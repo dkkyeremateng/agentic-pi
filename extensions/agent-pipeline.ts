@@ -2489,7 +2489,7 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                           : lastStatus;
 
                 const left =
-                    theme.fg("dim", ` ${model}`) +
+                    theme.fg("dim", ` ◆ ${model}`) +
                     theme.fg("muted", " · ") +
                     theme.fg("accent", "agent-pipeline") +
                     theme.fg("dim", " ") +
