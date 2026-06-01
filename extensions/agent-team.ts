@@ -43,14 +43,7 @@ import {
 } from "@mariozechner/pi-tui";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { spawn } from "child_process";
-import {
-    readFileSync,
-    existsSync,
-    readdirSync,
-    mkdirSync,
-    unlinkSync,
-    writeFileSync,
-} from "fs";
+import { readFileSync, existsSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
