@@ -1,0 +1,1782 @@
+// ABOUTME: Orchestrates plan / implement / test / validate (loop) then document / ship as a self-healing pipeline.
+// ABOUTME: The validator gates a correctness loop (FAIL -> back to implementer); only after PASS does the documenter
+// ABOUTME: run, then the validator ships — commits code+tests+docs and opens the PR (or pauses if there is no remote).
+/**
+ * Workflow — plan / implement / test / validate / document / ship orchestrator
+ *
+ * Runs the five agents defined in .pi/agents/*.md (the validator twice — to
+ * validate, then to ship):
+ *   planner -> implementer -> tester -> validator(gate) -> documenter -> validator(ship)
+ *
+ * Unlike a static chain, the validator's verdict drives a feedback loop:
+ *   - PASS    -> done (PR opened by validator if a remote exists)
+ *   - PAUSED  -> stop and report (no GitHub remote; validator did local work only)
+ *   - FAIL    -> feed the validator's findings back to the implementer and retry
+ *   - UNKNOWN -> stop and surface for human review
+ *
+ * Handles bug fixes, new features, and new apps — the planner classifies the
+ * request and the rest of the pipeline follows.
+ *
+ * Commands:
+ *   /workflow <request>   — run the full lifecycle on a request
+ *   /workflow-clear       — clear the progress widget
+ *
+ * Tool:
+ *   run_workflow { request, max_loops? } — same, callable by the primary agent
+ *
+ * Self-contained: depends only on pi packages + Node builtins, and reads agent
+ * definitions straight from .pi/agents/. Drop it in .pi/extensions/ and it loads.
+ */
+
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import {
+    Text,
+    Markdown,
+    truncateToWidth,
+    visibleWidth,
+} from "@mariozechner/pi-tui";
+import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import { spawn } from "child_process";
+import {
+    existsSync,
+    readdirSync,
+    mkdirSync,
+    unlinkSync,
+    writeFileSync,
+} from "fs";
+import { join } from "path";
+import {
+    type Verdict,
+    type CritiqueVerdict,
+    detectVerdict,
+    detectShip,
+    detectCritique,
+    isModelFailure,
+    secs,
+    digest,
+    testSignal,
+    outcomeLine,
+} from "../utils/workflow-utils";
+import {
+    REQUIRED_AGENTS,
+    DEFAULT_MAX_LOOPS,
+    LOG_PANEL_RESERVE,
+    LOG_CAP_CHARS,
+    STDERR_TAIL_CAP,
+    WORKFLOW_REPORT_TYPE,
+    WORKFLOW_REPORT_MAX,
+    WORKFLOW_LOG_TYPE,
+    setupSessions as setupSessionsCore,
+    publishReport as publishReportCore,
+    publishLogs as publishLogsCore,
+    type AgentDef,
+    type PhaseState,
+    loadDotEnv,
+    displayName,
+    statusMeta,
+    statusBadge,
+    agentPhaseStatus,
+    renderCard,
+    teamsBlock as teamsBlockCore,
+    chooseTeam as chooseTeamCore,
+    loadedExplicitly as loadedExplicitlyCore,
+    isActiveWorkflow as isActiveWorkflowCore,
+    loadAgents,
+    loadTeams,
+    teamIsSpec,
+    validatePlan,
+    scoutTask,
+    planTask,
+    implementTask,
+    fixTask,
+    testTask,
+    documentTask,
+    validateTask,
+    shipTask,
+    criticTask,
+    revisePlanTask,
+    specPlanTask,
+    specReviseTask,
+    specCriticTask,
+    specDocumentTask,
+} from "../utils/workflow-core";
+
+// Run before any process.env reads below (WORKER_MODEL, …).
+loadDotEnv(process.cwd());
+
+let isSpecMode = false; // true during spec-only runs; hides impl/test/validate/ship phases
+
+// This file is the base "workflow"; it owns the chrome by default. See
+// workflow-core for loadedExplicitly / selectedWorkflowExtension / isActiveWorkflow.
+const SELF_NAME = "workflow";
+
+const loadedExplicitly = () => loadedExplicitlyCore(import.meta.url, "workflow.ts");
+const isActiveWorkflow = () => isActiveWorkflowCore(SELF_NAME);
+
+// ── Config ───────────────────────────────────────
+
+// Empty string = inherit pi's configured default model. Override with PI_WORKFLOW_MODEL.
+const WORKER_MODEL = process.env.PI_WORKFLOW_MODEL || "";
+// Optional per-agent watchdog: kill an agent that runs longer than N minutes
+// (PI_WORKFLOW_AGENT_TIMEOUT, in minutes). 0 / unset = no timeout.
+const AGENT_TIMEOUT_MS =
+    Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_TIMEOUT || "0") || 0) *
+    60_000;
+
+
+// ── Extension ────────────────────────────────────
+
+export default function (pi: ExtensionAPI) {
+    let agents: Map<string, AgentDef> = new Map();
+    let teams: Record<string, string[]> = {};
+    let activeTeamName = "";
+    // The model the current pi session is running on (provider/id) — every agent
+    // in the workflow runs on it, so the one model you launch with drives the
+    // whole pipeline. Captured from ctx.model when a run starts.
+    let sessionModel = "";
+    let widgetCtx: any;
+    let sessionDir = "";
+    let phases: PhaseState[] = [];
+    let iteration = 0;
+    let maxLoopsRef = DEFAULT_MAX_LOOPS;
+    let lastStatus = "idle";
+    let running = false;
+    let currentProc: any = null;
+    let phaseLogs: { label: string; log: string }[] = []; // collected per run, posted as one card at the end
+    let totalDroppedLines = 0; // count of JSON lines dropped during this run (diagnostic signal)
+    let totalToolCalls = 0; // cumulative tool calls across all phases this run (incl. retries)
+    let runStartedAt = 0; // wall-clock start of the current run
+    let includeScout = false; // prepend a read-only Scout recon phase (team has `scout`)
+
+    const mkPhase = (label: string, agent: string): PhaseState => ({
+        label,
+        agent,
+        status: "pending",
+        elapsed: 0,
+        note: "",
+        log: "",
+        droppedLines: 0,
+        toolCount: 0,
+        contextPct: 0,
+        attempt: 0,
+        modelFallback: false,
+    });
+
+    function freshPhases(): PhaseState[] {
+        // Optional read-only recon pass, prepended when the active team has scout.
+        const lead = includeScout ? [mkPhase("Scout", "scout")] : [];
+        if (isSpecMode) {
+            return [
+                ...lead,
+                mkPhase("Plan", "planner"),
+                mkPhase("Critique", "critic"),
+                mkPhase("Document", "documenter"),
+            ];
+        }
+
+        return [
+            ...lead,
+            mkPhase("Plan", "planner"),
+            mkPhase("Critique", "critic"),
+            mkPhase("Implement", "implementer"),
+            mkPhase("Test", "tester"),
+            mkPhase("Validate", "validator"),
+            mkPhase("Document", "documenter"),
+            mkPhase("Ship", "validator"),
+        ];
+    }
+
+    const setupSessions = (cwd: string, wipe: boolean) => {
+        sessionDir = setupSessionsCore(cwd, wipe);
+    };
+
+    // ── Team helpers ─────────────────────────────
+
+    // Build a "provider/id" model string from a pi context, guarding for a
+    // model that exposes only an id (or none at all).
+    function sessionModelOf(ctx: any): string {
+        const m = ctx?.model;
+        if (!m) return "";
+        return m.provider && m.id ? `${m.provider}/${m.id}` : m.id || "";
+    }
+    // The base workflow runs every agent on one model: PI_WORKFLOW_MODEL if set,
+    // otherwise the current session's model. The team variant overrides per agent.
+    function modelFor(_agentKey: string): string {
+        return WORKER_MODEL || sessionModel || "default";
+    }
+    // Members of the active team that actually resolve to a loaded agent .md.
+    function activeMembers(): string[] {
+        const raw = teams[activeTeamName] || [];
+        return raw.filter((m) => agents.has(m.toLowerCase()));
+    }
+    // Pick a team, falling back to the first defined team if the name is unknown.
+    function activateTeam(name: string) {
+        const names = Object.keys(teams);
+        activeTeamName = teams[name] ? name : (names[0] ?? "");
+    }
+    const teamsBlock = () => teamsBlockCore(teams, agents, activeTeamName);
+    const chooseTeam = (ctx: any) => chooseTeamCore(ctx, teams);
+
+    // ── Widget (horizontal cards) ────────────────
+
+    // ── Idle grid dashboard (team roster with per-agent model) ──
+
+    // One agent card: name · status · model · description. Used in the idle
+    // dashboard so the whole team and the model each agent runs is visible at
+    // a glance before a workflow starts.
+    function renderAgentCard(
+        agentKey: string,
+        colWidth: number,
+        theme: any,
+    ): string[] {
+        const w = colWidth - 2;
+        const truncate = (s: string, max: number) =>
+            s.length > max ? s.slice(0, Math.max(0, max - 1)) + "…" : s;
+
+        const def = agents.get(agentKey.toLowerCase());
+        const { status, elapsed, toolCount } = agentPhaseStatus(
+            phases,
+            agentKey,
+        );
+        const { icon, color } = statusMeta(status);
+
+        const name = displayName(agentKey);
+        const nameStr = theme.fg("accent", theme.bold(truncate(name, w)));
+        const nameVisible = Math.min(name.length, w);
+
+        const word = status === "pending" ? "idle" : status;
+        const timeStr = elapsed > 0 ? ` ${Math.round(elapsed / 1000)}s` : "";
+        const toolNote =
+            status === "running" && toolCount > 0
+                ? ` · ${toolCount} tool${toolCount === 1 ? "" : "s"}`
+                : "";
+        const statusRaw = `${icon} ${word}${timeStr}${toolNote}`;
+        const statusStr = theme.fg(color, truncate(statusRaw, w));
+        const statusVisible = Math.min(statusRaw.length, w);
+
+        // No per-agent model line: every agent runs on the one session model,
+        // shown once in the grid header instead.
+
+        // Descriptions follow a "Short summary — details" convention; show just
+        // the summary (before the em dash) so it fits the card.
+        const descRaw = (def?.description || "—").split("—")[0].trim() || "—";
+        const descText = truncate(descRaw, w - 1);
+        const descLine = theme.fg("dim", descText);
+        const descVisible = Math.min(descText.length, w - 1);
+
+        const top = "┌" + "─".repeat(w) + "┐";
+        const bot = "└" + "─".repeat(w) + "┘";
+        const border = (content: string, visLen: number) =>
+            theme.fg("dim", "│") +
+            content +
+            " ".repeat(Math.max(0, w - visLen)) +
+            theme.fg("dim", "│");
+
+        return [
+            theme.fg("dim", top),
+            border(" " + nameStr, 1 + nameVisible),
+            border(" " + statusStr, 1 + statusVisible),
+            border(" " + descLine, 1 + descVisible),
+            theme.fg("dim", bot),
+        ];
+    }
+
+    // The idle dashboard: a grid of the active team's agents. All agents run on
+    // one model, shown once in the header. Mirrors the agent-team layout.
+    function renderAgentGrid(width: number, theme: any): string[] {
+        const members = activeMembers();
+        const teamNames = Object.keys(teams);
+
+        const header =
+            " " +
+            theme.fg("accent", theme.bold("workflow")) +
+            theme.fg("dim", "  ·  team ") +
+            theme.fg("accent", activeTeamName || "—") +
+            theme.fg(
+                "dim",
+                ` (${members.length} agent${members.length === 1 ? "" : "s"}` +
+                    `${teamIsSpec(members) ? " · spec mode" : " · full pipeline"})`,
+            ) +
+            theme.fg("dim", "  ·  model ") +
+            theme.fg("muted", modelFor(""));
+        const hint = theme.fg(
+            "dim",
+            teamNames.length > 1
+                ? " /workflow [request] — pick a team, then run"
+                : " /workflow <request> to run",
+        );
+
+        const lines: string[] = [header, hint, ""];
+
+        if (members.length === 0) {
+            lines.push(
+                theme.fg(
+                    "dim",
+                    " No agents in this team. Check .pi/agents/teams.yaml and .pi/agents/*.md.",
+                ),
+            );
+            return lines;
+        }
+
+        const cols = Math.min(
+            members.length <= 3 ? members.length : 3,
+            members.length,
+        );
+        const gap = 1;
+        const colWidth = Math.max(
+            18,
+            Math.floor((width - gap * (cols - 1)) / cols),
+        );
+
+        for (let i = 0; i < members.length; i += cols) {
+            const rowMembers = members.slice(i, i + cols);
+            const cards = rowMembers.map((m) =>
+                renderAgentCard(m, colWidth, theme),
+            );
+            const cardH = cards[0]?.length ?? 6;
+            while (cards.length < cols)
+                cards.push(Array(cardH).fill(" ".repeat(colWidth)));
+            for (let line = 0; line < cardH; line++) {
+                lines.push(
+                    cards.map((c) => c[line] || "").join(" ".repeat(gap)),
+                );
+            }
+        }
+        return lines;
+    }
+
+    function updateWidget() {
+        if (!widgetCtx) return;
+        widgetCtx.ui.setWidget("workflow", (_tui: any, theme: any) => {
+            const text = new Text("", 0, 1);
+            return {
+                render(width: number): string[] {
+                    if (phases.length === 0) {
+                        // Idle: show the active team as a grid of agent cards,
+                        // each annotated with the model it runs.
+                        text.setText(renderAgentGrid(width, theme).join("\n"));
+                        return text.render(width);
+                    }
+
+                    const arrowWidth = 5; // " ──▶ "
+                    const cols = phases.length;
+                    const colWidth = Math.max(
+                        14,
+                        Math.floor((width - arrowWidth * (cols - 1)) / cols),
+                    );
+                    const arrowRow = 2; // middle of the 5-line card
+
+                    const cards = phases.map((p) =>
+                        renderCard(p, colWidth, theme),
+                    );
+                    const cardHeight = cards[0].length;
+                    const lines: string[] = [];
+
+                    const passInfo =
+                        iteration > 1
+                            ? theme.fg(
+                                  "dim",
+                                  `  attempt ${iteration}/${maxLoopsRef}`,
+                              )
+                            : "";
+                    const workflowTitle = isSpecMode
+                        ? "plan-validate"
+                        : "plan-implement-test-validate";
+                    lines.push(
+                        " " +
+                            theme.fg("accent", theme.bold(workflowTitle)) +
+                            passInfo +
+                            statusBadge(theme, running, lastStatus),
+                    );
+                    lines.push("");
+
+                    for (let line = 0; line < cardHeight; line++) {
+                        let row = cards[0][line];
+                        for (let c = 1; c < cols; c++) {
+                            row +=
+                                line === arrowRow
+                                    ? theme.fg("dim", " ──▶ ")
+                                    : " ".repeat(arrowWidth);
+                            row += cards[c][line];
+                        }
+                        lines.push(row);
+                    }
+
+                    // Live log of the currently running agent — grows to fill the
+                    // available vertical space, pushing the editor down, then tails.
+                    const active = phases.find((p) => p.status === "running");
+                    if (active && active.log) {
+                        const toolNote =
+                            active.toolCount > 0
+                                ? ` · ${active.toolCount} tool${active.toolCount === 1 ? "" : "s"}`
+                                : "";
+                        const label = ` ─── ${active.label} · live${toolNote} `;
+                        const rule = "─".repeat(
+                            Math.max(0, width - visibleWidth(label) - 1),
+                        );
+                        lines.push("");
+                        lines.push(theme.fg("dim", label + rule));
+                        const logLines = active.log
+                            .split("\n")
+                            .map((l) => l.replace(/\s+$/, ""))
+                            .filter((l) => l.length);
+                        const rows = process.stdout.rows || 24;
+                        // Hard bound so the editor + footer always stay on screen: never
+                        // taller than half the terminal, and always leaving room below.
+                        // lines.length here = title + cards + label already pushed.
+                        const maxLogRows = Math.max(
+                            3,
+                            Math.min(
+                                Math.floor(rows / 2),
+                                rows - lines.length - LOG_PANEL_RESERVE,
+                            ),
+                        );
+                        const colW = width - 4;
+                        const shown = logLines.slice(-maxLogRows);
+                        if (logLines.length > shown.length) {
+                            lines.push(
+                                "   " +
+                                    theme.fg(
+                                        "dim",
+                                        `… ${logLines.length - shown.length} earlier line(s) — full log below`,
+                                    ),
+                            );
+                        }
+                        for (const l of shown) {
+                            const t =
+                                l.length > colW
+                                    ? l.slice(0, colW - 1) + "…"
+                                    : l;
+                            lines.push("   " + theme.fg("muted", t));
+                        }
+                    }
+
+                    text.setText(lines.join("\n"));
+                    return text.render(width);
+                },
+                invalidate() {
+                    text.invalidate();
+                },
+            };
+        });
+    }
+
+    // ── Run a single agent as a subprocess ───────
+
+    // Spawn a pi subprocess for a single agent run. Extracted so runAgent can
+    // retry with a fallback model when the primary model fails to load.
+    function spawnAgentWithModel(
+        agentDef: AgentDef,
+        task: string,
+        phase: PhaseState,
+        cwd: string,
+        model: string,
+    ): Promise<{ output: string; exitCode: number }> {
+        const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
+        const sessionFile = join(sessionDir, `${key}.json`);
+        const hasSession = existsSync(sessionFile);
+
+        const args = [
+            "--mode",
+            "json",
+            "-p",
+            "--no-extensions",
+            "--tools",
+            agentDef.tools,
+            "--append-system-prompt",
+            agentDef.systemPrompt,
+            "--session",
+            sessionFile,
+        ];
+        if (model) args.push("--model", model);
+        if (hasSession) args.push("-c");
+        args.push(task);
+
+        const answer: string[] = []; // only the final answer text — feeds the next phase
+        let activity = ""; // live feed: thinking + tool calls + answer text
+        let stderrTail = ""; // bounded stderr, surfaced only when the agent fails
+        let timedOut = false; // set when the watchdog kills a too-long-running agent
+        const start = Date.now();
+
+        return new Promise((resolve) => {
+            const proc = spawn("pi", args, {
+                stdio: ["ignore", "pipe", "pipe"],
+                env: { ...process.env, PI_SUBAGENT: "1" },
+                cwd,
+            });
+            currentProc = proc;
+
+            // Optional watchdog: kill an agent that exceeds the configured limit.
+            const watchdog =
+                AGENT_TIMEOUT_MS > 0
+                    ? setTimeout(() => {
+                          timedOut = true;
+                          try {
+                              proc.kill("SIGTERM");
+                          } catch {}
+                      }, AGENT_TIMEOUT_MS)
+                    : null;
+
+            let lastPaint = 0;
+            function paint(force = false) {
+                const now = Date.now();
+                if (!force && now - lastPaint < 120) return;
+                lastPaint = now;
+                updateWidget();
+            }
+            function pushActivity(s: string) {
+                activity += s;
+                if (activity.length > LOG_CAP_CHARS)
+                    activity = activity.slice(-LOG_CAP_CHARS);
+                phase.log = activity;
+                phase.note =
+                    activity
+                        .split("\n")
+                        .filter((l: string) => l.trim())
+                        .pop() || "";
+            }
+            function compactArgs(a: any): string {
+                if (!a || typeof a !== "object") return "";
+                const s = Object.entries(a)
+                    .map(
+                        ([k, v]) =>
+                            `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`,
+                    )
+                    .join(" ");
+                return s.length > 70 ? s.slice(0, 69) + "…" : s;
+            }
+
+            const timer = setInterval(() => {
+                phase.elapsed = Date.now() - start;
+                updateWidget();
+            }, 1000);
+
+            let buffer = "";
+            proc.stdout!.setEncoding("utf-8");
+            proc.stdout!.on("data", (chunk: string) => {
+                buffer += chunk;
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        const event = JSON.parse(line);
+                        if (event.type === "message_update") {
+                            const ev = event.assistantMessageEvent;
+                            if (ev?.type === "text_delta") {
+                                answer.push(ev.delta || "");
+                                pushActivity(ev.delta || "");
+                                paint();
+                            } else if (ev?.type === "thinking_delta") {
+                                pushActivity(ev.delta || "");
+                                paint();
+                            }
+                        } else if (event.type === "tool_execution_start") {
+                            phase.toolCount++;
+                            totalToolCalls++;
+                            pushActivity(
+                                `\n→ ${event.toolName} ${compactArgs(event.args)}\n`,
+                            );
+                            paint(true);
+                        } else if (event.type === "tool_execution_end") {
+                            pushActivity(`✓ ${event.toolName}\n`);
+                            paint(true);
+                        } else if (
+                            event.type === "message_end" ||
+                            event.type === "agent_end"
+                        ) {
+                            const msg =
+                                event.type === "message_end"
+                                    ? event.message
+                                    : (event.messages || []).find(
+                                          (m: any) => m.role === "assistant",
+                                      );
+                            if (msg?.usage?.input) {
+                                const ctxWindow =
+                                    msg.usage.contextWindow ||
+                                    msg.usage.max_tokens ||
+                                    200_000;
+                                phase.contextPct = Math.min(
+                                    100,
+                                    Math.round(
+                                        (msg.usage.input / ctxWindow) * 100,
+                                    ),
+                                );
+                                paint();
+                            }
+                        }
+                    } catch {
+                        // Malformed JSON line from pi's subprocess — track it per phase
+                        // and globally so we can surface a diagnostic signal in the report.
+                        // Do not fail the run; the output stream may still be recoverable.
+                        phase.droppedLines++;
+                        totalDroppedLines++;
+                    }
+                }
+            });
+            proc.stderr!.setEncoding("utf-8");
+            proc.stderr!.on("data", (chunk: string) => {
+                stderrTail += chunk;
+                if (stderrTail.length > STDERR_TAIL_CAP)
+                    stderrTail = stderrTail.slice(-STDERR_TAIL_CAP);
+            });
+
+            proc.on("close", (code) => {
+                currentProc = null;
+                if (buffer.trim()) {
+                    try {
+                        const event = JSON.parse(buffer);
+                        if (
+                            event.type === "message_update" &&
+                            event.assistantMessageEvent?.type === "text_delta"
+                        ) {
+                            answer.push(
+                                event.assistantMessageEvent.delta || "",
+                            );
+                        }
+                    } catch {
+                        phase.droppedLines++;
+                        totalDroppedLines++;
+                    }
+                }
+                clearInterval(timer);
+                if (watchdog) clearTimeout(watchdog);
+                phase.elapsed = Date.now() - start;
+                let output = answer.join("");
+                // Surface a watchdog timeout, then any captured stderr, so a
+                // failed phase is diagnosable instead of showing empty output.
+                if (timedOut) {
+                    output +=
+                        (output ? "\n\n" : "") +
+                        `[timed out after ${Math.round(AGENT_TIMEOUT_MS / 60_000)}m — killed by PI_WORKFLOW_AGENT_TIMEOUT]`;
+                }
+                if ((code ?? 1) !== 0 && stderrTail.trim()) {
+                    output +=
+                        (output ? "\n\n" : "") +
+                        `[stderr]\n${stderrTail.trim()}`;
+                }
+                phase.note =
+                    output
+                        .split("\n")
+                        .filter((l: string) => l.trim())
+                        .pop() || phase.note;
+                // A timeout kill can exit with code 0 on some platforms; force a
+                // non-zero code so the orchestrator treats it as a failure.
+                resolve({ output, exitCode: timedOut ? 1 : (code ?? 1) });
+            });
+
+            proc.on("error", (err) => {
+                currentProc = null;
+                clearInterval(timer);
+                if (watchdog) clearTimeout(watchdog);
+                resolve({
+                    output: `Error spawning agent: ${err.message}`,
+                    exitCode: 1,
+                });
+            });
+        });
+    }
+
+    function runAgent(
+        agentDef: AgentDef,
+        task: string,
+        phase: PhaseState,
+        cwd: string,
+    ): Promise<{ output: string; exitCode: number }> {
+        // PI_WORKFLOW_MODEL is an explicit override; otherwise every agent runs
+        // on the current session's model.
+        const primaryModel = WORKER_MODEL || sessionModel;
+        // Fallback: the model the current pi session is running on (the primary
+        // agent's model). If an agent's configured model fails to load, we retry
+        // with the session model since it's known to work — pi itself is using it.
+        const fallbackModel =
+            sessionModel && sessionModel !== primaryModel ? sessionModel : "";
+
+        return spawnAgentWithModel(
+            agentDef,
+            task,
+            phase,
+            cwd,
+            primaryModel,
+        ).then(async (result) => {
+            // Only model-specific load/run failures trigger a fallback — timeouts,
+            // tool failures, and bad output are not retried.
+            if (result.exitCode !== 0 && isModelFailure(result.output)) {
+                const agentName = displayName(agentDef.name);
+
+                // If the agent is already on the primary agent's model (no distinct
+                // fallback), there is nothing to fall back to — tell the user.
+                if (!fallbackModel) {
+                    widgetCtx?.ui?.notify?.(
+                        `${agentName}: model "${primaryModel}" failed to load or run, and no fallback is available (already on the primary agent's model).`,
+                        "error",
+                    );
+                    return result;
+                }
+
+                // Retry once with the primary agent's (session) model, which is known
+                // to work, and inform the user of the failure and the action taken.
+                phase.note = `⚠ ${primaryModel} failed → ${fallbackModel}`;
+                phase.modelFallback = true;
+                phase.toolCount = 0;
+                phase.contextPct = 0;
+                phase.droppedLines = 0;
+                phase.log += `\n⚠ Model ${primaryModel} failed — retrying with ${fallbackModel}\n`;
+                widgetCtx?.ui?.notify?.(
+                    `${agentName}: model "${primaryModel}" failed to load or run — falling back to the primary agent's model (${fallbackModel}) and retrying.`,
+                    "warning",
+                );
+                updateWidget();
+
+                const retry = await spawnAgentWithModel(
+                    agentDef,
+                    task,
+                    phase,
+                    cwd,
+                    fallbackModel,
+                );
+                if (retry.exitCode !== 0 && isModelFailure(retry.output)) {
+                    widgetCtx?.ui?.notify?.(
+                        `${agentName}: the fallback model (${fallbackModel}) also failed to load or run.`,
+                        "error",
+                    );
+                } else if (retry.exitCode === 0) {
+                    widgetCtx?.ui?.notify?.(
+                        `${agentName}: recovered on the primary agent's model (${fallbackModel}).`,
+                        "success",
+                    );
+                }
+                return retry;
+            }
+            return result;
+        });
+    }
+
+    async function runPhase(
+        phase: PhaseState,
+        task: string,
+        cwd: string,
+    ): Promise<{ output: string; ok: boolean }> {
+        const def = agents.get(phase.agent);
+        if (!def) {
+            phase.status = "error";
+            phase.note = `Agent "${phase.agent}" not found`;
+            updateWidget();
+            return {
+                output: `Agent "${phase.agent}" not found in .pi/agents/`,
+                ok: false,
+            };
+        }
+        phase.attempt++;
+        phase.status = "running";
+        phase.toolCount = 0; // reset for reused phases (loop-back, test⇄validate cycles)
+        phase.contextPct = 0;
+        updateWidget();
+        const res = await runAgent(def, task, phase, cwd);
+        phase.status = res.exitCode === 0 ? "done" : "error";
+        updateWidget();
+        // Notify the user when a phase completes so they have peripheral awareness
+        // without staring at the dashboard.
+        if (widgetCtx?.ui?.notify) {
+            const elapsed = Math.round(phase.elapsed / 1000);
+            const statusWord = phase.status === "done" ? "done" : "failed";
+            const attemptNote =
+                phase.attempt > 1 ? ` (attempt ${phase.attempt})` : "";
+            widgetCtx.ui.notify(
+                `${phase.label} ${statusWord} in ${elapsed}s${attemptNote}`,
+                phase.status === "done" ? "success" : "error",
+            );
+        }
+        if (phase.log && phase.log.trim())
+            phaseLogs.push({ label: phase.label, log: phase.log });
+        return { output: res.output, ok: res.exitCode === 0 };
+    }
+
+    // ── Orchestrate the full lifecycle ───────────
+
+    async function runWorkflow(
+        request: string,
+        maxLoops: number,
+        ctx: any,
+    ): Promise<{ status: string; report: string }> {
+        isSpecMode = false; // never inherit spec mode from a prior invocation
+        sessionModel = sessionModelOf(ctx); // all agents run on the session model
+        const cwd = ctx.cwd;
+        includeScout = activeMembers().some((m) => m.toLowerCase() === "scout");
+        setupSessions(cwd, true);
+        phases = freshPhases();
+        phaseLogs = [];
+        totalDroppedLines = 0;
+        totalToolCalls = 0;
+        runStartedAt = Date.now();
+        iteration = 0;
+        maxLoopsRef = maxLoops;
+        lastStatus = "running";
+        running = true;
+        updateWidget();
+
+        const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
+        if (missing.length) {
+            running = false;
+            lastStatus = "error";
+            return {
+                status: "error",
+                report: `Missing agent definitions: ${missing.join(", ")}. Expected them in .pi/agents/.`,
+            };
+        }
+
+        const [planP, critiqueP, implP, testP, valP, docP, shipP] = includeScout
+            ? phases.slice(1)
+            : phases;
+
+        // Optional Phase 0 — Scout (read-only recon, feeds the planner)
+        const scoutP = includeScout ? phases[0] : null;
+        let scoutFindings = "";
+        if (scoutP) {
+            const scoutRes = await runPhase(scoutP, scoutTask(request), cwd);
+            if (!scoutRes.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Scouting failed:\n\n${scoutRes.output}`,
+                };
+            }
+            scoutFindings = scoutRes.output;
+        }
+
+        // Phase 1 — Plan (once)
+        let plan = await runPhase(planP, planTask(request, scoutFindings), cwd);
+        if (!plan.ok) {
+            running = false;
+            lastStatus = "error";
+            return {
+                status: "error",
+                report: `Planning failed:\n\n${plan.output}`,
+            };
+        }
+
+        // Structural check: reject clearly malformed plans before handing to implementer.
+        const planCheck = validatePlan(plan.output);
+        if (!planCheck.ok) {
+            running = false;
+            lastStatus = "error";
+            return {
+                status: "error",
+                report: `Plan is missing required structure. The planner's output lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe implementer cannot act reliably on this plan. Re-run with a more specific request, or check that the planner agent definition is complete.`,
+            };
+        }
+
+        // Phase 2 — Critique (plan ⇄ critic loop)
+        let critique = { output: "", ok: true };
+        let critiqueVerdict: CritiqueVerdict = "unknown";
+
+        for (let loop = 1; loop <= maxLoops; loop++) {
+            critiqueP.status = "pending";
+            updateWidget();
+            critique = await runPhase(
+                critiqueP,
+                criticTask(request, plan.output),
+                cwd,
+            );
+            if (!critique.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Critique failed:\n\n${critique.output}`,
+                };
+            }
+
+            critiqueVerdict = detectCritique(critique.output);
+            if (critiqueVerdict !== "revise") break;
+
+            // REVISE — loop back to the planner unless we are out of attempts
+            if (loop === maxLoops) break;
+            planP.status = "pending";
+            planP.note = "";
+            updateWidget();
+            plan = await runPhase(
+                planP,
+                revisePlanTask(request, plan.output, critique.output),
+                cwd,
+            );
+            if (!plan.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Plan revision failed:\n\n${plan.output}`,
+                };
+            }
+        }
+
+        // Phase 3 — Implement (first pass)
+        let impl = await runPhase(
+            implP,
+            implementTask(request, plan.output),
+            cwd,
+        );
+        if (!impl.ok) {
+            running = false;
+            lastStatus = "error";
+            return {
+                status: "error",
+                report: `Implementation failed:\n\n${impl.output}`,
+            };
+        }
+
+        let test = { output: "", ok: false };
+        let val = { output: "", ok: false };
+        let doc = { output: "", ok: false };
+        let ship = { output: "", ok: false };
+        let verdict: Verdict = "unknown";
+
+        // Correctness loop — test ⇄ validate, gated by the validator.
+        for (let loop = 1; loop <= maxLoops; loop++) {
+            iteration = loop;
+
+            // Test
+            testP.status = "pending";
+            valP.status = "pending";
+            updateWidget();
+            test = await runPhase(
+                testP,
+                testTask(request, plan.output, impl.output),
+                cwd,
+            );
+            if (!test.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Testing failed:\n\n${test.output}`,
+                };
+            }
+
+            // Validate (the gate — no commit, no PR yet)
+            val = await runPhase(
+                valP,
+                validateTask(request, plan.output, test.output),
+                cwd,
+            );
+            if (!val.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Validation failed:\n\n${val.output}`,
+                };
+            }
+
+            verdict = detectVerdict(val.output);
+            if (verdict !== "fail") break;
+
+            // FAIL — loop back to the implementer unless we are out of attempts
+            if (loop === maxLoops) break;
+            implP.status = "pending";
+            implP.note = "";
+            updateWidget();
+            impl = await runPhase(
+                implP,
+                fixTask(request, plan.output, val.output, impl.output),
+                cwd,
+            );
+            if (!impl.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Re-implementation failed:\n\n${impl.output}`,
+                };
+            }
+        }
+
+        // Document + ship only once the change has passed validation.
+        let status: string;
+        if (verdict === "pass") {
+            doc = await runPhase(
+                docP,
+                documentTask(request, plan.output, impl.output, test.output),
+                cwd,
+            );
+            if (!doc.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Documentation failed:\n\n${doc.output}`,
+                };
+            }
+
+            ship = await runPhase(
+                shipP,
+                shipTask(request, test.output, doc.output),
+                cwd,
+            );
+            if (!ship.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Shipping failed:\n\n${ship.output}`,
+                };
+            }
+
+            status =
+                detectShip(ship.output) === "paused"
+                    ? "paused-no-remote"
+                    : "shipped";
+        } else {
+            status =
+                verdict === "fail" ? "failed-after-retries" : "needs-review";
+        }
+
+        running = false;
+        lastStatus = status;
+        updateWidget();
+
+        const passes = iteration;
+        const passed = verdict === "pass";
+        const prUrl =
+            (ship.output.match(/https?:\/\/\S*\/pull\/\d+/) || [])[0] || "";
+
+        const report = [
+            `# Workflow Report`,
+            ``,
+            `**Request:** ${request}`,
+            `**Outcome:** ${outcomeLine(status, passes)}`,
+            `**Result:** ${status} · verdict ${verdict.toUpperCase()} · ${passes} attempt(s) of ${maxLoops}`,
+            `**Totals:** ${secs(Date.now() - runStartedAt)} wall-clock · ${totalToolCalls} tool call(s)`,
+            ...(prUrl ? [`**Pull request:** ${prUrl}`] : []),
+            ...(totalDroppedLines > 0
+                ? [
+                      ``,
+                      `> **Diagnostic:** ${totalDroppedLines} malformed JSON line(s) were dropped from agent output streams during this run. This may indicate a pi subprocess protocol issue. Full agent logs are appended below.`,
+                  ]
+                : []),
+            ``,
+            `## Summary of work`,
+            ``,
+            ...(scoutP
+                ? [
+                      `- **Scout** (${secs(scoutP.elapsed)}) — ${digest(scoutFindings)}${scoutP.droppedLines > 0 ? ` [${scoutP.droppedLines} dropped]` : ""}`,
+                  ]
+                : []),
+            `- **Planner** (${secs(planP.elapsed)}) — ${digest(plan.output)}${planP.droppedLines > 0 ? ` [${planP.droppedLines} dropped]` : ""}`,
+            `- **Critic** (${secs(critiqueP.elapsed)}) — ${digest(critique.output)}${critiqueP.droppedLines > 0 ? ` [${critiqueP.droppedLines} dropped]` : ""}`,
+            `- **Implementer** (${secs(implP.elapsed)}) — ${digest(impl.output)}${implP.droppedLines > 0 ? ` [${implP.droppedLines} dropped]` : ""}`,
+            `- **Tester** (${secs(testP.elapsed)}) — ${digest(test.output)}${testSignal(test.output)}${testP.droppedLines > 0 ? ` [${testP.droppedLines} dropped]` : ""}`,
+            `- **Validator** (${secs(valP.elapsed)}) — verdict ${verdict.toUpperCase()}. ${digest(val.output)}${valP.droppedLines > 0 ? ` [${valP.droppedLines} dropped]` : ""}`,
+            ...(passed
+                ? [
+                      `- **Documenter** (${secs(docP.elapsed)}) — ${digest(doc.output)}${docP.droppedLines > 0 ? ` [${docP.droppedLines} dropped]` : ""}`,
+                      `- **Ship** (${secs(shipP.elapsed)}) — ${digest(ship.output)}${shipP.droppedLines > 0 ? ` [${shipP.droppedLines} dropped]` : ""}`,
+                  ]
+                : [
+                      `- **Documenter / Ship** — skipped (change did not pass validation)`,
+                  ]),
+            ``,
+            `## Details`,
+            ``,
+            ...(scoutP ? [`### Reconnaissance`, ``, scoutFindings, ``] : []),
+            `### Plan`,
+            ``,
+            plan.output,
+            ``,
+            `### Critique`,
+            ``,
+            critique.output,
+            ``,
+            `### Implementation`,
+            ``,
+            impl.output,
+            ``,
+            `### Test Report`,
+            ``,
+            test.output,
+            ``,
+            `### Validation`,
+            ``,
+            val.output,
+            ``,
+            ...(passed
+                ? [
+                      `### Documentation`,
+                      ``,
+                      doc.output,
+                      ``,
+                      `### Ship`,
+                      ``,
+                      ship.output,
+                      ``,
+                  ]
+                : []),
+        ].join("\n");
+
+        const reportPath = join(cwd, "workflow-report.md");
+        try {
+            writeFileSync(reportPath, report, "utf-8");
+        } catch {}
+
+        // Post the consolidated, scrollable activity log before returning.
+        publishLogs();
+
+        return { status, report };
+    }
+
+    // ── Orchestrate the spec-only workflow ────────
+
+    async function runSpecWorkflow(
+        request: string,
+        ctx: any,
+    ): Promise<{ status: string; report: string }> {
+        isSpecMode = true;
+        sessionModel = sessionModelOf(ctx); // all agents run on the session model
+        const cwd = ctx.cwd;
+        includeScout = activeMembers().some((m) => m.toLowerCase() === "scout");
+        setupSessions(cwd, true);
+        phases = freshPhases();
+        phaseLogs = [];
+        totalDroppedLines = 0;
+        totalToolCalls = 0;
+        runStartedAt = Date.now();
+        iteration = 1;
+        maxLoopsRef = 1;
+        lastStatus = "running";
+        running = true;
+        updateWidget();
+
+        const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
+        if (missing.length) {
+            running = false;
+            lastStatus = "error";
+            return {
+                status: "error",
+                report: `Missing agent definitions: ${missing.join(", ")}. Expected them in .pi/agents/.`,
+            };
+        }
+
+        // In spec mode the phases are Plan, Critique, and Document, optionally preceded by Scout.
+        const scoutP = includeScout ? phases[0] : null;
+        const offset = includeScout ? 1 : 0;
+        const planP = phases[offset];
+        const critiqueP = phases[offset + 1];
+        const docP = phases[offset + 2];
+
+        // Optional Phase 0 — Scout (read-only recon, feeds the planner)
+        let scoutFindings = "";
+        if (scoutP) {
+            const scoutRes = await runPhase(scoutP, scoutTask(request), cwd);
+            if (!scoutRes.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Scouting failed:\n\n${scoutRes.output}`,
+                };
+            }
+            scoutFindings = scoutRes.output;
+        }
+
+        // Plan ⇄ Critique loop — the planner revises until the critic approves.
+        const maxCritiqueLoops =
+            maxLoopsRef > 0 ? maxLoopsRef : DEFAULT_MAX_LOOPS;
+        let plan = await runPhase(
+            planP,
+            specPlanTask(request, scoutFindings),
+            cwd,
+        );
+        if (!plan.ok) {
+            running = false;
+            lastStatus = "error";
+            return {
+                status: "error",
+                report: `Planning failed:\n\n${plan.output}`,
+            };
+        }
+
+        let critique = { output: "", ok: true };
+        let critiqueVerdict: CritiqueVerdict = "unknown";
+
+        for (let loop = 1; loop <= maxCritiqueLoops; loop++) {
+            critiqueP.status = "pending";
+            updateWidget();
+            critique = await runPhase(
+                critiqueP,
+                specCriticTask(request, plan.output),
+                cwd,
+            );
+            if (!critique.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Critique failed:\n\n${critique.output}`,
+                };
+            }
+
+            critiqueVerdict = detectCritique(critique.output);
+            if (critiqueVerdict !== "revise") break;
+
+            // REVISE — loop back to the planner unless we are out of attempts
+            if (loop === maxCritiqueLoops) break;
+            planP.status = "pending";
+            planP.note = "";
+            updateWidget();
+            plan = await runPhase(
+                planP,
+                specReviseTask(request, plan.output, critique.output),
+                cwd,
+            );
+            if (!plan.ok) {
+                running = false;
+                lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Plan revision failed:\n\n${plan.output}`,
+                };
+            }
+        }
+
+        // Phase 3 — Document (produce the spec)
+        const doc = await runPhase(
+            docP,
+            specDocumentTask(request, plan.output),
+            cwd,
+        );
+        if (!doc.ok) {
+            running = false;
+            lastStatus = "error";
+            return {
+                status: "error",
+                report: `Documentation failed:\n\n${doc.output}`,
+            };
+        }
+
+        const critiqueApproved = critiqueVerdict !== "revise";
+        const status = critiqueApproved ? "done" : "needs-review";
+        running = false;
+        lastStatus = status;
+        updateWidget();
+
+        const outcome = critiqueApproved
+            ? "SPEC COMPLETE — implementation spec saved to specs/"
+            : `NEEDS REVIEW — the critic did not approve the plan after ${maxCritiqueLoops} attempt(s). The spec was generated from the last plan revision; review the critique before using it.`;
+
+        const report = [
+            `# Spec Workflow Report`,
+            ``,
+            `**Request:** ${request}`,
+            `**Outcome:** ${outcome}`,
+            `**Totals:** ${secs(Date.now() - runStartedAt)} wall-clock · ${totalToolCalls} tool call(s)`,
+            ...(totalDroppedLines > 0
+                ? [
+                      ``,
+                      `> **Diagnostic:** ${totalDroppedLines} malformed JSON line(s) were dropped from agent output streams during this run.`,
+                  ]
+                : []),
+            ``,
+            `## Summary`,
+            ``,
+            ...(scoutP
+                ? [
+                      `- **Scout** (${secs(scoutP.elapsed)}) — ${digest(scoutFindings)}`,
+                  ]
+                : []),
+            `- **Planner** (${secs(planP.elapsed)}) — ${digest(plan.output)}`,
+            `- **Critic** (${secs(critiqueP.elapsed)}) — ${digest(critique.output)}`,
+            `- **Documenter** (${secs(docP.elapsed)}) — ${digest(doc.output)}`,
+            ``,
+            `## Details`,
+            ``,
+            ...(scoutP ? [`### Reconnaissance`, ``, scoutFindings, ``] : []),
+            `### Plan`,
+            ``,
+            plan.output,
+            ``,
+            `### Critique`,
+            ``,
+            critique.output,
+            ``,
+            `### Implementation Spec`,
+            ``,
+            doc.output,
+        ].join("\n");
+
+        const reportPath = join(cwd, "workflow-report.md");
+        try {
+            writeFileSync(reportPath, report, "utf-8");
+        } catch {}
+
+        publishLogs();
+
+        return { status, report };
+    }
+
+    // ── Custom message renderer for workflow reports ──
+    // Only the active extension registers renderers — both files use the same
+    // customType strings, so registering in both would double up.
+
+    if (isActiveWorkflow())
+        pi.registerMessageRenderer(
+            WORKFLOW_REPORT_TYPE,
+            (message, _options, _theme) => {
+                const report = (message.content || "") as string;
+                const mdTheme = getMarkdownTheme();
+                const trimmed =
+                    report.length > WORKFLOW_REPORT_MAX
+                        ? report.slice(0, WORKFLOW_REPORT_MAX) +
+                          "\n\n... [truncated — full report saved to workflow-report.md]"
+                        : report;
+                return new Markdown(trimmed, 1, 0, mdTheme);
+            },
+        );
+
+    const publishReport = (report: string) =>
+        publishReportCore(pi, report, lastStatus);
+
+    // ── Consolidated activity log → one scrollable conversation message ──
+
+    if (isActiveWorkflow())
+        pi.registerMessageRenderer(
+            WORKFLOW_LOG_TYPE,
+            (message, { expanded }, theme) => {
+                const d = (message.details || {}) as { phases?: number };
+                if (!expanded) {
+                    const count = d.phases
+                        ? ` (${d.phases} phase${d.phases === 1 ? "" : "s"})`
+                        : "";
+                    return new Text(
+                        theme.fg("accent", "▤ ") +
+                            theme.fg("muted", "Activity logs") +
+                            theme.fg("dim", `${count} — expand to read`),
+                        0,
+                        0,
+                    );
+                }
+                return new Markdown(
+                    (message.content || "") as string,
+                    1,
+                    0,
+                    getMarkdownTheme(),
+                );
+            },
+        );
+
+    const publishLogs = () => publishLogsCore(pi, phaseLogs);
+
+    // ── Command ──────────────────────────────────
+
+    // Register commands + tool only for the active workflow extension, so when
+    // both auto-load you don't see /workflow and /workflow-team at once.
+    const active = isActiveWorkflow();
+
+    if (active)
+        pi.registerCommand("workflow", {
+            description:
+                "Run a workflow: '/workflow <request>' for full lifecycle, '/workflow spec <request>' for implementation spec only",
+            handler: async (args, ctx) => {
+                widgetCtx = ctx;
+                if (running) {
+                    ctx.ui.notify("A workflow is already running.", "warning");
+                    return;
+                }
+
+                agents = loadAgents(ctx.cwd);
+                teams = loadTeams(ctx.cwd);
+                if (Object.keys(teams).length === 0)
+                    teams = { all: Array.from(agents.keys()) };
+                const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
+                if (missing.length) {
+                    ctx.ui.notify(
+                        `Missing agents in .pi/agents/: ${missing.join(", ")}`,
+                        "error",
+                    );
+                    return;
+                }
+
+                let rawArgs = (args || "").trim();
+
+                // Optional `loops=N` token (anywhere) overrides the retry limit.
+                let maxLoops = DEFAULT_MAX_LOOPS;
+                const loopsMatch = rawArgs.match(
+                    /(?:^|\s)loops=(\d+)(?=\s|$)/i,
+                );
+                if (loopsMatch) {
+                    const n = parseInt(loopsMatch[1], 10);
+                    if (n > 0) maxLoops = n;
+                    rawArgs = (
+                        rawArgs.slice(0, loopsMatch.index!) +
+                        rawArgs.slice(loopsMatch.index! + loopsMatch[0].length)
+                    ).trim();
+                }
+                const lower = rawArgs.toLowerCase();
+
+                // An explicit `spec ` / `full ` prefix forces the mode and skips the
+                // team picker; otherwise we show the Select Team dialog and the
+                // chosen team decides the mode (a spec-only team like `info` runs
+                // the plan→document workflow).
+                const explicitSpec =
+                    lower === "spec" || lower.startsWith("spec ");
+                const explicitFull =
+                    lower === "full" || lower.startsWith("full ");
+                const request =
+                    explicitSpec || explicitFull
+                        ? rawArgs.slice(4).trim()
+                        : rawArgs;
+
+                if (explicitSpec || explicitFull) {
+                    isSpecMode = explicitSpec;
+                } else {
+                    const picked = await chooseTeam(ctx);
+                    if (picked === null) return; // user cancelled the picker
+                    activateTeam(picked);
+                    updateWidget();
+                    isSpecMode = teamIsSpec(activeMembers());
+                    // Move the active marker to the selected team and surface it.
+                    ctx.ui.notify(
+                        `Active team → ${activeTeamName}\nTeams:\n${teamsBlock()}`,
+                        "info",
+                    );
+                }
+
+                // Prompt for the request if it wasn't typed inline, so we never
+                // dispatch a workflow on an empty string.
+                let finalRequest = request;
+                if (!finalRequest) {
+                    const prompt = isSpecMode
+                        ? "What should be specified?"
+                        : "What should the workflow build or fix?";
+                    const typed = await ctx.ui.input(prompt, "");
+                    if (!typed) return;
+                    finalRequest = typed.trim();
+                    if (!finalRequest) return;
+                }
+
+                return isSpecMode
+                    ? runSpecWorkflowCommand(finalRequest, ctx)
+                    : runFullWorkflowCommand(finalRequest, ctx, maxLoops);
+            },
+        });
+
+    async function runFullWorkflowCommand(
+        request: string,
+        ctx: any,
+        maxLoops: number = DEFAULT_MAX_LOOPS,
+    ) {
+        ctx.ui.notify(
+            `Starting workflow: ${request} (max retries: ${maxLoops})`,
+            "info",
+        );
+        const result = await runWorkflow(request, maxLoops, ctx);
+
+        const level =
+            result.status === "shipped"
+                ? "success"
+                : result.status.startsWith("error") ||
+                    result.status === "failed-after-retries"
+                  ? "error"
+                  : "warning";
+        ctx.ui.notify(
+            `Workflow ${result.status}. Report is shown below.`,
+            level as any,
+        );
+        if (totalDroppedLines > 0) {
+            ctx.ui.notify(
+                `Heads up: ${totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
+                "warning",
+            );
+        }
+
+        if (result.report && result.report.trim().length > 0) {
+            publishReport(result.report);
+        }
+    }
+
+    async function runSpecWorkflowCommand(request: string, ctx: any) {
+        ctx.ui.notify(`Generating implementation spec: ${request}`, "info");
+        const result = await runSpecWorkflow(request, ctx);
+
+        const level =
+            result.status === "done"
+                ? "success"
+                : result.status.startsWith("error")
+                  ? "error"
+                  : "warning";
+        ctx.ui.notify(
+            `Spec generation ${result.status}. Report is shown below.`,
+            level as any,
+        );
+        if (totalDroppedLines > 0) {
+            ctx.ui.notify(
+                `Heads up: ${totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
+                "warning",
+            );
+        }
+
+        if (result.report && result.report.trim().length > 0) {
+            publishReport(result.report);
+        }
+    }
+
+    if (active)
+        pi.registerCommand("workflow-clear", {
+            description: "Clear the workflow progress widget",
+            handler: async (_args, ctx) => {
+                widgetCtx = ctx;
+                ctx.ui.setWidget("workflow", undefined);
+                ctx.ui.notify("Workflow widget cleared.", "info");
+            },
+        });
+
+    // ── Tool — let the primary agent invoke the workflow ──
+
+    if (active)
+        pi.registerTool({
+            name: "run_workflow",
+            label: "Run Workflow",
+            description:
+                "Run the full plan -> implement -> test -> validate lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself.",
+            parameters: Type.Object({
+                request: Type.String({
+                    description: "The bug, feature, or app to deliver",
+                }),
+                max_loops: Type.Optional(
+                    Type.Number({
+                        description: `Max implement/validate retries (default ${DEFAULT_MAX_LOOPS})`,
+                    }),
+                ),
+            }),
+            async execute(_id, params, signal, onUpdate, ctx) {
+                const { request, max_loops } = params as {
+                    request: string;
+                    max_loops?: number;
+                };
+                if (running) {
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: "A workflow is already running.",
+                            },
+                        ],
+                    };
+                }
+                agents = loadAgents(ctx.cwd);
+                widgetCtx = ctx;
+                if (onUpdate)
+                    onUpdate({
+                        content: [
+                            {
+                                type: "text",
+                                text: `Running workflow: ${request}`,
+                            },
+                        ],
+                    });
+                // If the turn is aborted, kill the running agent subprocess so the
+                // workflow doesn't keep running detached in the background.
+                const onAbort = () =>
+                    (globalThis as any).__piKillWorkflowProc?.();
+                signal?.addEventListener?.("abort", onAbort);
+                const result = await runWorkflow(
+                    request,
+                    max_loops && max_loops > 0 ? max_loops : DEFAULT_MAX_LOOPS,
+                    ctx,
+                ).finally(() =>
+                    signal?.removeEventListener?.("abort", onAbort),
+                );
+                const truncated =
+                    result.report.length > 8000
+                        ? result.report.slice(0, 8000) +
+                          "\n\n... [truncated — see workflow-report.md]"
+                        : result.report;
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `Status: ${result.status}\n\n${truncated}`,
+                        },
+                    ],
+                    details: { status: result.status, report: truncated },
+                };
+            },
+
+            renderCall(args, theme) {
+                const req = (args as any).request || "";
+                const preview =
+                    req.length > 56 ? req.slice(0, 53) + "..." : req;
+                return new Text(
+                    theme.fg("toolTitle", theme.bold("run_workflow ")) +
+                        theme.fg("accent", "plan→impl→test→validate") +
+                        theme.fg("dim", " — ") +
+                        theme.fg("muted", preview),
+                    0,
+                    0,
+                );
+            },
+
+            renderResult(result, options, theme) {
+                const details = result.details as any;
+                if (!details) {
+                    const t = result.content[0];
+                    return new Text(t?.type === "text" ? t.text : "", 0, 0);
+                }
+                if (options.isPartial) {
+                    return new Text(
+                        theme.fg("accent", "● workflow") +
+                            theme.fg("dim", " running..."),
+                        0,
+                        0,
+                    );
+                }
+                const meta: Record<string, { icon: string; color: string }> = {
+                    shipped: { icon: "✓", color: "success" },
+                    "paused-no-remote": { icon: "‖", color: "accent" },
+                    "failed-after-retries": { icon: "✗", color: "error" },
+                    "needs-review": { icon: "✗", color: "error" },
+                    error: { icon: "✗", color: "error" },
+                };
+                const m = meta[details.status] || { icon: "•", color: "muted" };
+                const header = theme.fg(
+                    m.color,
+                    `${m.icon} workflow ${details.status}`,
+                );
+                if (options.expanded && details.report) {
+                    const mdTheme = getMarkdownTheme();
+                    const trimmed =
+                        details.report.length > WORKFLOW_REPORT_MAX
+                            ? details.report.slice(0, WORKFLOW_REPORT_MAX) +
+                              "\n... [truncated — see workflow-report.md]"
+                            : details.report;
+                    return new Markdown(
+                        header + "\n\n" + trimmed,
+                        1,
+                        0,
+                        mdTheme,
+                    );
+                }
+                return new Text(header, 0, 0);
+            },
+        });
+
+    // ── Cancellation hook (integrates with escape-cancel if present) ──
+
+    pi.on("session_start", async (_event, ctx) => {
+        widgetCtx = ctx;
+        loadDotEnv(ctx.cwd); // pick up cwd/.env in case pi launched from elsewhere
+        agents = loadAgents(ctx.cwd);
+        teams = loadTeams(ctx.cwd);
+        // Fall back to an "all" team if teams.yaml is absent/empty, so the
+        // dashboard still has something to show.
+        if (Object.keys(teams).length === 0) {
+            teams = { all: Array.from(agents.keys()) };
+        }
+        activateTeam(Object.keys(teams)[0] ?? "");
+        phases = [];
+
+        // Only the active workflow extension owns the chrome. When both are
+        // auto-discovered, the inactive one clears its widget and bows out so it
+        // never stacks a second dashboard, footer, or cancellation hook.
+        if (!isActiveWorkflow()) {
+            ctx.ui.setWidget("workflow", undefined);
+            return;
+        }
+
+        // Show the idle team dashboard (grid of agents + their models).
+        updateWidget();
+        (globalThis as any).__piKillWorkflowProc = (): boolean => {
+            if (currentProc) {
+                try {
+                    currentProc.kill("SIGTERM");
+                } catch {}
+                currentProc = null;
+                running = false;
+                return true;
+            }
+            return false;
+        };
+        (globalThis as any).__piHasRunningWorkflow = (): boolean => running;
+        const present = REQUIRED_AGENTS.filter((a) => agents.has(a));
+        const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
+        ctx.ui.setStatus(
+            "workflow",
+            `Workflow: ${present.length}/${REQUIRED_AGENTS.length} agents`,
+        );
+
+        if (loadedExplicitly()) {
+            const flow = REQUIRED_AGENTS.map(
+                (a) => a.charAt(0).toUpperCase() + a.slice(1),
+            ).join(" → ");
+            if (missing.length) {
+                ctx.ui.notify(
+                    `Workflow\n` +
+                        `${flow}\n\n` +
+                        `Missing agents in .pi/agents/: ${missing.join(", ")} — add them to enable /workflow.`,
+                    "warning",
+                );
+            } else {
+                ctx.ui.notify(
+                    `Workflow\n` +
+                        `Teams:\n${teamsBlock()}\n\n` +
+                        `/workflow [request]   Pick a team (Select Team), then run the lifecycle\n` +
+                        `/workflow-clear       Clear the progress widget\n` +
+                        `run_workflow          Tool — the agent can launch the workflow for non-trivial tasks`,
+                    "info",
+                );
+            }
+        }
+
+        // Footer: model · workflow status · context-usage bar
+        ctx.ui.setFooter?.((_tui: any, theme: any, _data: any) => ({
+            dispose: () => {},
+            invalidate() {},
+            render(width: number): string[] {
+                // Full `provider/model` of the session (primary) agent.
+                const pm = ctx.model;
+                const model =
+                    pm?.provider && pm?.id
+                        ? `${pm.provider}/${pm.id}`
+                        : pm?.id || WORKER_MODEL || "default";
+                let pct = 0;
+                try {
+                    const u = ctx.getContextUsage?.();
+                    pct = u ? u.percent : 0;
+                } catch {}
+                const filled = Math.max(0, Math.min(10, Math.round(pct / 10)));
+                const bar = "#".repeat(filled) + "-".repeat(10 - filled);
+
+                const statusColor = running
+                    ? "accent"
+                    : lastStatus === "shipped"
+                      ? "success"
+                      : lastStatus === "paused-no-remote"
+                        ? "accent"
+                        : lastStatus === "idle"
+                          ? "dim"
+                          : "error";
+                const statusText = running
+                    ? iteration > 1
+                        ? `running attempt ${iteration}/${maxLoopsRef}`
+                        : "running"
+                    : lastStatus;
+
+                const left =
+                    theme.fg("dim", ` ${model}`) +
+                    theme.fg("muted", " · ") +
+                    theme.fg("accent", "workflow") +
+                    theme.fg("dim", " ") +
+                    theme.fg(statusColor, statusText);
+                const right = theme.fg("dim", `[${bar}] ${Math.round(pct)}% `);
+                const pad = " ".repeat(
+                    Math.max(
+                        1,
+                        width - visibleWidth(left) - visibleWidth(right),
+                    ),
+                );
+                return [truncateToWidth(left + pad + right, width)];
+            },
+        }));
+    });
+}
