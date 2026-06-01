@@ -365,12 +365,7 @@ export default function (pi: ExtensionAPI) {
 
     function updateWidget() {
         if (!widgetCtx) return;
-        widgetCtx.ui.setWidget("agent-pipeline", (tui: any, theme: any) => {
-            // Clear vacated rows when the widget shrinks (the live-log panel
-            // resets between phases, status rows tail) so stale lines don't
-            // ghost behind the new frame — e.g. a card's "done"/elapsed line
-            // appearing twice. Off by default in the host (PI_CLEAR_ON_SHRINK).
-            tui?.setClearOnShrink?.(true);
+        widgetCtx.ui.setWidget("agent-pipeline", (_tui: any, theme: any) => {
             const text = new Text("", 0, 1);
             return {
                 render(width: number): string[] {
@@ -427,28 +422,33 @@ export default function (pi: ExtensionAPI) {
                         lines.push(row);
                     }
 
-                    // Live log of the currently running agent — grows to fill the
-                    // available vertical space, pushing the editor down, then tails.
+                    // Live log of the running agent. Rendered at a STABLE height
+                    // for the whole run (padded with blank lines) so the widget
+                    // never shrinks between renders. A shrinking widget left stale
+                    // rows ghosting behind the new frame — e.g. a card's status
+                    // line showing twice ("running 52s" under "running 60s").
                     const active = phases.find((p) => p.status === "running");
-                    if (active && active.log) {
+                    if (running || (active && active.log)) {
                         const toolNote =
-                            active.toolCount > 0
+                            active && active.toolCount > 0
                                 ? ` · ${active.toolCount} tool${active.toolCount === 1 ? "" : "s"}`
                                 : "";
-                        const label = ` ─── ${active.label} · live${toolNote} `;
+                        const label = active
+                            ? ` ─── ${active.label} · live${toolNote} `
+                            : ` ─── live ─── `;
                         const rule = "─".repeat(
                             Math.max(0, width - visibleWidth(label) - 1),
                         );
                         lines.push("");
                         lines.push(theme.fg("dim", label + rule));
-                        const logLines = active.log
+                        const logLines = (active?.log || "")
                             .split("\n")
                             .map((l) => l.replace(/\s+$/, ""))
                             .filter((l) => l.length);
                         const rows = process.stdout.rows || 24;
                         // Hard bound so the editor + footer always stay on screen: never
                         // taller than half the terminal, and always leaving room below.
-                        // lines.length here = title + cards + label already pushed.
+                        // lines.length here = title + cards + blank + label already pushed.
                         const maxLogRows = Math.max(
                             3,
                             Math.min(
@@ -457,16 +457,19 @@ export default function (pi: ExtensionAPI) {
                             ),
                         );
                         const colW = width - 4;
-                        const shown = logLines.slice(-maxLogRows);
-                        if (logLines.length > shown.length) {
-                            lines.push(
-                                "   " +
-                                    theme.fg(
-                                        "dim",
-                                        `… ${logLines.length - shown.length} earlier line(s) — full log below`,
-                                    ),
-                            );
-                        }
+                        // Reserve the first panel row for the "earlier lines" notice
+                        // (blank when not needed) so the panel height is constant.
+                        const bodyRows = Math.max(1, maxLogRows - 1);
+                        const shown = logLines.slice(-bodyRows);
+                        lines.push(
+                            logLines.length > shown.length
+                                ? "   " +
+                                      theme.fg(
+                                          "dim",
+                                          `… ${logLines.length - shown.length} earlier line(s) — full log below`,
+                                      )
+                                : "",
+                        );
                         for (const l of shown) {
                             const t =
                                 l.length > colW
@@ -474,6 +477,9 @@ export default function (pi: ExtensionAPI) {
                                     : l;
                             lines.push("   " + theme.fg("muted", t));
                         }
+                        // Pad to the stable panel height so the widget never shrinks.
+                        for (let i = shown.length; i < bodyRows; i++)
+                            lines.push("");
                     }
 
                     text.setText(lines.join("\n"));

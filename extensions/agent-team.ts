@@ -544,16 +544,21 @@ export default function (pi: ExtensionAPI) {
     // the available vertical space, then tails. Shared by the pipeline and grid views.
     function appendLiveLog(lines: string[], width: number, theme: any) {
         const active = phases.find((p) => p.status === "running");
-        if (!active || !active.log) return;
+        // Render the panel whenever a run/dispatch is active, at a STABLE height
+        // (padded) so the widget never shrinks between renders. A shrinking widget
+        // left stale rows ghosting behind the new frame.
+        if (!running && !(active && active.log)) return;
         const toolNote =
-            active.toolCount > 0
+            active && active.toolCount > 0
                 ? ` · ${active.toolCount} tool${active.toolCount === 1 ? "" : "s"}`
                 : "";
-        const label = ` ─── ${active.label} · live${toolNote} `;
+        const label = active
+            ? ` ─── ${active.label} · live${toolNote} `
+            : ` ─── live ─── `;
         const rule = "─".repeat(Math.max(0, width - visibleWidth(label) - 1));
         lines.push("");
         lines.push(theme.fg("dim", label + rule));
-        const logLines = active.log
+        const logLines = (active?.log || "")
             .split("\n")
             .map((l) => l.replace(/\s+$/, ""))
             .filter((l) => l.length);
@@ -568,30 +573,30 @@ export default function (pi: ExtensionAPI) {
             ),
         );
         const colW = width - 4;
-        const shown = logLines.slice(-maxLogRows);
-        if (logLines.length > shown.length) {
-            lines.push(
-                "   " +
-                    theme.fg(
-                        "dim",
-                        `… ${logLines.length - shown.length} earlier line(s) — full log below`,
-                    ),
-            );
-        }
+        // Reserve the first panel row for the "earlier lines" notice (blank when
+        // not needed) so the panel height is constant.
+        const bodyRows = Math.max(1, maxLogRows - 1);
+        const shown = logLines.slice(-bodyRows);
+        lines.push(
+            logLines.length > shown.length
+                ? "   " +
+                      theme.fg(
+                          "dim",
+                          `… ${logLines.length - shown.length} earlier line(s) — full log below`,
+                      )
+                : "",
+        );
         for (const l of shown) {
             const t = l.length > colW ? l.slice(0, colW - 1) + "…" : l;
             lines.push("   " + theme.fg("muted", t));
         }
+        // Pad to the stable panel height so the widget never shrinks.
+        for (let i = shown.length; i < bodyRows; i++) lines.push("");
     }
 
     function updateWidget() {
         if (!widgetCtx) return;
-        widgetCtx.ui.setWidget("agent-team", (tui: any, theme: any) => {
-            // Clear vacated rows when the widget shrinks (the live-log panel
-            // resets between phases, status rows tail) so stale lines don't
-            // ghost behind the new frame. Off by default in the host
-            // (PI_CLEAR_ON_SHRINK).
-            tui?.setClearOnShrink?.(true);
+        widgetCtx.ui.setWidget("agent-team", (_tui: any, theme: any) => {
             const text = new Text("", 0, 1);
             return {
                 render(width: number): string[] {
