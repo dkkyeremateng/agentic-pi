@@ -2637,12 +2637,11 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                         : n >= 1000
                           ? `${(n / 1000).toFixed(1)}k`
                           : `${n}`;
-                const pctStr =
-                    known && typeof usage.tokens === "number"
-                        ? `${Math.round(pct)}% · ${fmtTok(usage.tokens)}`
-                        : known
-                          ? `${Math.round(pct)}%`
-                          : "—";
+                const pctStr = !known
+                    ? "—"
+                    : typeof usage.tokens === "number" && usage.tokens > 0
+                      ? `${Math.round(pct)}% · ${fmtTok(usage.tokens)}`
+                      : `${Math.round(pct)}%`;
 
                 // Left: agent-team status + primary model. Right: context bar.
                 const left =
