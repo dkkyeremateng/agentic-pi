@@ -2726,14 +2726,13 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                       ? `${Math.round(pct)}% · ${fmtTok(usage.tokens)}`
                       : `${Math.round(pct)}%`;
 
-                // Left: agent-team status + primary model. Right: context bar.
+                // Left: primary model · agent-team status. Right: context bar.
                 const left =
-                    " " +
+                    theme.fg("dim", ` ${primaryFull}`) +
+                    theme.fg("muted", " · ") +
                     theme.fg("accent", "agent-team") +
                     theme.fg("dim", " ") +
-                    theme.fg(statusColor, statusText) +
-                    theme.fg("dim", "  ◆ ") +
-                    theme.fg("muted", primaryFull);
+                    theme.fg(statusColor, statusText);
                 const right =
                     theme.fg("dim", ` [${bar}] `) +
                     theme.fg("muted", pctStr) +
