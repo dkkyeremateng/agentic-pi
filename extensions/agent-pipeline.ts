@@ -1886,25 +1886,32 @@ export default function (pi: ExtensionAPI) {
 
                 const res = await runAgent(def, task, phase, ctx.cwd);
 
-                phase.status = res.exitCode === 0 ? "done" : "error";
+                // An agent that exits cleanly but returns (near-)empty output did
+                // not actually do the work — treat it as a FAILED dispatch so the
+                // orchestrator re-dispatches it instead of building on nothing.
+                const emptyOutput = res.output.trim().length < 40;
+                const ok = res.exitCode === 0 && !emptyOutput;
+
+                phase.status = ok ? "done" : "error";
                 phase.elapsed = Date.now() - start;
                 dispatchElapsedMs = Date.now() - dispatchStartedAt; // session total so far
                 updateWidget();
 
                 if (widgetCtx?.ui?.notify) {
                     const elapsed = Math.round(phase.elapsed / 1000);
-                    const errMsg =
-                        phase.status === "error"
-                            ? `: ${res.output
+                    const errMsg = !ok
+                        ? emptyOutput
+                            ? ": returned no usable output"
+                            : `: ${res.output
                                   .split("\n")
                                   .filter((l) => l.trim())
                                   .slice(-2)
                                   .join(" ")
                                   .slice(0, 120)}`
-                            : "";
+                        : "";
                     widgetCtx.ui.notify(
-                        `${def.name} ${phase.status === "done" ? "done" : "failed"} in ${elapsed}s${errMsg}`,
-                        phase.status === "done" ? "success" : "error",
+                        `${def.name} ${ok ? "done" : "failed"} in ${elapsed}s${errMsg}`,
+                        ok ? "success" : "error",
                     );
                 }
 
@@ -1913,25 +1920,28 @@ export default function (pi: ExtensionAPI) {
                         ? res.output.slice(0, 8000) + "\n\n... [truncated]"
                         : res.output;
 
-                const status = res.exitCode === 0 ? "done" : "error";
+                const status = ok ? "done" : "error";
                 const summary = `[${def.name}] ${status} in ${Math.round(phase.elapsed / 1000)}s`;
 
                 // Steer the orchestrator (via the tool result it reads next):
+                // - empty output -> the dispatch failed; re-dispatch, do not skip;
                 // - if selected agents are still queued, dispatch the next one;
                 // - if none remain, the task is done — summarize and STOP. Without
-                //   this second signal, weak models re-select/re-dispatch a finished
-                //   agent instead of ending the turn.
+                //   these signals, weak models skip a failed agent or re-dispatch a
+                //   finished one instead of doing the right thing.
                 const remaining = phases
                     .filter((p) => p.status === "pending")
                     .map((p) => displayName(p.agent));
-                const nextStep = remaining.length
-                    ? `\n\nNOT DONE YET — still queued: ${remaining.join(", ")}. ` +
-                      `Dispatch the next one (${remaining[0]}) now. Do not stop until every selected agent has run.`
-                    : status === "done"
-                      ? `\n\nDONE — every selected agent has completed and this dispatch succeeded. ` +
-                        `Write your final summary of the result for the user and STOP. ` +
-                        `Do NOT call select_agents or dispatch_agent again (no re-runs, no "verify" passes) unless the user asks for more.`
-                      : "";
+                const nextStep = emptyOutput
+                    ? `\n\n${def.name} returned almost no output — this dispatch FAILED. It is NOT a result to build on. RE-DISPATCH ${def.name} with a clearer, more specific task. Do NOT skip it, do NOT do its work yourself, and do NOT hand its job to a different agent.`
+                    : remaining.length
+                      ? `\n\nNOT DONE YET — still queued: ${remaining.join(", ")}. ` +
+                        `Dispatch the next one (${remaining[0]}) now. Do not stop until every selected agent has run.`
+                      : status === "done"
+                        ? `\n\nDONE — every selected agent has completed and this dispatch succeeded. ` +
+                          `Write your final summary of the result for the user and STOP. ` +
+                          `Do NOT call select_agents or dispatch_agent again (no re-runs, no "verify" passes) unless the user asks for more.`
+                        : "";
 
                 return {
                     content: [
@@ -2257,7 +2267,7 @@ Members: ${teamMembers}
 
 ## How to Work
 1. **Analyze the request** — understand what the user needs
-2. **Determine the workflow** — decide which agents to dispatch and in what order, then call **select_agents** with that list so the dashboard reflects your plan up front. Refine the selection later if the work reveals you need a different agent:
+2. **Determine the workflow** — decide the COMPLETE set of agents the request needs end to end, and call **select_agents** with the FULL list up front. Do NOT start with a minimal subset and bolt agents on one at a time as you go. For a build/ship request (new app, feature, or bug fix), the full set is normally **planner → critic → implementer → tester → validator → documenter** (add **scout** first for an unfamiliar codebase); only trim an agent that genuinely does not apply. Refine the selection later ONLY if the work reveals a genuinely different need:
    - Read-only exploration? Start with **scout**, then decide what's next
    - Need a plan before implementing? Dispatch **planner**, review the plan, then decide
    - Plan looks risky? Dispatch **critic** to evaluate it, then revise or proceed
@@ -2268,6 +2278,7 @@ Members: ${teamMembers}
    - Quick lookup or review? Dispatch the right specialist directly
 3. **Review each result** — after every dispatch, read the output and decide:
    - Was it successful? Proceed to the next step
+   - **Empty or obviously incomplete output (e.g. it finished in ~1s with nothing usable)? That is a FAILED dispatch — RE-DISPATCH the SAME agent with a clearer, more specific task. Do NOT skip it, and do NOT do its work yourself or hand it to another agent.**
    - Did it fail or raise concerns? Dispatch a follow-up (e.g., critic to review a plan, implementer to fix a test failure)
    - Need more information? Dispatch scout or another specialist to investigate
 4. **Summarize and STOP** — once the deliverable is produced, report what was done and the files written, then end your turn. Do not launch another workflow or re-dispatch agents to keep going.
@@ -2284,7 +2295,7 @@ Members: ${teamMembers}
 - **Do not auto-start a new workflow.** When the current request is complete, stop and summarize. Never chain \`run_agent_pipeline\` onto finished dispatch work.
 - For everything else, compose the workflow yourself using **dispatch_agent**
 - Keep each dispatch focused — one clear objective per dispatch
-- If a dispatch fails, try a different approach: adjust the task, dispatch a different agent, or chain a fix
+- If a dispatch fails or returns no usable output, RE-DISPATCH the SAME agent with a clearer, more specific task before anything else — never skip a selected agent or substitute its work with your own or another agent's
 - You can dispatch the same agent multiple times with different tasks
 - Do NOT attempt to dispatch to agents outside the active team
 
