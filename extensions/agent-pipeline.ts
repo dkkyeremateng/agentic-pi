@@ -2295,20 +2295,34 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                 const filled = Math.max(0, Math.min(10, Math.round(pct / 10)));
                 const bar = "#".repeat(filled) + "-".repeat(10 - filled);
 
-                const statusColor = running
-                    ? "accent"
-                    : lastStatus === "shipped"
-                      ? "success"
-                      : lastStatus === "paused-no-remote"
+                // Ad-hoc dispatch doesn't set `running`, so derive its state from
+                // the phases — otherwise the footer reads "idle" while a dispatched
+                // agent is working.
+                const dispatchRunning =
+                    dispatchMode && phases.some((p) => p.status === "running");
+                const dispatchDone =
+                    dispatchMode && phases.length > 0 && !dispatchRunning;
+                const statusColor =
+                    running || dispatchRunning
                         ? "accent"
-                        : lastStatus === "idle"
-                          ? "dim"
-                          : "error";
+                        : dispatchDone
+                          ? "success"
+                          : lastStatus === "shipped"
+                            ? "success"
+                            : lastStatus === "paused-no-remote"
+                              ? "accent"
+                              : lastStatus === "idle"
+                                ? "dim"
+                                : "error";
                 const statusText = running
                     ? iteration > 1
                         ? `running attempt ${iteration}/${maxLoopsRef}`
                         : "running"
-                    : lastStatus;
+                    : dispatchRunning
+                      ? "dispatching"
+                      : dispatchDone
+                        ? "dispatch done"
+                        : lastStatus;
 
                 const left =
                     theme.fg("dim", ` ${model}`) +
