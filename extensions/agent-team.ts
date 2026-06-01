@@ -2611,14 +2611,20 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
 
                 // Primary agent's own context usage (session-wide, distinct from the
                 // per-agent card bars).
-                let pct = 0;
+                // `percent` is null right after a context compaction (the token
+                // count is unknown until the next model response). Render that as
+                // "—", not a misleading 0% that looks like the context was wiped.
+                let pct: number | null = 0;
                 try {
                     const u = ctx.getContextUsage?.();
                     pct = u ? u.percent : 0;
                 } catch {}
-                const filled = Math.max(0, Math.min(10, Math.round(pct / 10)));
+                const known = typeof pct === "number" && !Number.isNaN(pct);
+                const filled = known
+                    ? Math.max(0, Math.min(10, Math.round(pct / 10)))
+                    : 0;
                 const bar = "#".repeat(filled) + "-".repeat(10 - filled);
-                const pctStr = `${Math.round(pct)}%`;
+                const pctStr = known ? `${Math.round(pct)}%` : "—";
 
                 // Left: agent-team status + primary model. Right: context bar.
                 const left =

@@ -2299,13 +2299,20 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                     pm?.provider && pm?.id
                         ? `${pm.provider}/${pm.id}`
                         : pm?.id || WORKER_MODEL || "default";
-                let pct = 0;
+                // `percent` is null right after a context compaction (the token
+                // count is unknown until the next model response). Render that as
+                // "—", not a misleading 0% that looks like the context was wiped.
+                let pct: number | null = 0;
                 try {
                     const u = ctx.getContextUsage?.();
                     pct = u ? u.percent : 0;
                 } catch {}
-                const filled = Math.max(0, Math.min(10, Math.round(pct / 10)));
+                const known = typeof pct === "number" && !Number.isNaN(pct);
+                const filled = known
+                    ? Math.max(0, Math.min(10, Math.round(pct / 10)))
+                    : 0;
                 const bar = "#".repeat(filled) + "-".repeat(10 - filled);
+                const pctStr = known ? `${Math.round(pct)}%` : "—";
 
                 // Ad-hoc dispatch doesn't set `running`, so derive its state from
                 // the phases — otherwise the footer reads "idle" while a dispatched
@@ -2342,7 +2349,7 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                     theme.fg("accent", "agent-pipeline") +
                     theme.fg("dim", " ") +
                     theme.fg(statusColor, statusText);
-                const right = theme.fg("dim", `[${bar}] ${Math.round(pct)}% `);
+                const right = theme.fg("dim", `[${bar}] ${pctStr} `);
                 const pad = " ".repeat(
                     Math.max(
                         1,
