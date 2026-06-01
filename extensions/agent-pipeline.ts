@@ -166,6 +166,9 @@ export default function (pi: ExtensionAPI) {
     let freshDispatchSession = false;
     let dispatchStartedAt = 0; // wall-clock start of the current dispatch session
     let dispatchElapsedMs = 0; // total wall-clock of the dispatch session so far
+    let primaryTurnStartedAt = 0; // wall-clock start of the primary agent's turn
+    let pipelineRanThisTurn = false; // run_agent_pipeline fired during this turn
+    let dispatchedThisTurn = false; // dispatch_agent fired during this turn
 
     // The only tools the primary agent (orchestrator) may use — it has NO direct
     // codebase tools and must delegate. Re-asserted before every turn (see
@@ -1659,6 +1662,7 @@ export default function (pi: ExtensionAPI) {
                 }
                 agents = loadAgents(ctx.cwd);
                 widgetCtx = ctx;
+                pipelineRanThisTurn = true; // fold the primary's turn time into the total
                 if (onUpdate)
                     onUpdate({
                         content: [
@@ -1830,10 +1834,13 @@ export default function (pi: ExtensionAPI) {
                 if (!dispatchMode || freshDispatchSession) {
                     dispatchMode = true;
                     phases = [];
-                    dispatchStartedAt = Date.now(); // start the session timer
+                    // Time from the primary agent's turn start (its pre-dispatch
+                    // reasoning counts), falling back to now if unknown.
+                    dispatchStartedAt = primaryTurnStartedAt || Date.now();
                     dispatchElapsedMs = 0;
                 }
                 freshDispatchSession = false;
+                dispatchedThisTurn = true;
 
                 // Track this agent as a phase so its card reflects live status.
                 // Re-dispatching the same agent reuses (and resets) its phase so the
@@ -2063,7 +2070,7 @@ export default function (pi: ExtensionAPI) {
                 // selection) we preserve the status of agents already worked.
                 dispatchMode = true;
                 if (freshDispatchSession) {
-                    dispatchStartedAt = Date.now(); // start the session timer
+                    dispatchStartedAt = primaryTurnStartedAt || Date.now();
                     dispatchElapsedMs = 0;
                 }
                 const byAgent = freshDispatchSession
@@ -2115,6 +2122,27 @@ export default function (pi: ExtensionAPI) {
                 const t = result.content[0];
                 return new Text(t?.type === "text" ? t.text : "", 0, 0);
             },
+        });
+
+    // ── Primary-turn timing ──
+    // The orchestrator's turn wraps both its own reasoning and the sub-agent work
+    // it triggers, so timing it gives the total INCLUDING the primary agent's time.
+    // At turn end we fold that into the dispatch / pipeline totals.
+    if (active)
+        pi.on("agent_start", async () => {
+            primaryTurnStartedAt = Date.now();
+            pipelineRanThisTurn = false;
+            dispatchedThisTurn = false;
+        });
+    if (active)
+        pi.on("agent_end", async () => {
+            if (primaryTurnStartedAt <= 0) return;
+            const turnMs = Date.now() - primaryTurnStartedAt;
+            // Only fold the turn time into a total when work actually ran this turn,
+            // so a plain "done" reply doesn't overwrite the last total.
+            if (dispatchedThisTurn) dispatchElapsedMs = turnMs;
+            if (pipelineRanThisTurn) runElapsedMs = turnMs;
+            if (dispatchedThisTurn || pipelineRanThisTurn) updateWidget();
         });
 
     // ── Orchestrator system prompt + tool lockdown ──
