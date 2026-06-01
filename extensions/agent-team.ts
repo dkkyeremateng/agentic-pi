@@ -2610,21 +2610,39 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                         : pm?.id || "default";
 
                 // Primary agent's own context usage (session-wide, distinct from the
-                // per-agent card bars).
-                // `percent` is null right after a context compaction (the token
-                // count is unknown until the next model response). Render that as
-                // "—", not a misleading 0% that looks like the context was wiped.
-                let pct: number | null = 0;
+                // per-agent card bars). getContextUsage() returns undefined when the
+                // model's context window is unknown, and percent:null right after a
+                // compaction (count untrustworthy until the next model response).
+                // Both are "unknown" — render "—", never a misleading 0%. When known,
+                // show the token count too so a small-but-nonzero context isn't hidden
+                // by a percentage that rounds to 0.
+                let usage: any;
                 try {
-                    const u = ctx.getContextUsage?.();
-                    pct = u ? u.percent : 0;
+                    usage = ctx.getContextUsage?.();
                 } catch {}
-                const known = typeof pct === "number" && !Number.isNaN(pct);
+                const pct =
+                    usage &&
+                    typeof usage.percent === "number" &&
+                    !Number.isNaN(usage.percent)
+                        ? usage.percent
+                        : null;
+                const known = pct !== null;
                 const filled = known
                     ? Math.max(0, Math.min(10, Math.round(pct / 10)))
                     : 0;
                 const bar = "#".repeat(filled) + "-".repeat(10 - filled);
-                const pctStr = known ? `${Math.round(pct)}%` : "—";
+                const fmtTok = (n: number) =>
+                    n >= 10000
+                        ? `${Math.round(n / 1000)}k`
+                        : n >= 1000
+                          ? `${(n / 1000).toFixed(1)}k`
+                          : `${n}`;
+                const pctStr =
+                    known && typeof usage.tokens === "number"
+                        ? `${Math.round(pct)}% · ${fmtTok(usage.tokens)}`
+                        : known
+                          ? `${Math.round(pct)}%`
+                          : "—";
 
                 // Left: agent-team status + primary model. Right: context bar.
                 const left =
