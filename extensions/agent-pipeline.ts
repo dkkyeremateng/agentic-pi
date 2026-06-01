@@ -75,6 +75,8 @@ import {
     renderCard,
     teamsBlock as teamsBlockCore,
     chooseTeam as chooseTeamCore,
+    contextBundle,
+    type RunArtifacts,
     loadedExplicitly as loadedExplicitlyCore,
     isActiveWorkflow as isActiveWorkflowCore,
     loadAgents as loadAgentsCore,
@@ -866,6 +868,16 @@ export default function (pi: ExtensionAPI) {
             };
         }
 
+        // Shared curated context — the artifacts each later agent would not
+        // otherwise see (recon, critique). Builders already thread the rest
+        // (plan, impl summary, test report) into the phases that need them, so
+        // we only accumulate the dropped ones here to avoid duplication.
+        const runArtifacts: RunArtifacts = {};
+        const shared = (task: string) => {
+            const bundle = contextBundle(runArtifacts);
+            return bundle ? `${bundle}\n\n---\n\n${task}` : task;
+        };
+
         const [planP, critiqueP, implP, testP, valP, docP, shipP] = includeScout
             ? phases.slice(1)
             : phases;
@@ -884,6 +896,7 @@ export default function (pi: ExtensionAPI) {
                 };
             }
             scoutFindings = scoutRes.output;
+            runArtifacts.recon = scoutFindings;
         }
 
         // Phase 1 — Plan (once)
@@ -917,7 +930,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             critique = await runPhase(
                 critiqueP,
-                criticTask(request, plan.output),
+                shared(criticTask(request, plan.output)),
                 cwd,
             );
             if (!critique.ok) {
@@ -952,10 +965,13 @@ export default function (pi: ExtensionAPI) {
             }
         }
 
+        // The critic's verdict is now settled — share it with every later agent.
+        runArtifacts.critique = critique.output;
+
         // Phase 3 — Implement (first pass)
         let impl = await runPhase(
             implP,
-            implementTask(request, plan.output),
+            shared(implementTask(request, plan.output)),
             cwd,
         );
         if (!impl.ok) {
@@ -983,7 +999,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             test = await runPhase(
                 testP,
-                testTask(request, plan.output, impl.output),
+                shared(testTask(request, plan.output, impl.output)),
                 cwd,
             );
             if (!test.ok) {
@@ -998,7 +1014,7 @@ export default function (pi: ExtensionAPI) {
             // Validate (the gate — no commit, no PR yet)
             val = await runPhase(
                 valP,
-                validateTask(request, plan.output, test.output),
+                shared(validateTask(request, plan.output, test.output)),
                 cwd,
             );
             if (!val.ok) {
@@ -1020,7 +1036,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             impl = await runPhase(
                 implP,
-                fixTask(request, plan.output, val.output, impl.output),
+                shared(fixTask(request, plan.output, val.output, impl.output)),
                 cwd,
             );
             if (!impl.ok) {
@@ -1038,7 +1054,14 @@ export default function (pi: ExtensionAPI) {
         if (verdict === "pass") {
             doc = await runPhase(
                 docP,
-                documentTask(request, plan.output, impl.output, test.output),
+                shared(
+                    documentTask(
+                        request,
+                        plan.output,
+                        impl.output,
+                        test.output,
+                    ),
+                ),
                 cwd,
             );
             if (!doc.ok) {
@@ -1052,7 +1075,7 @@ export default function (pi: ExtensionAPI) {
 
             ship = await runPhase(
                 shipP,
-                shipTask(request, test.output, doc.output),
+                shared(shipTask(request, test.output, doc.output)),
                 cwd,
             );
             if (!ship.ok) {
@@ -1208,6 +1231,14 @@ export default function (pi: ExtensionAPI) {
         const critiqueP = phases[offset + 1];
         const docP = phases[offset + 2];
 
+        // Shared curated context (recon + critique) — see runWorkflow. Builders
+        // already thread the plan, so only the dropped artifacts go in here.
+        const runArtifacts: RunArtifacts = {};
+        const shared = (task: string) => {
+            const bundle = contextBundle(runArtifacts);
+            return bundle ? `${bundle}\n\n---\n\n${task}` : task;
+        };
+
         // Optional Phase 0 — Scout (read-only recon, feeds the planner)
         let scoutFindings = "";
         if (scoutP) {
@@ -1221,6 +1252,7 @@ export default function (pi: ExtensionAPI) {
                 };
             }
             scoutFindings = scoutRes.output;
+            runArtifacts.recon = scoutFindings;
         }
 
         // Plan ⇄ Critique loop — the planner revises until the critic approves.
@@ -1248,7 +1280,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             critique = await runPhase(
                 critiqueP,
-                specCriticTask(request, plan.output),
+                shared(specCriticTask(request, plan.output)),
                 cwd,
             );
             if (!critique.ok) {
@@ -1283,10 +1315,13 @@ export default function (pi: ExtensionAPI) {
             }
         }
 
+        // The critic's verdict is settled — share it with the documenter.
+        runArtifacts.critique = critique.output;
+
         // Phase 3 — Document (produce the spec)
         const doc = await runPhase(
             docP,
-            specDocumentTask(request, plan.output),
+            shared(specDocumentTask(request, plan.output)),
             cwd,
         );
         if (!doc.ok) {

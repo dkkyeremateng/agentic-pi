@@ -560,6 +560,46 @@ export function validatePlan(plan: string): PlanCheck {
     return { ok: missing.length === 0, missing };
 }
 
+// ── Shared run context (curated cross-agent bundle) ──
+// Durable artifacts earlier pipeline phases produced. Prepended to a later
+// agent's task so every agent can build on the others' work without the lossy
+// digest-into-the-next-prompt handoff. Used by agent-pipeline only (single
+// model, one shared context window); agent-team keeps isolated handoffs.
+export interface RunArtifacts {
+    recon?: string; // scout findings
+    plan?: string; // approved plan
+    critique?: string; // critic's verdict + findings
+    implSummary?: string; // implementer's change summary
+    testReport?: string; // tester's report
+    docReport?: string; // documenter's report
+}
+
+// Render the artifacts present into a labelled "## Shared run context" block,
+// or "" when none are set. Callers should pass only the artifacts a phase does
+// not already receive through its task builder, to avoid duplicating context.
+export function contextBundle(a: RunArtifacts): string {
+    const parts: string[] = [];
+    const add = (title: string, body?: string) => {
+        if (body && body.trim()) parts.push(`### ${title}`, "", body.trim(), "");
+    };
+    add("Reconnaissance (scout)", a.recon);
+    add("Approved plan (planner)", a.plan);
+    add("Critique (critic)", a.critique);
+    add("Implementation summary (implementer)", a.implSummary);
+    add("Test report (tester)", a.testReport);
+    add("Documentation report (documenter)", a.docReport);
+    if (parts.length === 0) return "";
+    return [
+        "## Shared run context",
+        "",
+        "Earlier agents in this pipeline produced the artifacts below. Treat them as established ground truth and build on them — do not re-derive what is already settled.",
+        "",
+        ...parts,
+    ]
+        .join("\n")
+        .trimEnd();
+}
+
 // ── Prompt templates ─────────────────────────────
 
 // Optional reconnaissance brief from the scout agent, injected into the planner
