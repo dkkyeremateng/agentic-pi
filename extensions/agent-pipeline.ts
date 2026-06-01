@@ -164,6 +164,8 @@ export default function (pi: ExtensionAPI) {
     // These track the dispatch session so each new user request starts clean.
     let dispatchMode = false;
     let freshDispatchSession = false;
+    let dispatchStartedAt = 0; // wall-clock start of the current dispatch session
+    let dispatchElapsedMs = 0; // total wall-clock of the dispatch session so far
 
     // The only tools the primary agent (orchestrator) may use — it has NO direct
     // codebase tools and must delegate. Re-asserted before every turn (see
@@ -1828,6 +1830,8 @@ export default function (pi: ExtensionAPI) {
                 if (!dispatchMode || freshDispatchSession) {
                     dispatchMode = true;
                     phases = [];
+                    dispatchStartedAt = Date.now(); // start the session timer
+                    dispatchElapsedMs = 0;
                 }
                 freshDispatchSession = false;
 
@@ -1860,6 +1864,7 @@ export default function (pi: ExtensionAPI) {
 
                 phase.status = res.exitCode === 0 ? "done" : "error";
                 phase.elapsed = Date.now() - start;
+                dispatchElapsedMs = Date.now() - dispatchStartedAt; // session total so far
                 updateWidget();
 
                 if (widgetCtx?.ui?.notify) {
@@ -2057,6 +2062,10 @@ export default function (pi: ExtensionAPI) {
                 // agents reset to queued. Within the same request (refining the
                 // selection) we preserve the status of agents already worked.
                 dispatchMode = true;
+                if (freshDispatchSession) {
+                    dispatchStartedAt = Date.now(); // start the session timer
+                    dispatchElapsedMs = 0;
+                }
                 const byAgent = freshDispatchSession
                     ? new Map<string, PhaseState>()
                     : new Map(phases.map((p) => [p.agent, p]));
@@ -2416,7 +2425,9 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                     : dispatchRunning
                       ? `running ${activeName ?? "agent"}`
                       : dispatchDone
-                        ? "dispatch done"
+                        ? dispatchElapsedMs > 0
+                            ? `dispatch done · ${secs(dispatchElapsedMs)} total`
+                            : "dispatch done"
                         : runElapsedMs > 0
                           ? `${lastStatus} · ${secs(runElapsedMs)} total`
                           : lastStatus;
