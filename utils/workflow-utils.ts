@@ -74,8 +74,13 @@ export function detectShip(output: string): "shipped" | "paused" {
     return "shipped";
 }
 
+// Format a duration: plain seconds under a minute, "Nm Ss" (or "Nm") above it.
 export function secs(ms: number): string {
-    return `${Math.round(ms / 1000)}s`;
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return r ? `${m}m ${r}s` : `${m}m`;
 }
 
 /**

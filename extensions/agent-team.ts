@@ -350,7 +350,7 @@ export default function (pi: ExtensionAPI) {
         const nameVisible =
             markerVisible + Math.min(name.length, w - markerVisible);
 
-        const timeStr = elapsed > 0 ? ` ${Math.round(elapsed / 1000)}s` : "";
+        const timeStr = elapsed > 0 ? ` ${secs(elapsed)}` : "";
         const toolNote =
             status === "running" && toolCount > 0
                 ? ` · ${toolCount} tool${toolCount === 1 ? "" : "s"}`
@@ -1044,12 +1044,12 @@ export default function (pi: ExtensionAPI) {
         // Notify the user when a phase completes so they have peripheral awareness
         // without staring at the dashboard.
         if (widgetCtx?.ui?.notify) {
-            const elapsed = Math.round(phase.elapsed / 1000);
+            const elapsed = secs(phase.elapsed);
             const statusWord = phase.status === "done" ? "done" : "failed";
             const attemptNote =
                 phase.attempt > 1 ? ` (attempt ${phase.attempt})` : "";
             widgetCtx.ui.notify(
-                `${phase.label} ${statusWord} in ${elapsed}s${attemptNote}`,
+                `${phase.label} ${statusWord} in ${elapsed}${attemptNote}`,
                 phase.status === "done" ? "success" : "error",
             );
         }
@@ -2106,7 +2106,7 @@ export default function (pi: ExtensionAPI) {
                 updateWidget();
 
                 if (widgetCtx?.ui?.notify) {
-                    const elapsed = Math.round(phase.elapsed / 1000);
+                    const elapsed = secs(phase.elapsed);
                     const errMsg = !ok
                         ? emptyOutput
                             ? ": returned no usable output"
@@ -2118,7 +2118,7 @@ export default function (pi: ExtensionAPI) {
                                   .slice(0, 120)}`
                         : "";
                     widgetCtx.ui.notify(
-                        `${def.name} ${ok ? "done" : "failed"} in ${elapsed}s${errMsg}`,
+                        `${def.name} ${ok ? "done" : "failed"} in ${elapsed}${errMsg}`,
                         ok ? "success" : "error",
                     );
                 }
@@ -2129,7 +2129,7 @@ export default function (pi: ExtensionAPI) {
                         : res.output;
 
                 const status = ok ? "done" : "error";
-                const summary = `[${def.name}] ${status} in ${Math.round(phase.elapsed / 1000)}s`;
+                const summary = `[${def.name}] ${status} in ${secs(phase.elapsed)}`;
 
                 // Steer the orchestrator (via the tool result it reads next):
                 // - empty output -> the dispatch failed; re-dispatch, do not skip;
@@ -2203,11 +2203,11 @@ export default function (pi: ExtensionAPI) {
                 const color = details.status === "done" ? "success" : "error";
                 const elapsed =
                     typeof details.elapsed === "number"
-                        ? Math.round(details.elapsed / 1000)
-                        : 0;
+                        ? secs(details.elapsed)
+                        : "0s";
                 const header =
                     theme.fg(color, `${icon} ${details.agent}`) +
-                    theme.fg("dim", ` ${elapsed}s`);
+                    theme.fg("dim", ` ${elapsed}`);
                 if (options.expanded && details.fullOutput) {
                     const output =
                         details.fullOutput.length > 4000

@@ -18,6 +18,7 @@ import {
 } from "fs";
 import { join, basename, resolve as resolvePath } from "path";
 import { fileURLToPath } from "url";
+import { secs } from "./workflow-utils";
 
 // ── Config ───────────────────────────────────────
 
@@ -263,8 +264,7 @@ export function renderCard(
 
     const word =
         phase.status === "pending" ? displayName(phase.agent) : phase.status;
-    const timeStr =
-        phase.elapsed > 0 ? ` ${Math.round(phase.elapsed / 1000)}s` : "";
+    const timeStr = phase.elapsed > 0 ? ` ${secs(phase.elapsed)}` : "";
     // While running, surface the live tool-call count as an activity signal.
     const toolNote =
         phase.status === "running" && phase.toolCount > 0
