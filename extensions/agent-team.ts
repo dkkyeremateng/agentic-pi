@@ -210,6 +210,7 @@ export default function (pi: ExtensionAPI) {
     let totalDroppedLines = 0; // count of JSON lines dropped during this run (diagnostic signal)
     let totalToolCalls = 0; // cumulative tool calls across all phases this run (incl. retries)
     let runStartedAt = 0; // wall-clock start of the current run
+    let runElapsedMs = 0; // total wall-clock of the last completed run (frozen at completion)
     let includeScout = false; // prepend a read-only Scout recon phase (team has `scout`)
     let dispatchMode = false; // true while the primary agent drives ad-hoc dispatches:
     // the full team grid stays on screen and the cards selected for work are marked,
@@ -218,6 +219,11 @@ export default function (pi: ExtensionAPI) {
     // select_agents / dispatch_agent rebuilds the cards from scratch (drops the
     // previous workflow's cards, resets reused agents to queued) so a new workflow
     // never shows stale state from the last one.
+    let dispatchStartedAt = 0; // wall-clock start of the current dispatch session
+    let dispatchElapsedMs = 0; // total wall-clock of the dispatch session so far
+    let primaryTurnStartedAt = 0; // wall-clock start of the primary agent's turn
+    let pipelineRanThisTurn = false; // run_agent_team fired during this turn
+    let dispatchedThisTurn = false; // dispatch_agent fired during this turn
 
     // The only tools the primary agent (orchestrator) may use. It has NO direct
     // codebase tools — it must delegate. This lockdown is re-asserted before every
@@ -1076,6 +1082,7 @@ export default function (pi: ExtensionAPI) {
         totalDroppedLines = 0;
         totalToolCalls = 0;
         runStartedAt = Date.now();
+        runElapsedMs = 0;
         iteration = 0;
         maxLoopsRef = maxLoops;
         lastStatus = "running";
@@ -1299,6 +1306,7 @@ export default function (pi: ExtensionAPI) {
                 verdict === "fail" ? "failed-after-retries" : "needs-review";
         }
 
+        runElapsedMs = Date.now() - runStartedAt;
         running = false;
         lastStatus = status;
         updateWidget();
@@ -1314,7 +1322,7 @@ export default function (pi: ExtensionAPI) {
             `**Request:** ${request}`,
             `**Outcome:** ${outcomeLine(status, passes)}`,
             `**Result:** ${status} · verdict ${verdict.toUpperCase()} · ${passes} attempt(s) of ${maxLoops}`,
-            `**Totals:** ${secs(Date.now() - runStartedAt)} wall-clock · ${totalToolCalls} tool call(s)`,
+            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)`,
             ...(prUrl ? [`**Pull request:** ${prUrl}`] : []),
             ...(totalDroppedLines > 0
                 ? [
@@ -1409,6 +1417,7 @@ export default function (pi: ExtensionAPI) {
         totalDroppedLines = 0;
         totalToolCalls = 0;
         runStartedAt = Date.now();
+        runElapsedMs = 0;
         iteration = 1;
         maxLoopsRef = 1;
         lastStatus = "running";
@@ -1524,6 +1533,7 @@ export default function (pi: ExtensionAPI) {
 
         const critiqueApproved = critiqueVerdict !== "revise";
         const status = critiqueApproved ? "done" : "needs-review";
+        runElapsedMs = Date.now() - runStartedAt;
         running = false;
         lastStatus = status;
         updateWidget();
@@ -1537,7 +1547,7 @@ export default function (pi: ExtensionAPI) {
             ``,
             `**Request:** ${request}`,
             `**Outcome:** ${outcome}`,
-            `**Totals:** ${secs(Date.now() - runStartedAt)} wall-clock · ${totalToolCalls} tool call(s)`,
+            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)`,
             ...(totalDroppedLines > 0
                 ? [
                       ``,
@@ -1867,6 +1877,7 @@ export default function (pi: ExtensionAPI) {
                 }
                 agents = loadAgents(ctx.cwd);
                 widgetCtx = ctx;
+                pipelineRanThisTurn = true; // fold the primary's turn time into the total
                 if (onUpdate)
                     onUpdate({
                         content: [
@@ -2053,8 +2064,13 @@ export default function (pi: ExtensionAPI) {
                 if (!dispatchMode || freshDispatchSession) {
                     dispatchMode = true;
                     phases = []; // start a fresh dispatch session's selections
+                    // Time from the primary agent's turn start (its pre-dispatch
+                    // reasoning counts), falling back to now if unknown.
+                    dispatchStartedAt = primaryTurnStartedAt || Date.now();
+                    dispatchElapsedMs = 0;
                 }
                 freshDispatchSession = false;
+                dispatchedThisTurn = true;
 
                 // Track this agent as a phase so its card reflects live status.
                 // Re-dispatching the same agent reuses (and resets) its phase so the
@@ -2103,6 +2119,7 @@ export default function (pi: ExtensionAPI) {
 
                 phase.status = ok ? "done" : "error";
                 phase.elapsed = Date.now() - start;
+                dispatchElapsedMs = Date.now() - dispatchStartedAt; // session total so far
                 updateWidget();
 
                 if (widgetCtx?.ui?.notify) {
@@ -2305,6 +2322,10 @@ export default function (pi: ExtensionAPI) {
                 // agents reset to queued. Within the same request (refining the
                 // selection) we preserve the status of agents already worked.
                 dispatchMode = true;
+                if (freshDispatchSession) {
+                    dispatchStartedAt = primaryTurnStartedAt || Date.now();
+                    dispatchElapsedMs = 0;
+                }
                 const byAgent = freshDispatchSession
                     ? new Map<string, PhaseState>()
                     : new Map(phases.map((p) => [p.agent, p]));
@@ -2357,6 +2378,27 @@ export default function (pi: ExtensionAPI) {
         });
 
     // ── Cancellation hook (integrates with escape-cancel if present) ──
+
+    // ── Primary-turn timing ──
+    // The orchestrator's turn wraps both its own reasoning and the sub-agent work
+    // it triggers, so timing it gives the total INCLUDING the primary agent's time.
+    // At turn end we fold that into the dispatch / pipeline totals.
+    if (active)
+        pi.on("agent_start", async () => {
+            primaryTurnStartedAt = Date.now();
+            pipelineRanThisTurn = false;
+            dispatchedThisTurn = false;
+        });
+    if (active)
+        pi.on("agent_end", async () => {
+            if (primaryTurnStartedAt <= 0) return;
+            const turnMs = Date.now() - primaryTurnStartedAt;
+            // Only fold the turn time into a total when work actually ran this turn,
+            // so a plain "done" reply doesn't overwrite the last total.
+            if (dispatchedThisTurn) dispatchElapsedMs = turnMs;
+            if (pipelineRanThisTurn) runElapsedMs = turnMs;
+            if (dispatchedThisTurn || pipelineRanThisTurn) updateWidget();
+        });
 
     // ── Orchestrator System Prompt ─────────────────
     //
@@ -2607,6 +2649,11 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                     dispatchMode && phases.some((p) => p.status === "running");
                 const dispatchDone =
                     dispatchMode && phases.length > 0 && !dispatchRunning;
+                // The agent currently executing — surfaced in the status so the
+                // footer shows e.g. "running Implementer" rather than a bare state.
+                const activeName = phases.find(
+                    (p) => p.status === "running",
+                )?.label;
                 const statusColor =
                     running || dispatchRunning
                         ? "accent"
@@ -2620,14 +2667,22 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                                 ? "dim"
                                 : "error";
                 const statusText = running
-                    ? iteration > 1
-                        ? `running attempt ${iteration}/${maxLoopsRef}`
-                        : "running"
+                    ? activeName
+                        ? iteration > 1
+                            ? `running ${activeName} (attempt ${iteration}/${maxLoopsRef})`
+                            : `running ${activeName}`
+                        : iteration > 1
+                          ? `running attempt ${iteration}/${maxLoopsRef}`
+                          : "running"
                     : dispatchRunning
-                      ? "dispatching"
+                      ? `running ${activeName ?? "agent"}`
                       : dispatchDone
-                        ? "dispatch done"
-                        : lastStatus;
+                        ? dispatchElapsedMs > 0
+                            ? `dispatch done · ${secs(dispatchElapsedMs)} total`
+                            : "dispatch done"
+                        : runElapsedMs > 0
+                          ? `${lastStatus} · ${secs(runElapsedMs)} total`
+                          : lastStatus;
 
                 // Primary (orchestrator) agent's model — the full `provider/model`
                 // pi was loaded with.
