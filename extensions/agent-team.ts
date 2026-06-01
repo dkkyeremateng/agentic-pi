@@ -67,6 +67,7 @@ import {
     WORKFLOW_REPORT_TYPE,
     WORKFLOW_REPORT_MAX,
     WORKFLOW_LOG_TYPE,
+    setupSessions as setupSessionsCore,
     type AgentDef,
     type PhaseState,
     loadDotEnv,
