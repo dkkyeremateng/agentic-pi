@@ -2368,6 +2368,11 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                     dispatchMode && phases.some((p) => p.status === "running");
                 const dispatchDone =
                     dispatchMode && phases.length > 0 && !dispatchRunning;
+                // The agent currently executing — surfaced in the status so the
+                // footer shows e.g. "running Implementer" rather than a bare state.
+                const activeName = phases.find(
+                    (p) => p.status === "running",
+                )?.label;
                 const statusColor =
                     running || dispatchRunning
                         ? "accent"
@@ -2381,11 +2386,15 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                                 ? "dim"
                                 : "error";
                 const statusText = running
-                    ? iteration > 1
-                        ? `running attempt ${iteration}/${maxLoopsRef}`
-                        : "running"
+                    ? activeName
+                        ? iteration > 1
+                            ? `running ${activeName} (attempt ${iteration}/${maxLoopsRef})`
+                            : `running ${activeName}`
+                        : iteration > 1
+                          ? `running attempt ${iteration}/${maxLoopsRef}`
+                          : "running"
                     : dispatchRunning
-                      ? "dispatching"
+                      ? `running ${activeName ?? "agent"}`
                       : dispatchDone
                         ? "dispatch done"
                         : lastStatus;
