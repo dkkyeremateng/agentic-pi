@@ -75,7 +75,10 @@ export interface PhaseState {
 
 // True only when pi was started with this extension via -e/--extension (not when
 // it was auto-discovered). `selfUrl` is the caller's import.meta.url.
-export function loadedExplicitly(selfUrl: string, fallbackBase: string): boolean {
+export function loadedExplicitly(
+    selfUrl: string,
+    fallbackBase: string,
+): boolean {
     let self = "";
     try {
         self = fileURLToPath(selfUrl);
@@ -563,8 +566,8 @@ export function validatePlan(plan: string): PlanCheck {
 // ── Shared run context (curated cross-agent bundle) ──
 // Durable artifacts earlier pipeline phases produced. Prepended to a later
 // agent's task so every agent can build on the others' work without the lossy
-// digest-into-the-next-prompt handoff. Used by agent-pipeline only (single
-// model, one shared context window); agent-team keeps isolated handoffs.
+// digest-into-the-next-prompt handoff. Used by both agent-pipeline (always on)
+// and agent-team (on by default; opt out with PI_AGENT_TEAM_SHARED_CONTEXT=0).
 export interface RunArtifacts {
     recon?: string; // scout findings
     plan?: string; // approved plan
@@ -580,7 +583,8 @@ export interface RunArtifacts {
 export function contextBundle(a: RunArtifacts): string {
     const parts: string[] = [];
     const add = (title: string, body?: string) => {
-        if (body && body.trim()) parts.push(`### ${title}`, "", body.trim(), "");
+        if (body && body.trim())
+            parts.push(`### ${title}`, "", body.trim(), "");
     };
     add("Reconnaissance (scout)", a.recon);
     add("Approved plan (planner)", a.plan);

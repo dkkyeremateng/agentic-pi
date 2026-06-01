@@ -68,6 +68,8 @@ import {
     WORKFLOW_REPORT_MAX,
     WORKFLOW_LOG_TYPE,
     setupSessions as setupSessionsCore,
+    contextBundle,
+    type RunArtifacts,
     type AgentDef,
     type PhaseState,
     loadDotEnv,
@@ -116,7 +118,11 @@ const isActiveWorkflow = () => isActiveWorkflowCore(SELF_NAME);
 // The agents shipped alongside this extension (`<ext>/../agents`). Used as a
 // fallback so the pipeline works when launched (e.g. via `-e`) from a project
 // that has no .pi/agents of its own — the cwd still wins when it does.
-const INSTALL_AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+const INSTALL_AGENTS_DIR = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "agents",
+);
 const loadAgents = (cwd: string) => loadAgentsCore(cwd, INSTALL_AGENTS_DIR);
 const loadTeams = (cwd: string) => loadTeamsCore(cwd, INSTALL_AGENTS_DIR);
 
@@ -139,6 +145,12 @@ const WORKER_MODEL = process.env.PI_WORKFLOW_MODEL || "";
 const AGENT_TIMEOUT_MS =
     Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_TIMEOUT || "0") || 0) *
     60_000;
+// Opt-in curated cross-agent context bundle (on by default). When enabled, each
+// later phase receives a "Shared run context" block containing the durable artifacts
+// earlier agents produced (recon, critique, etc.) that the task builders do not
+// already thread. Set PI_AGENT_TEAM_SHARED_CONTEXT=0 to disable — each agent then
+// sees only what its own task prompt carries, matching the pre-port behaviour.
+const SHARED_CONTEXT = process.env.PI_AGENT_TEAM_SHARED_CONTEXT !== "0";
 
 type AgentName =
     | "scout"
@@ -189,7 +201,6 @@ function loadAgentModels(cwd?: string): AgentModelConfig {
         documenter: pick("documenter", "PI_AGENT_DOCUMENTER_MODEL"),
     };
 }
-
 
 // ── Extension ────────────────────────────────────
 
@@ -677,9 +688,7 @@ export default function (pi: ExtensionAPI) {
                               )
                             : "";
                     // Reflect the agents actually running, not a fixed label.
-                    const workflowTitle = phases
-                        .map((p) => p.label)
-                        .join("→");
+                    const workflowTitle = phases.map((p) => p.label).join("→");
                     lines.push(
                         " " +
                             theme.fg("accent", theme.bold(workflowTitle)) +
@@ -1099,6 +1108,18 @@ export default function (pi: ExtensionAPI) {
             };
         }
 
+        // Shared curated context — the artifacts each later agent would not
+        // otherwise see (recon, critique). Builders already thread the rest
+        // (plan, impl summary, test report) into the phases that need them, so
+        // we only accumulate the dropped ones here to avoid duplication.
+        // Controlled by PI_AGENT_TEAM_SHARED_CONTEXT (on by default).
+        const runArtifacts: RunArtifacts = {};
+        const shared = (task: string) => {
+            if (!SHARED_CONTEXT) return task;
+            const bundle = contextBundle(runArtifacts);
+            return bundle ? `${bundle}\n\n---\n\n${task}` : task;
+        };
+
         const [planP, critiqueP, implP, testP, valP, docP, shipP] = includeScout
             ? phases.slice(1)
             : phases;
@@ -1117,6 +1138,7 @@ export default function (pi: ExtensionAPI) {
                 };
             }
             scoutFindings = scoutRes.output;
+            runArtifacts.recon = scoutFindings;
         }
 
         // Phase 1 — Plan (once)
@@ -1150,7 +1172,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             critique = await runPhase(
                 critiqueP,
-                criticTask(request, plan.output),
+                shared(criticTask(request, plan.output)),
                 cwd,
             );
             if (!critique.ok) {
@@ -1185,10 +1207,13 @@ export default function (pi: ExtensionAPI) {
             }
         }
 
+        // The critic's verdict is now settled — share it with every later agent.
+        runArtifacts.critique = critique.output;
+
         // Phase 3 — Implement (first pass)
         let impl = await runPhase(
             implP,
-            implementTask(request, plan.output),
+            shared(implementTask(request, plan.output)),
             cwd,
         );
         if (!impl.ok) {
@@ -1216,7 +1241,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             test = await runPhase(
                 testP,
-                testTask(request, plan.output, impl.output),
+                shared(testTask(request, plan.output, impl.output)),
                 cwd,
             );
             if (!test.ok) {
@@ -1231,7 +1256,7 @@ export default function (pi: ExtensionAPI) {
             // Validate (the gate — no commit, no PR yet)
             val = await runPhase(
                 valP,
-                validateTask(request, plan.output, test.output),
+                shared(validateTask(request, plan.output, test.output)),
                 cwd,
             );
             if (!val.ok) {
@@ -1253,7 +1278,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             impl = await runPhase(
                 implP,
-                fixTask(request, plan.output, val.output, impl.output),
+                shared(fixTask(request, plan.output, val.output, impl.output)),
                 cwd,
             );
             if (!impl.ok) {
@@ -1271,7 +1296,14 @@ export default function (pi: ExtensionAPI) {
         if (verdict === "pass") {
             doc = await runPhase(
                 docP,
-                documentTask(request, plan.output, impl.output, test.output),
+                shared(
+                    documentTask(
+                        request,
+                        plan.output,
+                        impl.output,
+                        test.output,
+                    ),
+                ),
                 cwd,
             );
             if (!doc.ok) {
@@ -1285,7 +1317,7 @@ export default function (pi: ExtensionAPI) {
 
             ship = await runPhase(
                 shipP,
-                shipTask(request, test.output, doc.output),
+                shared(shipTask(request, test.output, doc.output)),
                 cwd,
             );
             if (!ship.ok) {
@@ -1441,6 +1473,15 @@ export default function (pi: ExtensionAPI) {
         const critiqueP = phases[offset + 1];
         const docP = phases[offset + 2];
 
+        // Shared curated context (recon + critique) — see runWorkflow. Builders
+        // already thread the plan, so only the dropped artifacts go in here.
+        const runArtifacts: RunArtifacts = {};
+        const shared = (task: string) => {
+            if (!SHARED_CONTEXT) return task;
+            const bundle = contextBundle(runArtifacts);
+            return bundle ? `${bundle}\n\n---\n\n${task}` : task;
+        };
+
         // Optional Phase 0 — Scout (read-only recon, feeds the planner)
         let scoutFindings = "";
         if (scoutP) {
@@ -1454,6 +1495,7 @@ export default function (pi: ExtensionAPI) {
                 };
             }
             scoutFindings = scoutRes.output;
+            runArtifacts.recon = scoutFindings;
         }
 
         // Plan ⇄ Critique loop — the planner revises until the critic approves.
@@ -1481,7 +1523,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             critique = await runPhase(
                 critiqueP,
-                specCriticTask(request, plan.output),
+                shared(specCriticTask(request, plan.output)),
                 cwd,
             );
             if (!critique.ok) {
@@ -1516,10 +1558,13 @@ export default function (pi: ExtensionAPI) {
             }
         }
 
+        // The critic's verdict is settled — share it with the documenter.
+        runArtifacts.critique = critique.output;
+
         // Phase 3 — Document (produce the spec)
         const doc = await runPhase(
             docP,
-            specDocumentTask(request, plan.output),
+            shared(specDocumentTask(request, plan.output)),
             cwd,
         );
         if (!doc.ok) {
