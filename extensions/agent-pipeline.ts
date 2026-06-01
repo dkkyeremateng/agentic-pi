@@ -127,6 +127,12 @@ const WORKER_MODEL = process.env.PI_WORKFLOW_MODEL || "";
 const AGENT_TIMEOUT_MS =
     Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_TIMEOUT || "0") || 0) *
     60_000;
+// Opt-in (off by default): run every phase agent against ONE shared session file
+// so each resumes the full accumulated transcript (maximal context sharing),
+// instead of the curated context bundle alone. Trades context-window growth — and
+// a likely compaction partway through a long run — for complete cross-agent
+// history. The curated bundle still applies on top.
+const SHARED_SESSION = process.env.PI_AGENT_PIPELINE_SHARED_SESSION === "1";
 
 
 // ── Extension ────────────────────────────────────
@@ -514,7 +520,13 @@ export default function (pi: ExtensionAPI) {
         model: string,
     ): Promise<{ output: string; exitCode: number }> {
         const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
-        const sessionFile = join(sessionDir, `${key}.json`);
+        // With SHARED_SESSION, every agent resumes one shared session file so it
+        // sees the full transcript of the agents that ran before it; otherwise
+        // each agent has its own session (resumed across retry loops).
+        const sessionFile = join(
+            sessionDir,
+            SHARED_SESSION ? "pipeline-shared.json" : `${key}.json`,
+        );
         const hasSession = existsSync(sessionFile);
 
         const args = [

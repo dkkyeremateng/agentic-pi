@@ -187,6 +187,28 @@ Commands:
 - `PI_WORKFLOW_AGENT_TIMEOUT` — optional watchdog (in minutes). If set, any agent that runs longer is killed and the phase fails with a clear "timed out" note. `0`/unset disables it.
 - `run_agent_pipeline { request, max_loops }` — `max_loops` overrides the retry limit per call
 
+### Shared context across phases (`agent-pipeline.ts`)
+
+In `agent-pipeline.ts` the phase agents share a **curated context bundle** so each
+can build on the others' work instead of relying on lossy hand-offs. The scout's
+reconnaissance and the critic's verdict — the artifacts the per-phase prompts would
+otherwise drop — are prepended to every downstream agent's task as a `## Shared run
+context` block. Combined with what the prompts already thread through (the plan,
+the implementer's change summary, the tester's report), every agent
+(implementer → tester → validator → documenter → ship) sees the full cross-agent
+context, with no duplication. The bundle stays small (recon + critique only), so it
+adds context without bloating the window.
+
+- `PI_AGENT_PIPELINE_SHARED_SESSION=1` — **opt-in, off by default.** Instead of the
+  curated bundle, run **all** phase agents against a single shared session file so
+  each one resumes the *full* accumulated transcript (maximal sharing). This trades
+  context-window growth — and a likely compaction partway through a long run — for
+  complete cross-agent history. The curated bundle still applies on top.
+
+This is `agent-pipeline.ts` only — `agent-team.ts` runs each agent on its own model
+with its own context window, so a shared window is ill-defined there and it keeps
+isolated hand-offs.
+
 Each report now ends its header with a **Totals** line — wall-clock time and the total number of tool calls across the run. On failure, the agent's captured `stderr` tail is included so failures are diagnosable; if the agent run is aborted (turn cancelled), the running subprocess is killed instead of leaking.
 
 ### `.env` file (recommended)
