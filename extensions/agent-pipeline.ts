@@ -413,9 +413,11 @@ export default function (pi: ExtensionAPI) {
                                   `  attempt ${iteration}/${maxLoopsRef}`,
                               )
                             : "";
-                    const workflowTitle = isSpecMode
-                        ? "plan-validate"
-                        : "plan-implement-test-validate";
+                    // Reflect the agents actually running (full pipeline or the
+                    // dispatched set), not a fixed label.
+                    const workflowTitle = phases
+                        .map((p) => p.label)
+                        .join("→");
                     // Once a run finishes, show the total wall-clock time it took
                     // to complete the whole pipeline, next to the status badge.
                     const totalTime =

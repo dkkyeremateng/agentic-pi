@@ -669,9 +669,10 @@ export default function (pi: ExtensionAPI) {
                                   `  attempt ${iteration}/${maxLoopsRef}`,
                               )
                             : "";
-                    const workflowTitle = isSpecMode
-                        ? "plan-validate"
-                        : "plan-implement-test-validate";
+                    // Reflect the agents actually running, not a fixed label.
+                    const workflowTitle = phases
+                        .map((p) => p.label)
+                        .join("→");
                     lines.push(
                         " " +
                             theme.fg("accent", theme.bold(workflowTitle)) +
@@ -1906,9 +1907,24 @@ export default function (pi: ExtensionAPI) {
                 const req = (args as any).request || "";
                 const preview =
                     req.length > 56 ? req.slice(0, 53) + "..." : req;
+                // Reflect the agents this run will actually use (from the active
+                // team) rather than a fixed label — Scout only when the team has it.
+                const members = activeMembers();
+                const flow = [
+                    ...(members.some((m) => m.toLowerCase() === "scout")
+                        ? ["Scout"]
+                        : []),
+                    "Plan",
+                    "Critique",
+                    "Implement",
+                    "Test",
+                    "Validate",
+                    "Document",
+                    "Ship",
+                ].join("→");
                 return new Text(
                     theme.fg("toolTitle", theme.bold("run_agent_team ")) +
-                        theme.fg("accent", "plan→impl→test→validate") +
+                        theme.fg("accent", flow) +
                         theme.fg("dim", " — ") +
                         theme.fg("muted", preview),
                     0,
