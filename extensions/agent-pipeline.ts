@@ -1687,7 +1687,7 @@ export default function (pi: ExtensionAPI) {
                     content: [
                         {
                             type: "text",
-                            text: `Status: ${result.status}\n\n${truncated}`,
+                            text: `Status: ${result.status} · completed in ${secs(runElapsedMs)}\n\n${truncated}`,
                         },
                     ],
                     details: { status: result.status, report: truncated },
@@ -2418,7 +2418,9 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                       ? `running ${activeName ?? "agent"}`
                       : dispatchDone
                         ? "dispatch done"
-                        : lastStatus;
+                        : runElapsedMs > 0
+                          ? `${lastStatus} · ${secs(runElapsedMs)} total`
+                          : lastStatus;
 
                 const left =
                     theme.fg("dim", ` ${model}`) +
