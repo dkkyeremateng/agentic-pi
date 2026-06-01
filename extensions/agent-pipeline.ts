@@ -367,10 +367,12 @@ export default function (pi: ExtensionAPI) {
                         14,
                         Math.floor((width - arrowWidth * (cols - 1)) / cols),
                     );
-                    const arrowRow = 2; // middle of the 5-line card
+                    const arrowRow = 2; // status row of the card
 
+                    // showContext=false: every phase shares the primary model
+                    // and context, so the per-card context bar is omitted here.
                     const cards = phases.map((p) =>
-                        renderCard(p, colWidth, theme),
+                        renderCard(p, colWidth, theme, false),
                     );
                     const cardHeight = cards[0].length;
                     const lines: string[] = [];

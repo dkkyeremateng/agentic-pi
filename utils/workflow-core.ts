@@ -242,10 +242,14 @@ export function statusBadge(
 // One pipeline phase card: name · status · context bar. Pure — derives everything
 // from the phase. The card deliberately omits a log snippet (the live activity
 // panel below the cards carries that), so cards stay compact.
+// `showContext` (default true) draws the per-phase context-usage bar. The
+// single-model agent-pipeline passes false — every phase shares the primary
+// session's model and context, so a per-card bar is redundant there.
 export function renderCard(
     phase: PhaseState,
     colWidth: number,
     theme: any,
+    showContext = true,
 ): string[] {
     const w = colWidth - 2;
     const truncate = (s: string, max: number) =>
@@ -273,7 +277,7 @@ export function renderCard(
 
     // Context usage bar: 5 blocks + percent, only shown when we have data.
     const ctxLine =
-        phase.contextPct > 0
+        showContext && phase.contextPct > 0
             ? (() => {
                   const filled = Math.ceil(phase.contextPct / 20);
                   const bar = "#".repeat(filled) + "-".repeat(5 - filled);
