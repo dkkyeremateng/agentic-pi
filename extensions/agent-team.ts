@@ -586,7 +586,12 @@ export default function (pi: ExtensionAPI) {
 
     function updateWidget() {
         if (!widgetCtx) return;
-        widgetCtx.ui.setWidget("agent-team", (_tui: any, theme: any) => {
+        widgetCtx.ui.setWidget("agent-team", (tui: any, theme: any) => {
+            // Clear vacated rows when the widget shrinks (the live-log panel
+            // resets between phases, status rows tail) so stale lines don't
+            // ghost behind the new frame. Off by default in the host
+            // (PI_CLEAR_ON_SHRINK).
+            tui?.setClearOnShrink?.(true);
             const text = new Text("", 0, 1);
             return {
                 render(width: number): string[] {
