@@ -149,6 +149,7 @@ export default function (pi: ExtensionAPI) {
     let totalDroppedLines = 0; // count of JSON lines dropped during this run (diagnostic signal)
     let totalToolCalls = 0; // cumulative tool calls across all phases this run (incl. retries)
     let runStartedAt = 0; // wall-clock start of the current run
+    let runElapsedMs = 0; // total wall-clock of the last completed run (frozen at completion)
     let includeScout = false; // prepend a read-only Scout recon phase (team has `scout`)
     // Orchestrator (ad-hoc dispatch) state. When no team is selected, the primary
     // agent determines the agents itself, driving select_agents/dispatch_agent.
@@ -402,11 +403,18 @@ export default function (pi: ExtensionAPI) {
                     const workflowTitle = isSpecMode
                         ? "plan-validate"
                         : "plan-implement-test-validate";
+                    // Once a run finishes, show the total wall-clock time it took
+                    // to complete the whole pipeline, next to the status badge.
+                    const totalTime =
+                        !running && runElapsedMs > 0
+                            ? theme.fg("dim", `  ·  ${secs(runElapsedMs)} total`)
+                            : "";
                     lines.push(
                         " " +
                             theme.fg("accent", theme.bold(workflowTitle)) +
                             passInfo +
-                            statusBadge(theme, running, lastStatus),
+                            statusBadge(theme, running, lastStatus) +
+                            totalTime,
                     );
                     lines.push("");
 
@@ -841,6 +849,7 @@ export default function (pi: ExtensionAPI) {
         totalDroppedLines = 0;
         totalToolCalls = 0;
         runStartedAt = Date.now();
+        runElapsedMs = 0;
         iteration = 0;
         maxLoopsRef = maxLoops;
         lastStatus = "running";
@@ -1064,6 +1073,7 @@ export default function (pi: ExtensionAPI) {
                 verdict === "fail" ? "failed-after-retries" : "needs-review";
         }
 
+        runElapsedMs = Date.now() - runStartedAt;
         running = false;
         lastStatus = status;
         updateWidget();
@@ -1079,7 +1089,7 @@ export default function (pi: ExtensionAPI) {
             `**Request:** ${request}`,
             `**Outcome:** ${outcomeLine(status, passes)}`,
             `**Result:** ${status} · verdict ${verdict.toUpperCase()} · ${passes} attempt(s) of ${maxLoops}`,
-            `**Totals:** ${secs(Date.now() - runStartedAt)} wall-clock · ${totalToolCalls} tool call(s)`,
+            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)`,
             ...(prUrl ? [`**Pull request:** ${prUrl}`] : []),
             ...(totalDroppedLines > 0
                 ? [
@@ -1174,6 +1184,7 @@ export default function (pi: ExtensionAPI) {
         totalDroppedLines = 0;
         totalToolCalls = 0;
         runStartedAt = Date.now();
+        runElapsedMs = 0;
         iteration = 1;
         maxLoopsRef = 1;
         lastStatus = "running";
@@ -1289,6 +1300,7 @@ export default function (pi: ExtensionAPI) {
 
         const critiqueApproved = critiqueVerdict !== "revise";
         const status = critiqueApproved ? "done" : "needs-review";
+        runElapsedMs = Date.now() - runStartedAt;
         running = false;
         lastStatus = status;
         updateWidget();
@@ -1302,7 +1314,7 @@ export default function (pi: ExtensionAPI) {
             ``,
             `**Request:** ${request}`,
             `**Outcome:** ${outcome}`,
-            `**Totals:** ${secs(Date.now() - runStartedAt)} wall-clock · ${totalToolCalls} tool call(s)`,
+            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)`,
             ...(totalDroppedLines > 0
                 ? [
                       ``,
@@ -1512,7 +1524,7 @@ export default function (pi: ExtensionAPI) {
                   ? "error"
                   : "warning";
         ctx.ui.notify(
-            `Workflow ${result.status}. Report is shown below.`,
+            `Workflow ${result.status} in ${secs(runElapsedMs)}. Report is shown below.`,
             level as any,
         );
         if (totalDroppedLines > 0) {
@@ -1538,7 +1550,7 @@ export default function (pi: ExtensionAPI) {
                   ? "error"
                   : "warning";
         ctx.ui.notify(
-            `Spec generation ${result.status}. Report is shown below.`,
+            `Spec generation ${result.status} in ${secs(runElapsedMs)}. Report is shown below.`,
             level as any,
         );
         if (totalDroppedLines > 0) {
