@@ -1,4 +1,4 @@
-// ABOUTME: Team-model variant of the workflow orchestrator — identical pipeline to workflow.ts but allows
+// ABOUTME: Team-model variant of the workflow orchestrator — identical pipeline to agent-pipeline.ts but allows
 // ABOUTME: configuring the model per agent via env vars (PI_AGENT_PLANNER_MODEL, PI_AGENT_IMPLEMENTER_MODEL, …)
 // ABOUTME: or a global fallback (PI_WORKFLOW_MODEL). Every other aspect of the pipeline is unchanged.
 /**
@@ -23,11 +23,11 @@
  * Set PI_WORKFLOW_MODEL as a global fallback for all agents.
  *
  * Commands:
- *   /workflow-team <request>   — run the full lifecycle on a request
- *   /workflow-team-clear       — clear the progress widget
+ *   /agent-team <request>   — run the full lifecycle on a request
+ *   /agent-team-clear       — clear the progress widget
  *
  * Tool:
- *   run_workflow_team { request, max_loops? } — same, callable by the primary agent
+ *   run_agent_team { request, max_loops? } — same, callable by the primary agent
  *
  * Self-contained: depends only on pi packages + Node builtins, and reads agent
  * definitions straight from .pi/agents/. Drop it in .pi/extensions/ and it loads.
@@ -51,7 +51,8 @@ import {
     unlinkSync,
     writeFileSync,
 } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import {
     type Verdict,
     type CritiqueVerdict,
@@ -70,6 +71,9 @@ import {
     LOG_PANEL_RESERVE,
     LOG_CAP_CHARS,
     STDERR_TAIL_CAP,
+    WORKFLOW_REPORT_TYPE,
+    WORKFLOW_REPORT_MAX,
+    WORKFLOW_LOG_TYPE,
     type AgentDef,
     type PhaseState,
     loadDotEnv,
@@ -82,8 +86,8 @@ import {
     chooseTeam as chooseTeamCore,
     loadedExplicitly as loadedExplicitlyCore,
     isActiveWorkflow as isActiveWorkflowCore,
-    loadAgents,
-    loadTeams,
+    loadAgents as loadAgentsCore,
+    loadTeams as loadTeamsCore,
     teamIsSpec,
     validatePlan,
     scoutTask,
@@ -107,13 +111,20 @@ loadDotEnv(process.cwd());
 
 let isSpecMode = false; // true during spec-only runs; hides impl/test/validate/ship phases
 
-// This file is "workflow-team". See workflow-core for loadedExplicitly /
+// This file is "agent-team". See workflow-core for loadedExplicitly /
 // selectedWorkflowExtension / isActiveWorkflow (shared, parameterized over name).
-const SELF_NAME = "workflow-team";
+const SELF_NAME = "agent-team";
 
 const loadedExplicitly = () =>
-    loadedExplicitlyCore(import.meta.url, "workflow-team.ts");
+    loadedExplicitlyCore(import.meta.url, "agent-team.ts");
 const isActiveWorkflow = () => isActiveWorkflowCore(SELF_NAME);
+
+// The agents shipped alongside this extension (`<ext>/../agents`). Used as a
+// fallback so the pipeline works when launched (e.g. via `-e`) from a project
+// that has no .pi/agents of its own — the cwd still wins when it does.
+const INSTALL_AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+const loadAgents = (cwd: string) => loadAgentsCore(cwd, INSTALL_AGENTS_DIR);
+const loadTeams = (cwd: string) => loadTeamsCore(cwd, INSTALL_AGENTS_DIR);
 
 // ── Config ───────────────────────────────────────
 
@@ -222,7 +233,7 @@ export default function (pi: ExtensionAPI) {
     const ORCHESTRATOR_TOOLS = [
         "select_agents",
         "dispatch_agent",
-        "run_workflow_team",
+        "run_agent_team",
     ];
 
     const mkPhase = (label: string, agent: string): PhaseState => ({
@@ -462,7 +473,7 @@ export default function (pi: ExtensionAPI) {
             // Ad-hoc dispatch outside the workflow team — no team name/count/mode.
             header =
                 " " +
-                theme.fg("accent", theme.bold("workflow-team")) +
+                theme.fg("accent", theme.bold("agent-team")) +
                 theme.fg("dim", "  ·  ") +
                 theme.fg("dim", "ad-hoc dispatch") +
                 badge;
@@ -477,7 +488,7 @@ export default function (pi: ExtensionAPI) {
             const countSet = selecting ? selectedKeys : roster;
             header =
                 " " +
-                theme.fg("accent", theme.bold("workflow-team")) +
+                theme.fg("accent", theme.bold("agent-team")) +
                 theme.fg("dim", "  ·  ") +
                 theme.fg("dim", selecting ? "selected from " : "team ") +
                 theme.fg("accent", activeTeamName || "—") +
@@ -492,8 +503,8 @@ export default function (pi: ExtensionAPI) {
                 selecting
                     ? " primary agent selected these agents for the work"
                     : teamNames.length > 1
-                      ? " /workflow-team [request] — pick a team, then run"
-                      : " /workflow-team <request> to run",
+                      ? " /agent-team [request] — pick a team, then run"
+                      : " /agent-team <request> to run",
             );
         }
 
@@ -582,7 +593,7 @@ export default function (pi: ExtensionAPI) {
 
     function updateWidget() {
         if (!widgetCtx) return;
-        widgetCtx.ui.setWidget("workflow-team", (_tui: any, theme: any) => {
+        widgetCtx.ui.setWidget("agent-team", (_tui: any, theme: any) => {
             const text = new Text("", 0, 1);
             return {
                 render(width: number): string[] {
@@ -599,7 +610,7 @@ export default function (pi: ExtensionAPI) {
                         return text.render(width);
                     }
 
-                    // ── Pipeline view (full run_workflow_team) ───────────
+                    // ── Pipeline view (full run_agent_team) ───────────
                     // Per-agent model table, shown between the title and the cards.
                     const fallbackModel =
                         WORKER_MODEL || widgetCtx?.model?.id || "default";
@@ -1654,13 +1665,13 @@ export default function (pi: ExtensionAPI) {
     // ── Command ──────────────────────────────────
 
     // Register commands + tool only for the active workflow extension, so when
-    // both auto-load you don't see /workflow and /workflow-team at once.
+    // both auto-load you don't see /agent-pipeline and /agent-team at once.
     const active = isActiveWorkflow();
 
     if (active)
-        pi.registerCommand("workflow-team", {
+        pi.registerCommand("agent-team", {
             description:
-                "Run a workflow: '/workflow-team <request>' for full lifecycle, '/workflow-team spec <request>' for implementation spec only",
+                "Run a workflow: '/agent-team <request>' for full lifecycle, '/agent-team spec <request>' for implementation spec only",
             handler: async (args, ctx) => {
                 widgetCtx = ctx;
                 if (running) {
@@ -1807,11 +1818,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (active)
-        pi.registerCommand("workflow-team-clear", {
-            description: "Clear the workflow-team progress widget",
+        pi.registerCommand("agent-team-clear", {
+            description: "Clear the agent-team progress widget",
             handler: async (_args, ctx) => {
                 widgetCtx = ctx;
-                ctx.ui.setWidget("workflow-team", undefined);
+                ctx.ui.setWidget("agent-team", undefined);
                 ctx.ui.notify("Workflow-team widget cleared.", "info");
             },
         });
@@ -1820,7 +1831,7 @@ export default function (pi: ExtensionAPI) {
 
     if (active)
         pi.registerTool({
-            name: "run_workflow_team",
+            name: "run_agent_team",
             label: "Run Workflow (Team)",
             description:
                 "Run the full plan -> implement -> test -> validate lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself.",
@@ -1893,7 +1904,7 @@ export default function (pi: ExtensionAPI) {
                 const preview =
                     req.length > 56 ? req.slice(0, 53) + "..." : req;
                 return new Text(
-                    theme.fg("toolTitle", theme.bold("run_workflow_team ")) +
+                    theme.fg("toolTitle", theme.bold("run_agent_team ")) +
                         theme.fg("accent", "plan→impl→test→validate") +
                         theme.fg("dim", " — ") +
                         theme.fg("muted", preview),
@@ -1910,7 +1921,7 @@ export default function (pi: ExtensionAPI) {
                 }
                 if (options.isPartial) {
                     return new Text(
-                        theme.fg("accent", "● workflow-team") +
+                        theme.fg("accent", "● agent-team") +
                             theme.fg("dim", " running..."),
                         0,
                         0,
@@ -1926,7 +1937,7 @@ export default function (pi: ExtensionAPI) {
                 const m = meta[details.status] || { icon: "•", color: "muted" };
                 const header = theme.fg(
                     m.color,
-                    `${m.icon} workflow-team ${details.status}`,
+                    `${m.icon} agent-team ${details.status}`,
                 );
                 if (options.expanded && details.report) {
                     const mdTheme = getMarkdownTheme();
@@ -2015,7 +2026,7 @@ export default function (pi: ExtensionAPI) {
                 setupSessions(ctx.cwd, false);
 
                 // Enter dispatch mode: the full team grid stays on screen and the
-                // selected agents are marked. A workflow run (run_workflow_team)
+                // selected agents are marked. A workflow run (run_agent_team)
                 // resets this back to the linear pipeline view. A new user request
                 // (freshDispatchSession) also starts from a clean slate so the new
                 // workflow never shows the previous one's cards.
@@ -2321,7 +2332,7 @@ export default function (pi: ExtensionAPI) {
     //
     // The primary agent acts as an orchestrator: it receives the user's request,
     // reviews it, and decides whether to run the full pipeline or dispatch
-    // individual agents for ad-hoc work. It has access to both run_workflow_team
+    // individual agents for ad-hoc work. It has access to both run_agent_team
     // (for the automated lifecycle) and dispatch_agent (for free-form tasks).
     //
     // This handler injects a system prompt that guides the orchestrator's
@@ -2363,7 +2374,7 @@ This overrides any earlier instructions about doing work yourself. For this
 session you are a coordinator, not a coder.
 
 **You have NO codebase tools.** Your only tools are \`select_agents\`,
-\`dispatch_agent\`, and \`run_workflow_team\`. You physically cannot read, write,
+\`dispatch_agent\`, and \`run_agent_team\`. You physically cannot read, write,
 or run code — you MUST delegate every piece of work to a specialist agent.
 
 ## ACT, DON'T NARRATE (while work is pending)
@@ -2390,11 +2401,11 @@ a selected agent is still queued. If you no longer need a selected agent, call
 (including any spec/doc file) has been written. Once that is true:
 - **STOP.** End your turn with a plain-text summary of what was done and the files
   that were written. A text-only response is the CORRECT ending here.
-- **Do NOT** call \`run_workflow_team\`, re-call \`select_agents\` to add more, or
+- **Do NOT** call \`run_agent_team\`, re-call \`select_agents\` to add more, or
   re-dispatch finished agents to "continue." Finishing the task is the goal — not
   keeping the pipeline running.
 - Pick ONE approach per request: EITHER compose the work yourself with
-  \`dispatch_agent\`, OR run \`run_workflow_team\`. Never run the full pipeline
+  \`dispatch_agent\`, OR run \`run_agent_team\`. Never run the full pipeline
   after you have already completed the work with dispatches — that just redoes
   finished work and can fail.
 - Only act again if the USER asks for more, or a dispatch genuinely failed and a
@@ -2408,7 +2419,7 @@ You determine the workflow by deciding which specialist agents to dispatch and i
 You have three tools:
 - **select_agents** — declares the agents you will use for the work, in order. Call this FIRST, right after you decide the workflow, so the dashboard shows the plan before any agent runs.
 - **dispatch_agent** — dispatches a task to a specialist agent. You compose workflows by chaining dispatches in the order that makes sense for the request.
-- **run_workflow_team** — runs the full automated pipeline (scout → plan → critique → implement → test → validate → document → ship) with built-in retry loops. Use this as a shortcut when the standard sequence fits.
+- **run_agent_team** — runs the full automated pipeline (scout → plan → critique → implement → test → validate → document → ship) with built-in retry loops. Use this as a shortcut when the standard sequence fits.
 
 ## Active Team: ${activeTeamName}
 Members: ${teamMembers}
@@ -2437,9 +2448,9 @@ Members: ${teamMembers}
 
 ## Rules
 - **You determine the workflow** — do not blindly follow a fixed sequence. Reason about what the request needs.
-- **NEVER try to read, write, or execute code directly** — you have no such tools. ALWAYS use dispatch_agent or run_workflow_team to get work done.
-- Use **run_workflow_team** only when the standard full pipeline is the right fit (code changes that need testing, validation, and shipping), and only as the FIRST move on a request — never after you have already done the work with dispatches.
-- **Do not auto-start a new workflow.** When the current request is complete, stop and summarize. Never chain \`run_workflow_team\` onto finished dispatch work.
+- **NEVER try to read, write, or execute code directly** — you have no such tools. ALWAYS use dispatch_agent or run_agent_team to get work done.
+- Use **run_agent_team** only when the standard full pipeline is the right fit (code changes that need testing, validation, and shipping), and only as the FIRST move on a request — never after you have already done the work with dispatches.
+- **Do not auto-start a new workflow.** When the current request is complete, stop and summarize. Never chain \`run_agent_team\` onto finished dispatch work.
 - For everything else, compose the workflow yourself using **dispatch_agent**
 - Keep each dispatch focused — one clear objective per dispatch
 - If a dispatch fails, try a different approach: adjust the task, dispatch a different agent, or chain a fix
@@ -2492,7 +2503,7 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
         // auto-discovered, the inactive one clears its widget and bows out so it
         // never stacks a second dashboard, footer, or cancellation hook.
         if (!isActiveWorkflow()) {
-            ctx.ui.setWidget("workflow-team", undefined);
+            ctx.ui.setWidget("agent-team", undefined);
             return;
         }
 
@@ -2502,7 +2513,7 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
         // Lock down the primary agent to orchestration tools only. The primary
         // agent must NOT have direct codebase tools — it delegates all work to
         // specialist agents via dispatch_agent or runs the full pipeline via
-        // run_workflow_team. Without this lockdown, the primary agent would
+        // run_agent_team. Without this lockdown, the primary agent would
         // just do the work itself instead of coordinating the team.
         if (active) pi.setActiveTools(ORCHESTRATOR_TOOLS);
         (globalThis as any).__piKillWorkflowProc = (): boolean => {
@@ -2520,7 +2531,7 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
         const present = REQUIRED_AGENTS.filter((a) => agents.has(a));
         const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
         ctx.ui.setStatus(
-            "workflow-team",
+            "agent-team",
             `Workflow Team: ${present.length}/${REQUIRED_AGENTS.length} agents`,
         );
 
@@ -2532,16 +2543,16 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                 ctx.ui.notify(
                     `Workflow Team\n` +
                         `${flow}\n\n` +
-                        `Missing agents in .pi/agents/: ${missing.join(", ")} — add them to enable /workflow-team.`,
+                        `Missing agents in .pi/agents/: ${missing.join(", ")} — add them to enable /agent-team.`,
                     "warning",
                 );
             } else {
                 ctx.ui.notify(
                     `Workflow Team\n` +
                         `Teams:\n${teamsBlock()}\n\n` +
-                        `/workflow-team [request]   Pick a team (Select Team), then run the lifecycle\n` +
-                        `/workflow-team-clear       Clear the progress widget\n` +
-                        `run_workflow_team          Tool — the agent can launch the workflow for non-trivial tasks\n` +
+                        `/agent-team [request]   Pick a team (Select Team), then run the lifecycle\n` +
+                        `/agent-team-clear       Clear the progress widget\n` +
+                        `run_agent_team          Tool — the agent can launch the workflow for non-trivial tasks\n` +
                         `dispatch_agent             Tool — dispatch a task to any loaded agent outside the pipeline`,
                     "info",
                 );
@@ -2606,10 +2617,10 @@ You can replicate this sequence manually via dispatch_agent, skip stages, reorde
                 const bar = "#".repeat(filled) + "-".repeat(10 - filled);
                 const pctStr = `${Math.round(pct)}%`;
 
-                // Left: workflow-team status + primary model. Right: context bar.
+                // Left: agent-team status + primary model. Right: context bar.
                 const left =
                     " " +
-                    theme.fg("accent", "workflow-team") +
+                    theme.fg("accent", "agent-team") +
                     theme.fg("dim", " ") +
                     theme.fg(statusColor, statusText) +
                     theme.fg("dim", "  ◆ ") +

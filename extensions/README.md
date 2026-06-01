@@ -1,4 +1,4 @@
-# workflow.ts — plan / critic / implement / test / validate / document / ship orchestrator
+# agent-pipeline.ts — plan / critic / implement / test / validate / document / ship orchestrator
 
 A self-contained pi extension that runs the agents as a **self-healing loop**,
 gated by the validator — optionally led by a read-only **scout** recon pass. The
@@ -60,31 +60,31 @@ pi auto-discovers `cwd/.pi/extensions/*.ts`. Run `pi` from this directory and th
 extension loads automatically — no registration. It reads the agent definitions
 from `.pi/agents/` (scout, planner, critic, implementer, tester, documenter, validator).
 
-Both `workflow.ts` and `workflow-team.ts` live here and auto-load together, but
+Both `agent-pipeline.ts` and `agent-team.ts` live here and auto-load together, but
 only **one** renders the dashboard/footer at a time so they don't stack: launch
-with `pi -e .pi/extensions/workflow.ts` to get the base UI, or
-`pi -e .pi/extensions/workflow-team.ts` for the per-agent-model variant. With no
-`-e` (plain auto-discovery) the base `workflow` owns the chrome by default. The
+with `pi -e .pi/extensions/agent-pipeline.ts` to get the base UI, or
+`pi -e .pi/extensions/agent-team.ts` for the per-agent-model variant. With no
+`-e` (plain auto-discovery) the base `agent-pipeline` owns the chrome by default. The
 other extension's commands stay registered either way.
 
 ## Use it
 
 ```bash
 pi
-/workflow Fix the off-by-one in pagination on /api/users
-/workflow Add CSV export to the reports page
-/workflow Build a todo app with a REST API
+/agent-pipeline Fix the off-by-one in pagination on /api/users
+/agent-pipeline Add CSV export to the reports page
+/agent-pipeline Build a todo app with a REST API
 ```
 
-Or let the primary agent call the **`run_workflow`** tool for any non-trivial task.
+Or let the primary agent call the **`run_agent_pipeline`** tool for any non-trivial task.
 
-In `workflow-team.ts`, the primary agent acts as an **orchestrator that determines the workflow**: it receives
+In `agent-team.ts`, the primary agent acts as an **orchestrator that determines the workflow**: it receives
 the user's request, reviews it, and decides which agents to dispatch and in what order.
 It declares that plan with `select_agents` (so the dashboard shows the chosen agents up front), then
 composes the workflow by chaining `dispatch_agent` calls (e.g., scout → planner → critic → implementer),
-or uses `run_workflow_team` as a shortcut for the standard full pipeline — picking ONE approach per request.
+or uses `run_agent_team` as a shortcut for the standard full pipeline — picking ONE approach per request.
 Once the deliverable is produced it **stops and summarizes**; it does not auto-start a new workflow or
-chain `run_workflow_team` onto finished dispatch work.
+chain `run_agent_team` onto finished dispatch work.
 A system prompt is injected at session start that catalogs all available agents,
 describes the standard pipeline stages, and guides the orchestrator to reason about
 what the request needs — rather than following a fixed sequence for every task.
@@ -133,7 +133,7 @@ runs the **full pipeline**, while any other team (e.g. `info` = planner +
 documenter) runs the **plan→document (spec)** workflow.
 
 When the primary agent drives **ad-hoc work** (rather than the full
-`run_workflow_team` pipeline), the dashboard grid **stays on screen** and narrows
+`run_agent_team` pipeline), the dashboard grid **stays on screen** and narrows
 to the agents selected for the work. At bootup every agent in the team is shown;
 once the orchestrator has determined the agents the work needs, it calls
 **`select_agents`** to declare them and the grid **drops the unselected cards**,
@@ -162,13 +162,13 @@ active team's members (e.g. a research/browser agent that belongs to no team). W
 a dispatched agent is **not** on the active team, the grid **hides the team
 information and the idle team roster** and shows only the dispatched agent(s); the
 header drops the `team <name> (N agents · mode)` descriptor and reads
-`workflow-team · ad-hoc dispatch` instead, with the hint *"primary agent dispatched
+`agent-team · ad-hoc dispatch` instead, with the hint *"primary agent dispatched
 work outside the workflow team."* This way the dashboard reflects the actual work
 rather than an irrelevant team grid.
 
-Running `/workflow` opens a **Select Team** dialog first — the team you pick
+Running `/agent-pipeline` opens a **Select Team** dialog first — the team you pick
 decides which agents run and the mode (full vs spec). Skip the dialog by forcing
-a mode with a `spec ` or `full ` prefix (e.g. `/workflow spec add CSV export`).
+a mode with a `spec ` or `full ` prefix (e.g. `/agent-pipeline spec add CSV export`).
 
 If the chosen team includes the **`scout`** agent (the default `full` team does),
 a read-only **Scout** recon phase runs first and its concise findings (structure,
@@ -178,14 +178,14 @@ never modifies files; it appears as the first card in the flow and gets its own
 `.pi/agents/teams.yaml` to skip the recon pass.
 
 Commands:
-- `/workflow [request]` — pick a team (Select Team dialog), then run the lifecycle in that team's mode (prompts for the request if omitted). Add a `loops=N` token (e.g. `/workflow loops=5 fix the bug`) to override the retry limit for this run.
-- `/workflow-clear` — clear the progress widget
+- `/agent-pipeline [request]` — pick a team (Select Team dialog), then run the lifecycle in that team's mode (prompts for the request if omitted). Add a `loops=N` token (e.g. `/agent-pipeline loops=5 fix the bug`) to override the retry limit for this run.
+- `/agent-pipeline-clear` — clear the progress widget
 
 ## Config
 
-- **Model** — every agent in the pipeline runs on the **current session's model** (the model you launched pi with), so one model drives the whole workflow. Set `PI_WORKFLOW_MODEL` to override all agents with a specific model instead. (Per-agent `model:` frontmatter is ignored here — use the `workflow-team.ts` variant for per-agent models.)
+- **Model** — every agent in the pipeline runs on the **current session's model** (the model you launched pi with), so one model drives the whole workflow. Set `PI_WORKFLOW_MODEL` to override all agents with a specific model instead. (Per-agent `model:` frontmatter is ignored here — use the `agent-team.ts` variant for per-agent models.)
 - `PI_WORKFLOW_AGENT_TIMEOUT` — optional watchdog (in minutes). If set, any agent that runs longer is killed and the phase fails with a clear "timed out" note. `0`/unset disables it.
-- `run_workflow { request, max_loops }` — `max_loops` overrides the retry limit per call
+- `run_agent_pipeline { request, max_loops }` — `max_loops` overrides the retry limit per call
 
 Each report now ends its header with a **Totals** line — wall-clock time and the total number of tool calls across the run. On failure, the agent's captured `stderr` tail is included so failures are diagnosable; if the agent run is aborted (turn cancelled), the running subprocess is killed instead of leaking.
 
@@ -203,7 +203,7 @@ Create `.env` next to `.pi/`:
 # .env — workflow model config
 PI_WORKFLOW_MODEL=anthropic/claude-opus-4-8        # global fallback for all agents
 
-# Per-agent overrides (workflow-team.ts only)
+# Per-agent overrides (agent-team.ts only)
 PI_AGENT_SCOUT_MODEL=anthropic/claude-haiku-4-5
 PI_AGENT_PLANNER_MODEL=anthropic/claude-opus-4-8
 PI_AGENT_CRITIC_MODEL=anthropic/claude-opus-4-8
@@ -217,9 +217,9 @@ PI_AGENT_DOCUMENTER_MODEL=openrouter/google/gemini-3-flash
 `.gitignore` if it holds anything sensitive. (The `.pi/agents/models.yaml` file
 described below is an alternative for the per-agent model config specifically.)
 
-## Team variant — `workflow-team.ts`
+## Team variant — `agent-team.ts`
 
-`workflow-team.ts` runs the same pipeline but lets you **set the model per agent**
+`agent-team.ts` runs the same pipeline but lets you **set the model per agent**
 and **pick a team from `.pi/agents/teams.yaml`**. Per-agent models come from
 either source (env wins over the file):
 
@@ -259,7 +259,7 @@ until the agent runs), the **model it will run** (`◆ <model>`), and its
 description:
 
 ```
- workflow-team  ·  team full (7 agents · full pipeline)
+ agent-team  ·  team full (7 agents · full pipeline)
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
 │ Scout        │ │ Planner      │ │ Critic       │ │ Implementer  │
 │ ○ idle       │ │ ○ idle       │ │ ○ idle       │ │ ○ idle       │
@@ -278,7 +278,7 @@ set** — here 3 spec agents, so it flips from `7 agents · full pipeline` to
 `◌ queued` before any of them runs, and the badge counts completions (`0/3`):
 
 ```
- workflow-team  ·  selected from full (3 agents · spec mode)  ·  ◌ queued: 0/3
+ agent-team  ·  selected from full (3 agents · spec mode)  ·  ◌ queued: 0/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
 │ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Critic           │
 │ ◌ queued           │ │ ◌ queued           │ │ ◌ queued           │
@@ -293,7 +293,7 @@ As it then dispatches each agent (`dispatch_agent`), the cards update in place �
 (`◌ queued: 0/3` → `● working: 1/3` → `✓ done: 3/3`):
 
 ```
- workflow-team  ·  selected from full (3 agents · spec mode)  ·  ● working: 1/3
+ agent-team  ·  selected from full (3 agents · spec mode)  ·  ● working: 1/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
 │ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Critic           │
 │ ✓ done 4s          │ │ ● running 9s       │ │ ◌ queued           │
@@ -307,7 +307,7 @@ Teams are defined in `.pi/agents/teams.yaml` (a flat `team:` → `- member` list
 a team that has the implementer, tester, and validator runs the **full pipeline**
 (plan → critique → implement → test → validate → document → ship);
 any other team (e.g. `spec` = planner + critic + documenter) runs the
-**plan→critique→document (spec)** workflow. Running `/workflow-team` opens a
+**plan→critique→document (spec)** workflow. Running `/agent-team` opens a
 **Select Team** dialog first
 and the chosen team decides the mode; an explicit `spec ` or `full ` prefix skips
 the dialog and forces the mode.
@@ -324,12 +324,12 @@ model with `PI_AGENT_SCOUT_MODEL` or a `scout:` line in `models.yaml` — a
 fast/cheap model is a good fit for read-only recon.
 
 Commands:
-- `/workflow-team [request]` — pick a team (Select Team dialog), then run the lifecycle in that team's mode (prompts if omitted). Add a `loops=N` token to override the retry limit for this run.
-- `/workflow-team-clear` — clear the progress widget
+- `/agent-team [request]` — pick a team (Select Team dialog), then run the lifecycle in that team's mode (prompts if omitted). Add a `loops=N` token to override the retry limit for this run.
+- `/agent-team-clear` — clear the progress widget
 
 Tools (available to the primary agent as the orchestrator):
 - `select_agents { agents }` — declare the agents the work will use, in order. Called first, once the workflow is determined, so the dashboard marks them **queued** before any agent runs.
-- `run_workflow_team { request, max_loops }` — run the full automated lifecycle
+- `run_agent_team { request, max_loops }` — run the full automated lifecycle
 - `dispatch_agent { agent, task }` — dispatch a task to any loaded agent outside the pipeline
 
 The primary agent receives an **orchestrator system prompt** that catalogs all
@@ -343,10 +343,10 @@ Both extensions share their stateless guts via `.pi/utils/workflow-core.ts`
 `.pi/utils/workflow-utils.ts` (verdict/digest helpers). These live in `.pi/utils/`
 — **not** `.pi/extensions/` — so pi doesn't try to auto-load them as extensions.
 Only the model-aware orchestration, rendering, and per-extension identity stay
-in `workflow.ts` / `workflow-team.ts`.
+in `agent-pipeline.ts` / `agent-team.ts`.
 
 ## Using it on another project
 
 These extensions only auto-load when pi runs from this directory. To use them elsewhere:
-- copy `.pi/extensions/workflow*.ts`, **`.pi/utils/`** (workflow-core + workflow-utils), and `.pi/agents/` into that project's `.pi/`, or
-- symlink `workflow.ts` into `~/.pi/agent/extensions/` to make it global — but keep the `../utils/` modules reachable at the same relative path (agents still load from the active project's `.pi/agents/`).
+- copy `.pi/extensions/agent-pipeline.ts` + `.pi/extensions/agent-team.ts`, **`.pi/utils/`** (workflow-core + workflow-utils), and `.pi/agents/` into that project's `.pi/`, or
+- symlink `agent-pipeline.ts` into `~/.pi/agent/extensions/` to make it global — but keep the `../utils/` modules reachable at the same relative path (agents still load from the active project's `.pi/agents/`).

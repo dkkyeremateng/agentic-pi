@@ -18,11 +18,11 @@
  * request and the rest of the pipeline follows.
  *
  * Commands:
- *   /workflow <request>   — run the full lifecycle on a request
- *   /workflow-clear       — clear the progress widget
+ *   /agent-pipeline <request>   — run the full lifecycle on a request
+ *   /agent-pipeline-clear       — clear the progress widget
  *
  * Tool:
- *   run_workflow { request, max_loops? } — same, callable by the primary agent
+ *   run_agent_pipeline { request, max_loops? } — same, callable by the primary agent
  *
  * Self-contained: depends only on pi packages + Node builtins, and reads agent
  * definitions straight from .pi/agents/. Drop it in .pi/extensions/ and it loads.
@@ -45,7 +45,8 @@ import {
     unlinkSync,
     writeFileSync,
 } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import {
     type Verdict,
     type CritiqueVerdict,
@@ -82,8 +83,8 @@ import {
     chooseTeam as chooseTeamCore,
     loadedExplicitly as loadedExplicitlyCore,
     isActiveWorkflow as isActiveWorkflowCore,
-    loadAgents,
-    loadTeams,
+    loadAgents as loadAgentsCore,
+    loadTeams as loadTeamsCore,
     teamIsSpec,
     validatePlan,
     scoutTask,
@@ -107,12 +108,19 @@ loadDotEnv(process.cwd());
 
 let isSpecMode = false; // true during spec-only runs; hides impl/test/validate/ship phases
 
-// This file is the base "workflow"; it owns the chrome by default. See
+// This file is the base "agent-pipeline"; it owns the chrome by default. See
 // workflow-core for loadedExplicitly / selectedWorkflowExtension / isActiveWorkflow.
-const SELF_NAME = "workflow";
+const SELF_NAME = "agent-pipeline";
 
-const loadedExplicitly = () => loadedExplicitlyCore(import.meta.url, "workflow.ts");
+const loadedExplicitly = () => loadedExplicitlyCore(import.meta.url, "agent-pipeline.ts");
 const isActiveWorkflow = () => isActiveWorkflowCore(SELF_NAME);
+
+// The agents shipped alongside this extension (`<ext>/../agents`). Used as a
+// fallback so the pipeline works when launched (e.g. via `-e`) from a project
+// that has no .pi/agents of its own — the cwd still wins when it does.
+const INSTALL_AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+const loadAgents = (cwd: string) => loadAgentsCore(cwd, INSTALL_AGENTS_DIR);
+const loadTeams = (cwd: string) => loadTeamsCore(cwd, INSTALL_AGENTS_DIR);
 
 // ── Config ───────────────────────────────────────
 
@@ -290,7 +298,7 @@ export default function (pi: ExtensionAPI) {
 
         const header =
             " " +
-            theme.fg("accent", theme.bold("workflow")) +
+            theme.fg("accent", theme.bold("agent-pipeline")) +
             theme.fg("dim", "  ·  team ") +
             theme.fg("accent", activeTeamName || "—") +
             theme.fg(
@@ -303,8 +311,8 @@ export default function (pi: ExtensionAPI) {
         const hint = theme.fg(
             "dim",
             teamNames.length > 1
-                ? " /workflow [request] — pick a team, then run"
-                : " /workflow <request> to run",
+                ? " /agent-pipeline [request] — pick a team, then run"
+                : " /agent-pipeline <request> to run",
         );
 
         const lines: string[] = [header, hint, ""];
@@ -348,7 +356,7 @@ export default function (pi: ExtensionAPI) {
 
     function updateWidget() {
         if (!widgetCtx) return;
-        widgetCtx.ui.setWidget("workflow", (_tui: any, theme: any) => {
+        widgetCtx.ui.setWidget("agent-pipeline", (_tui: any, theme: any) => {
             const text = new Text("", 0, 1);
             return {
                 render(width: number): string[] {
@@ -1370,13 +1378,13 @@ export default function (pi: ExtensionAPI) {
     // ── Command ──────────────────────────────────
 
     // Register commands + tool only for the active workflow extension, so when
-    // both auto-load you don't see /workflow and /workflow-team at once.
+    // both auto-load you don't see /agent-pipeline and /agent-team at once.
     const active = isActiveWorkflow();
 
     if (active)
-        pi.registerCommand("workflow", {
+        pi.registerCommand("agent-pipeline", {
             description:
-                "Run a workflow: '/workflow <request>' for full lifecycle, '/workflow spec <request>' for implementation spec only",
+                "Run a workflow: '/agent-pipeline <request>' for full lifecycle, '/agent-pipeline spec <request>' for implementation spec only",
             handler: async (args, ctx) => {
                 widgetCtx = ctx;
                 if (running) {
@@ -1522,11 +1530,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (active)
-        pi.registerCommand("workflow-clear", {
+        pi.registerCommand("agent-pipeline-clear", {
             description: "Clear the workflow progress widget",
             handler: async (_args, ctx) => {
                 widgetCtx = ctx;
-                ctx.ui.setWidget("workflow", undefined);
+                ctx.ui.setWidget("agent-pipeline", undefined);
                 ctx.ui.notify("Workflow widget cleared.", "info");
             },
         });
@@ -1535,7 +1543,7 @@ export default function (pi: ExtensionAPI) {
 
     if (active)
         pi.registerTool({
-            name: "run_workflow",
+            name: "run_agent_pipeline",
             label: "Run Workflow",
             description:
                 "Run the full plan -> implement -> test -> validate lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself.",
@@ -1608,7 +1616,7 @@ export default function (pi: ExtensionAPI) {
                 const preview =
                     req.length > 56 ? req.slice(0, 53) + "..." : req;
                 return new Text(
-                    theme.fg("toolTitle", theme.bold("run_workflow ")) +
+                    theme.fg("toolTitle", theme.bold("run_agent_pipeline ")) +
                         theme.fg("accent", "plan→impl→test→validate") +
                         theme.fg("dim", " — ") +
                         theme.fg("muted", preview),
@@ -1625,7 +1633,7 @@ export default function (pi: ExtensionAPI) {
                 }
                 if (options.isPartial) {
                     return new Text(
-                        theme.fg("accent", "● workflow") +
+                        theme.fg("accent", "● agent-pipeline") +
                             theme.fg("dim", " running..."),
                         0,
                         0,
@@ -1641,7 +1649,7 @@ export default function (pi: ExtensionAPI) {
                 const m = meta[details.status] || { icon: "•", color: "muted" };
                 const header = theme.fg(
                     m.color,
-                    `${m.icon} workflow ${details.status}`,
+                    `${m.icon} agent-pipeline ${details.status}`,
                 );
                 if (options.expanded && details.report) {
                     const mdTheme = getMarkdownTheme();
@@ -1680,7 +1688,7 @@ export default function (pi: ExtensionAPI) {
         // auto-discovered, the inactive one clears its widget and bows out so it
         // never stacks a second dashboard, footer, or cancellation hook.
         if (!isActiveWorkflow()) {
-            ctx.ui.setWidget("workflow", undefined);
+            ctx.ui.setWidget("agent-pipeline", undefined);
             return;
         }
 
@@ -1701,7 +1709,7 @@ export default function (pi: ExtensionAPI) {
         const present = REQUIRED_AGENTS.filter((a) => agents.has(a));
         const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
         ctx.ui.setStatus(
-            "workflow",
+            "agent-pipeline",
             `Workflow: ${present.length}/${REQUIRED_AGENTS.length} agents`,
         );
 
@@ -1713,16 +1721,16 @@ export default function (pi: ExtensionAPI) {
                 ctx.ui.notify(
                     `Workflow\n` +
                         `${flow}\n\n` +
-                        `Missing agents in .pi/agents/: ${missing.join(", ")} — add them to enable /workflow.`,
+                        `Missing agents in .pi/agents/: ${missing.join(", ")} — add them to enable /agent-pipeline.`,
                     "warning",
                 );
             } else {
                 ctx.ui.notify(
                     `Workflow\n` +
                         `Teams:\n${teamsBlock()}\n\n` +
-                        `/workflow [request]   Pick a team (Select Team), then run the lifecycle\n` +
-                        `/workflow-clear       Clear the progress widget\n` +
-                        `run_workflow          Tool — the agent can launch the workflow for non-trivial tasks`,
+                        `/agent-pipeline [request]   Pick a team (Select Team), then run the lifecycle\n` +
+                        `/agent-pipeline-clear       Clear the progress widget\n` +
+                        `run_agent_pipeline          Tool — the agent can launch the workflow for non-trivial tasks`,
                     "info",
                 );
             }
@@ -1765,7 +1773,7 @@ export default function (pi: ExtensionAPI) {
                 const left =
                     theme.fg("dim", ` ${model}`) +
                     theme.fg("muted", " · ") +
-                    theme.fg("accent", "workflow") +
+                    theme.fg("accent", "agent-pipeline") +
                     theme.fg("dim", " ") +
                     theme.fg(statusColor, statusText);
                 const right = theme.fg("dim", `[${bar}] ${Math.round(pct)}% `);

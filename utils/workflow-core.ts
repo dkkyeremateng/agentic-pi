@@ -1,5 +1,5 @@
 // ABOUTME: Shared, stateless core for the workflow orchestrator extensions
-// ABOUTME: (workflow.ts and workflow-team.ts). Holds the identical types,
+// ABOUTME: (agent-pipeline.ts and agent-team.ts). Holds the identical types,
 // ABOUTME: constants, agent/team/.env loaders, prompt templates, and the pure
 // ABOUTME: card-rendering helpers (statusMeta, statusBadge, agentPhaseStatus,
 // ABOUTME: renderCard) so the two extensions don't duplicate them. Stateful
@@ -66,9 +66,9 @@ export interface PhaseState {
 }
 
 // ── Active-workflow detection ────────────────────
-// Both workflow.ts and workflow-team.ts may auto-load from .pi/extensions/ at
+// Both agent-pipeline.ts and agent-team.ts may auto-load from .pi/extensions/ at
 // once; only one renders the dashboard/footer. The one launched with -e wins;
-// with no explicit choice, the base "workflow" is the default. These helpers are
+// with no explicit choice, the base "agent-pipeline" is the default. These helpers are
 // shared but parameterized over each extension's own identity (its module URL,
 // filename, and SELF_NAME) since `import.meta.url` is per-module.
 
@@ -110,7 +110,7 @@ export function selectedWorkflowExtension(): string | null {
         else if (a.startsWith("-e=")) val = a.slice("-e=".length);
         if (!val) continue;
         const n = nameOf(val);
-        if (n === "workflow" || n === "workflow-team") return n;
+        if (n === "agent-pipeline" || n === "agent-team") return n;
     }
     return null;
 }
@@ -118,7 +118,7 @@ export function selectedWorkflowExtension(): string | null {
 // Whether the extension with the given SELF_NAME owns the on-screen chrome.
 export function isActiveWorkflow(selfName: string): boolean {
     const sel = selectedWorkflowExtension();
-    return sel ? sel === selfName : selfName === "workflow";
+    return sel ? sel === selfName : selfName === "agent-pipeline";
 }
 
 // ── .env loader ──────────────────────────────────
@@ -329,12 +329,19 @@ function parseAgentFile(filePath: string): AgentDef | null {
     }
 }
 
-export function loadAgents(cwd: string): Map<string, AgentDef> {
+// `fallbackDir` (optional) is the extension's own install agents dir
+// (`<ext>/../agents`); it's searched last so a project's own .pi/agents wins,
+// but a project that defines none still resolves the globally installed agents.
+export function loadAgents(
+    cwd: string,
+    fallbackDir?: string,
+): Map<string, AgentDef> {
     const dirs = [
         join(cwd, ".pi", "agents"),
         join(cwd, "agents"),
         join(cwd, ".claude", "agents"),
     ];
+    if (fallbackDir) dirs.push(fallbackDir);
     const agents = new Map<string, AgentDef>();
     for (const dir of dirs) {
         if (!existsSync(dir)) continue;
@@ -371,14 +378,23 @@ function parseTeamsYaml(raw: string): Record<string, string[]> {
     return teams;
 }
 
-export function loadTeams(cwd: string): Record<string, string[]> {
-    const path = join(cwd, ".pi", "agents", "teams.yaml");
-    if (!existsSync(path)) return {};
-    try {
-        return parseTeamsYaml(readFileSync(path, "utf-8"));
-    } catch {
-        return {};
+// `fallbackDir` (optional) is the extension's own install agents dir; its
+// teams.yaml is used when the cwd project has none (mirrors loadAgents).
+export function loadTeams(
+    cwd: string,
+    fallbackDir?: string,
+): Record<string, string[]> {
+    const candidates = [join(cwd, ".pi", "agents", "teams.yaml")];
+    if (fallbackDir) candidates.push(join(fallbackDir, "teams.yaml"));
+    for (const path of candidates) {
+        if (!existsSync(path)) continue;
+        try {
+            return parseTeamsYaml(readFileSync(path, "utf-8"));
+        } catch {
+            return {};
+        }
     }
+    return {};
 }
 
 // A team can run the full pipeline only if it has the implementer, tester,
