@@ -150,6 +150,21 @@ export default function (pi: ExtensionAPI) {
     let totalToolCalls = 0; // cumulative tool calls across all phases this run (incl. retries)
     let runStartedAt = 0; // wall-clock start of the current run
     let includeScout = false; // prepend a read-only Scout recon phase (team has `scout`)
+    // Orchestrator (ad-hoc dispatch) state. When no team is selected, the primary
+    // agent determines the agents itself, driving select_agents/dispatch_agent.
+    // These track the dispatch session so each new user request starts clean.
+    let dispatchMode = false;
+    let freshDispatchSession = false;
+
+    // The only tools the primary agent (orchestrator) may use — it has NO direct
+    // codebase tools and must delegate. Re-asserted before every turn (see
+    // before_agent_start) so the primary keeps delegating instead of doing the
+    // work itself.
+    const ORCHESTRATOR_TOOLS = [
+        "select_agents",
+        "dispatch_agent",
+        "run_agent_pipeline",
+    ];
 
     const mkPhase = (label: string, agent: string): PhaseState => ({
         label,
@@ -808,6 +823,7 @@ export default function (pi: ExtensionAPI) {
         sessionModel = sessionModelOf(ctx); // all agents run on the session model
         const cwd = ctx.cwd;
         includeScout = activeMembers().some((m) => m.toLowerCase() === "scout");
+        dispatchMode = false; // a full pipeline run uses the linear card view
         setupSessions(cwd, true);
         phases = freshPhases();
         phaseLogs = [];
@@ -1140,6 +1156,7 @@ export default function (pi: ExtensionAPI) {
         sessionModel = sessionModelOf(ctx); // all agents run on the session model
         const cwd = ctx.cwd;
         includeScout = activeMembers().some((m) => m.toLowerCase() === "scout");
+        dispatchMode = false; // a full pipeline run uses the linear card view
         setupSessions(cwd, true);
         phases = freshPhases();
         phaseLogs = [];
@@ -1665,6 +1682,515 @@ export default function (pi: ExtensionAPI) {
             },
         });
 
+    // ── dispatch_agent tool — primary agent dispatches one specialist ──
+    //
+    // Lets the orchestrator run a single agent on a focused task (on the primary
+    // session model). Used to compose ad-hoc workflows when no team pipeline fits.
+
+    if (active)
+        pi.registerTool({
+            name: "dispatch_agent",
+            label: "Dispatch Agent",
+            description:
+                "Dispatch a task to a specialist agent outside the workflow pipeline. The agent runs on the primary session model with its configured tools, and returns the result. Use this for ad-hoc work that doesn't fit the plan→implement→test→validate lifecycle (e.g. quick lookups, one-off analyses, or re-running a specific agent with a custom task).",
+            parameters: Type.Object({
+                agent: Type.String({
+                    description:
+                        "Agent name (case-insensitive). Must be a loaded agent from .pi/agents/.",
+                }),
+                task: Type.String({
+                    description: "Task description for the agent to execute.",
+                }),
+            }),
+
+            async execute(_id, params, _signal, onUpdate, ctx) {
+                const { agent, task } = params as {
+                    agent: string;
+                    task: string;
+                };
+
+                if (running) {
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
+                            },
+                        ],
+                    };
+                }
+
+                agents = loadAgents(ctx.cwd);
+                widgetCtx = ctx;
+                const def = agents.get(agent.toLowerCase());
+                if (!def) {
+                    const available = Array.from(agents.values())
+                        .map((d) => d.name)
+                        .join(", ");
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `Agent "${agent}" not found. Available agents: ${available}`,
+                            },
+                        ],
+                    };
+                }
+
+                if (onUpdate)
+                    onUpdate({
+                        content: [
+                            {
+                                type: "text",
+                                text: `Dispatching to ${def.name}...`,
+                            },
+                        ],
+                    });
+
+                // Ensure session directory is initialized. setupSessions is
+                // normally called by runWorkflow/runSpecWorkflow, but
+                // dispatch_agent can be called standalone.
+                setupSessions(ctx.cwd, false);
+
+                // Enter dispatch mode. A new user request (freshDispatchSession)
+                // starts from a clean slate so the new work never shows the
+                // previous request's cards.
+                if (!dispatchMode || freshDispatchSession) {
+                    dispatchMode = true;
+                    phases = [];
+                }
+                freshDispatchSession = false;
+
+                // Track this agent as a phase so its card reflects live status.
+                // Re-dispatching the same agent reuses (and resets) its phase so the
+                // view never grows duplicate cards; other selections stay marked.
+                const agentKey = def.name.toLowerCase();
+                let phase = phases.find((p) => p.agent === agentKey);
+                if (phase) {
+                    phase.status = "pending";
+                    phase.elapsed = 0;
+                    phase.note = "";
+                    phase.log = "";
+                    phase.droppedLines = 0;
+                    phase.toolCount = 0;
+                    phase.contextPct = 0;
+                    phase.attempt = 0;
+                } else {
+                    phase = mkPhase(displayName(def.name), agentKey);
+                    phases.push(phase);
+                }
+                updateWidget();
+
+                const start = Date.now();
+                phase.attempt = 1;
+                phase.status = "running";
+                updateWidget();
+
+                const res = await runAgent(def, task, phase, ctx.cwd);
+
+                phase.status = res.exitCode === 0 ? "done" : "error";
+                phase.elapsed = Date.now() - start;
+                updateWidget();
+
+                if (widgetCtx?.ui?.notify) {
+                    const elapsed = Math.round(phase.elapsed / 1000);
+                    const errMsg =
+                        phase.status === "error"
+                            ? `: ${res.output
+                                  .split("\n")
+                                  .filter((l) => l.trim())
+                                  .slice(-2)
+                                  .join(" ")
+                                  .slice(0, 120)}`
+                            : "";
+                    widgetCtx.ui.notify(
+                        `${def.name} ${phase.status === "done" ? "done" : "failed"} in ${elapsed}s${errMsg}`,
+                        phase.status === "done" ? "success" : "error",
+                    );
+                }
+
+                const truncated =
+                    res.output.length > 8000
+                        ? res.output.slice(0, 8000) + "\n\n... [truncated]"
+                        : res.output;
+
+                const status = res.exitCode === 0 ? "done" : "error";
+                const summary = `[${def.name}] ${status} in ${Math.round(phase.elapsed / 1000)}s`;
+
+                // Steer the orchestrator (via the tool result it reads next):
+                // - if selected agents are still queued, dispatch the next one;
+                // - if none remain, the task is done — summarize and STOP. Without
+                //   this second signal, weak models re-select/re-dispatch a finished
+                //   agent instead of ending the turn.
+                const remaining = phases
+                    .filter((p) => p.status === "pending")
+                    .map((p) => displayName(p.agent));
+                const nextStep = remaining.length
+                    ? `\n\nNOT DONE YET — still queued: ${remaining.join(", ")}. ` +
+                      `Dispatch the next one (${remaining[0]}) now. Do not stop until every selected agent has run.`
+                    : status === "done"
+                      ? `\n\nDONE — every selected agent has completed and this dispatch succeeded. ` +
+                        `Write your final summary of the result for the user and STOP. ` +
+                        `Do NOT call select_agents or dispatch_agent again (no re-runs, no "verify" passes) unless the user asks for more.`
+                      : "";
+
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `${summary}\n\n${truncated}${nextStep}`,
+                        },
+                    ],
+                    details: {
+                        agent: def.name,
+                        task,
+                        status,
+                        elapsed: phase.elapsed,
+                        exitCode: res.exitCode,
+                        fullOutput: res.output,
+                        remainingQueued: remaining,
+                    },
+                };
+            },
+
+            renderCall(args, theme) {
+                const agentName = (args as any).agent || "?";
+                const task = (args as any).task || "";
+                const preview =
+                    task.length > 60 ? task.slice(0, 57) + "..." : task;
+                return new Text(
+                    theme.fg("toolTitle", theme.bold("dispatch_agent ")) +
+                        theme.fg("accent", agentName) +
+                        theme.fg("dim", " — ") +
+                        theme.fg("muted", preview),
+                    0,
+                    0,
+                );
+            },
+
+            renderResult(result, options, theme) {
+                const details = result.details as any;
+                if (!details) {
+                    const t = result.content[0];
+                    return new Text(t?.type === "text" ? t.text : "", 0, 0);
+                }
+                if (options.isPartial) {
+                    return new Text(
+                        theme.fg("accent", `● ${details.agent || "?"}`) +
+                            theme.fg("dim", " working..."),
+                        0,
+                        0,
+                    );
+                }
+                const icon = details.status === "done" ? "✓" : "✗";
+                const color = details.status === "done" ? "success" : "error";
+                const elapsed =
+                    typeof details.elapsed === "number"
+                        ? Math.round(details.elapsed / 1000)
+                        : 0;
+                const header =
+                    theme.fg(color, `${icon} ${details.agent}`) +
+                    theme.fg("dim", ` ${elapsed}s`);
+                if (options.expanded && details.fullOutput) {
+                    const output =
+                        details.fullOutput.length > 4000
+                            ? details.fullOutput.slice(0, 4000) +
+                              "\n... [truncated]"
+                            : details.fullOutput;
+                    return new Markdown(
+                        header + "\n\n" + output,
+                        1,
+                        0,
+                        getMarkdownTheme(),
+                    );
+                }
+                // Collapsed view: show error snippet on failure
+                if (details.status === "error" && details.fullOutput) {
+                    const errSnippet = details.fullOutput
+                        .split("\n")
+                        .filter((l: string) => l.trim())
+                        .slice(-3)
+                        .join(" ")
+                        .slice(0, 200);
+                    return new Text(
+                        header + theme.fg("error", `\n${errSnippet}`),
+                        0,
+                        0,
+                    );
+                }
+                return new Text(header, 0, 0);
+            },
+        });
+
+    // ── select_agents tool — declare the agents the orchestrator will use ──
+    //
+    // Called once the primary agent has determined which specialists the work
+    // needs, BEFORE dispatching. It marks the chosen agents on the dashboard so
+    // the plan is visible up front; subsequent dispatch_agent calls flip each
+    // card to running/done. Agents already worked keep their status.
+
+    if (active)
+        pi.registerTool({
+            name: "select_agents",
+            label: "Select Agents",
+            description:
+                "Declare which specialist agents the work will use, in the order you intend to dispatch them. Call this once after you have determined the workflow and before dispatching — it marks the chosen agents on the dashboard so the plan is visible. You can still dispatch agents not pre-declared; this just sets the up-front plan.",
+            parameters: Type.Object({
+                agents: Type.Array(Type.String(), {
+                    description:
+                        "Agent names (case-insensitive), in dispatch order. Must be loaded agents from .pi/agents/.",
+                }),
+            }),
+
+            async execute(_id, params, _signal, _onUpdate, ctx) {
+                const names = (params as { agents: string[] }).agents || [];
+
+                if (running) {
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: "Cannot change the selection while a full workflow is running.",
+                            },
+                        ],
+                    };
+                }
+
+                agents = loadAgents(ctx.cwd);
+                widgetCtx = ctx;
+
+                const resolved: string[] = [];
+                const unknown: string[] = [];
+                for (const n of names) {
+                    const def = agents.get(n.toLowerCase());
+                    if (def) resolved.push(def.name.toLowerCase());
+                    else unknown.push(n);
+                }
+
+                if (resolved.length === 0) {
+                    const available = Array.from(agents.values())
+                        .map((d) => d.name)
+                        .join(", ");
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `No valid agents in selection. Available agents: ${available}`,
+                            },
+                        ],
+                    };
+                }
+
+                // Enter dispatch mode and rebuild the phase list from the declared
+                // selection. On a new request (freshDispatchSession) every card is
+                // built fresh — the previous workflow's cards are dropped and reused
+                // agents reset to queued. Within the same request (refining the
+                // selection) we preserve the status of agents already worked.
+                dispatchMode = true;
+                const byAgent = freshDispatchSession
+                    ? new Map<string, PhaseState>()
+                    : new Map(phases.map((p) => [p.agent, p]));
+                freshDispatchSession = false;
+                phases = resolved.map(
+                    (key) => byAgent.get(key) ?? mkPhase(displayName(key), key),
+                );
+                setupSessions(ctx.cwd, false);
+                updateWidget();
+
+                const order = resolved.map((k) => displayName(k)).join(" → ");
+                const warn = unknown.length
+                    ? ` (ignored unknown: ${unknown.join(", ")})`
+                    : "";
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `Selected ${resolved.length} agent${resolved.length === 1 ? "" : "s"} for the work: ${order}.${warn} The dashboard now shows them queued — dispatch them in order.`,
+                        },
+                    ],
+                    details: { selected: resolved, order, unknown },
+                };
+            },
+
+            renderCall(args, theme) {
+                const list = ((args as any).agents || []) as string[];
+                const preview = list.map((a) => displayName(a)).join(" → ");
+                return new Text(
+                    theme.fg("toolTitle", theme.bold("select_agents ")) +
+                        theme.fg("accent", preview || "—"),
+                    0,
+                    0,
+                );
+            },
+
+            renderResult(result, _options, theme) {
+                const details = result.details as any;
+                if (details?.order) {
+                    return new Text(
+                        theme.fg("success", "▸ queued ") +
+                            theme.fg("accent", details.order),
+                        0,
+                        0,
+                    );
+                }
+                const t = result.content[0];
+                return new Text(t?.type === "text" ? t.text : "", 0, 0);
+            },
+        });
+
+    // ── Orchestrator system prompt + tool lockdown ──
+    //
+    // The primary agent acts as an orchestrator: it determines which specialist
+    // agents a task needs and dispatches them (on the single session model), or
+    // runs the full pipeline via run_agent_pipeline. This hook re-asserts the
+    // lockdown each turn and injects the orchestrator guidance + agent catalog.
+
+    if (active)
+        pi.on("before_agent_start", async (event, _ctx) => {
+            // Re-assert the orchestration lockdown every turn. setActiveTools at
+            // session start only holds for the first turn — without re-applying it
+            // here the primary agent regains codebase tools on later turns and stops
+            // delegating, doing the work itself instead.
+            pi.setActiveTools(ORCHESTRATOR_TOOLS);
+
+            // A new user request = a new workflow. Mark it so the first
+            // select_agents / dispatch_agent of this request rebuilds the cards from
+            // scratch instead of carrying over the previous workflow's state.
+            freshDispatchSession = true;
+
+            // Build a dynamic catalog of all loaded agents
+            const agentCatalog = Array.from(agents.values())
+                .map(
+                    (def) =>
+                        `### ${displayName(def.name)}\n**Dispatch as:** \`${def.name}\`\n${def.description}\n**Tools:** ${def.tools}`,
+                )
+                .join("\n\n");
+
+            const teamMembers = Array.from(agents.values())
+                .map((d) => displayName(d.name))
+                .join(", ");
+
+            // APPEND the orchestration layer to Pi's base system prompt instead of
+            // replacing it. The base prompt carries the tool-calling scaffolding the
+            // model needs to actually emit tool calls; replacing it wholesale made
+            // weaker models narrate a plan as text instead of dispatching. A short,
+            // imperative directive goes first so the very next action is a tool call.
+            const orchestratorAddendum = `# ROLE OVERRIDE: You are the ORCHESTRATOR
+
+This overrides any earlier instructions about doing work yourself. For this
+session you are a coordinator, not a coder.
+
+**You have NO codebase tools.** Your only tools are \`select_agents\`,
+\`dispatch_agent\`, and \`run_agent_pipeline\`. You physically cannot read, write,
+or run code — you MUST delegate every piece of work to a specialist agent.
+
+## ACT, DON'T NARRATE (while work is pending)
+When the user asks for work and it is NOT yet done, your FIRST action MUST be a
+tool call:
+1. Call **select_agents** with the agents you will use, in order.
+2. Then call **dispatch_agent** for the first agent — in the SAME response if you
+   can. Do not stop after planning. Do not end your turn with only text when work
+   is still pending.
+Writing the plan as prose WITHOUT calling a tool is a failure. If you find
+yourself describing what an agent should do, call dispatch_agent instead.
+
+## FINISH EVERY AGENT YOU SELECTED (do not leave one queued)
+Every agent you put in \`select_agents\` is a commitment. After each
+\`dispatch_agent\` returns, immediately dispatch the NEXT selected agent that has
+not run yet — keep going until **every** selected agent has been dispatched and
+completed. A still-"queued" agent (e.g. a documenter that has not run) means the
+job is UNFINISHED — you must dispatch it before you stop. Never end your turn while
+a selected agent is still queued. If you no longer need a selected agent, call
+\`select_agents\` again with the trimmed list rather than just leaving it hanging.
+
+## STOP WHEN DONE (do not start a new workflow)
+"Done" means **every agent you selected has completed** AND the deliverable
+(including any spec/doc file) has been written. Once that is true:
+- **STOP.** End your turn with a plain-text summary of what was done and the files
+  that were written. A text-only response is the CORRECT ending here.
+- **Do NOT** call \`run_agent_pipeline\`, re-call \`select_agents\` to add more, or
+  re-dispatch finished agents to "continue." Finishing the task is the goal — not
+  keeping the pipeline running.
+- Pick ONE approach per request: EITHER compose the work yourself with
+  \`dispatch_agent\`, OR run \`run_agent_pipeline\`. Never run the full pipeline
+  after you have already completed the work with dispatches — that just redoes
+  finished work and can fail.
+- Only act again if the USER asks for more, or a dispatch genuinely failed and a
+  retry is needed to deliver what was asked.
+- A **successful** dispatch is final. Do not re-dispatch the same agent to
+  "verify", "double-check", or "confirm" a result you already have — trust the
+  output, summarize it, and stop. Re-running a finished agent is a failure.
+
+You determine the workflow by deciding which specialist agents to dispatch and in what order.
+
+You have three tools:
+- **select_agents** — declares the agents you will use for the work, in order. Call this FIRST, right after you decide the workflow, so the dashboard shows the plan before any agent runs.
+- **dispatch_agent** — dispatches a task to a specialist agent. You compose workflows by chaining dispatches in the order that makes sense for the request.
+- **run_agent_pipeline** — runs the full automated pipeline (scout → plan → critique → implement → test → validate → document → ship) with built-in retry loops. Use this as a shortcut when the standard sequence fits.
+
+## Active Team: ${activeTeamName}
+Members: ${teamMembers}
+
+## How to Work
+1. **Analyze the request** — understand what the user needs
+2. **Determine the workflow** — decide which agents to dispatch and in what order, then call **select_agents** with that list so the dashboard reflects your plan up front. Refine the selection later if the work reveals you need a different agent:
+   - Read-only exploration? Start with **scout**, then decide what's next
+   - Need a plan before implementing? Dispatch **planner**, review the plan, then decide
+   - Plan looks risky? Dispatch **critic** to evaluate it, then revise or proceed
+   - Ready to implement? Dispatch **implementer** with the approved plan
+   - Need tests? Dispatch **tester** after implementation
+   - Need validation? Dispatch **validator** to run the full suite
+   - Need docs? Dispatch **documenter** after validation passes
+   - Quick lookup or review? Dispatch the right specialist directly
+3. **Review each result** — after every dispatch, read the output and decide:
+   - Was it successful? Proceed to the next step
+   - Did it fail or raise concerns? Dispatch a follow-up (e.g., critic to review a plan, implementer to fix a test failure)
+   - Need more information? Dispatch scout or another specialist to investigate
+4. **Summarize and STOP** — once the deliverable is produced, report what was done and the files written, then end your turn. Do not launch another workflow or re-dispatch agents to keep going.
+
+## Producing file deliverables (specs, docs, code)
+- **planner, critic, scout, tester are READ-ONLY / analysis agents.** Their output comes back to you as TEXT only — it is NOT saved to any file. A plan or spec a planner returns exists only in your context until a write-capable agent persists it.
+- Only **implementer** and **documenter** can write files. If the user wants a file deliverable (a spec, design doc, README, or code), you MUST dispatch one of these with an **explicit target path** (e.g. \`specs/todo-app.md\`) and the **full content to write** (pass along the planner's output verbatim).
+- After that dispatch, confirm the agent reported the exact file path it wrote, and include that path in your summary to the user. If it only described the content without writing a file, dispatch again and insist it use the write tool.
+
+## Rules
+- **You determine the workflow** — do not blindly follow a fixed sequence. Reason about what the request needs.
+- **NEVER try to read, write, or execute code directly** — you have no such tools. ALWAYS use dispatch_agent or run_agent_pipeline to get work done.
+- Use **run_agent_pipeline** only when the standard full pipeline is the right fit (code changes that need testing, validation, and shipping), and only as the FIRST move on a request — never after you have already done the work with dispatches.
+- **Do not auto-start a new workflow.** When the current request is complete, stop and summarize. Never chain \`run_agent_pipeline\` onto finished dispatch work.
+- For everything else, compose the workflow yourself using **dispatch_agent**
+- Keep each dispatch focused — one clear objective per dispatch
+- If a dispatch fails, try a different approach: adjust the task, dispatch a different agent, or chain a fix
+- You can dispatch the same agent multiple times with different tasks
+- Do NOT attempt to dispatch to agents outside the active team
+
+## Available Agents
+
+${agentCatalog}
+
+## Standard Pipeline (for reference)
+The full pipeline runs these agents in sequence with built-in retry loops:
+1. **Scout** (optional) — read-only recon to map the codebase
+2. **Planner** — produces a phased implementation plan
+3. **Critic** — evaluates the plan; loops back to planner if rejected
+4. **Implementer** — applies the plan
+5. **Tester** — writes and runs tests
+6. **Validator** — gates the result; loops back to implementer on FAIL
+7. **Documenter** — updates docs (only on PASS)
+8. **Ship** — opens a draft PR (only on PASS)
+
+You can replicate this sequence manually via dispatch_agent, skip stages, reorder them, or insert additional steps as needed.`;
+
+            // Append our orchestration layer onto Pi's assembled base prompt so the
+            // model keeps its tool-calling instructions and gains the role override.
+            const base = event.systemPrompt || "";
+            return {
+                systemPrompt: base
+                    ? `${base}\n\n${"=".repeat(60)}\n\n${orchestratorAddendum}`
+                    : orchestratorAddendum,
+            };
+        });
+
     // ── Cancellation hook (integrates with escape-cancel if present) ──
 
     pi.on("session_start", async (_event, ctx) => {
@@ -1679,6 +2205,7 @@ export default function (pi: ExtensionAPI) {
         }
         activateTeam(Object.keys(teams)[0] ?? "");
         phases = [];
+        dispatchMode = false;
 
         // Only the active workflow extension owns the chrome. When both are
         // auto-discovered, the inactive one clears its widget and bows out so it
@@ -1690,6 +2217,11 @@ export default function (pi: ExtensionAPI) {
 
         // Show the idle team dashboard (grid of agents + their models).
         updateWidget();
+
+        // Lock the primary agent to orchestration tools so it determines the
+        // agents a task needs and delegates to them, instead of editing code
+        // itself. Re-asserted each turn in before_agent_start.
+        if (active) pi.setActiveTools(ORCHESTRATOR_TOOLS);
         (globalThis as any).__piKillWorkflowProc = (): boolean => {
             if (currentProc) {
                 try {
@@ -1726,7 +2258,8 @@ export default function (pi: ExtensionAPI) {
                         `Teams:\n${teamsBlock()}\n\n` +
                         `/agent-pipeline [request]   Pick a team (Select Team), then run the lifecycle\n` +
                         `/agent-pipeline-clear       Clear the progress widget\n` +
-                        `run_agent_pipeline          Tool — the agent can launch the workflow for non-trivial tasks`,
+                        `run_agent_pipeline          Tool — the agent can launch the full pipeline for non-trivial tasks\n` +
+                        `select_agents / dispatch_agent  Tools — the primary agent determines and dispatches the agents a task needs`,
                     "info",
                 );
             }
