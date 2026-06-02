@@ -1,6 +1,9 @@
 // ABOUTME: Orchestrates plan / implement / test / validate (loop) then document / ship as a self-healing pipeline.
 // ABOUTME: The validator gates a correctness loop (FAIL -> back to implementer); only after PASS does the documenter
 // ABOUTME: run, then the validator ships — commits code+tests+docs and opens the PR (or pauses if there is no remote).
+
+process.stderr.write("[agent-pipeline] Extension loaded\n");
+
 /**
  * Workflow — scout / plan / critique / implement / test / validate / document / ship orchestrator
  *
