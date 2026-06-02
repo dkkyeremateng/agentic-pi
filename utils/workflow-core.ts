@@ -2146,12 +2146,16 @@ export function spawnAgentWithModel(
         "--session",
         sessionFile,
     ];
-    if (model) args.push("--model", model);
+    // Only pass --model if the string looks valid (non-empty, no whitespace)
+    const cleanModel = model?.trim();
+    if (cleanModel && !/\s/.test(cleanModel)) {
+        args.push("--model", cleanModel);
+    }
     if (hasSession) args.push("-c");
     args.push(task);
 
     // Record the model this run is actually using so the card reflects it.
-    phase.activeModel = model || undefined;
+    phase.activeModel = cleanModel || undefined;
 
     const state: SpawnEventState = {
         answer: [],
