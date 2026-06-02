@@ -629,8 +629,16 @@ export async function dispatchAgentCore(
 
     const res = await h.runAgent(def, task, phase, ctx.cwd);
 
-    // A clean exit with (near-)empty output did no real work — fail it.
-    const emptyOutput = res.output.trim().length < h.minDispatchOutputChars;
+    // A clean exit with (near-)empty output usually means the agent did no real
+    // work — fail it so the orchestrator re-dispatches instead of building on
+    // nothing. But tool-driven agents (e.g. a browser/research agent that works
+    // through bash + playwright-cli) do their work via tool calls and often end
+    // with only a terse summary; the captured output is just the final assistant
+    // text, not the tool activity. So only treat short output as "empty" when the
+    // agent also made no tool calls — that is the genuine did-nothing case.
+    const emptyOutput =
+        res.output.trim().length < h.minDispatchOutputChars &&
+        phase.toolCount === 0;
     const ok = res.exitCode === 0 && !emptyOutput;
 
     phase.status = ok ? "done" : "error";
