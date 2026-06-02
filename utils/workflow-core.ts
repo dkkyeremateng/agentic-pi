@@ -2145,10 +2145,17 @@ export function spawnAgentWithModel(
         "--session",
         sessionFile,
     ];
-    // Only pass --model if the string looks valid (non-empty, no whitespace)
+    // Only pass --model if the string looks valid (non-empty, no whitespace).
+    // Extract just the model ID if the string contains a provider prefix
+    // (format: provider/model). The provider is determined from session context.
     const cleanModel = model?.trim();
     if (cleanModel && !/\s/.test(cleanModel)) {
-        args.push("--model", cleanModel);
+        // If the model string contains slashes, extract the last part as the model ID
+        // e.g., "gate_frame_private/gateframe/mimo-v2.5" -> "gateframe/mimo-v2.5"
+        const slashIdx = cleanModel.indexOf("/");
+        const modelId =
+            slashIdx > 0 ? cleanModel.slice(slashIdx + 1) : cleanModel;
+        args.push("--model", modelId);
     }
     if (hasSession) args.push("-c");
     args.push(task);
