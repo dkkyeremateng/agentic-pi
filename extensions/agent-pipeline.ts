@@ -580,7 +580,10 @@ export default function (pi: ExtensionAPI) {
         cwd: string,
     ): Promise<{ output: string; exitCode: number }> {
         // PI_WORKFLOW_MODEL is an explicit override; otherwise every agent runs
-        // on the current session's model.
+        // on the current session's model. Note: unlike agent-team, the agent's
+        // frontmatter `model:` field is intentionally ignored here — the pipeline
+        // runs all agents on a single model for consistency. Use agent-team if
+        // you need per-agent model control.
         const primaryModel = WORKER_MODEL || sessionModel;
         // Fallback: the model the current pi session is running on (the primary
         // agent's model). If an agent's configured model fails to load, we retry
@@ -902,6 +905,7 @@ export default function (pi: ExtensionAPI) {
                 lastStatus = "error";
                 return failPhase("Re-implementation", impl.output);
             }
+            runArtifacts.implSummary = `[attempt ${implP.attempt}] ${impl.output}`;
         }
 
         // Document + ship only once the change has passed validation.

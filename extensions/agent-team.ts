@@ -68,6 +68,8 @@ import {
     WORKFLOW_REPORT_MAX,
     WORKFLOW_LOG_TYPE,
     setupSessions as setupSessionsCore,
+    publishReport as publishReportCore,
+    publishLogs as publishLogsCore,
     contextBundle,
     type RunArtifacts,
     buildPhaseMap,
@@ -1114,6 +1116,7 @@ export default function (pi: ExtensionAPI) {
                 lastStatus = "error";
                 return failPhase("Re-implementation", impl.output);
             }
+            runArtifacts.implSummary = `[attempt ${implP.attempt}] ${impl.output}`;
         }
 
         // Document + ship only once the change has passed validation.
@@ -1486,22 +1489,8 @@ export default function (pi: ExtensionAPI) {
             },
         );
 
-    function publishReport(report: string) {
-        const trimmed =
-            report.length > WORKFLOW_REPORT_MAX
-                ? report.slice(0, WORKFLOW_REPORT_MAX) +
-                  "\n\n... [truncated — full report saved to workflow-report.md]"
-                : report;
-        pi.sendMessage(
-            {
-                customType: WORKFLOW_REPORT_TYPE,
-                content: trimmed,
-                display: true,
-                details: { status: lastStatus, length: report.length },
-            },
-            { triggerTurn: false },
-        );
-    }
+    const publishReport = (report: string) =>
+        publishReportCore(pi, report, lastStatus);
 
     // ── Consolidated activity log → one scrollable conversation message ──
 
@@ -1531,26 +1520,7 @@ export default function (pi: ExtensionAPI) {
             },
         );
 
-    function publishLogs() {
-        if (phaseLogs.length === 0) return;
-        const sections = phaseLogs.map(
-            (p) => `## ${p.label}\n\n\`\`\`\n${p.log}\n\`\`\``,
-        );
-        let content = `# Activity Logs\n\n${sections.join("\n\n")}`;
-        if (content.length > WORKFLOW_REPORT_MAX) {
-            content =
-                content.slice(0, WORKFLOW_REPORT_MAX) + "\n\n... [truncated]";
-        }
-        pi.sendMessage(
-            {
-                customType: WORKFLOW_LOG_TYPE,
-                content,
-                display: true,
-                details: { phases: phaseLogs.length },
-            },
-            { triggerTurn: false },
-        );
-    }
+    const publishLogs = () => publishLogsCore(pi, phaseLogs);
 
     // ── Command ──────────────────────────────────
 

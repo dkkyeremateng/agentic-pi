@@ -676,7 +676,12 @@ export class WorkflowRuntime {
         const reportPath = join(cwd, "workflow-report.md");
         try {
             writeFileSync(reportPath, report, "utf-8");
-        } catch {}
+        } catch (e: any) {
+            this.config.notify?.(
+                `Could not write workflow-report.md: ${e.message}`,
+                "warning",
+            );
+        }
 
         return { status, report };
     }
@@ -872,7 +877,12 @@ export class WorkflowRuntime {
         const reportPath = join(cwd, "workflow-report.md");
         try {
             writeFileSync(reportPath, report, "utf-8");
-        } catch {}
+        } catch (e: any) {
+            this.config.notify?.(
+                `Could not write workflow-report.md: ${e.message}`,
+                "warning",
+            );
+        }
 
         return { status, report };
     }
