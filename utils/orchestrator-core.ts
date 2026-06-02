@@ -775,14 +775,32 @@ export async function dispatchAgentCore(
     s.dispatchedThisTurn = true;
     s.dispatchesThisTurn++;
 
-    // Track this agent as a phase. Re-dispatching reuses (and resets) its card.
+    // Track this agent as a phase. Each dispatch gets a unique ID to allow
+    // parallel instances of the same agent.
     const agentKey = def.name.toLowerCase();
-    let phase = s.phases.find((p) => p.agent === agentKey);
-    if (phase) {
-        const fresh = mkPhase(displayName(def.name), agentKey);
-        Object.assign(phase, fresh);
+    const dispatchId = `${agentKey}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Look for an existing phase with the same agent name:
+    // - If it's RUNNING, create a new phase (parallel dispatch)
+    // - If it's PENDING/DONE/ERROR, reuse and reset it (sequential re-dispatch)
+    const existingRunning = s.phases.find(
+        (p) => p.agent === agentKey && p.status === "running",
+    );
+    const existingPhase = s.phases.find((p) => p.agent === agentKey);
+
+    let phase: PhaseState;
+    if (existingRunning) {
+        // Another instance is already running - create new phase for parallel dispatch
+        phase = mkPhase(displayName(def.name), agentKey, dispatchId);
+        s.phases.push(phase);
+    } else if (existingPhase) {
+        // Reuse existing phase (reset it for sequential re-dispatch)
+        const fresh = mkPhase(displayName(def.name), agentKey, dispatchId);
+        Object.assign(existingPhase, fresh);
+        phase = existingPhase;
     } else {
-        phase = mkPhase(displayName(def.name), agentKey);
+        // No existing phase - create new one
+        phase = mkPhase(displayName(def.name), agentKey, dispatchId);
         s.phases.push(phase);
     }
     h.ui.updateWidget();

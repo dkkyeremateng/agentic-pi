@@ -64,6 +64,7 @@ export interface AgentDef {
 export interface PhaseState {
     label: string;
     agent: string;
+    dispatchId?: string; // unique ID for parallel dispatches of the same agent
     status: "pending" | "running" | "done" | "error";
     elapsed: number;
     note: string; // last non-empty line (for the card)
@@ -1720,10 +1721,16 @@ export function failPhase(
 
 // Create a fresh PhaseState with all counters zeroed. Shared across extensions
 // and the runtime so the three copies stay identical.
-export function mkPhase(label: string, agent: string): PhaseState {
+// dispatchId: optional unique identifier for parallel dispatches of the same agent
+export function mkPhase(
+    label: string,
+    agent: string,
+    dispatchId?: string,
+): PhaseState {
     return {
         label,
         agent,
+        dispatchId,
         status: "pending",
         elapsed: 0,
         note: "",
