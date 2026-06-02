@@ -77,6 +77,8 @@ import {
     chooseTeam as chooseTeamCore,
     contextBundle,
     type RunArtifacts,
+    buildPhaseMap,
+    failPhase,
     loadedExplicitly as loadedExplicitlyCore,
     isActiveWorkflow as isActiveWorkflowCore,
     loadAgents as loadAgentsCore,
@@ -97,6 +99,8 @@ import {
     specReviseTask,
     specCriticTask,
     specDocumentTask,
+    loadPromptTemplate,
+    renderTemplate,
 } from "../utils/workflow-core";
 
 // Run before any process.env reads below (WORKER_MODEL, …).
@@ -108,13 +112,18 @@ let isSpecMode = false; // true during spec-only runs; hides impl/test/validate/
 // workflow-core for loadedExplicitly / selectedWorkflowExtension / isActiveWorkflow.
 const SELF_NAME = "agent-pipeline";
 
-const loadedExplicitly = () => loadedExplicitlyCore(import.meta.url, "agent-pipeline.ts");
+const loadedExplicitly = () =>
+    loadedExplicitlyCore(import.meta.url, "agent-pipeline.ts");
 const isActiveWorkflow = () => isActiveWorkflowCore(SELF_NAME);
 
 // The agents shipped alongside this extension (`<ext>/../agents`). Used as a
 // fallback so the pipeline works when launched (e.g. via `-e`) from a project
 // that has no .pi/agents of its own — the cwd still wins when it does.
-const INSTALL_AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+const INSTALL_AGENTS_DIR = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "agents",
+);
 const loadAgents = (cwd: string) => loadAgentsCore(cwd, INSTALL_AGENTS_DIR);
 const loadTeams = (cwd: string) => loadTeamsCore(cwd, INSTALL_AGENTS_DIR);
 
@@ -133,7 +142,6 @@ const AGENT_TIMEOUT_MS =
 // a likely compaction partway through a long run — for complete cross-agent
 // history. The curated bundle still applies on top.
 const SHARED_SESSION = process.env.PI_AGENT_PIPELINE_SHARED_SESSION === "1";
-
 
 // ── Extension ────────────────────────────────────
 
@@ -156,6 +164,7 @@ export default function (pi: ExtensionAPI) {
     let phaseLogs: { label: string; log: string }[] = []; // collected per run, posted as one card at the end
     let totalDroppedLines = 0; // count of JSON lines dropped during this run (diagnostic signal)
     let totalToolCalls = 0; // cumulative tool calls across all phases this run (incl. retries)
+    let totalTokens = { input: 0, output: 0 }; // cumulative token usage across all phases
     let runStartedAt = 0; // wall-clock start of the current run
     let runElapsedMs = 0; // total wall-clock of the last completed run (frozen at completion)
     let includeScout = false; // prepend a read-only Scout recon phase (team has `scout`)
@@ -415,14 +424,22 @@ export default function (pi: ExtensionAPI) {
                             : "";
                     // Reflect the agents actually running (full pipeline or the
                     // dispatched set), not a fixed label.
-                    const workflowTitle = phases
-                        .map((p) => p.label)
-                        .join("→");
+                    const doneCount = phases.filter(
+                        (p) => p.status === "done",
+                    ).length;
+                    const phaseProgress = running
+                        ? ` (${doneCount}/${phases.length})`
+                        : "";
+                    const workflowTitle =
+                        phases.map((p) => p.label).join("→") + phaseProgress;
                     // Once a run finishes, show the total wall-clock time it took
                     // to complete the whole pipeline, next to the status badge.
                     const totalTime =
                         !running && runElapsedMs > 0
-                            ? theme.fg("dim", `  ·  ${secs(runElapsedMs)} total`)
+                            ? theme.fg(
+                                  "dim",
+                                  `  ·  ${secs(runElapsedMs)} total`,
+                              )
                             : "";
                     lines.push(
                         " " +
@@ -662,6 +679,9 @@ export default function (pi: ExtensionAPI) {
                                         (msg.usage.input / ctxWindow) * 100,
                                     ),
                                 );
+                                // Track token usage for the report
+                                totalTokens.input += msg.usage.input || 0;
+                                totalTokens.output += msg.usage.output || 0;
                                 paint();
                             }
                         }
@@ -869,6 +889,7 @@ export default function (pi: ExtensionAPI) {
         phaseLogs = [];
         totalDroppedLines = 0;
         totalToolCalls = 0;
+        totalTokens = { input: 0, output: 0 };
         runStartedAt = Date.now();
         runElapsedMs = 0;
         iteration = 0;
@@ -897,12 +918,16 @@ export default function (pi: ExtensionAPI) {
             return bundle ? `${bundle}\n\n---\n\n${task}` : task;
         };
 
-        const [planP, critiqueP, implP, testP, valP, docP, shipP] = includeScout
-            ? phases.slice(1)
-            : phases;
-
-        // Optional Phase 0 — Scout (read-only recon, feeds the planner)
-        const scoutP = includeScout ? phases[0] : null;
+        // Type-safe phase access — matched by agent name, not position
+        const pm = buildPhaseMap(phases);
+        const scoutP = pm.scout ?? null;
+        const planP = pm.planner;
+        const critiqueP = pm.critic;
+        const implP = pm.implementer;
+        const testP = pm.tester;
+        const valP = pm.validator;
+        const docP = pm.documenter;
+        const shipP = pm.ship;
         let scoutFindings = "";
         if (scoutP) {
             const scoutRes = await runPhase(scoutP, scoutTask(request), cwd);
@@ -923,11 +948,9 @@ export default function (pi: ExtensionAPI) {
         if (!plan.ok) {
             running = false;
             lastStatus = "error";
-            return {
-                status: "error",
-                report: `Planning failed:\n\n${plan.output}`,
-            };
+            return failPhase("Planning", plan.output);
         }
+        runArtifacts.plan = plan.output;
 
         // Structural check: reject clearly malformed plans before handing to implementer.
         const planCheck = validatePlan(plan.output);
@@ -955,10 +978,7 @@ export default function (pi: ExtensionAPI) {
             if (!critique.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Critique failed:\n\n${critique.output}`,
-                };
+                return failPhase("Critique", critique.output);
             }
 
             critiqueVerdict = detectCritique(critique.output);
@@ -977,10 +997,7 @@ export default function (pi: ExtensionAPI) {
             if (!plan.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Plan revision failed:\n\n${plan.output}`,
-                };
+                return failPhase("Plan revision", plan.output);
             }
         }
 
@@ -996,11 +1013,9 @@ export default function (pi: ExtensionAPI) {
         if (!impl.ok) {
             running = false;
             lastStatus = "error";
-            return {
-                status: "error",
-                report: `Implementation failed:\n\n${impl.output}`,
-            };
+            return failPhase("Implementation", impl.output);
         }
+        runArtifacts.implSummary = impl.output;
 
         let test = { output: "", ok: false };
         let val = { output: "", ok: false };
@@ -1024,11 +1039,9 @@ export default function (pi: ExtensionAPI) {
             if (!test.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Testing failed:\n\n${test.output}`,
-                };
+                return failPhase("Testing", test.output);
             }
+            runArtifacts.testReport = test.output;
 
             // Validate (the gate — no commit, no PR yet)
             val = await runPhase(
@@ -1039,10 +1052,7 @@ export default function (pi: ExtensionAPI) {
             if (!val.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Validation failed:\n\n${val.output}`,
-                };
+                return failPhase("Validation", val.output);
             }
 
             verdict = detectVerdict(val.output);
@@ -1061,10 +1071,7 @@ export default function (pi: ExtensionAPI) {
             if (!impl.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Re-implementation failed:\n\n${impl.output}`,
-                };
+                return failPhase("Re-implementation", impl.output);
             }
         }
 
@@ -1084,12 +1091,17 @@ export default function (pi: ExtensionAPI) {
                 cwd,
             );
             if (!doc.ok) {
-                running = false;
-                lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Documentation failed:\n\n${doc.output}`,
+                // Graceful degradation: doc failure doesn't kill a passing build
+                widgetCtx?.ui?.notify?.(
+                    "Documenter failed — code changes are valid but docs were not updated. Proceeding to ship.",
+                    "warning",
+                );
+                doc = {
+                    output: "[Documenter failed — see activity logs]",
+                    ok: false,
                 };
+            } else {
+                runArtifacts.docReport = doc.output;
             }
 
             ship = await runPhase(
@@ -1100,10 +1112,7 @@ export default function (pi: ExtensionAPI) {
             if (!ship.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Shipping failed:\n\n${ship.output}`,
-                };
+                return failPhase("Shipping", ship.output);
             }
 
             status =
@@ -1131,7 +1140,7 @@ export default function (pi: ExtensionAPI) {
             `**Request:** ${request}`,
             `**Outcome:** ${outcomeLine(status, passes)}`,
             `**Result:** ${status} · verdict ${verdict.toUpperCase()} · ${passes} attempt(s) of ${maxLoops}`,
-            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)`,
+            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)${totalTokens.input > 0 ? ` · ${(totalTokens.input + totalTokens.output).toLocaleString()} tokens (${totalTokens.input.toLocaleString()} in / ${totalTokens.output.toLocaleString()} out)` : ""}`,
             ...(prUrl ? [`**Pull request:** ${prUrl}`] : []),
             ...(totalDroppedLines > 0
                 ? [
@@ -1225,6 +1234,7 @@ export default function (pi: ExtensionAPI) {
         phaseLogs = [];
         totalDroppedLines = 0;
         totalToolCalls = 0;
+        totalTokens = { input: 0, output: 0 };
         runStartedAt = Date.now();
         runElapsedMs = 0;
         iteration = 1;
@@ -1243,12 +1253,12 @@ export default function (pi: ExtensionAPI) {
             };
         }
 
-        // In spec mode the phases are Plan, Critique, and Document, optionally preceded by Scout.
-        const scoutP = includeScout ? phases[0] : null;
-        const offset = includeScout ? 1 : 0;
-        const planP = phases[offset];
-        const critiqueP = phases[offset + 1];
-        const docP = phases[offset + 2];
+        // Type-safe phase access — matched by agent name, not position
+        const pm = buildPhaseMap(phases);
+        const scoutP = pm.scout ?? null;
+        const planP = pm.planner;
+        const critiqueP = pm.critic;
+        const docP = pm.documenter;
 
         // Shared curated context (recon + critique) — see runWorkflow. Builders
         // already thread the plan, so only the dropped artifacts go in here.
@@ -1265,10 +1275,7 @@ export default function (pi: ExtensionAPI) {
             if (!scoutRes.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Scouting failed:\n\n${scoutRes.output}`,
-                };
+                return failPhase("Scouting", scoutRes.output);
             }
             scoutFindings = scoutRes.output;
             runArtifacts.recon = scoutFindings;
@@ -1285,11 +1292,9 @@ export default function (pi: ExtensionAPI) {
         if (!plan.ok) {
             running = false;
             lastStatus = "error";
-            return {
-                status: "error",
-                report: `Planning failed:\n\n${plan.output}`,
-            };
+            return failPhase("Planning", plan.output);
         }
+        runArtifacts.plan = plan.output;
 
         let critique = { output: "", ok: true };
         let critiqueVerdict: CritiqueVerdict = "unknown";
@@ -1305,10 +1310,7 @@ export default function (pi: ExtensionAPI) {
             if (!critique.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Critique failed:\n\n${critique.output}`,
-                };
+                return failPhase("Critique", critique.output);
             }
 
             critiqueVerdict = detectCritique(critique.output);
@@ -1327,10 +1329,7 @@ export default function (pi: ExtensionAPI) {
             if (!plan.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Plan revision failed:\n\n${plan.output}`,
-                };
+                return failPhase("Plan revision", plan.output);
             }
         }
 
@@ -1346,11 +1345,9 @@ export default function (pi: ExtensionAPI) {
         if (!doc.ok) {
             running = false;
             lastStatus = "error";
-            return {
-                status: "error",
-                report: `Documentation failed:\n\n${doc.output}`,
-            };
+            return failPhase("Documentation", doc.output);
         }
+        runArtifacts.docReport = doc.output;
 
         const critiqueApproved = critiqueVerdict !== "revise";
         const status = critiqueApproved ? "done" : "needs-review";
@@ -1368,7 +1365,7 @@ export default function (pi: ExtensionAPI) {
             ``,
             `**Request:** ${request}`,
             `**Outcome:** ${outcome}`,
-            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)`,
+            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)${totalTokens.input > 0 ? ` · ${(totalTokens.input + totalTokens.output).toLocaleString()} tokens` : ""}`,
             ...(totalDroppedLines > 0
                 ? [
                       ``,
@@ -2209,112 +2206,13 @@ export default function (pi: ExtensionAPI) {
             // model needs to actually emit tool calls; replacing it wholesale made
             // weaker models narrate a plan as text instead of dispatching. A short,
             // imperative directive goes first so the very next action is a tool call.
-            const orchestratorAddendum = `# ROLE OVERRIDE: You are the ORCHESTRATOR
-
-This overrides any earlier instructions about doing work yourself. For this
-session you are a coordinator, not a coder.
-
-**You have NO codebase tools.** Your only tools are \`select_agents\`,
-\`dispatch_agent\`, and \`run_agent_pipeline\`. You physically cannot read, write,
-or run code — you MUST delegate every piece of work to a specialist agent.
-
-## ACT, DON'T NARRATE (while work is pending)
-When the user asks for work and it is NOT yet done, your FIRST action MUST be a
-tool call:
-1. Call **select_agents** with the agents you will use, in order.
-2. Then call **dispatch_agent** for the first agent — in the SAME response if you
-   can. Do not stop after planning. Do not end your turn with only text when work
-   is still pending.
-Writing the plan as prose WITHOUT calling a tool is a failure. If you find
-yourself describing what an agent should do, call dispatch_agent instead.
-
-## FINISH EVERY AGENT YOU SELECTED (do not leave one queued)
-Every agent you put in \`select_agents\` is a commitment. After each
-\`dispatch_agent\` returns, immediately dispatch the NEXT selected agent that has
-not run yet — keep going until **every** selected agent has been dispatched and
-completed. A still-"queued" agent (e.g. a documenter that has not run) means the
-job is UNFINISHED — you must dispatch it before you stop. Never end your turn while
-a selected agent is still queued. If you no longer need a selected agent, call
-\`select_agents\` again with the trimmed list rather than just leaving it hanging.
-
-## STOP WHEN DONE (do not start a new workflow)
-"Done" means **every agent you selected has completed** AND the deliverable
-(including any spec/doc file) has been written. Once that is true:
-- **STOP.** End your turn with a plain-text summary of what was done and the files
-  that were written. A text-only response is the CORRECT ending here.
-- **Do NOT** call \`run_agent_pipeline\`, re-call \`select_agents\` to add more, or
-  re-dispatch finished agents to "continue." Finishing the task is the goal — not
-  keeping the pipeline running.
-- Pick ONE approach per request: EITHER compose the work yourself with
-  \`dispatch_agent\`, OR run \`run_agent_pipeline\`. Never run the full pipeline
-  after you have already completed the work with dispatches — that just redoes
-  finished work and can fail.
-- Only act again if the USER asks for more, or a dispatch genuinely failed and a
-  retry is needed to deliver what was asked.
-- A **successful** dispatch is final. Do not re-dispatch the same agent to
-  "verify", "double-check", or "confirm" a result you already have — trust the
-  output, summarize it, and stop. Re-running a finished agent is a failure.
-
-You determine the workflow by deciding which specialist agents to dispatch and in what order.
-
-You have three tools:
-- **select_agents** — declares the agents you will use for the work, in order. Call this FIRST, right after you decide the workflow, so the dashboard shows the plan before any agent runs.
-- **dispatch_agent** — dispatches a task to a specialist agent. You compose workflows by chaining dispatches in the order that makes sense for the request.
-- **run_agent_pipeline** — runs the full automated pipeline (scout → plan → critique → implement → test → validate → document → ship) with built-in retry loops. Use this as a shortcut when the standard sequence fits.
-
-## Active Team: ${activeTeamName}
-Members: ${teamMembers}
-
-## How to Work
-1. **Analyze the request** — understand what the user needs
-2. **Determine the workflow** — decide the COMPLETE set of agents the request needs end to end, and call **select_agents** with the FULL list up front. Do NOT start with a minimal subset and bolt agents on one at a time as you go. For a build/ship request (new app, feature, or bug fix), the full set is normally **planner → critic → implementer → tester → validator → documenter** (add **scout** first for an unfamiliar codebase); only trim an agent that genuinely does not apply. Refine the selection later ONLY if the work reveals a genuinely different need:
-   - Read-only exploration? Start with **scout**, then decide what's next
-   - Need a plan before implementing? Dispatch **planner**, review the plan, then decide
-   - Plan looks risky? Dispatch **critic** to evaluate it, then revise or proceed
-   - Ready to implement? Dispatch **implementer** with the approved plan
-   - Need tests? Dispatch **tester** after implementation
-   - Need validation? Dispatch **validator** to run the full suite
-   - Need docs? Dispatch **documenter** after validation passes
-   - Quick lookup or review? Dispatch the right specialist directly
-3. **Review each result** — after every dispatch, read the output and decide:
-   - Was it successful? Proceed to the next step
-   - **Empty or obviously incomplete output (e.g. it finished in ~1s with nothing usable)? That is a FAILED dispatch — RE-DISPATCH the SAME agent with a clearer, more specific task. Do NOT skip it, and do NOT do its work yourself or hand it to another agent.**
-   - Did it fail or raise concerns? Dispatch a follow-up (e.g., critic to review a plan, implementer to fix a test failure)
-   - Need more information? Dispatch scout or another specialist to investigate
-4. **Summarize and STOP** — once the deliverable is produced, report what was done and the files written, then end your turn. Do not launch another workflow or re-dispatch agents to keep going.
-
-## Producing file deliverables (specs, docs, code)
-- **planner, critic, scout, tester are READ-ONLY / analysis agents.** Their output comes back to you as TEXT only — it is NOT saved to any file. A plan or spec a planner returns exists only in your context until a write-capable agent persists it.
-- Only **implementer** and **documenter** can write files. If the user wants a file deliverable (a spec, design doc, README, or code), you MUST dispatch one of these with an **explicit target path** (e.g. \`specs/todo-app.md\`) and the **full content to write** (pass along the planner's output verbatim).
-- After that dispatch, confirm the agent reported the exact file path it wrote, and include that path in your summary to the user. If it only described the content without writing a file, dispatch again and insist it use the write tool.
-
-## Rules
-- **You determine the workflow** — do not blindly follow a fixed sequence. Reason about what the request needs.
-- **NEVER try to read, write, or execute code directly** — you have no such tools. ALWAYS use dispatch_agent or run_agent_pipeline to get work done.
-- Use **run_agent_pipeline** only when the standard full pipeline is the right fit (code changes that need testing, validation, and shipping), and only as the FIRST move on a request — never after you have already done the work with dispatches.
-- **Do not auto-start a new workflow.** When the current request is complete, stop and summarize. Never chain \`run_agent_pipeline\` onto finished dispatch work.
-- For everything else, compose the workflow yourself using **dispatch_agent**
-- Keep each dispatch focused — one clear objective per dispatch
-- If a dispatch fails or returns no usable output, RE-DISPATCH the SAME agent with a clearer, more specific task before anything else — never skip a selected agent or substitute its work with your own or another agent's
-- You can dispatch the same agent multiple times with different tasks
-- Do NOT attempt to dispatch to agents outside the active team
-
-## Available Agents
-
-${agentCatalog}
-
-## Standard Pipeline (for reference)
-The full pipeline runs these agents in sequence with built-in retry loops:
-1. **Scout** (optional) — read-only recon to map the codebase
-2. **Planner** — produces a phased implementation plan
-3. **Critic** — evaluates the plan; loops back to planner if rejected
-4. **Implementer** — applies the plan
-5. **Tester** — writes and runs tests
-6. **Validator** — gates the result; loops back to implementer on FAIL
-7. **Documenter** — updates docs (only on PASS)
-8. **Ship** — opens a draft PR (only on PASS)
-
-You can replicate this sequence manually via dispatch_agent, skip stages, reorder them, or insert additional steps as needed.`;
+            const template = loadPromptTemplate("orchestrator", "", _ctx.cwd);
+            const orchestratorAddendum = renderTemplate(template, {
+                run_tool_name: "run_agent_pipeline",
+                team_name: activeTeamName,
+                team_members: teamMembers,
+                agent_catalog: agentCatalog,
+            });
 
             // Append our orchestration layer onto Pi's assembled base prompt so the
             // model keeps its tool-calling instructions and gains the role override.

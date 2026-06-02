@@ -15,8 +15,9 @@ import {
     readdirSync,
     mkdirSync,
     unlinkSync,
+    statSync,
 } from "fs";
-import { join, basename, resolve as resolvePath } from "path";
+import { join, basename, dirname, resolve as resolvePath } from "path";
 import { fileURLToPath } from "url";
 import { secs } from "./workflow-utils";
 
@@ -459,18 +460,33 @@ export async function chooseTeam(
 
 // ── Sessions & report publishing ─────────────────
 
+// Default TTL for orphaned session files: 7 days. Files older than this are
+// removed during cleanup so the session directory doesn't grow unbounded when
+// dispatch-mode sessions accumulate across runs.
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 // Ensure the per-agent session directory exists; optionally wipe stale sessions.
+// When `wipe` is false, still removes orphaned files older than SESSION_TTL_MS
+// so dispatch-mode sessions don't accumulate indefinitely.
 // Returns the directory path (the caller stores it as its sessionDir).
 export function setupSessions(cwd: string, wipe: boolean): string {
     const sessionDir = join(cwd, ".pi", "workflow-sessions");
     if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true });
-    if (wipe) {
-        for (const f of readdirSync(sessionDir)) {
-            if (f.endsWith(".json")) {
-                try {
+    const now = Date.now();
+    for (const f of readdirSync(sessionDir)) {
+        if (!f.endsWith(".json")) continue;
+        if (wipe) {
+            try {
+                unlinkSync(join(sessionDir, f));
+            } catch {}
+        } else {
+            // TTL-based cleanup: remove orphaned session files older than 7 days.
+            try {
+                const stat = statSync(join(sessionDir, f));
+                if (now - stat.mtimeMs > SESSION_TTL_MS) {
                     unlinkSync(join(sessionDir, f));
-                } catch {}
-            }
+                }
+            } catch {}
         }
     }
     return sessionDir;
@@ -958,4 +974,103 @@ export function specDocumentTask(original: string, plan: string): string {
         "",
         "Output the full spec as a single markdown document and report the path where it was saved.",
     ].join("\n");
+}
+
+// ── Phase helpers ───────────────────────────────
+
+// Type-safe access to phases by agent name. Built from the phases array so
+// callers never rely on positional indexing (which breaks silently if
+// freshPhases() changes order).
+export interface PhaseMap {
+    scout?: PhaseState;
+    planner: PhaseState;
+    critic: PhaseState;
+    implementer: PhaseState;
+    tester: PhaseState;
+    validator: PhaseState;
+    documenter: PhaseState;
+    ship: PhaseState;
+}
+
+// Build a PhaseMap from the phases array. Phases are matched by agent name;
+// the ship phase uses the second validator entry. Throws if required phases
+// are missing (callers should guard with REQUIRED_AGENTS check first).
+export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
+    const byAgent = (name: string) =>
+        phases.find((p) => p.agent === name.toLowerCase());
+    const validators = phases.filter((p) => p.agent === "validator");
+    return {
+        scout: byAgent("scout"),
+        planner: byAgent("planner")!,
+        critic: byAgent("critic")!,
+        implementer: byAgent("implementer")!,
+        tester: byAgent("tester")!,
+        validator: validators[0]!,
+        documenter: byAgent("documenter")!,
+        ship: validators[1] ?? validators[0]!,
+    };
+}
+
+// Standardised error return for a failed phase. Sets the running state to
+// stopped/error and returns the shape both runWorkflow and runSpecWorkflow
+// use. Eliminates the 7-line `if (!x.ok) { running = false; ... }` block
+// repeated for every phase.
+export function failPhase(
+    phaseName: string,
+    output: string,
+): { status: string; report: string } {
+    return {
+        status: "error",
+        report: `${phaseName} failed:\n\n${output}`,
+    };
+}
+
+// ── Token tracking ───────────────────────────────
+
+// Per-phase token usage captured from the agent's message_end event. Both
+// input and output tokens are tracked so the workflow report can show cost
+// estimates and a total across all phases.
+export interface TokenUsage {
+    input: number;
+    output: number;
+    contextWindow: number;
+}
+
+// ── Prompt template loader ───────────────────────
+
+// Load a prompt template from `.pi/prompts/<name>.md`. Falls back to the
+// install-level `agents/../prompts/<name>.md` (shipped alongside the extension),
+// then to the provided `fallback` string. Templates use `{{variable}}` placeholders
+// replaced at call time.
+export function loadPromptTemplate(
+    name: string,
+    fallback: string,
+    cwd?: string,
+): string {
+    const candidates: string[] = [];
+    if (cwd) candidates.push(join(cwd, ".pi", "prompts", `${name}.md`));
+    // Install-level prompts: <ext>/../prompts/<name>.md
+    try {
+        const extDir = dirname(fileURLToPath(import.meta.url));
+        candidates.push(join(extDir, "..", "prompts", `${name}.md`));
+    } catch {}
+    for (const path of candidates) {
+        if (existsSync(path)) {
+            try {
+                return readFileSync(path, "utf-8");
+            } catch {}
+        }
+    }
+    return fallback;
+}
+
+// Replace `{{key}}` placeholders in a template with values from the map.
+export function renderTemplate(
+    template: string,
+    vars: Record<string, string>,
+): string {
+    return template.replace(
+        /\{\{(\w+)\}\}/g,
+        (_, key) => vars[key] ?? `{{${key}}}`,
+    );
 }
