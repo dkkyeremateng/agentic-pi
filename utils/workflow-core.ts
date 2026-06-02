@@ -2133,6 +2133,14 @@ export function spawnAgentWithModel(
     model: string,
     config: SpawnConfig,
 ): Promise<SpawnResult> {
+    // Write to file to bypass any caching
+    writeFileSync(
+        "/tmp/pi-spawn-debug.log",
+        `[${new Date().toISOString()}] spawnAgentWithModel called\n` +
+            `agent=${agentDef.name}\n` +
+            `model="${model}"\n`,
+        { flag: "a" },
+    );
     process.stderr.write(
         `[spawnAgentWithModel] agent=${agentDef.name} received model="${model}"\n`,
     );
