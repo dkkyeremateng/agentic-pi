@@ -145,7 +145,11 @@ export function isActiveWorkflow(selfName: string): boolean {
 // in every shell — handy when pi is launched from an IDE/GUI.
 export function loadDotEnv(cwd: string): void {
     const path = join(cwd, ".env");
-    if (!existsSync(path)) return;
+    if (!existsSync(path)) {
+        console.error(`[loadDotEnv] No .env file found at ${path}`);
+        return;
+    }
+    console.error(`[loadDotEnv] Loading .env from ${path}`);
     try {
         for (const raw of readFileSync(path, "utf-8").split("\n")) {
             let line = raw.trim();
@@ -161,9 +165,16 @@ export function loadDotEnv(cwd: string): void {
             ) {
                 val = val.slice(1, -1);
             }
-            if (!(key in process.env)) process.env[key] = val;
+            if (!(key in process.env)) {
+                process.env[key] = val;
+                console.error(`[loadDotEnv] Set ${key}=${val}`);
+            } else {
+                console.error(`[loadDotEnv] Skipped ${key} (already in env)`);
+            }
         }
-    } catch {}
+    } catch (error) {
+        console.error(`[loadDotEnv] Error loading .env:`, error);
+    }
 }
 
 // ── Display helpers ──────────────────────────────
