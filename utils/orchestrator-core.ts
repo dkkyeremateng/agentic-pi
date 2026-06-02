@@ -297,7 +297,10 @@ export async function runWorkflowCore(
 
         val = await h.runPhase(
             valP,
-            shared(validateTask(request, plan.output, test.output), "validator"),
+            shared(
+                validateTask(request, plan.output, test.output),
+                "validator",
+            ),
             cwd,
         );
         if (!val.ok) return fail(s, "Validation", val.output);
@@ -429,6 +432,7 @@ export async function runSpecWorkflowCore(
     s.runElapsedMs = 0;
     s.iteration = 1;
     s.maxLoopsRef = 1;
+    const maxCritiqueLoops = 1;
     s.lastStatus = "running";
     s.running = true;
     h.updateWidget();
@@ -467,8 +471,11 @@ export async function runSpecWorkflowCore(
         runArtifacts.recon = scoutFindings;
     }
 
-    const maxCritiqueLoops = s.maxLoopsRef > 0 ? s.maxLoopsRef : DEFAULT_MAX_LOOPS;
-    let plan = await h.runPhase(planP, specPlanTask(request, scoutFindings), cwd);
+    let plan = await h.runPhase(
+        planP,
+        specPlanTask(request, scoutFindings),
+        cwd,
+    );
     if (!plan.ok) return fail(s, "Planning", plan.output);
     runArtifacts.plan = plan.output;
 
@@ -608,14 +615,8 @@ export async function dispatchAgentCore(
     const agentKey = def.name.toLowerCase();
     let phase = s.phases.find((p) => p.agent === agentKey);
     if (phase) {
-        phase.status = "pending";
-        phase.elapsed = 0;
-        phase.note = "";
-        phase.log = "";
-        phase.droppedLines = 0;
-        phase.toolCount = 0;
-        phase.contextPct = 0;
-        phase.attempt = 0;
+        const fresh = mkPhase(displayName(def.name), agentKey);
+        Object.assign(phase, fresh);
     } else {
         phase = mkPhase(displayName(def.name), agentKey);
         s.phases.push(phase);
@@ -684,7 +685,9 @@ export async function dispatchAgentCore(
             : "";
 
     return {
-        content: [{ type: "text", text: `${summary}\n\n${truncated}${nextStep}` }],
+        content: [
+            { type: "text", text: `${summary}\n\n${truncated}${nextStep}` },
+        ],
         details: {
             agent: def.name,
             task,

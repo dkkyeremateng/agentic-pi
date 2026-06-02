@@ -91,7 +91,6 @@ import {
 // Run before any process.env reads below (WORKER_MODEL, …).
 loadDotEnv(process.cwd());
 
-
 // This file is the base "agent-pipeline"; it owns the chrome by default. See
 // workflow-core for loadedExplicitly / selectedWorkflowExtension / isActiveWorkflow.
 const SELF_NAME = "agent-pipeline";
@@ -946,7 +945,11 @@ export default function (pi: ExtensionAPI) {
             // Only fold the turn time into a total when work actually ran this turn,
             // so a plain "done" reply doesn't overwrite the last total.
             if (st.dispatchedThisTurn) st.dispatchElapsedMs = turnMs;
-            if (st.pipelineRanThisTurn) st.runElapsedMs = turnMs;
+            // Only overwrite runElapsedMs if the pipeline is still running (aborted
+            // mid-run). When the pipeline completed, runWorkflowCore already set the
+            // correct value from runStartedAt; overwriting it with the full turn time
+            // (which includes orchestrator reasoning) would inflate the dashboard.
+            if (st.pipelineRanThisTurn && st.running) st.runElapsedMs = turnMs;
             if (st.dispatchedThisTurn || st.pipelineRanThisTurn) updateWidget();
         });
 

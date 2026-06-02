@@ -450,8 +450,7 @@ export function renderWorkflowFooter(opts: {
     // (otherwise the footer reads "idle" while a dispatched agent is working).
     const dispatchRunning =
         dispatchMode && phases.some((p) => p.status === "running");
-    const dispatchDone =
-        dispatchMode && phases.length > 0 && !dispatchRunning;
+    const dispatchDone = dispatchMode && phases.length > 0 && !dispatchRunning;
     const activeName = phases.find((p) => p.status === "running")?.label;
     const statusColor =
         running || dispatchRunning
@@ -1038,16 +1037,7 @@ export function buildWorkflowReport(o: {
         o.val,
         ``,
         ...(o.passed
-            ? [
-                  `### Documentation`,
-                  ``,
-                  o.doc,
-                  ``,
-                  `### Ship`,
-                  ``,
-                  o.ship,
-                  ``,
-              ]
+            ? [`### Documentation`, ``, o.doc, ``, `### Ship`, ``, o.ship, ``]
             : []),
     ].join("\n");
 }
@@ -1637,6 +1627,7 @@ export function mkPhase(label: string, agent: string): PhaseState {
         contextPct: 0,
         attempt: 0,
         modelFallback: false,
+        activeModel: undefined,
     };
 }
 
@@ -2011,7 +2002,10 @@ export function spawnAgentWithModel(
                         // Capture the final assistant text (subagent mode emits
                         // it only here, not as streaming deltas). The last
                         // assistant message wins — earlier ones carry tool-use.
-                        if (msg?.role === "assistant" && Array.isArray(msg.content)) {
+                        if (
+                            msg?.role === "assistant" &&
+                            Array.isArray(msg.content)
+                        ) {
                             const text = msg.content
                                 .filter((c: any) => c?.type === "text")
                                 .map((c: any) => c.text || "")

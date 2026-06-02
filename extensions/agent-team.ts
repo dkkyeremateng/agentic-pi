@@ -97,7 +97,6 @@ import {
 // Run before any process.env reads below (WORKER_MODEL, loadAgentModels, …).
 loadDotEnv(process.cwd());
 
-
 // This file is "agent-team". See workflow-core for loadedExplicitly /
 // selectedWorkflowExtension / isActiveWorkflow (shared, parameterized over name).
 const SELF_NAME = "agent-team";
@@ -305,7 +304,9 @@ export default function (pi: ExtensionAPI) {
         // dispatched). A selected agent that hasn't run yet is "queued"; selected
         // cards get a status-colored border and a ▸ marker so the chosen agents
         // stand out from the idle roster.
-        const selected = st.phases.some((p) => p.agent === agentKey.toLowerCase());
+        const selected = st.phases.some(
+            (p) => p.agent === agentKey.toLowerCase(),
+        );
         const queued = selected && status === "pending";
 
         // Resolve the card's icon/colour/word. Queued is distinct from idle so the
@@ -523,7 +524,14 @@ export default function (pi: ExtensionAPI) {
     // Append the live log of the currently running agent — delegates to the
     // shared core implementation (pi-tui's visibleWidth is injected).
     const appendLiveLog = (lines: string[], width: number, theme: any) =>
-        appendLiveLogCore(lines, width, theme, st.phases, st.running, visibleWidth);
+        appendLiveLogCore(
+            lines,
+            width,
+            theme,
+            st.phases,
+            st.running,
+            visibleWidth,
+        );
 
     function updateWidget() {
         if (!widgetCtx) return;
@@ -559,7 +567,8 @@ export default function (pi: ExtensionAPI) {
                         ...agentOrder.map((a) => displayName(a).length),
                     ); // "Implementer".length = 11
                     const activeAgent =
-                        st.phases.find((p) => p.status === "running")?.agent ?? "";
+                        st.phases.find((p) => p.status === "running")?.agent ??
+                        "";
 
                     const modelRows: string[] = agentOrder.map((agentKey) => {
                         const m = agentModels[agentKey] || fallbackModel;
