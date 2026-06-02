@@ -42,7 +42,6 @@ import {
     visibleWidth,
 } from "@mariozechner/pi-tui";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { spawn } from "child_process";
 import { readFileSync, existsSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -61,8 +60,6 @@ import {
     REQUIRED_AGENTS,
     DEFAULT_MAX_LOOPS,
     LOG_PANEL_RESERVE,
-    LOG_CAP_CHARS,
-    STDERR_TAIL_CAP,
     WORKFLOW_REPORT_TYPE,
     WORKFLOW_REPORT_MAX,
     WORKFLOW_LOG_TYPE,
@@ -1553,7 +1550,7 @@ export default function (pi: ExtensionAPI) {
                   ? "error"
                   : "warning";
         ctx.ui.notify(
-            `Workflow ${result.status}. Report is shown below.`,
+            `Workflow ${result.status} in ${secs(runElapsedMs)}. Report is shown below.`,
             level as any,
         );
         if (totalDroppedLines > 0) {
@@ -1579,7 +1576,7 @@ export default function (pi: ExtensionAPI) {
                   ? "error"
                   : "warning";
         ctx.ui.notify(
-            `Spec generation ${result.status}. Report is shown below.`,
+            `Spec generation ${result.status} in ${secs(runElapsedMs)}. Report is shown below.`,
             level as any,
         );
         if (totalDroppedLines > 0) {
@@ -1816,19 +1813,7 @@ export default function (pi: ExtensionAPI) {
                     phase.contextPct = 0;
                     phase.attempt = 0;
                 } else {
-                    phase = {
-                        label: displayName(def.name),
-                        agent: agentKey,
-                        status: "pending",
-                        elapsed: 0,
-                        note: "",
-                        log: "",
-                        droppedLines: 0,
-                        toolCount: 0,
-                        contextPct: 0,
-                        attempt: 0,
-                        modelFallback: false,
-                    };
+                    phase = mkPhaseCore(displayName(def.name), agentKey);
                     phases.push(phase);
                 }
                 updateWidget();

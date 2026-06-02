@@ -24,7 +24,6 @@ import {
     detectVerdict,
     detectShip,
     detectCritique,
-    isModelFailure,
     secs,
     digest,
     testSignal,
@@ -33,8 +32,6 @@ import {
 import {
     REQUIRED_AGENTS,
     DEFAULT_MAX_LOOPS,
-    LOG_CAP_CHARS,
-    STDERR_TAIL_CAP,
     setupSessions as setupSessionsCore,
     contextBundleForPhase,
     type RunArtifacts,

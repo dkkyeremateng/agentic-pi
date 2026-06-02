@@ -3,31 +3,24 @@ import assert from "node:assert/strict";
 import {
     validatePlan,
     contextBundle,
+    contextBundleForPhase,
     buildPhaseMap,
     failPhase,
     renderTemplate,
     tokenNote,
+    mkPhase,
+    freshPhases,
     type RunArtifacts,
     type PhaseState,
 } from "./workflow-core";
 
 // Run with: npx tsx --test workflow-core.test.ts
 
-// Helper: create a minimal PhaseState for testing.
-function mkPhase(agent: string): PhaseState {
-    return {
-        label: agent,
-        agent,
-        status: "pending",
-        elapsed: 0,
-        note: "",
-        log: "",
-        droppedLines: 0,
-        toolCount: 0,
-        contextPct: 0,
-        attempt: 0,
-        modelFallback: false,
-    };
+// Helper: create a minimal PhaseState for testing (uses the shared mkPhase
+// under the hood but assigns the agent field as the label for convenience
+// in tests that don't care about the label/agent distinction).
+function testPhase(agent: string): PhaseState {
+    return mkPhase(agent, agent);
 }
 
 // ── validatePlan ─────────────────────────────────
@@ -213,14 +206,14 @@ describe("contextBundle", () => {
 describe("buildPhaseMap", () => {
     it("correctly maps phases by agent name", () => {
         const phases: PhaseState[] = [
-            mkPhase("scout"),
-            mkPhase("planner"),
-            mkPhase("critic"),
-            mkPhase("implementer"),
-            mkPhase("tester"),
-            mkPhase("validator"),
-            mkPhase("documenter"),
-            mkPhase("validator"), // second validator = ship
+            testPhase("scout"),
+            testPhase("planner"),
+            testPhase("critic"),
+            testPhase("implementer"),
+            testPhase("tester"),
+            testPhase("validator"),
+            testPhase("documenter"),
+            testPhase("validator"), // second validator = ship
         ];
         const pm = buildPhaseMap(phases);
         assert.equal(pm.scout?.agent, "scout");
@@ -235,13 +228,13 @@ describe("buildPhaseMap", () => {
 
     it("maps ship to the second validator entry", () => {
         const phases: PhaseState[] = [
-            mkPhase("planner"),
-            mkPhase("critic"),
-            mkPhase("implementer"),
-            mkPhase("tester"),
-            mkPhase("validator"), // first = validate
-            mkPhase("documenter"),
-            mkPhase("validator"), // second = ship
+            testPhase("planner"),
+            testPhase("critic"),
+            testPhase("implementer"),
+            testPhase("tester"),
+            testPhase("validator"), // first = validate
+            testPhase("documenter"),
+            testPhase("validator"), // second = ship
         ];
         const pm = buildPhaseMap(phases);
         // The ship phase should be the second validator in the array
@@ -251,12 +244,12 @@ describe("buildPhaseMap", () => {
 
     it("falls back to first validator for ship when only one validator exists", () => {
         const phases: PhaseState[] = [
-            mkPhase("planner"),
-            mkPhase("critic"),
-            mkPhase("implementer"),
-            mkPhase("tester"),
-            mkPhase("validator"),
-            mkPhase("documenter"),
+            testPhase("planner"),
+            testPhase("critic"),
+            testPhase("implementer"),
+            testPhase("tester"),
+            testPhase("validator"),
+            testPhase("documenter"),
         ];
         const pm = buildPhaseMap(phases);
         const validators = phases.filter((p) => p.agent === "validator");
@@ -265,13 +258,13 @@ describe("buildPhaseMap", () => {
 
     it("returns undefined for scout when not present", () => {
         const phases: PhaseState[] = [
-            mkPhase("planner"),
-            mkPhase("critic"),
-            mkPhase("implementer"),
-            mkPhase("tester"),
-            mkPhase("validator"),
-            mkPhase("documenter"),
-            mkPhase("validator"),
+            testPhase("planner"),
+            testPhase("critic"),
+            testPhase("implementer"),
+            testPhase("tester"),
+            testPhase("validator"),
+            testPhase("documenter"),
+            testPhase("validator"),
         ];
         const pm = buildPhaseMap(phases);
         assert.equal(pm.scout, undefined);
@@ -336,31 +329,229 @@ describe("renderTemplate", () => {
 
 describe("tokenNote", () => {
     it("returns empty string when tokens is undefined", () => {
-        const phase = mkPhase("planner");
+        const phase = testPhase("planner");
         assert.equal(tokenNote(phase), "");
     });
 
     it("returns empty string when tokens are zero", () => {
-        const phase = mkPhase("planner");
+        const phase = testPhase("planner");
         phase.tokens = { input: 0, output: 0, contextWindow: 200000 };
         assert.equal(tokenNote(phase), "");
     });
 
     it("formats small token counts without k suffix", () => {
-        const phase = mkPhase("planner");
+        const phase = testPhase("planner");
         phase.tokens = { input: 500, output: 300, contextWindow: 200000 };
         assert.equal(tokenNote(phase), ", 800 tokens");
     });
 
     it("formats large token counts with k suffix", () => {
-        const phase = mkPhase("planner");
+        const phase = testPhase("planner");
         phase.tokens = { input: 10000, output: 2340, contextWindow: 200000 };
         assert.equal(tokenNote(phase), ", 12.3k tokens");
     });
 
     it("formats exactly 1000 tokens with k suffix", () => {
-        const phase = mkPhase("planner");
+        const phase = testPhase("planner");
         phase.tokens = { input: 700, output: 300, contextWindow: 200000 };
         assert.equal(tokenNote(phase), ", 1.0k tokens");
+    });
+});
+
+// ── mkPhase ──────────────────────────────────────
+
+describe("mkPhase", () => {
+    it("creates a phase with the given label and agent", () => {
+        const phase = mkPhase("Plan", "planner");
+        assert.equal(phase.label, "Plan");
+        assert.equal(phase.agent, "planner");
+    });
+
+    it("initializes all counters to zero/false/empty", () => {
+        const phase = mkPhase("Test", "tester");
+        assert.equal(phase.status, "pending");
+        assert.equal(phase.elapsed, 0);
+        assert.equal(phase.note, "");
+        assert.equal(phase.log, "");
+        assert.equal(phase.droppedLines, 0);
+        assert.equal(phase.toolCount, 0);
+        assert.equal(phase.contextPct, 0);
+        assert.equal(phase.attempt, 0);
+        assert.equal(phase.modelFallback, false);
+    });
+
+    it("does not set tokens or activeModel", () => {
+        const phase = mkPhase("X", "y");
+        assert.equal(phase.tokens, undefined);
+        assert.equal(phase.activeModel, undefined);
+    });
+});
+
+// ── freshPhases ──────────────────────────────────
+
+describe("freshPhases", () => {
+    it("returns full pipeline without scout by default", () => {
+        const phases = freshPhases(false, false);
+        const agents = phases.map((p) => p.agent);
+        assert.deepEqual(agents, [
+            "planner",
+            "critic",
+            "implementer",
+            "tester",
+            "validator",
+            "documenter",
+            "validator",
+        ]);
+    });
+
+    it("prepends scout when includeScout is true", () => {
+        const phases = freshPhases(true, false);
+        assert.equal(phases[0].agent, "scout");
+        assert.equal(phases[0].label, "Scout");
+        assert.equal(phases.length, 8); // scout + 7 standard phases
+    });
+
+    it("returns spec mode phases without scout", () => {
+        const phases = freshPhases(false, true);
+        const agents = phases.map((p) => p.agent);
+        assert.deepEqual(agents, ["planner", "critic", "documenter"]);
+    });
+
+    it("returns spec mode phases with scout", () => {
+        const phases = freshPhases(true, true);
+        const agents = phases.map((p) => p.agent);
+        assert.deepEqual(agents, ["scout", "planner", "critic", "documenter"]);
+    });
+
+    it("all phases start as pending", () => {
+        const phases = freshPhases(false, false);
+        for (const p of phases) {
+            assert.equal(p.status, "pending", `${p.agent} should be pending`);
+        }
+    });
+
+    it("labels match the phase purpose", () => {
+        const phases = freshPhases(true, false);
+        assert.equal(phases[0].label, "Scout");
+        assert.equal(phases[1].label, "Plan");
+        assert.equal(phases[2].label, "Critique");
+        assert.equal(phases[3].label, "Implement");
+        assert.equal(phases[4].label, "Test");
+        assert.equal(phases[5].label, "Validate");
+        assert.equal(phases[6].label, "Document");
+        assert.equal(phases[7].label, "Ship");
+    });
+});
+
+// ── contextBundleForPhase ────────────────────────
+
+describe("contextBundleForPhase", () => {
+    const fullArtifacts: RunArtifacts = {
+        recon: "Scout findings",
+        plan: "The plan",
+        critique: "Critique feedback",
+        implSummary: "Implementation done",
+        testReport: "Tests passed",
+        docReport: "Docs updated",
+    };
+
+    it("scout gets no artifacts (read-only recon pass)", () => {
+        const bundle = contextBundleForPhase("scout", fullArtifacts);
+        // Scout whitelist is ["recon"] but scout doesn't consume prior artifacts.
+        // The bundle should only include recon if it's in the whitelist.
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(!bundle.includes("The plan"));
+        assert.ok(!bundle.includes("Critique"));
+    });
+
+    it("planner gets only recon", () => {
+        const bundle = contextBundleForPhase("planner", fullArtifacts);
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(!bundle.includes("The plan"));
+        assert.ok(!bundle.includes("Critique"));
+        assert.ok(!bundle.includes("Implementation"));
+    });
+
+    it("critic gets recon and plan", () => {
+        const bundle = contextBundleForPhase("critic", fullArtifacts);
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(bundle.includes("The plan"));
+        assert.ok(!bundle.includes("Critique"));
+        assert.ok(!bundle.includes("Implementation"));
+    });
+
+    it("implementer gets recon, plan, and critique", () => {
+        const bundle = contextBundleForPhase("implementer", fullArtifacts);
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(bundle.includes("The plan"));
+        assert.ok(bundle.includes("Critique feedback"));
+        assert.ok(!bundle.includes("Implementation done"));
+        assert.ok(!bundle.includes("Tests passed"));
+    });
+
+    it("tester gets recon, plan, and implSummary (not critique)", () => {
+        const bundle = contextBundleForPhase("tester", fullArtifacts);
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(bundle.includes("The plan"));
+        assert.ok(bundle.includes("Implementation done"));
+        assert.ok(!bundle.includes("Critique feedback"));
+        assert.ok(!bundle.includes("Docs updated"));
+    });
+
+    it("validator gets recon, plan, implSummary, and testReport", () => {
+        const bundle = contextBundleForPhase("validator", fullArtifacts);
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(bundle.includes("The plan"));
+        assert.ok(bundle.includes("Implementation done"));
+        assert.ok(bundle.includes("Tests passed"));
+        assert.ok(!bundle.includes("Critique feedback"));
+        assert.ok(!bundle.includes("Docs updated"));
+    });
+
+    it("documenter gets recon, plan, implSummary, and testReport", () => {
+        const bundle = contextBundleForPhase("documenter", fullArtifacts);
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(bundle.includes("The plan"));
+        assert.ok(bundle.includes("Implementation done"));
+        assert.ok(bundle.includes("Tests passed"));
+        assert.ok(!bundle.includes("Critique feedback"));
+        assert.ok(!bundle.includes("Docs updated"));
+    });
+
+    it("ship gets all artifacts", () => {
+        const bundle = contextBundleForPhase("ship", fullArtifacts);
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(bundle.includes("The plan"));
+        assert.ok(bundle.includes("Implementation done"));
+        assert.ok(bundle.includes("Tests passed"));
+        assert.ok(bundle.includes("Docs updated"));
+    });
+
+    it("unknown agent falls back to all artifacts", () => {
+        const bundle = contextBundleForPhase("unknown-agent", fullArtifacts);
+        // Unknown agents get the full bundle (forward-compat)
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(bundle.includes("The plan"));
+        assert.ok(bundle.includes("Critique feedback"));
+        assert.ok(bundle.includes("Implementation done"));
+        assert.ok(bundle.includes("Tests passed"));
+        assert.ok(bundle.includes("Docs updated"));
+    });
+
+    it("returns empty string when no artifacts are set", () => {
+        const bundle = contextBundleForPhase("planner", {});
+        assert.equal(bundle, "");
+    });
+
+    it("omits artifacts that are undefined even if in whitelist", () => {
+        const partial: RunArtifacts = { recon: "Scout only" };
+        const bundle = contextBundleForPhase("planner", partial);
+        assert.ok(bundle.includes("Scout only"));
+        assert.ok(!bundle.includes("The plan"));
+    });
+
+    it("is case-insensitive for agent names", () => {
+        const bundle = contextBundleForPhase("PLANNER", fullArtifacts);
+        assert.ok(bundle.includes("Scout findings"));
     });
 });

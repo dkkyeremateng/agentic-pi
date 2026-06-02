@@ -37,8 +37,7 @@ import {
     visibleWidth,
 } from "@mariozechner/pi-tui";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { spawn } from "child_process";
-import { existsSync, writeFileSync } from "fs";
+import { writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -56,8 +55,6 @@ import {
     REQUIRED_AGENTS,
     DEFAULT_MAX_LOOPS,
     LOG_PANEL_RESERVE,
-    LOG_CAP_CHARS,
-    STDERR_TAIL_CAP,
     WORKFLOW_REPORT_TYPE,
     WORKFLOW_REPORT_MAX,
     WORKFLOW_LOG_TYPE,
@@ -676,10 +673,7 @@ export default function (pi: ExtensionAPI) {
             if (!scoutRes.ok) {
                 running = false;
                 lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Scouting failed:\n\n${scoutRes.output}`,
-                };
+                return failPhase("Scouting", scoutRes.output);
             }
             scoutFindings = scoutRes.output;
             runArtifacts.recon = scoutFindings;
