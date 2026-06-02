@@ -736,9 +736,6 @@ export async function dispatchAgentCore(
     onUpdate: ((u: ToolResult) => void) | undefined,
     ctx: any,
 ): Promise<ToolResult> {
-    process.stderr.write(
-        `\n\n===== dispatchAgentCore CALLED =====\nagent="${agent}"\ntask="${task.slice(0, 50)}..."\n====================================\n\n`,
-    );
     if (s.running)
         return textResult(
             "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
@@ -912,10 +909,19 @@ export function selectAgentsCore(
 
     const resolved: string[] = [];
     const unknown: string[] = [];
+    const seen = new Set<string>();
     for (const n of names) {
         const def = s.agents.get(n.toLowerCase());
-        if (def) resolved.push(def.name.toLowerCase());
-        else unknown.push(n);
+        if (def) {
+            const key = def.name.toLowerCase();
+            // Deduplicate: only add each agent once to the selection
+            if (!seen.has(key)) {
+                resolved.push(key);
+                seen.add(key);
+            }
+        } else {
+            unknown.push(n);
+        }
     }
 
     if (resolved.length === 0) {
