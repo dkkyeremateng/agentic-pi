@@ -2161,8 +2161,9 @@ export function spawnAgentWithModel(
         const firstSlash = cleanModel.indexOf("/");
         const modelId =
             firstSlash > 0 ? cleanModel.slice(firstSlash + 1) : cleanModel;
-        console.error(
-            `[spawnAgentWithModel] Extracted modelId: "${modelId}" from "${cleanModel}"`,
+        // Log to stderr for debugging
+        process.stderr.write(
+            `[spawnAgentWithModel] agent=${agentDef.name} extracted modelId="${modelId}" from="${cleanModel}"\n`,
         );
         args.push("--model", modelId);
     }
