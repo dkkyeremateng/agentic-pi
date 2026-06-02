@@ -44,6 +44,13 @@ dispatch multiple agents in the SAME response:
 To dispatch in parallel, call `dispatch_agent` multiple times in one response.
 The agents will run concurrently. Wait for all results before summarizing.
 
+**Important for parallel dispatches of the SAME agent:**
+- Call `select_agents` ONCE with the agent name (e.g., `select_agents(['seeker'])`)
+- This shows ONE card in the dashboard representing your plan
+- Then call `dispatch_agent` multiple times with different tasks
+- The system will automatically create separate phases for each parallel instance
+- DO NOT call `select_agents(['seeker', 'seeker'])` — duplicates are ignored
+
 **Sequential dispatches** are still needed when:
 - Agent B needs output from agent A (e.g. implementer needs planner's output)
 - Validation depends on implementation
