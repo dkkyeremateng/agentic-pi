@@ -44,6 +44,7 @@ import {
     type PhaseMap,
     buildPhaseMap,
     failPhase,
+    tokenNote,
     displayName,
     validatePlan,
     spawnAgentWithModel as coreSpawnAgent,
@@ -197,6 +198,11 @@ export class WorkflowRuntime {
                 // Accumulate module-level counters from the shared spawn.
                 this.totalToolCalls += phase.toolCount - prevToolCount;
                 this.totalDroppedLines += phase.droppedLines - prevDroppedLines;
+                if (result.tokens) {
+                    this.totalTokens.input += result.tokens.input;
+                    this.totalTokens.output += result.tokens.output;
+                    phase.tokens = result.tokens;
+                }
                 return result;
             },
         );
@@ -629,18 +635,18 @@ export class WorkflowRuntime {
             ``,
             ...(scoutP
                 ? [
-                      `- **Scout** (${secs(scoutP.elapsed)}) — ${digest(scoutFindings)}${scoutP.droppedLines > 0 ? ` [${scoutP.droppedLines} dropped]` : ""}`,
+                      `- **Scout** (${secs(scoutP.elapsed)}${tokenNote(scoutP)}) — ${digest(scoutFindings)}${scoutP.droppedLines > 0 ? ` [${scoutP.droppedLines} dropped]` : ""}`,
                   ]
                 : []),
-            `- **Planner** (${secs(planP.elapsed)}) — ${digest(plan.output)}${planP.droppedLines > 0 ? ` [${planP.droppedLines} dropped]` : ""}`,
-            `- **Critic** (${secs(critiqueP.elapsed)}) — ${digest(critique.output)}${critiqueP.droppedLines > 0 ? ` [${critiqueP.droppedLines} dropped]` : ""}`,
-            `- **Implementer** (${secs(implP.elapsed)}) — ${digest(impl.output)}${implP.droppedLines > 0 ? ` [${implP.droppedLines} dropped]` : ""}`,
-            `- **Tester** (${secs(testP.elapsed)}) — ${digest(test.output)}${testSignal(test.output)}${testP.droppedLines > 0 ? ` [${testP.droppedLines} dropped]` : ""}`,
-            `- **Validator** (${secs(valP.elapsed)}) — verdict ${verdict.toUpperCase()}. ${digest(val.output)}${valP.droppedLines > 0 ? ` [${valP.droppedLines} dropped]` : ""}`,
+            `- **Planner** (${secs(planP.elapsed)}${tokenNote(planP)}) — ${digest(plan.output)}${planP.droppedLines > 0 ? ` [${planP.droppedLines} dropped]` : ""}`,
+            `- **Critic** (${secs(critiqueP.elapsed)}${tokenNote(critiqueP)}) — ${digest(critique.output)}${critiqueP.droppedLines > 0 ? ` [${critiqueP.droppedLines} dropped]` : ""}`,
+            `- **Implementer** (${secs(implP.elapsed)}${tokenNote(implP)}) — ${digest(impl.output)}${implP.droppedLines > 0 ? ` [${implP.droppedLines} dropped]` : ""}`,
+            `- **Tester** (${secs(testP.elapsed)}${tokenNote(testP)}) — ${digest(test.output)}${testSignal(test.output)}${testP.droppedLines > 0 ? ` [${testP.droppedLines} dropped]` : ""}`,
+            `- **Validator** (${secs(valP.elapsed)}${tokenNote(valP)}) — verdict ${verdict.toUpperCase()}. ${digest(val.output)}${valP.droppedLines > 0 ? ` [${valP.droppedLines} dropped]` : ""}`,
             ...(passed
                 ? [
-                      `- **Documenter** (${secs(docP.elapsed)}) — ${digest(doc.output)}${docP.droppedLines > 0 ? ` [${docP.droppedLines} dropped]` : ""}`,
-                      `- **Ship** (${secs(shipP.elapsed)}) — ${digest(ship.output)}${shipP.droppedLines > 0 ? ` [${shipP.droppedLines} dropped]` : ""}`,
+                      `- **Documenter** (${secs(docP.elapsed)}${tokenNote(docP)}) — ${digest(doc.output)}${docP.droppedLines > 0 ? ` [${docP.droppedLines} dropped]` : ""}`,
+                      `- **Ship** (${secs(shipP.elapsed)}${tokenNote(shipP)}) — ${digest(ship.output)}${shipP.droppedLines > 0 ? ` [${shipP.droppedLines} dropped]` : ""}`,
                   ]
                 : [
                       `- **Documenter / Ship** — skipped (change did not pass validation)`,
@@ -861,12 +867,12 @@ export class WorkflowRuntime {
             ``,
             ...(scoutP
                 ? [
-                      `- **Scout** (${secs(scoutP.elapsed)}) — ${digest(scoutFindings)}`,
+                      `- **Scout** (${secs(scoutP.elapsed)}${tokenNote(scoutP)}) — ${digest(scoutFindings)}`,
                   ]
                 : []),
-            `- **Planner** (${secs(planP.elapsed)}) — ${digest(plan.output)}`,
-            `- **Critic** (${secs(critiqueP.elapsed)}) — ${digest(critique.output)}`,
-            `- **Documenter** (${secs(docP.elapsed)}) — ${digest(doc.output)}`,
+            `- **Planner** (${secs(planP.elapsed)}${tokenNote(planP)}) — ${digest(plan.output)}`,
+            `- **Critic** (${secs(critiqueP.elapsed)}${tokenNote(critiqueP)}) — ${digest(critique.output)}`,
+            `- **Documenter** (${secs(docP.elapsed)}${tokenNote(docP)}) — ${digest(doc.output)}`,
             ``,
             `## Details`,
             ``,

@@ -6,6 +6,7 @@ import {
     buildPhaseMap,
     failPhase,
     renderTemplate,
+    tokenNote,
     type RunArtifacts,
     type PhaseState,
 } from "./workflow-core";
@@ -194,7 +195,10 @@ describe("contextBundle", () => {
         const result = contextBundle(a);
         // The truncated body should be ≤3000 chars + "..."
         const reconSection = result.split("### Reconnaissance (scout)")[1];
-        assert.ok(reconSection.length < 5100, `Section too long: ${reconSection.length}`);
+        assert.ok(
+            reconSection.length < 5100,
+            `Section too long: ${reconSection.length}`,
+        );
         assert.ok(result.includes("..."), "Expected truncation marker");
     });
 
@@ -303,9 +307,12 @@ describe("renderTemplate", () => {
     });
 
     it("leaves unreplaced placeholders intact", () => {
-        const result = renderTemplate("Hello {{name}}, your {{item}} is ready.", {
-            name: "Bob",
-        });
+        const result = renderTemplate(
+            "Hello {{name}}, your {{item}} is ready.",
+            {
+                name: "Bob",
+            },
+        );
         assert.equal(result, "Hello Bob, your {{item}} is ready.");
     });
 
@@ -322,5 +329,38 @@ describe("renderTemplate", () => {
     it("replaces multiple occurrences of the same key", () => {
         const result = renderTemplate("{{x}} and {{x}} again", { x: "hello" });
         assert.equal(result, "hello and hello again");
+    });
+});
+
+// ── tokenNote ──────────────────────────────────
+
+describe("tokenNote", () => {
+    it("returns empty string when tokens is undefined", () => {
+        const phase = mkPhase("planner");
+        assert.equal(tokenNote(phase), "");
+    });
+
+    it("returns empty string when tokens are zero", () => {
+        const phase = mkPhase("planner");
+        phase.tokens = { input: 0, output: 0, contextWindow: 200000 };
+        assert.equal(tokenNote(phase), "");
+    });
+
+    it("formats small token counts without k suffix", () => {
+        const phase = mkPhase("planner");
+        phase.tokens = { input: 500, output: 300, contextWindow: 200000 };
+        assert.equal(tokenNote(phase), ", 800 tokens");
+    });
+
+    it("formats large token counts with k suffix", () => {
+        const phase = mkPhase("planner");
+        phase.tokens = { input: 10000, output: 2340, contextWindow: 200000 };
+        assert.equal(tokenNote(phase), ", 12.3k tokens");
+    });
+
+    it("formats exactly 1000 tokens with k suffix", () => {
+        const phase = mkPhase("planner");
+        phase.tokens = { input: 700, output: 300, contextWindow: 200000 };
+        assert.equal(tokenNote(phase), ", 1.0k tokens");
     });
 });

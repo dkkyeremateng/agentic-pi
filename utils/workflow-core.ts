@@ -66,6 +66,7 @@ export interface PhaseState {
     attempt: number; // how many times this phase has been run (incremented on retry loops)
     modelFallback: boolean; // true if the phase retried with the fallback model after the primary model failed
     activeModel?: string; // the model the agent is actually running on (set at spawn; reflects fallback)
+    tokens?: TokenUsage; // per-phase token usage captured from the agent's message_end event
 }
 
 // ── Active-workflow detection ────────────────────
@@ -1041,6 +1042,19 @@ export interface TokenUsage {
     input: number;
     output: number;
     contextWindow: number;
+}
+
+// Format a per-phase token note for the workflow report summary line.
+// Returns ", Nk tokens" when tokens are present, or "" otherwise.
+export function tokenNote(phase: PhaseState): string {
+    if (
+        !phase.tokens ||
+        (phase.tokens.input === 0 && phase.tokens.output === 0)
+    )
+        return "";
+    const total = phase.tokens.input + phase.tokens.output;
+    const k = total >= 1000 ? `${(total / 1000).toFixed(1)}k` : `${total}`;
+    return `, ${k} tokens`;
 }
 
 // ── Shared agent spawn ────────────────────────────
