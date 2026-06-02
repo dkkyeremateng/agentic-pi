@@ -2146,19 +2146,16 @@ export function spawnAgentWithModel(
         sessionFile,
     ];
     // Only pass --model if the string looks valid (non-empty, no whitespace).
-    // For standard providers (no slash), extract the model name.
-    // For custom providers (with slash), don't pass --model at all and let
-    // the subagent inherit the model from session context to avoid auth issues.
+    // If the string contains a slash, it's in provider/model format.
+    // Extract everything after the FIRST slash as the model ID.
+    // e.g., "gate_frame_private/gateframe/mimo-v2.5" -> "gateframe/mimo-v2.5"
+    // e.g., "anthropic/claude-3-opus" -> "claude-3-opus"
     const cleanModel = model?.trim();
     if (cleanModel && !/\s/.test(cleanModel)) {
-        // If the model string contains a slash, it's a custom provider/model format.
-        // Don't pass --model to avoid authentication issues with custom providers.
-        // The subagent will inherit the model from the parent session.
-        if (!cleanModel.includes("/")) {
-            args.push("--model", cleanModel);
-        }
-        // If it contains a slash, we intentionally don't pass --model
-        // and let pi use its default model resolution from session context.
+        const firstSlash = cleanModel.indexOf("/");
+        const modelId =
+            firstSlash > 0 ? cleanModel.slice(firstSlash + 1) : cleanModel;
+        args.push("--model", modelId);
     }
     if (hasSession) args.push("-c");
     args.push(task);
