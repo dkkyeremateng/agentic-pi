@@ -922,6 +922,9 @@ export function makeSpawnWrapper(opts: {
             ? sessionDirOpt
             : () => sessionDirOpt;
     return (agentDef, task, phase, cwd, model) => {
+        process.stderr.write(
+            `[makeSpawnWrapper] called with agent=${agentDef.name} model="${model}"\n`,
+        );
         const cfg: SpawnConfig = {
             sessionDir: getSessionDir(),
             sharedSession,
