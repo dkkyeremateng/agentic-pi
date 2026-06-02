@@ -74,7 +74,15 @@ export function renderPipelineTitle(
 
     const doneCount = phases.filter((p) => p.status === "done").length;
     const phaseProgress = running ? ` (${doneCount}/${phases.length})` : "";
-    const workflowTitle = phases.map((p) => p.label).join("→") + phaseProgress;
+
+    // Use different separator for parallel vs sequential execution
+    // Check if there are duplicate agent names (parallel dispatch)
+    const agentNames = phases.map((p) => p.agent);
+    const isParallel = new Set(agentNames).size < agentNames.length;
+    const separator = isParallel ? " ∥ " : "→";
+
+    const workflowTitle =
+        phases.map((p) => p.label).join(separator) + phaseProgress;
 
     const totalTime =
         showTotalTime && !running && runElapsedMs > 0
@@ -93,7 +101,9 @@ export function renderPipelineTitle(
 
 // Render phase cards with arrows between them.
 // Returns an array of lines with cards laid out horizontally and arrows on the middle row.
-// When multiple phases are running concurrently, arrows are omitted (replaced with spaces).
+// Arrows are omitted when:
+// - Multiple phases are running concurrently (parallel execution)
+// - Multiple phases with the same agent name have completed (parallel jobs done)
 export function renderPhaseCardsWithArrows(
     cards: string[][],
     theme: any,
@@ -104,20 +114,29 @@ export function renderPhaseCardsWithArrows(
     const arrowRow = 2; // middle row for arrows
     const cardHeight = cards[0].length;
 
-    // Check if multiple phases are running concurrently
-    const concurrentRunning = phases
-        ? phases.filter((p) => p.status === "running").length > 1
-        : false;
+    // Check if we should hide arrows (parallel execution or completed parallel jobs)
+    let hideArrows = false;
+    if (phases && phases.length > 0) {
+        // Hide arrows if multiple phases are running concurrently
+        const concurrentRunning =
+            phases.filter((p) => p.status === "running").length > 1;
+
+        // Hide arrows if there are duplicate agent names (parallel dispatch)
+        const agentNames = phases.map((p) => p.agent);
+        const hasDuplicateAgents = new Set(agentNames).size < agentNames.length;
+
+        hideArrows = concurrentRunning || hasDuplicateAgents;
+    }
 
     const lines: string[] = [];
     for (let line = 0; line < cardHeight; line++) {
         let row = cards[0][line];
         for (let c = 1; c < cols; c++) {
-            if (concurrentRunning) {
-                // No arrows when running concurrently - just space
+            if (hideArrows) {
+                // No arrows for parallel execution - just space
                 row += " ".repeat(arrowWidth);
             } else {
-                // Show arrows when running sequentially or idle
+                // Show arrows for sequential pipeline
                 row +=
                     line === arrowRow
                         ? theme.fg("dim", " ──▶ ")
