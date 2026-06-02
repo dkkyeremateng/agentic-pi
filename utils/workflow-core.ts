@@ -144,12 +144,27 @@ export function isActiveWorkflow(selfName: string): boolean {
 // keep PI_WORKFLOW_MODEL / PI_AGENT_*_MODEL in a file instead of exporting them
 // in every shell — handy when pi is launched from an IDE/GUI.
 export function loadDotEnv(cwd: string): void {
-    const path = join(cwd, ".env");
-    if (!existsSync(path)) {
-        console.error(`[loadDotEnv] No .env file found at ${path}`);
-        return;
+    // First, load from pi config directory (global defaults)
+    const piConfigDir = join(homedir(), "Documents", ".configs", "pi");
+    const piConfigPath = join(piConfigDir, ".env");
+    if (existsSync(piConfigPath)) {
+        console.error(
+            `[loadDotEnv] Loading global config from ${piConfigPath}`,
+        );
+        loadEnvFile(piConfigPath, false); // Don't override existing env vars
     }
-    console.error(`[loadDotEnv] Loading .env from ${path}`);
+
+    // Then, load from cwd (project-specific overrides)
+    const cwdPath = join(cwd, ".env");
+    if (existsSync(cwdPath)) {
+        console.error(`[loadDotEnv] Loading project config from ${cwdPath}`);
+        loadEnvFile(cwdPath, true); // Allow overrides
+    } else {
+        console.error(`[loadDotEnv] No .env file found at ${cwdPath}`);
+    }
+}
+
+function loadEnvFile(path: string, allowOverride: boolean): void {
     try {
         for (const raw of readFileSync(path, "utf-8").split("\n")) {
             let line = raw.trim();
@@ -165,15 +180,23 @@ export function loadDotEnv(cwd: string): void {
             ) {
                 val = val.slice(1, -1);
             }
-            if (!(key in process.env)) {
+
+            if (allowOverride || !(key in process.env)) {
+                const oldValue = process.env[key];
                 process.env[key] = val;
-                console.error(`[loadDotEnv] Set ${key}=${val}`);
+                if (oldValue !== undefined && allowOverride) {
+                    console.error(
+                        `[loadEnvFile] Override ${key}: ${oldValue} → ${val}`,
+                    );
+                } else {
+                    console.error(`[loadEnvFile] Set ${key}=${val}`);
+                }
             } else {
-                console.error(`[loadDotEnv] Skipped ${key} (already in env)`);
+                console.error(`[loadEnvFile] Skipped ${key} (already in env)`);
             }
         }
     } catch (error) {
-        console.error(`[loadDotEnv] Error loading .env:`, error);
+        console.error(`[loadEnvFile] Error loading ${path}:`, error);
     }
 }
 
