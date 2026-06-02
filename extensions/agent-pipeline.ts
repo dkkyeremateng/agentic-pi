@@ -437,6 +437,9 @@ export default function (pi: ExtensionAPI) {
         phase: PhaseState,
         cwd: string,
     ): Promise<{ output: string; exitCode: number }> {
+        process.stderr.write(
+            `[agent-pipeline runAgent] agent=${agentDef.name} primaryModel="${primaryModel}" fallbackModel="${fallbackModel}"\n`,
+        );
         // PI_WORKFLOW_MODEL is an explicit override; otherwise every agent runs
         // on the current session's model. Note: unlike agent-team, the agent's
         // frontmatter `model:` field is intentionally ignored here — the pipeline
