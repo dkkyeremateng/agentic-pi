@@ -59,7 +59,6 @@ import {
 import {
     REQUIRED_AGENTS,
     DEFAULT_MAX_LOOPS,
-    LOG_PANEL_RESERVE,
     WORKFLOW_REPORT_TYPE,
     WORKFLOW_REPORT_MAX,
     WORKFLOW_LOG_TYPE,
@@ -89,6 +88,8 @@ import {
     statusBadge,
     agentPhaseStatus,
     renderCard,
+    appendLiveLog as appendLiveLogCore,
+    renderWorkflowFooter,
     teamsBlock as teamsBlockCore,
     chooseTeam as chooseTeamCore,
     loadedExplicitly as loadedExplicitlyCore,
@@ -552,59 +553,10 @@ export default function (pi: ExtensionAPI) {
         return lines;
     }
 
-    // Append the live log of the currently running agent to `lines`. Grows to fill
-    // the available vertical space, then tails. Shared by the pipeline and grid views.
-    function appendLiveLog(lines: string[], width: number, theme: any) {
-        const active = phases.find((p) => p.status === "running");
-        // Render the panel whenever a run/dispatch is active, at a STABLE height
-        // (padded) so the widget never shrinks between renders. A shrinking widget
-        // left stale rows ghosting behind the new frame.
-        if (!running && !(active && active.log)) return;
-        const toolNote =
-            active && active.toolCount > 0
-                ? ` · ${active.toolCount} tool${active.toolCount === 1 ? "" : "s"}`
-                : "";
-        const label = active
-            ? ` ─── ${active.label} · live${toolNote} `
-            : ` ─── live ─── `;
-        const rule = "─".repeat(Math.max(0, width - visibleWidth(label) - 1));
-        lines.push("");
-        lines.push(theme.fg("dim", label + rule));
-        const logLines = (active?.log || "")
-            .split("\n")
-            .map((l) => l.replace(/\s+$/, ""))
-            .filter((l) => l.length);
-        const rows = process.stdout.rows || 24;
-        // Hard bound so the editor + footer always stay on screen: never taller
-        // than half the terminal, and always leaving room below.
-        const maxLogRows = Math.max(
-            3,
-            Math.min(
-                Math.floor(rows / 2),
-                rows - lines.length - LOG_PANEL_RESERVE,
-            ),
-        );
-        const colW = width - 4;
-        // Reserve the first panel row for the "earlier lines" notice (blank when
-        // not needed) so the panel height is constant.
-        const bodyRows = Math.max(1, maxLogRows - 1);
-        const shown = logLines.slice(-bodyRows);
-        lines.push(
-            logLines.length > shown.length
-                ? "   " +
-                      theme.fg(
-                          "dim",
-                          `… ${logLines.length - shown.length} earlier line(s) — full log below`,
-                      )
-                : "",
-        );
-        for (const l of shown) {
-            const t = l.length > colW ? l.slice(0, colW - 1) + "…" : l;
-            lines.push("   " + theme.fg("muted", t));
-        }
-        // Pad to the stable panel height so the widget never shrinks.
-        for (let i = shown.length; i < bodyRows; i++) lines.push("");
-    }
+    // Append the live log of the currently running agent — delegates to the
+    // shared core implementation (pi-tui's visibleWidth is injected).
+    const appendLiveLog = (lines: string[], width: number, theme: any) =>
+        appendLiveLogCore(lines, width, theme, phases, running, visibleWidth);
 
     function updateWidget() {
         if (!widgetCtx) return;
@@ -2199,48 +2151,6 @@ export default function (pi: ExtensionAPI) {
             dispose: () => {},
             invalidate() {},
             render(width: number): string[] {
-                // Workflow status. The full pipeline drives `running`/`lastStatus`;
-                // ad-hoc dispatch doesn't, so derive its state from the phases so the
-                // footer never reads "idle" while a dispatched agent is working.
-                const dispatchRunning =
-                    dispatchMode && phases.some((p) => p.status === "running");
-                const dispatchDone =
-                    dispatchMode && phases.length > 0 && !dispatchRunning;
-                // The agent currently executing — surfaced in the status so the
-                // footer shows e.g. "running Implementer" rather than a bare state.
-                const activeName = phases.find(
-                    (p) => p.status === "running",
-                )?.label;
-                const statusColor =
-                    running || dispatchRunning
-                        ? "accent"
-                        : dispatchDone
-                          ? "success"
-                          : lastStatus === "shipped"
-                            ? "success"
-                            : lastStatus === "paused-no-remote"
-                              ? "accent"
-                              : lastStatus === "idle"
-                                ? "dim"
-                                : "error";
-                const statusText = running
-                    ? activeName
-                        ? iteration > 1
-                            ? `running ${activeName} (attempt ${iteration}/${maxLoopsRef})`
-                            : `running ${activeName}`
-                        : iteration > 1
-                          ? `running attempt ${iteration}/${maxLoopsRef}`
-                          : "running"
-                    : dispatchRunning
-                      ? `running ${activeName ?? "agent"}`
-                      : dispatchDone
-                        ? dispatchElapsedMs > 0
-                            ? `dispatch done · ${secs(dispatchElapsedMs)} total`
-                            : "dispatch done"
-                        : runElapsedMs > 0
-                          ? `${lastStatus} · ${secs(runElapsedMs)} total`
-                          : lastStatus;
-
                 // Primary (orchestrator) agent's model — the full `provider/model`
                 // pi was loaded with.
                 const pm = widgetCtx?.model || ctx.model;
@@ -2248,59 +2158,23 @@ export default function (pi: ExtensionAPI) {
                     pm?.provider && pm?.id
                         ? `${pm.provider}/${pm.id}`
                         : pm?.id || "default";
-
-                // Primary agent's own context usage (session-wide, distinct from the
-                // per-agent card bars). getContextUsage() returns undefined when the
-                // model's context window is unknown, and percent:null right after a
-                // compaction (count untrustworthy until the next model response).
-                // Both are "unknown" — render "—", never a misleading 0%. When known,
-                // show the token count too so a small-but-nonzero context isn't hidden
-                // by a percentage that rounds to 0.
-                let usage: any;
-                try {
-                    usage = ctx.getContextUsage?.();
-                } catch {}
-                const pct =
-                    usage &&
-                    typeof usage.percent === "number" &&
-                    !Number.isNaN(usage.percent)
-                        ? usage.percent
-                        : null;
-                const known = pct !== null;
-                const filled = known
-                    ? Math.max(0, Math.min(10, Math.round(pct / 10)))
-                    : 0;
-                const bar = "#".repeat(filled) + "-".repeat(10 - filled);
-                const fmtTok = (n: number) =>
-                    n >= 10000
-                        ? `${Math.round(n / 1000)}k`
-                        : n >= 1000
-                          ? `${(n / 1000).toFixed(1)}k`
-                          : `${n}`;
-                const pctStr = !known
-                    ? "—"
-                    : typeof usage.tokens === "number" && usage.tokens > 0
-                      ? `${Math.round(pct)}% · ${fmtTok(usage.tokens)}`
-                      : `${Math.round(pct)}%`;
-
-                // Left: primary model · agent-team status. Right: context bar.
-                const left =
-                    theme.fg("dim", ` ◆ ${primaryFull}`) +
-                    theme.fg("muted", " · ") +
-                    theme.fg("accent", "agent-team") +
-                    theme.fg("dim", " ") +
-                    theme.fg(statusColor, statusText);
-                const right =
-                    theme.fg("dim", ` [${bar}] `) +
-                    theme.fg("muted", pctStr) +
-                    " ";
-                const pad = " ".repeat(
-                    Math.max(
-                        1,
-                        width - visibleWidth(left) - visibleWidth(right),
-                    ),
-                );
-                return [truncateToWidth(left + pad + right, width)];
+                return renderWorkflowFooter({
+                    width,
+                    theme,
+                    selfName: "agent-team",
+                    model: primaryFull,
+                    running,
+                    lastStatus,
+                    iteration,
+                    maxLoopsRef,
+                    dispatchMode,
+                    phases,
+                    dispatchElapsedMs,
+                    runElapsedMs,
+                    contextUsage: () => ctx.getContextUsage?.(),
+                    visibleWidth,
+                    truncateToWidth,
+                });
             },
         }));
     });
