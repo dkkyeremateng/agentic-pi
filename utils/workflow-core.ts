@@ -9,6 +9,16 @@
 // as an extension — it has no default export and is imported, like
 // ./workflow-utils.
 
+process.stderr.write("\n\n========== workflow-core.ts LOADED ==========\n\n");
+
+import {
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    statSync,
+    unlinkSync,
+    writeFileSync,
+} from "fs";
 import { spawn } from "child_process";
 import { homedir } from "os";
 import {
