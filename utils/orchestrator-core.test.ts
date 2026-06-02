@@ -9,7 +9,8 @@ import {
     runWorkflowCore,
     runSpecWorkflowCore,
 } from "./orchestrator-core";
-import type { AgentDef, PhaseState } from "./workflow-core";
+import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
+import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
 
 // Run with: npx tsx --test orchestrator-core.test.ts
 
@@ -25,21 +26,54 @@ function mkAgent(name: string): AgentDef {
     };
 }
 
-function mkHost(overrides: Partial<OrchestratorHost> = {}): OrchestratorHost {
-    return {
-        runPhase: async () => ({ output: "", ok: true }),
-        runAgent: async () => ({ output: "test output", exitCode: 0 }),
-        updateWidget: () => {},
-        notify: () => {},
-        setupSessions: () => {},
-        loadAgents: () => new Map(),
-        prepareRun: () => {},
-        publishLogs: () => {},
-        sharedContext: true,
-        maxDispatchesPerTurn: 20,
-        minDispatchOutputChars: 40,
-        ...overrides,
+// Deep partial for test overrides
+type DeepPartial<T> = {
+    [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
+};
+
+function mkHost(
+    overrides: DeepPartial<OrchestratorHost> = {},
+): OrchestratorHost {
+    const base: OrchestratorHost = {
+        execution: {
+            runPhase: async () => ({ output: "", ok: true }),
+            runAgent: async () => ({ output: "test output", exitCode: 0 }),
+        },
+        ui: {
+            updateWidget: () => {},
+            notify: () => {},
+            publishLogs: () => {},
+        },
+        setup: {
+            setupSessions: () => {},
+            loadAgents: () => new Map(),
+            prepareRun: () => {},
+        },
+        config: {
+            sharedContext: true,
+            maxDispatchesPerTurn: 20,
+            minDispatchOutputChars: 40,
+        },
     };
+
+    // Merge overrides
+    if (overrides.execution) {
+        Object.assign(base.execution, overrides.execution);
+    }
+    if (overrides.ui) {
+        Object.assign(base.ui, overrides.ui);
+    }
+    if (overrides.setup) {
+        Object.assign(base.setup, overrides.setup);
+    }
+    if (overrides.config) {
+        Object.assign(base.config, overrides.config);
+    }
+    if (overrides.signal !== undefined) {
+        base.signal = overrides.signal as AbortSignal;
+    }
+
+    return base;
 }
 
 function mkState(
@@ -121,7 +155,13 @@ describe("dispatchAgentCore", () => {
     it("returns error for unknown agent", async () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
-        const host = mkHost({ loadAgents: () => agents });
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
         const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
             st,
@@ -139,11 +179,17 @@ describe("dispatchAgentCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async () => ({
-                output: "Here is a detailed plan output with enough text for the test",
-                exitCode: 0,
-            }),
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => ({
+                    output: "Here is a detailed plan output with enough text for the test",
+                    exitCode: 0,
+                }),
+            },
         });
         const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
@@ -164,11 +210,17 @@ describe("dispatchAgentCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("tester", mkAgent("tester"));
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async () => ({
-                output: "something failed badly",
-                exitCode: 1,
-            }),
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => ({
+                    output: "something failed badly",
+                    exitCode: 1,
+                }),
+            },
         });
         const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
@@ -187,8 +239,14 @@ describe("dispatchAgentCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async () => ({ output: "   ", exitCode: 0 }),
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => ({ output: "   ", exitCode: 0 }),
+            },
         });
         const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
@@ -207,12 +265,20 @@ describe("dispatchAgentCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("researcher", mkAgent("researcher"));
         const host = mkHost({
-            loadAgents: () => agents,
-            minDispatchOutputChars: 40,
-            runAgent: async (_def, _task, phase) => {
-                // Simulate a tool-driven agent: short output but tool calls made
-                phase.toolCount = 5;
-                return { output: "Done.", exitCode: 0 };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            config: {
+                minDispatchOutputChars: 40,
+            },
+            execution: {
+                runAgent: async (_def, _task, phase) => {
+                    // Simulate a tool-driven agent: short output but tool calls made
+                    phase.toolCount = 5;
+                    return { output: "Done.", exitCode: 0 };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -233,22 +299,28 @@ describe("dispatchAgentCore", () => {
         agents.set("planner", mkAgent("planner"));
         let callCount = 0;
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async (_def, _task, phase) => {
-                callCount++;
-                if (callCount === 1) {
-                    // First call: simulate model fallback
-                    phase.modelFallback = true;
-                    phase.activeModel = "fallback/model";
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async (_def, _task, phase) => {
+                    callCount++;
+                    if (callCount === 1) {
+                        // First call: simulate model fallback
+                        phase.modelFallback = true;
+                        phase.activeModel = "fallback/model";
+                        return {
+                            output: "fallback output with enough text for this test",
+                            exitCode: 0,
+                        };
+                    }
                     return {
-                        output: "fallback output with enough text for this test",
+                        output: "normal output with enough text for this test",
                         exitCode: 0,
                     };
-                }
-                return {
-                    output: "normal output with enough text for this test",
-                    exitCode: 0,
-                };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -277,11 +349,17 @@ describe("dispatchAgentCore", () => {
         agents.set("planner", mkAgent("planner"));
         agents.set("tester", mkAgent("tester"));
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async () => ({
-                output: "enough output text here for testing purposes in this test",
-                exitCode: 0,
-            }),
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => ({
+                    output: "enough output text here for testing purposes in this test",
+                    exitCode: 0,
+                }),
+            },
         });
         const st = mkStateWithAgents(agents);
         const ctx = mkCtx();
@@ -297,8 +375,14 @@ describe("dispatchAgentCore", () => {
         agents.set("planner", mkAgent("planner"));
         const longOutput = "x".repeat(10000);
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async () => ({ output: longOutput, exitCode: 0 }),
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => ({ output: longOutput, exitCode: 0 }),
+            },
         });
         const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
@@ -316,11 +400,17 @@ describe("dispatchAgentCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async () => ({
-                output: "enough output for this test case to pass the minimum character threshold",
-                exitCode: 0,
-            }),
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => ({
+                    output: "enough output for this test case to pass the minimum character threshold",
+                    exitCode: 0,
+                }),
+            },
         });
         const st = mkStateWithAgents(agents, { dispatchMode: false });
         await dispatchAgentCore(
@@ -338,11 +428,17 @@ describe("dispatchAgentCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async () => ({
-                output: "enough output for this test case to pass the minimum character threshold",
-                exitCode: 0,
-            }),
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => ({
+                    output: "enough output for this test case to pass the minimum character threshold",
+                    exitCode: 0,
+                }),
+            },
         });
         const st = mkState({
             dispatchMode: true,
@@ -380,8 +476,14 @@ describe("dispatchAgentCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async () => ({ output: "   ", exitCode: 0 }),
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => ({ output: "   ", exitCode: 0 }),
+            },
         });
         const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
@@ -399,11 +501,17 @@ describe("dispatchAgentCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         const host = mkHost({
-            loadAgents: () => agents,
-            runAgent: async () => ({
-                output: "enough output for this test case to pass the minimum character threshold",
-                exitCode: 0,
-            }),
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => ({
+                    output: "enough output for this test case to pass the minimum character threshold",
+                    exitCode: 0,
+                }),
+            },
         });
         const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
@@ -423,14 +531,20 @@ describe("dispatchAgentCore", () => {
         agents.set("planner", mkAgent("planner"));
         let loadCount = 0;
         const host = mkHost({
-            loadAgents: () => {
-                loadCount++;
-                return agents;
+            setup: {
+                loadAgents: () => {
+                    loadCount++;
+                    return agents;
+                },
+                setupSessions: () => {},
+                prepareRun: () => {},
             },
-            runAgent: async () => ({
-                output: "enough output for this test case to pass the minimum character threshold",
-                exitCode: 0,
-            }),
+            execution: {
+                runAgent: async () => ({
+                    output: "enough output for this test case to pass the minimum character threshold",
+                    exitCode: 0,
+                }),
+            },
         });
         const st = mkStateWithAgents(agents, {
             freshDispatchSession: false,
@@ -451,14 +565,20 @@ describe("dispatchAgentCore", () => {
         agents.set("planner", mkAgent("planner"));
         let loadCount = 0;
         const host = mkHost({
-            loadAgents: () => {
-                loadCount++;
-                return agents;
+            setup: {
+                loadAgents: () => {
+                    loadCount++;
+                    return agents;
+                },
+                setupSessions: () => {},
+                prepareRun: () => {},
             },
-            runAgent: async () => ({
-                output: "enough output for this test case to pass the minimum character threshold",
-                exitCode: 0,
-            }),
+            execution: {
+                runAgent: async () => ({
+                    output: "enough output for this test case to pass the minimum character threshold",
+                    exitCode: 0,
+                }),
+            },
         });
         const st = mkStateWithAgents(agents, {
             freshDispatchSession: true,
@@ -488,7 +608,13 @@ describe("selectAgentsCore", () => {
     it("returns error when no valid agents in selection", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
-        const host = mkHost({ loadAgents: () => agents });
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
         const st = mkStateWithAgents(agents);
         const result = selectAgentsCore(st, host, ["nonexistent"], mkCtx());
         assert.ok(result.content[0].text.includes("No valid agents"));
@@ -498,7 +624,13 @@ describe("selectAgentsCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         agents.set("tester", mkAgent("tester"));
-        const host = mkHost({ loadAgents: () => agents });
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
         const st = mkStateWithAgents(agents);
         const result = selectAgentsCore(
             st,
@@ -516,7 +648,13 @@ describe("selectAgentsCore", () => {
     it("sets dispatch mode", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
-        const host = mkHost({ loadAgents: () => agents });
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
         const st = mkStateWithAgents(agents, { dispatchMode: false });
         selectAgentsCore(st, host, ["planner"], mkCtx());
         assert.equal(st.dispatchMode, true);
@@ -539,7 +677,13 @@ describe("selectAgentsCore", () => {
             attempt: 1,
             modelFallback: false,
         };
-        const host = mkHost({ loadAgents: () => agents });
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
         const st = mkStateWithAgents(agents, {
             dispatchMode: true,
             freshDispatchSession: false,
@@ -569,7 +713,13 @@ describe("selectAgentsCore", () => {
             attempt: 1,
             modelFallback: false,
         };
-        const host = mkHost({ loadAgents: () => agents });
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
         const st = mkState({
             freshDispatchSession: true,
             phases: [existingPhase],
@@ -584,7 +734,13 @@ describe("selectAgentsCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         agents.set("tester", mkAgent("tester"));
-        const host = mkHost({ loadAgents: () => agents });
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
         const st = mkStateWithAgents(agents);
         const result = selectAgentsCore(
             st,
@@ -600,9 +756,13 @@ describe("selectAgentsCore", () => {
         agents.set("planner", mkAgent("planner"));
         let loadCount = 0;
         const host = mkHost({
-            loadAgents: () => {
-                loadCount++;
-                return agents;
+            setup: {
+                loadAgents: () => {
+                    loadCount++;
+                    return agents;
+                },
+                setupSessions: () => {},
+                prepareRun: () => {},
             },
         });
         const st = mkStateWithAgents(agents, {
@@ -617,9 +777,13 @@ describe("selectAgentsCore", () => {
         agents.set("planner", mkAgent("planner"));
         let loadCount = 0;
         const host = mkHost({
-            loadAgents: () => {
-                loadCount++;
-                return agents;
+            setup: {
+                loadAgents: () => {
+                    loadCount++;
+                    return agents;
+                },
+                setupSessions: () => {},
+                prepareRun: () => {},
             },
         });
         const st = mkStateWithAgents(agents, {
@@ -646,7 +810,13 @@ describe("runWorkflowCore re-entry guard", () => {
         ]) {
             agents.set(name, mkAgent(name));
         }
-        const host = mkHost({ loadAgents: () => agents });
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
         const st = mkStateWithAgents(agents, { running: true });
         const result = await runWorkflowCore(
             st,
@@ -668,7 +838,13 @@ describe("runSpecWorkflowCore re-entry guard", () => {
         agents.set("planner", mkAgent("planner"));
         agents.set("critic", mkAgent("critic"));
         agents.set("documenter", mkAgent("documenter"));
-        const host = mkHost({ loadAgents: () => agents });
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
         const st = mkStateWithAgents(agents, { running: true });
         const result = await runSpecWorkflowCore(
             st,
@@ -716,25 +892,34 @@ Build feature X according to the requirements.
         const agents = mkFullAgentSet();
         const runPhaseCalls: string[] = [];
         const host = mkHost({
-            loadAgents: () => agents,
-            runPhase: async (phase) => {
-                runPhaseCalls.push(phase.agent);
-                if (phase.agent === "planner") {
-                    return { output: mkValidPlan(), ok: true };
-                }
-                if (phase.agent === "validator") {
-                    return { output: "VERDICT: PASS", ok: true };
-                }
-                if (phase.agent === "critic") {
-                    return { output: "APPROVED\nPlan looks good", ok: true };
-                }
-                if (phase.agent === "ship") {
-                    return {
-                        output: "SHIP: SHIPPED\nhttps://github.com/test/pull/1",
-                        ok: true,
-                    };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    runPhaseCalls.push(phase.agent);
+                    if (phase.agent === "planner") {
+                        return { output: mkValidPlan(), ok: true };
+                    }
+                    if (phase.agent === "validator") {
+                        return { output: "VERDICT: PASS", ok: true };
+                    }
+                    if (phase.agent === "critic") {
+                        return {
+                            output: "APPROVED\nPlan looks good",
+                            ok: true,
+                        };
+                    }
+                    if (phase.agent === "ship") {
+                        return {
+                            output: "SHIP: SHIPPED\nhttps://github.com/test/pull/1",
+                            ok: true,
+                        };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -762,28 +947,34 @@ Build feature X according to the requirements.
         const agents = mkFullAgentSet();
         let criticCalls = 0;
         const host = mkHost({
-            loadAgents: () => agents,
-            runPhase: async (phase) => {
-                if (phase.agent === "planner") {
-                    return { output: mkValidPlan(), ok: true };
-                }
-                if (phase.agent === "critic") {
-                    criticCalls++;
-                    if (criticCalls === 1) {
-                        return {
-                            output: "REVISE BEFORE IMPLEMENTING\nNeeds more detail",
-                            ok: true,
-                        };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "planner") {
+                        return { output: mkValidPlan(), ok: true };
                     }
-                    return { output: "APPROVED\nPlan approved", ok: true };
-                }
-                if (phase.agent === "validator") {
-                    return { output: "VERDICT: PASS", ok: true };
-                }
-                if (phase.agent === "ship") {
-                    return { output: "SHIP: SHIPPED", ok: true };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+                    if (phase.agent === "critic") {
+                        criticCalls++;
+                        if (criticCalls === 1) {
+                            return {
+                                output: "REVISE BEFORE IMPLEMENTING\nNeeds more detail",
+                                ok: true,
+                            };
+                        }
+                        return { output: "APPROVED\nPlan approved", ok: true };
+                    }
+                    if (phase.agent === "validator") {
+                        return { output: "VERDICT: PASS", ok: true };
+                    }
+                    if (phase.agent === "ship") {
+                        return { output: "SHIP: SHIPPED", ok: true };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -803,32 +994,38 @@ Build feature X according to the requirements.
         let validatorCalls = 0;
         let implementerCalls = 0;
         const host = mkHost({
-            loadAgents: () => agents,
-            runPhase: async (phase) => {
-                if (phase.agent === "planner") {
-                    return { output: mkValidPlan(), ok: true };
-                }
-                if (phase.agent === "validator") {
-                    validatorCalls++;
-                    if (validatorCalls === 1) {
-                        return {
-                            output: "VERDICT: FAIL\nIssues found",
-                            ok: true,
-                        };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "planner") {
+                        return { output: mkValidPlan(), ok: true };
                     }
-                    return { output: "VERDICT: PASS", ok: true };
-                }
-                if (phase.agent === "implementer") {
-                    implementerCalls++;
-                    return { output: "Implementation complete", ok: true };
-                }
-                if (phase.agent === "critic") {
-                    return { output: "APPROVED\nPlan approved", ok: true };
-                }
-                if (phase.agent === "ship") {
-                    return { output: "SHIP: SHIPPED", ok: true };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+                    if (phase.agent === "validator") {
+                        validatorCalls++;
+                        if (validatorCalls === 1) {
+                            return {
+                                output: "VERDICT: FAIL\nIssues found",
+                                ok: true,
+                            };
+                        }
+                        return { output: "VERDICT: PASS", ok: true };
+                    }
+                    if (phase.agent === "implementer") {
+                        implementerCalls++;
+                        return { output: "Implementation complete", ok: true };
+                    }
+                    if (phase.agent === "critic") {
+                        return { output: "APPROVED\nPlan approved", ok: true };
+                    }
+                    if (phase.agent === "ship") {
+                        return { output: "SHIP: SHIPPED", ok: true };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -848,18 +1045,27 @@ Build feature X according to the requirements.
     it("exhausts max retries and returns failed-after-retries", async () => {
         const agents = mkFullAgentSet();
         const host = mkHost({
-            loadAgents: () => agents,
-            runPhase: async (phase) => {
-                if (phase.agent === "planner") {
-                    return { output: mkValidPlan(), ok: true };
-                }
-                if (phase.agent === "validator") {
-                    return { output: "VERDICT: FAIL\nStill broken", ok: true };
-                }
-                if (phase.agent === "critic") {
-                    return { output: "APPROVED\nPlan approved", ok: true };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "planner") {
+                        return { output: mkValidPlan(), ok: true };
+                    }
+                    if (phase.agent === "validator") {
+                        return {
+                            output: "VERDICT: FAIL\nStill broken",
+                            ok: true,
+                        };
+                    }
+                    if (phase.agent === "critic") {
+                        return { output: "APPROVED\nPlan approved", ok: true };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -879,16 +1085,22 @@ Build feature X according to the requirements.
         agents.set("scout", mkAgent("scout"));
         const runPhaseCalls: string[] = [];
         const host = mkHost({
-            loadAgents: () => agents,
-            runPhase: async (phase) => {
-                runPhaseCalls.push(phase.agent);
-                if (phase.agent === "scout") {
-                    return { output: "Scout failed", ok: false };
-                }
-                if (phase.agent === "planner") {
-                    return { output: mkValidPlan(), ok: true };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    runPhaseCalls.push(phase.agent);
+                    if (phase.agent === "scout") {
+                        return { output: "Scout failed", ok: false };
+                    }
+                    if (phase.agent === "planner") {
+                        return { output: mkValidPlan(), ok: true };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
             },
         });
         const st = mkStateWithAgents(agents, {
@@ -921,24 +1133,30 @@ Build feature X according to the requirements.
     it("continues to ship when documenter fails", async () => {
         const agents = mkFullAgentSet();
         const host = mkHost({
-            loadAgents: () => agents,
-            runPhase: async (phase) => {
-                if (phase.agent === "planner") {
-                    return { output: mkValidPlan(), ok: true };
-                }
-                if (phase.agent === "validator") {
-                    return { output: "VERDICT: PASS", ok: true };
-                }
-                if (phase.agent === "critic") {
-                    return { output: "APPROVED\nPlan approved", ok: true };
-                }
-                if (phase.agent === "documenter") {
-                    return { output: "Documentation failed", ok: false };
-                }
-                if (phase.agent === "ship") {
-                    return { output: "SHIP: SHIPPED", ok: true };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "planner") {
+                        return { output: mkValidPlan(), ok: true };
+                    }
+                    if (phase.agent === "validator") {
+                        return { output: "VERDICT: PASS", ok: true };
+                    }
+                    if (phase.agent === "critic") {
+                        return { output: "APPROVED\nPlan approved", ok: true };
+                    }
+                    if (phase.agent === "documenter") {
+                        return { output: "Documentation failed", ok: false };
+                    }
+                    if (phase.agent === "ship") {
+                        return { output: "SHIP: SHIPPED", ok: true };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -957,24 +1175,30 @@ Build feature X according to the requirements.
         const controller = new AbortController();
         let phaseCount = 0;
         const host = mkHost({
-            loadAgents: () => agents,
-            signal: controller.signal,
-            runPhase: async (phase) => {
-                phaseCount++;
-                if (phaseCount === 2) {
-                    controller.abort();
-                }
-                if (phase.agent === "planner") {
-                    return { output: mkValidPlan(), ok: true };
-                }
-                if (phase.agent === "validator") {
-                    return { output: "VERDICT: PASS", ok: true };
-                }
-                if (phase.agent === "critic") {
-                    return { output: "APPROVED\nPlan approved", ok: true };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
             },
+            execution: {
+                runPhase: async (phase) => {
+                    phaseCount++;
+                    if (phaseCount === 2) {
+                        controller.abort();
+                    }
+                    if (phase.agent === "planner") {
+                        return { output: mkValidPlan(), ok: true };
+                    }
+                    if (phase.agent === "validator") {
+                        return { output: "VERDICT: PASS", ok: true };
+                    }
+                    if (phase.agent === "critic") {
+                        return { output: "APPROVED\nPlan approved", ok: true };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
+            },
+            signal: controller.signal,
         });
         const st = mkStateWithAgents(agents);
         const result = await runWorkflowCore(
@@ -1005,13 +1229,19 @@ describe("runSpecWorkflowCore", () => {
         const agents = mkSpecAgentSet();
         const runPhaseCalls: string[] = [];
         const host = mkHost({
-            loadAgents: () => agents,
-            runPhase: async (phase) => {
-                runPhaseCalls.push(phase.agent);
-                if (phase.agent === "critic") {
-                    return { output: "APPROVED\nSpec approved", ok: true };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    runPhaseCalls.push(phase.agent);
+                    if (phase.agent === "critic") {
+                        return { output: "APPROVED\nSpec approved", ok: true };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -1030,15 +1260,21 @@ describe("runSpecWorkflowCore", () => {
     it("returns needs-review when critic rejects", async () => {
         const agents = mkSpecAgentSet();
         const host = mkHost({
-            loadAgents: () => agents,
-            runPhase: async (phase) => {
-                if (phase.agent === "critic") {
-                    return {
-                        output: "REVISE BEFORE DOCUMENTING\nNeeds more detail",
-                        ok: true,
-                    };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "critic") {
+                        return {
+                            output: "REVISE BEFORE DOCUMENTING\nNeeds more detail",
+                            ok: true,
+                        };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -1056,13 +1292,19 @@ describe("runSpecWorkflowCore", () => {
         const agents = mkSpecAgentSet();
         const runPhaseCalls: string[] = [];
         const host = mkHost({
-            loadAgents: () => agents,
-            runPhase: async (phase) => {
-                runPhaseCalls.push(phase.agent);
-                if (phase.agent === "planner") {
-                    return { output: "Planning failed", ok: false };
-                }
-                return { output: `${phase.agent} output`, ok: true };
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    runPhaseCalls.push(phase.agent);
+                    if (phase.agent === "planner") {
+                        return { output: "Planning failed", ok: false };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
             },
         });
         const st = mkStateWithAgents(agents);
@@ -1081,12 +1323,359 @@ describe("runSpecWorkflowCore", () => {
 
 // ── spawnAgentWithModel ──────────────────────────
 // NOTE: Testing spawnAgentWithModel directly requires mocking child_process.spawn,
-// which is not reliably supported by Node's built-in test runner. The function's
-// behavior is validated through integration testing and the extensive mocking
-// in runWorkflowCore/runSpecWorkflowCore tests above (which exercise the full
-// pipeline via mock runPhase/runAgent callbacks). Future work could add tests
-// using a proper mocking framework or by extracting the JSON parsing logic
-// into a separately-testable pure function.
+// which is not reliably supported by Node's built-in test runner. However, the
+// core JSON parsing and result computation logic has been extracted into pure
+// functions (handleSpawnEvent and computeSpawnResult) that can be tested without
+// subprocess mocking.
+
+describe("handleSpawnEvent", () => {
+    function mkPhase(): PhaseState {
+        return {
+            label: "test",
+            agent: "test",
+            status: "running",
+            elapsed: 0,
+            note: "",
+            log: "",
+            droppedLines: 0,
+            toolCount: 0,
+            contextPct: 0,
+            attempt: 1,
+            modelFallback: false,
+        };
+    }
+
+    function mkState(): SpawnEventState {
+        return {
+            answer: [],
+            finalText: "",
+            finalError: "",
+            activity: "",
+            stderrTail: "",
+            droppedLines: 0,
+            toolCount: 0,
+        };
+    }
+
+    const noopPaint = () => {};
+
+    it("accumulates text_delta into answer and activity", () => {
+        const state = mkState();
+        const phase = mkPhase();
+
+        handleSpawnEvent(
+            {
+                type: "message_update",
+                assistantMessageEvent: { type: "text_delta", delta: "Hello" },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+
+        assert.equal(state.answer.join(""), "Hello");
+        assert.equal(state.activity, "Hello");
+    });
+
+    it("accumulates multiple text_delta events", () => {
+        const state = mkState();
+        const phase = mkPhase();
+
+        handleSpawnEvent(
+            {
+                type: "message_update",
+                assistantMessageEvent: { type: "text_delta", delta: "Hello " },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+        handleSpawnEvent(
+            {
+                type: "message_update",
+                assistantMessageEvent: { type: "text_delta", delta: "world" },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+
+        assert.equal(state.answer.join(""), "Hello world");
+    });
+
+    it("increments toolCount on tool_execution_start", () => {
+        const state = mkState();
+        const phase = mkPhase();
+
+        handleSpawnEvent(
+            {
+                type: "tool_execution_start",
+                toolName: "bash",
+                args: { command: "ls" },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+
+        assert.equal(state.toolCount, 1);
+        assert.equal(phase.toolCount, 1);
+        assert.ok(state.activity.includes("bash"));
+    });
+
+    it("appends tool completion marker on tool_execution_end", () => {
+        const state = mkState();
+        const phase = mkPhase();
+
+        handleSpawnEvent(
+            {
+                type: "tool_execution_start",
+                toolName: "bash",
+                args: { command: "ls" },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+        handleSpawnEvent(
+            {
+                type: "tool_execution_end",
+                toolName: "bash",
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+
+        assert.ok(state.activity.includes("✓ bash"));
+    });
+
+    it("captures finalText from message_end", () => {
+        const state = mkState();
+        const phase = mkPhase();
+
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "Final answer" }],
+                },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+
+        assert.equal(state.finalText, "Final answer");
+    });
+
+    it("captures token usage from message_end", () => {
+        const state = mkState();
+        const phase = mkPhase();
+
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: {
+                    role: "assistant",
+                    content: [],
+                    usage: {
+                        input: 1000,
+                        output: 500,
+                        contextWindow: 100000,
+                    },
+                },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+
+        assert.deepEqual(state.capturedTokens, {
+            input: 1000,
+            output: 500,
+            contextWindow: 100000,
+        });
+        assert.equal(phase.contextPct, 1);
+    });
+
+    it("captures finalError from message_end with stopReason error", () => {
+        const state = mkState();
+        const phase = mkPhase();
+
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: {
+                    role: "assistant",
+                    content: [],
+                    stopReason: "error",
+                    errorMessage: "Quota exceeded",
+                },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+
+        assert.equal(state.finalError, "Quota exceeded");
+    });
+
+    it("handles agent_end event type", () => {
+        const state = mkState();
+        const phase = mkPhase();
+
+        handleSpawnEvent(
+            {
+                type: "agent_end",
+                messages: [
+                    {
+                        role: "assistant",
+                        content: [{ type: "text", text: "Agent done" }],
+                    },
+                ],
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+
+        assert.equal(state.finalText, "Agent done");
+    });
+});
+
+describe("computeSpawnResult", () => {
+    function mkState(
+        overrides: Partial<SpawnEventState> = {},
+    ): SpawnEventState {
+        return {
+            answer: [],
+            finalText: "",
+            finalError: "",
+            activity: "",
+            stderrTail: "",
+            droppedLines: 0,
+            toolCount: 0,
+            ...overrides,
+        };
+    }
+
+    it("prefers streamed deltas over finalText", () => {
+        const state = mkState({
+            answer: ["Streamed", " content"],
+            finalText: "Final text",
+        });
+
+        const result = computeSpawnResult(state, 0, false, 0, "");
+
+        assert.equal(result.output, "Streamed content");
+        assert.equal(result.exitCode, 0);
+    });
+
+    it("falls back to finalText when no deltas", () => {
+        const state = mkState({
+            answer: [],
+            finalText: "Final text",
+        });
+
+        const result = computeSpawnResult(state, 0, false, 0, "");
+
+        assert.equal(result.output, "Final text");
+    });
+
+    it("appends agent error when finalError is set", () => {
+        const state = mkState({
+            answer: ["Some output"],
+            finalError: "Quota exceeded",
+        });
+
+        const result = computeSpawnResult(state, 0, false, 0, "");
+
+        assert.ok(result.output.includes("[agent error]"));
+        assert.ok(result.output.includes("Quota exceeded"));
+        assert.equal(result.exitCode, 1);
+    });
+
+    it("appends timeout message when timedOut", () => {
+        const state = mkState();
+
+        const result = computeSpawnResult(state, null, true, 60000, "");
+
+        assert.ok(result.output.includes("[timed out after 1m"));
+        assert.equal(result.exitCode, 1);
+    });
+
+    it("appends stderr when exit code is non-zero", () => {
+        const state = mkState();
+
+        const result = computeSpawnResult(
+            state,
+            1,
+            false,
+            0,
+            "Error: something failed",
+        );
+
+        assert.ok(result.output.includes("[stderr]"));
+        assert.ok(result.output.includes("Error: something failed"));
+        assert.equal(result.exitCode, 1);
+    });
+
+    it("returns exit code 0 on success", () => {
+        const state = mkState({ answer: ["Success"] });
+
+        const result = computeSpawnResult(state, 0, false, 0, "");
+
+        assert.equal(result.exitCode, 0);
+    });
+
+    it("includes captured tokens in result", () => {
+        const state = mkState({
+            answer: ["Output"],
+            capturedTokens: {
+                input: 1000,
+                output: 500,
+                contextWindow: 100000,
+            },
+        });
+
+        const result = computeSpawnResult(state, 0, false, 0, "");
+
+        assert.deepEqual(result.tokens, {
+            input: 1000,
+            output: 500,
+            contextWindow: 100000,
+        });
+    });
+
+    it("forces exit code 1 when timedOut even if process exited 0", () => {
+        const state = mkState({ answer: ["Output"] });
+
+        const result = computeSpawnResult(state, 0, true, 60000, "");
+
+        assert.equal(result.exitCode, 1);
+    });
+
+    it("forces exit code 1 when finalError even if process exited 0", () => {
+        const state = mkState({
+            answer: ["Output"],
+            finalError: "Auth failed",
+        });
+
+        const result = computeSpawnResult(state, 0, false, 0, "");
+
+        assert.equal(result.exitCode, 1);
+    });
+
+    it("handles null exit code as 1", () => {
+        const state = mkState({ answer: ["Output"] });
+
+        const result = computeSpawnResult(state, null, false, 0, "");
+
+        assert.equal(result.exitCode, 1);
+    });
+});
 
 describe("spawnAgentWithModel (placeholder)", () => {
     it("placeholder: spawn tests require child_process mocking", () => {
@@ -1095,6 +1684,7 @@ describe("spawnAgentWithModel (placeholder)", () => {
         // 2. Manual testing with real pi subprocesses
         // 3. The extensive mocking of runPhase/runAgent in orchestrator tests
         //    which exercise the full pipeline including spawn behavior.
+        // 4. The pure function tests above (handleSpawnEvent, computeSpawnResult)
         assert.ok(true);
     });
 });

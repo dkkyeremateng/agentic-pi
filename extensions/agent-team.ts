@@ -222,24 +222,33 @@ export default function (pi: ExtensionAPI) {
 
     // Callbacks + config the shared orchestration delegates back to.
     const host: OrchestratorHost = {
-        runPhase: (phase, task, cwd) => runPhase(phase, task, cwd),
-        runAgent: (def, task, phase, cwd) => runAgent(def, task, phase, cwd),
-        updateWidget: () => updateWidget(),
-        notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
-        setupSessions: (cwd, wipe) => setupSessions(cwd, wipe),
-        loadAgents: (cwd) => {
-            // The dispatch/select paths refresh per-agent models here (the
-            // pipeline variant has no per-agent models, so it just loads agents).
-            agentModels = loadAgentModels(cwd);
-            return loadAgents(cwd);
+        execution: {
+            runPhase: (phase, task, cwd) => runPhase(phase, task, cwd),
+            runAgent: (def, task, phase, cwd) =>
+                runAgent(def, task, phase, cwd),
         },
-        prepareRun: (ctx) => {
-            agentModels = loadAgentModels(ctx.cwd);
+        ui: {
+            updateWidget: () => updateWidget(),
+            notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
+            publishLogs: () => publishLogs(),
         },
-        publishLogs: () => publishLogs(),
-        sharedContext: SHARED_CONTEXT,
-        maxDispatchesPerTurn: MAX_DISPATCHES_PER_TURN,
-        minDispatchOutputChars: MIN_DISPATCH_OUTPUT_CHARS,
+        setup: {
+            setupSessions: (cwd, wipe) => setupSessions(cwd, wipe),
+            loadAgents: (cwd) => {
+                // The dispatch/select paths refresh per-agent models here (the
+                // pipeline variant has no per-agent models, so it just loads agents).
+                agentModels = loadAgentModels(cwd);
+                return loadAgents(cwd);
+            },
+            prepareRun: (ctx) => {
+                agentModels = loadAgentModels(ctx.cwd);
+            },
+        },
+        config: {
+            sharedContext: SHARED_CONTEXT,
+            maxDispatchesPerTurn: MAX_DISPATCHES_PER_TURN,
+            minDispatchOutputChars: MIN_DISPATCH_OUTPUT_CHARS,
+        },
     };
 
     // The only tools the primary agent (orchestrator) may use. It has NO direct

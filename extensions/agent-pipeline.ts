@@ -159,19 +159,28 @@ export default function (pi: ExtensionAPI) {
 
     // Callbacks + config the shared orchestration delegates back to.
     const host: OrchestratorHost = {
-        runPhase: (phase, task, cwd) => runPhase(phase, task, cwd),
-        runAgent: (def, task, phase, cwd) => runAgent(def, task, phase, cwd),
-        updateWidget: () => updateWidget(),
-        notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
-        setupSessions: (cwd, wipe) => setupSessions(cwd, wipe),
-        loadAgents: (cwd) => loadAgents(cwd),
-        prepareRun: (ctx) => {
-            sessionModel = sessionModelOf(ctx);
+        execution: {
+            runPhase: (phase, task, cwd) => runPhase(phase, task, cwd),
+            runAgent: (def, task, phase, cwd) =>
+                runAgent(def, task, phase, cwd),
         },
-        publishLogs: () => publishLogs(),
-        sharedContext: true, // the pipeline always applies the curated bundle
-        maxDispatchesPerTurn: MAX_DISPATCHES_PER_TURN,
-        minDispatchOutputChars: MIN_DISPATCH_OUTPUT_CHARS,
+        ui: {
+            updateWidget: () => updateWidget(),
+            notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
+            publishLogs: () => publishLogs(),
+        },
+        setup: {
+            setupSessions: (cwd, wipe) => setupSessions(cwd, wipe),
+            loadAgents: (cwd) => loadAgents(cwd),
+            prepareRun: (ctx) => {
+                sessionModel = sessionModelOf(ctx);
+            },
+        },
+        config: {
+            sharedContext: true, // the pipeline always applies the curated bundle
+            maxDispatchesPerTurn: MAX_DISPATCHES_PER_TURN,
+            minDispatchOutputChars: MIN_DISPATCH_OUTPUT_CHARS,
+        },
     };
 
     // The only tools the primary agent (orchestrator) may use — it has NO direct

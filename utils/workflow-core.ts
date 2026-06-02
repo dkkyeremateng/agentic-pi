@@ -1963,6 +1963,149 @@ export interface SpawnResult {
 // This is the single shared implementation used by agent-pipeline, agent-team,
 // and the WorkflowRuntime class. Each caller handles model resolution and
 // fallback differently, so this function only handles the spawn itself.
+// ── Pure event handler for spawn events ────────────
+// Extracted for unit testing without subprocess mocking.
+export interface SpawnEventState {
+    answer: string[];
+    finalText: string;
+    finalError: string;
+    activity: string;
+    stderrTail: string;
+    capturedTokens?: TokenUsage;
+    droppedLines: number;
+    toolCount: number;
+    contextPct?: number;
+}
+
+export function handleSpawnEvent(
+    event: any,
+    state: SpawnEventState,
+    phase: PhaseState,
+    paint: (force?: boolean) => void,
+): void {
+    if (event.type === "message_update") {
+        const ev = event.assistantMessageEvent;
+        if (ev?.type === "text_delta") {
+            state.answer.push(ev.delta || "");
+            state.activity += ev.delta || "";
+            if (state.activity.length > LOG_CAP_CHARS)
+                state.activity = state.activity.slice(-LOG_CAP_CHARS);
+            phase.log = state.activity;
+            phase.note =
+                state.activity
+                    .split("\n")
+                    .filter((l: string) => l.trim())
+                    .pop() || "";
+            paint();
+        } else if (ev?.type === "thinking_delta") {
+            state.activity += ev.delta || "";
+            if (state.activity.length > LOG_CAP_CHARS)
+                state.activity = state.activity.slice(-LOG_CAP_CHARS);
+            phase.log = state.activity;
+            phase.note =
+                state.activity
+                    .split("\n")
+                    .filter((l: string) => l.trim())
+                    .pop() || "";
+            paint();
+        }
+    } else if (event.type === "tool_execution_start") {
+        phase.toolCount++;
+        state.toolCount++;
+        const compactArgs = (a: any): string => {
+            if (!a || typeof a !== "object") return "";
+            const s = Object.entries(a)
+                .map(
+                    ([k, v]) =>
+                        `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`,
+                )
+                .join(" ");
+            return s.length > 70 ? s.slice(0, 69) + "…" : s;
+        };
+        state.activity += `\n→ ${event.toolName} ${compactArgs(event.args)}\n`;
+        if (state.activity.length > LOG_CAP_CHARS)
+            state.activity = state.activity.slice(-LOG_CAP_CHARS);
+        phase.log = state.activity;
+        phase.note =
+            state.activity
+                .split("\n")
+                .filter((l: string) => l.trim())
+                .pop() || "";
+        paint(true);
+    } else if (event.type === "tool_execution_end") {
+        state.activity += `✓ ${event.toolName}\n`;
+        if (state.activity.length > LOG_CAP_CHARS)
+            state.activity = state.activity.slice(-LOG_CAP_CHARS);
+        phase.log = state.activity;
+        phase.note =
+            state.activity
+                .split("\n")
+                .filter((l: string) => l.trim())
+                .pop() || "";
+        paint(true);
+    } else if (event.type === "message_end" || event.type === "agent_end") {
+        const msg =
+            event.type === "message_end"
+                ? event.message
+                : (event.messages || []).find(
+                      (m: any) => m.role === "assistant",
+                  );
+        if (msg?.role === "assistant" && Array.isArray(msg.content)) {
+            const text = msg.content
+                .filter((c: any) => c?.type === "text")
+                .map((c: any) => c.text || "")
+                .join("");
+            if (text) state.finalText = text;
+            if (msg.stopReason === "error" && msg.errorMessage)
+                state.finalError = String(msg.errorMessage);
+        }
+        if (msg?.usage?.input) {
+            const ctxWindow =
+                msg.usage.contextWindow || msg.usage.max_tokens || 200_000;
+            phase.contextPct = Math.min(
+                100,
+                Math.round((msg.usage.input / ctxWindow) * 100),
+            );
+            state.contextPct = phase.contextPct;
+            state.capturedTokens = {
+                input: msg.usage.input || 0,
+                output: msg.usage.output || 0,
+                contextWindow: ctxWindow,
+            };
+            paint();
+        }
+    }
+}
+
+// Compute the final output and exit code from spawn state.
+export function computeSpawnResult(
+    state: SpawnEventState,
+    exitCode: number | null,
+    timedOut: boolean,
+    agentTimeoutMs: number,
+    stderrTail: string,
+): SpawnResult {
+    let output = state.answer.join("") || state.finalText;
+    if (state.finalError) {
+        output +=
+            (output ? "\n\n" : "") +
+            `[agent error] ${state.finalError.slice(0, STDERR_TAIL_CAP)}`;
+    }
+    if (timedOut) {
+        output +=
+            (output ? "\n\n" : "") +
+            `[timed out after ${Math.round(agentTimeoutMs / 60_000)}m — killed by PI_WORKFLOW_AGENT_TIMEOUT]`;
+    }
+    if ((exitCode ?? 1) !== 0 && stderrTail.trim()) {
+        output += (output ? "\n\n" : "") + `[stderr]\n${stderrTail.trim()}`;
+    }
+    return {
+        output,
+        exitCode: timedOut || state.finalError ? 1 : (exitCode ?? 1),
+        tokens: state.capturedTokens,
+    };
+}
+
 export function spawnAgentWithModel(
     agentDef: AgentDef,
     task: string,
@@ -1997,19 +2140,15 @@ export function spawnAgentWithModel(
     // Record the model this run is actually using so the card reflects it.
     phase.activeModel = model || undefined;
 
-    const answer: string[] = [];
-    // Captured from the terminal message_end/agent_end event:
-    //  - finalText: the assistant's final content[], a fallback for models that
-    //    don't stream text_delta (so we don't report "no usable output").
-    //  - finalError: a model-level failure (e.g. quota/auth) that pi reports via
-    //    stopReason:"error" while still exiting 0 with empty content — otherwise
-    //    swallowed, leaving the agent looking mysteriously empty.
-    let finalText = "";
-    let finalError = "";
-    let activity = "";
-    let stderrTail = "";
-    let timedOut = false;
-    let capturedTokens: TokenUsage | undefined;
+    const state: SpawnEventState = {
+        answer: [],
+        finalText: "",
+        finalError: "",
+        activity: "",
+        stderrTail: "",
+        droppedLines: 0,
+        toolCount: 0,
+    };
     const start = Date.now();
 
     return new Promise((resolve) => {
@@ -2020,6 +2159,7 @@ export function spawnAgentWithModel(
         });
         config.setCurrentProc(proc);
 
+        let timedOut = false;
         const watchdog =
             config.agentTimeoutMs > 0
                 ? setTimeout(() => {
@@ -2037,27 +2177,6 @@ export function spawnAgentWithModel(
             lastPaint = now;
             config.updateWidget();
         };
-        const pushActivity = (s: string) => {
-            activity += s;
-            if (activity.length > LOG_CAP_CHARS)
-                activity = activity.slice(-LOG_CAP_CHARS);
-            phase.log = activity;
-            phase.note =
-                activity
-                    .split("\n")
-                    .filter((l: string) => l.trim())
-                    .pop() || "";
-        };
-        const compactArgs = (a: any): string => {
-            if (!a || typeof a !== "object") return "";
-            const s = Object.entries(a)
-                .map(
-                    ([k, v]) =>
-                        `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`,
-                )
-                .join(" ");
-            return s.length > 70 ? s.slice(0, 69) + "…" : s;
-        };
 
         const timer = setInterval(() => {
             phase.elapsed = Date.now() - start;
@@ -2074,77 +2193,17 @@ export function spawnAgentWithModel(
                 if (!line.trim()) continue;
                 try {
                     const event = JSON.parse(line);
-                    if (event.type === "message_update") {
-                        const ev = event.assistantMessageEvent;
-                        if (ev?.type === "text_delta") {
-                            answer.push(ev.delta || "");
-                            pushActivity(ev.delta || "");
-                            paint();
-                        } else if (ev?.type === "thinking_delta") {
-                            pushActivity(ev.delta || "");
-                            paint();
-                        }
-                    } else if (event.type === "tool_execution_start") {
-                        phase.toolCount++;
-                        pushActivity(
-                            `\n→ ${event.toolName} ${compactArgs(event.args)}\n`,
-                        );
-                        paint(true);
-                    } else if (event.type === "tool_execution_end") {
-                        pushActivity(`✓ ${event.toolName}\n`);
-                        paint(true);
-                    } else if (
-                        event.type === "message_end" ||
-                        event.type === "agent_end"
-                    ) {
-                        const msg =
-                            event.type === "message_end"
-                                ? event.message
-                                : (event.messages || []).find(
-                                      (m: any) => m.role === "assistant",
-                                  );
-                        // Capture the final assistant text (subagent mode emits
-                        // it only here, not as streaming deltas). The last
-                        // assistant message wins — earlier ones carry tool-use.
-                        if (
-                            msg?.role === "assistant" &&
-                            Array.isArray(msg.content)
-                        ) {
-                            const text = msg.content
-                                .filter((c: any) => c?.type === "text")
-                                .map((c: any) => c.text || "")
-                                .join("");
-                            if (text) finalText = text;
-                            if (msg.stopReason === "error" && msg.errorMessage)
-                                finalError = String(msg.errorMessage);
-                        }
-                        if (msg?.usage?.input) {
-                            const ctxWindow =
-                                msg.usage.contextWindow ||
-                                msg.usage.max_tokens ||
-                                200_000;
-                            phase.contextPct = Math.min(
-                                100,
-                                Math.round((msg.usage.input / ctxWindow) * 100),
-                            );
-                            capturedTokens = {
-                                input: msg.usage.input || 0,
-                                output: msg.usage.output || 0,
-                                contextWindow: ctxWindow,
-                            };
-                            paint();
-                        }
-                    }
+                    handleSpawnEvent(event, state, phase, paint);
                 } catch {
-                    phase.droppedLines++;
+                    state.droppedLines++;
                 }
             }
         });
         proc.stderr!.setEncoding("utf-8");
         proc.stderr!.on("data", (chunk: string) => {
-            stderrTail += chunk;
-            if (stderrTail.length > STDERR_TAIL_CAP)
-                stderrTail = stderrTail.slice(-STDERR_TAIL_CAP);
+            state.stderrTail += chunk;
+            if (state.stderrTail.length > STDERR_TAIL_CAP)
+                state.stderrTail = state.stderrTail.slice(-STDERR_TAIL_CAP);
         });
 
         proc.on("close", (code) => {
@@ -2156,45 +2215,33 @@ export function spawnAgentWithModel(
                         event.type === "message_update" &&
                         event.assistantMessageEvent?.type === "text_delta"
                     ) {
-                        answer.push(event.assistantMessageEvent.delta || "");
+                        state.answer.push(
+                            event.assistantMessageEvent.delta || "",
+                        );
                     }
                 } catch {
-                    phase.droppedLines++;
+                    state.droppedLines++;
                 }
             }
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
             phase.elapsed = Date.now() - start;
-            // Prefer streamed deltas; fall back to the terminal message content
-            // (the only place text appears in subagent mode).
-            let output = answer.join("") || finalText;
-            // A model-level error (e.g. quota/auth) makes pi exit 0 with empty
-            // content. Surface it and force a non-zero exit so the orchestrator
-            // treats it as a failure instead of "no usable output".
-            if (finalError) {
-                output +=
-                    (output ? "\n\n" : "") +
-                    `[agent error] ${finalError.slice(0, STDERR_TAIL_CAP)}`;
-            }
-            if (timedOut) {
-                output +=
-                    (output ? "\n\n" : "") +
-                    `[timed out after ${Math.round(config.agentTimeoutMs / 60_000)}m — killed by PI_WORKFLOW_AGENT_TIMEOUT]`;
-            }
-            if ((code ?? 1) !== 0 && stderrTail.trim()) {
-                output +=
-                    (output ? "\n\n" : "") + `[stderr]\n${stderrTail.trim()}`;
-            }
             phase.note =
-                output
-                    .split("\n")
-                    .filter((l: string) => l.trim())
-                    .pop() || phase.note;
-            resolve({
-                output,
-                exitCode: timedOut || finalError ? 1 : (code ?? 1),
-                tokens: capturedTokens,
-            });
+                state.answer.join("") || state.finalText
+                    ? (state.answer.join("") || state.finalText)
+                          .split("\n")
+                          .filter((l: string) => l.trim())
+                          .pop() || phase.note
+                    : phase.note;
+            resolve(
+                computeSpawnResult(
+                    state,
+                    code,
+                    timedOut,
+                    config.agentTimeoutMs,
+                    state.stderrTail,
+                ),
+            );
         });
 
         proc.on("error", (err: any) => {

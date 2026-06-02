@@ -105,7 +105,8 @@ export function newOrchestratorState(): OrchestratorState {
 }
 
 // Per-extension callbacks + config the orchestration delegates to.
-export interface OrchestratorHost {
+// Execution callbacks: run phases or individual agents
+export interface ExecutionCallbacks {
     // Run one phase (wraps the extension's model strategy + subprocess spawn).
     runPhase: (
         phase: PhaseState,
@@ -119,15 +120,34 @@ export interface OrchestratorHost {
         phase: PhaseState,
         cwd: string,
     ) => Promise<{ output: string; exitCode: number }>;
+}
+
+// UI and notification callbacks
+export interface UICallbacks {
     updateWidget: () => void;
     notify: (msg: string, level: string) => void;
+    publishLogs: () => void;
+}
+
+// Setup and initialization callbacks
+export interface SetupCallbacks {
     setupSessions: (cwd: string, wipe: boolean) => void;
     loadAgents: (cwd: string) => Map<string, AgentDef>;
     prepareRun: (ctx: any) => void; // capture the model(s) for this run
-    publishLogs: () => void;
+}
+
+// Configuration flags
+export interface OrchestratorConfig {
     sharedContext: boolean; // apply the curated context bundle
     maxDispatchesPerTurn: number;
     minDispatchOutputChars: number;
+}
+
+export interface OrchestratorHost {
+    execution: ExecutionCallbacks;
+    ui: UICallbacks;
+    setup: SetupCallbacks;
+    config: OrchestratorConfig;
     // Optional abort signal from the tool handler. When aborted, the pipeline
     // stops before the next phase instead of spawning a new subprocess.
     signal?: AbortSignal;
@@ -233,7 +253,7 @@ function checkAbort(
         s.running = false;
         s.lastStatus = "aborted";
         s.runElapsedMs = Date.now() - s.runStartedAt;
-        h.updateWidget();
+        h.ui.updateWidget();
         return {
             status: "aborted",
             report: "Workflow aborted by user.",
@@ -258,11 +278,11 @@ export async function runWorkflowCore(
         };
     }
     s.isSpecMode = false;
-    h.prepareRun(ctx);
+    h.setup.prepareRun(ctx);
     const cwd = ctx.cwd;
     s.includeScout = activeMembers(s).some((m) => m.toLowerCase() === "scout");
     s.dispatchMode = false;
-    h.setupSessions(cwd, true);
+    h.setup.setupSessions(cwd, true);
     s.phases = freshPhases(s.includeScout, s.isSpecMode);
     s.phaseLogs = [];
     s.totalDroppedLines = 0;
@@ -274,7 +294,7 @@ export async function runWorkflowCore(
     s.maxLoopsRef = maxLoops;
     s.lastStatus = "running";
     s.running = true;
-    h.updateWidget();
+    h.ui.updateWidget();
 
     const missing = REQUIRED_AGENTS.filter((a) => !s.agents.has(a));
     if (missing.length) {
@@ -288,7 +308,7 @@ export async function runWorkflowCore(
 
     const runArtifacts: RunArtifacts = {};
     const shared = (task: string, phaseAgent: string) => {
-        if (!h.sharedContext) return task;
+        if (!h.config.sharedContext) return task;
         const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
         return bundle ? `${bundle}\n\n---\n\n${task}` : task;
     };
@@ -303,11 +323,9 @@ export async function runWorkflowCore(
     const docP = pm.documenter;
     const shipP = pm.ship;
 
-    const validatorCount = s.phases.filter(
-        (p) => p.agent === "validator",
-    ).length;
+    const validatorCount = valP ? 1 : 0;
     if (validatorCount < 2) {
-        h.notify(
+        h.ui.notify(
             `Only ${validatorCount} validator(s) configured — the ship phase will reuse the validator's session. Add a second validator entry in teams.yaml for independent ship validation.`,
             "warning",
         );
@@ -317,16 +335,23 @@ export async function runWorkflowCore(
     if (scoutP) {
         const abort = checkAbort(s, h);
         if (abort) return abort;
-        const scoutRes = await h.runPhase(scoutP, scoutTask(request), cwd);
+        const scoutRes = await h.execution.runPhase(
+            scoutP,
+            scoutTask(request),
+            cwd,
+        );
         if (!scoutRes.ok) return fail(s, "Scouting", scoutRes.output);
         scoutFindings = scoutRes.output;
         runArtifacts.recon = scoutFindings;
     }
 
-    // Phase 1 — Plan (once)
     let aborted = checkAbort(s, h);
     if (aborted) return aborted;
-    let plan = await h.runPhase(planP, planTask(request, scoutFindings), cwd);
+    let plan = await h.execution.runPhase(
+        planP,
+        planTask(request, scoutFindings),
+        cwd,
+    );
     if (!plan.ok) return fail(s, "Planning", plan.output);
     runArtifacts.plan = plan.output;
 
@@ -347,8 +372,8 @@ export async function runWorkflowCore(
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
         critiqueP.status = "pending";
-        h.updateWidget();
-        critique = await h.runPhase(
+        h.ui.updateWidget();
+        critique = await h.execution.runPhase(
             critiqueP,
             shared(criticTask(request, plan.output), "critic"),
             cwd,
@@ -363,13 +388,13 @@ export async function runWorkflowCore(
         if (aborted) return aborted;
         planP.status = "pending";
         planP.note = "";
-        h.updateWidget();
-        plan = await h.runPhase(
+        h.ui.updateWidget();
+        plan = await h.execution.runPhase(
             planP,
             revisePlanTask(request, plan.output, critique.output),
             cwd,
         );
-        if (!plan.ok) return fail(s, "Plan revision", plan.output);
+        if (!plan.ok) return fail(s, "Planning", plan.output);
         runArtifacts.plan = plan.output;
     }
 
@@ -378,12 +403,12 @@ export async function runWorkflowCore(
     // Phase 3 — Implement (first pass)
     aborted = checkAbort(s, h);
     if (aborted) return aborted;
-    let impl = await h.runPhase(
+    let impl = await h.execution.runPhase(
         implP,
         shared(implementTask(request, plan.output), "implementer"),
         cwd,
     );
-    if (!impl.ok) return fail(s, "Implementation", impl.output);
+    if (!impl.ok) return fail(s, "Implementing", impl.output);
     runArtifacts.implSummary = impl.output;
 
     let test = { output: "", ok: false };
@@ -400,8 +425,8 @@ export async function runWorkflowCore(
 
         testP.status = "pending";
         valP.status = "pending";
-        h.updateWidget();
-        test = await h.runPhase(
+        h.ui.updateWidget();
+        test = await h.execution.runPhase(
             testP,
             shared(testTask(request, plan.output, impl.output), "tester"),
             cwd,
@@ -409,7 +434,7 @@ export async function runWorkflowCore(
         if (!test.ok) return fail(s, "Testing", test.output);
         runArtifacts.testReport = test.output;
 
-        val = await h.runPhase(
+        val = await h.execution.runPhase(
             valP,
             shared(
                 validateTask(request, plan.output, test.output),
@@ -427,16 +452,16 @@ export async function runWorkflowCore(
         if (aborted) return aborted;
         implP.status = "pending";
         implP.note = "";
-        h.updateWidget();
-        impl = await h.runPhase(
+        h.ui.updateWidget();
+        impl = await h.execution.runPhase(
             implP,
             shared(
-                fixTask(request, plan.output, val.output, impl.output),
+                fixTask(request, plan.output, impl.output, val.output),
                 "implementer",
             ),
             cwd,
         );
-        if (!impl.ok) return fail(s, "Re-implementation", impl.output);
+        if (!impl.ok) return fail(s, "Implementing", impl.output);
         runArtifacts.implSummary = `[attempt ${implP.attempt}] ${impl.output}`;
     }
 
@@ -445,7 +470,7 @@ export async function runWorkflowCore(
     if (verdict === "pass") {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
-        doc = await h.runPhase(
+        doc = await h.execution.runPhase(
             docP,
             shared(
                 documentTask(request, plan.output, impl.output, test.output),
@@ -454,7 +479,7 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!doc.ok) {
-            h.notify(
+            h.ui.notify(
                 "Documenter failed — code changes are valid but docs were not updated. Proceeding to ship.",
                 "warning",
             );
@@ -468,7 +493,7 @@ export async function runWorkflowCore(
 
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
-        ship = await h.runPhase(
+        ship = await h.execution.runPhase(
             shipP,
             shared(shipTask(request, test.output, doc.output), "ship"),
             cwd,
@@ -486,7 +511,7 @@ export async function runWorkflowCore(
     s.runElapsedMs = Date.now() - s.runStartedAt;
     s.running = false;
     s.lastStatus = status;
-    h.updateWidget();
+    h.ui.updateWidget();
 
     const passes = s.iteration;
     const passed = verdict === "pass";
@@ -526,7 +551,7 @@ export async function runWorkflowCore(
     });
 
     writeReport(h, cwd, report);
-    h.publishLogs();
+    h.ui.publishLogs();
     return { status, report };
 }
 
@@ -545,11 +570,11 @@ export async function runSpecWorkflowCore(
         };
     }
     s.isSpecMode = true;
-    h.prepareRun(ctx);
+    h.setup.prepareRun(ctx);
     const cwd = ctx.cwd;
     s.includeScout = activeMembers(s).some((m) => m.toLowerCase() === "scout");
     s.dispatchMode = false;
-    h.setupSessions(cwd, true);
+    h.setup.setupSessions(cwd, true);
     s.phases = freshPhases(s.includeScout, s.isSpecMode);
     s.phaseLogs = [];
     s.totalDroppedLines = 0;
@@ -562,7 +587,7 @@ export async function runSpecWorkflowCore(
     const maxCritiqueLoops = 1;
     s.lastStatus = "running";
     s.running = true;
-    h.updateWidget();
+    h.ui.updateWidget();
 
     // Spec mode only runs planner -> critic -> documenter (+ optional scout).
     const missing = ["planner", "critic", "documenter"].filter(
@@ -585,7 +610,7 @@ export async function runSpecWorkflowCore(
 
     const runArtifacts: RunArtifacts = {};
     const shared = (task: string, phaseAgent: string) => {
-        if (!h.sharedContext) return task;
+        if (!h.config.sharedContext) return task;
         const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
         return bundle ? `${bundle}\n\n---\n\n${task}` : task;
     };
@@ -594,7 +619,11 @@ export async function runSpecWorkflowCore(
     if (scoutP) {
         const abort = checkAbort(s, h);
         if (abort) return abort;
-        const scoutRes = await h.runPhase(scoutP, scoutTask(request), cwd);
+        const scoutRes = await h.execution.runPhase(
+            scoutP,
+            scoutTask(request),
+            cwd,
+        );
         if (!scoutRes.ok) return fail(s, "Scouting", scoutRes.output);
         scoutFindings = scoutRes.output;
         runArtifacts.recon = scoutFindings;
@@ -602,7 +631,7 @@ export async function runSpecWorkflowCore(
 
     let aborted = checkAbort(s, h);
     if (aborted) return aborted;
-    let plan = await h.runPhase(
+    let plan = await h.execution.runPhase(
         planP,
         specPlanTask(request, scoutFindings),
         cwd,
@@ -617,8 +646,8 @@ export async function runSpecWorkflowCore(
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
         critiqueP.status = "pending";
-        h.updateWidget();
-        critique = await h.runPhase(
+        h.ui.updateWidget();
+        critique = await h.execution.runPhase(
             critiqueP,
             shared(specCriticTask(request, plan.output), "critic"),
             cwd,
@@ -633,8 +662,8 @@ export async function runSpecWorkflowCore(
         if (aborted) return aborted;
         planP.status = "pending";
         planP.note = "";
-        h.updateWidget();
-        plan = await h.runPhase(
+        h.ui.updateWidget();
+        plan = await h.execution.runPhase(
             planP,
             specReviseTask(request, plan.output, critique.output),
             cwd,
@@ -647,7 +676,7 @@ export async function runSpecWorkflowCore(
 
     aborted = checkAbort(s, h);
     if (aborted) return aborted;
-    const doc = await h.runPhase(
+    const doc = await h.execution.runPhase(
         docP,
         shared(specDocumentTask(request, plan.output), "documenter"),
         cwd,
@@ -660,7 +689,7 @@ export async function runSpecWorkflowCore(
     s.runElapsedMs = Date.now() - s.runStartedAt;
     s.running = false;
     s.lastStatus = status;
-    h.updateWidget();
+    h.ui.updateWidget();
 
     const outcome = critiqueApproved
         ? "SPEC COMPLETE — implementation spec saved to specs/"
@@ -686,7 +715,7 @@ export async function runSpecWorkflowCore(
     });
 
     writeReport(h, cwd, report);
-    h.publishLogs();
+    h.ui.publishLogs();
     return { status, report };
 }
 
@@ -694,7 +723,10 @@ function writeReport(h: OrchestratorHost, cwd: string, report: string): void {
     try {
         writeFileSync(join(cwd, "workflow-report.md"), report, "utf-8");
     } catch (e: any) {
-        h.notify(`Could not write workflow-report.md: ${e.message}`, "warning");
+        h.ui.notify(
+            `Could not write workflow-report.md: ${e.message}`,
+            "warning",
+        );
     }
 }
 
@@ -716,15 +748,15 @@ export async function dispatchAgentCore(
             "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
         );
 
-    if (s.dispatchesThisTurn >= h.maxDispatchesPerTurn)
+    if (s.dispatchesThisTurn >= h.config.maxDispatchesPerTurn)
         return textResult(
-            `Dispatch limit reached (${h.maxDispatchesPerTurn} per turn). Summarize what has been done and stop — do not dispatch more agents this turn.`,
+            `Dispatch limit reached (${h.config.maxDispatchesPerTurn} per turn). Summarize what has been done and stop — do not dispatch more agents this turn.`,
         );
 
     // Only refresh agents from disk on a fresh user request. During a burst
     // of dispatches within the same turn the agent definitions don't change,
     // so re-reading from disk is wasted I/O.
-    if (s.freshDispatchSession) s.agents = h.loadAgents(ctx.cwd);
+    if (s.freshDispatchSession) s.agents = h.setup.loadAgents(ctx.cwd);
     const def = s.agents.get(agent.toLowerCase());
     if (!def) {
         const available = Array.from(s.agents.values())
@@ -738,7 +770,7 @@ export async function dispatchAgentCore(
     if (onUpdate) onUpdate(textResult(`Dispatching to ${def.name}...`));
 
     // dispatch_agent can be called standalone, so ensure the session dir exists.
-    h.setupSessions(ctx.cwd, false);
+    h.setup.setupSessions(ctx.cwd, false);
 
     // Enter dispatch mode. A new user request (freshDispatchSession) starts clean.
     if (!s.dispatchMode || s.freshDispatchSession) {
@@ -761,14 +793,14 @@ export async function dispatchAgentCore(
         phase = mkPhase(displayName(def.name), agentKey);
         s.phases.push(phase);
     }
-    h.updateWidget();
+    h.ui.updateWidget();
 
     const start = Date.now();
     phase.attempt = 1;
     phase.status = "running";
-    h.updateWidget();
+    h.ui.updateWidget();
 
-    const res = await h.runAgent(def, task, phase, ctx.cwd);
+    const res = await h.execution.runAgent(def, task, phase, ctx.cwd);
 
     // A clean exit with (near-)empty output usually means the agent did no real
     // work — fail it so the orchestrator re-dispatches instead of building on
@@ -778,14 +810,14 @@ export async function dispatchAgentCore(
     // text, not the tool activity. So only treat short output as "empty" when the
     // agent also made no tool calls — that is the genuine did-nothing case.
     const emptyOutput =
-        res.output.trim().length < h.minDispatchOutputChars &&
+        res.output.trim().length < h.config.minDispatchOutputChars &&
         phase.toolCount === 0;
     const ok = res.exitCode === 0 && !emptyOutput;
 
     phase.status = ok ? "done" : "error";
     phase.elapsed = Date.now() - start;
     s.dispatchElapsedMs = Date.now() - s.dispatchStartedAt;
-    h.updateWidget();
+    h.ui.updateWidget();
 
     const errMsg = !ok
         ? emptyOutput
@@ -797,7 +829,7 @@ export async function dispatchAgentCore(
                   .join(" ")
                   .slice(0, 120)}`
         : "";
-    h.notify(
+    h.ui.notify(
         `${def.name} ${ok ? "done" : "failed"} in ${secs(phase.elapsed)}${errMsg}`,
         ok ? "success" : "error",
     );
@@ -853,7 +885,7 @@ export function selectAgentsCore(
         );
 
     // Only refresh agents on a fresh session (new user request).
-    if (s.freshDispatchSession) s.agents = h.loadAgents(ctx.cwd);
+    if (s.freshDispatchSession) s.agents = h.setup.loadAgents(ctx.cwd);
 
     const resolved: string[] = [];
     const unknown: string[] = [];
@@ -884,8 +916,8 @@ export function selectAgentsCore(
     s.phases = resolved.map(
         (key) => byAgent.get(key) ?? mkPhase(displayName(key), key),
     );
-    h.setupSessions(ctx.cwd, false);
-    h.updateWidget();
+    h.setup.setupSessions(ctx.cwd, false);
+    h.ui.updateWidget();
 
     const order = resolved.map((k) => displayName(k)).join(" → ");
     const warn = unknown.length
