@@ -78,7 +78,14 @@ export function renderPipelineTitle(
     // Use different separator for parallel vs sequential execution
     // Check if there are duplicate agent names (parallel dispatch)
     const agentNames = phases.map((p) => p.agent);
-    const isParallel = new Set(agentNames).size < agentNames.length;
+    const hasDuplicateAgents = new Set(agentNames).size < agentNames.length;
+
+    // Check if multiple phases are running concurrently
+    const runningCount = phases.filter((p) => p.status === "running").length;
+    const hasConcurrentExecution = runningCount > 1;
+
+    // Use ∥ for parallel execution (duplicates or concurrent), → for sequential
+    const isParallel = hasDuplicateAgents || hasConcurrentExecution;
     const separator = isParallel ? " ∥ " : "→";
 
     const workflowTitle =
