@@ -6,6 +6,7 @@ full:
     - tester
     - validator
     - documenter
+    - shipper
 
 spec:
     - planner

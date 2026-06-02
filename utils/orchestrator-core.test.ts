@@ -869,6 +869,7 @@ describe("runWorkflowCore", () => {
             "tester",
             "documenter",
             "validator",
+            "shipper",
         ]) {
             agents.set(name, mkAgent(name));
         }
@@ -912,7 +913,7 @@ Build feature X according to the requirements.
                             ok: true,
                         };
                     }
-                    if (phase.agent === "ship") {
+                    if (phase.agent === "shipper") {
                         return {
                             output: "SHIP: SHIPPED\nhttps://github.com/test/pull/1",
                             ok: true,
@@ -970,7 +971,7 @@ Build feature X according to the requirements.
                     if (phase.agent === "validator") {
                         return { output: "VERDICT: PASS", ok: true };
                     }
-                    if (phase.agent === "ship") {
+                    if (phase.agent === "shipper") {
                         return { output: "SHIP: SHIPPED", ok: true };
                     }
                     return { output: `${phase.agent} output`, ok: true };
@@ -1021,7 +1022,7 @@ Build feature X according to the requirements.
                     if (phase.agent === "critic") {
                         return { output: "APPROVED\nPlan approved", ok: true };
                     }
-                    if (phase.agent === "ship") {
+                    if (phase.agent === "shipper") {
                         return { output: "SHIP: SHIPPED", ok: true };
                     }
                     return { output: `${phase.agent} output`, ok: true };
@@ -1037,8 +1038,9 @@ Build feature X according to the requirements.
             mkCtx(),
         );
         assert.equal(result.status, "shipped");
-        // Validator is called 3 times: validate (FAIL), validate (PASS), and ship
-        assert.equal(validatorCalls, 3);
+        // Validator is called 2 times: validate (FAIL), validate (PASS)
+        // Shipper is called 1 time for shipping
+        assert.equal(validatorCalls, 2);
         assert.equal(implementerCalls, 2);
     });
 
@@ -1152,7 +1154,7 @@ Build feature X according to the requirements.
                     if (phase.agent === "documenter") {
                         return { output: "Documentation failed", ok: false };
                     }
-                    if (phase.agent === "ship") {
+                    if (phase.agent === "shipper") {
                         return { output: "SHIP: SHIPPED", ok: true };
                     }
                     return { output: `${phase.agent} output`, ok: true };

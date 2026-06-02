@@ -321,15 +321,7 @@ export async function runWorkflowCore(
     const testP = pm.tester;
     const valP = pm.validator;
     const docP = pm.documenter;
-    const shipP = pm.ship;
-
-    const validatorCount = valP ? 1 : 0;
-    if (validatorCount < 2) {
-        h.ui.notify(
-            `Only ${validatorCount} validator(s) configured — the ship phase will reuse the validator's session. Add a second validator entry in teams.yaml for independent ship validation.`,
-            "warning",
-        );
-    }
+    const shipP = pm.shipper;
 
     let scoutFindings = "";
     if (scoutP) {
@@ -495,7 +487,7 @@ export async function runWorkflowCore(
         if (aborted) return aborted;
         ship = await h.execution.runPhase(
             shipP,
-            shared(shipTask(request, test.output, doc.output), "ship"),
+            shared(shipTask(request, test.output, doc.output), "shipper"),
             cwd,
         );
         if (!ship.ok) return fail(s, "Shipping", ship.output);

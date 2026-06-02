@@ -213,7 +213,7 @@ describe("buildPhaseMap", () => {
             testPhase("tester"),
             testPhase("validator"),
             testPhase("documenter"),
-            testPhase("validator"), // second validator = ship
+            testPhase("shipper"),
         ];
         const pm = buildPhaseMap(phases);
         assert.equal(pm.scout?.agent, "scout");
@@ -223,37 +223,7 @@ describe("buildPhaseMap", () => {
         assert.equal(pm.tester.agent, "tester");
         assert.equal(pm.validator.agent, "validator");
         assert.equal(pm.documenter.agent, "documenter");
-        assert.equal(pm.ship.agent, "validator"); // ship = second validator
-    });
-
-    it("maps ship to the second validator entry", () => {
-        const phases: PhaseState[] = [
-            testPhase("planner"),
-            testPhase("critic"),
-            testPhase("implementer"),
-            testPhase("tester"),
-            testPhase("validator"), // first = validate
-            testPhase("documenter"),
-            testPhase("validator"), // second = ship
-        ];
-        const pm = buildPhaseMap(phases);
-        // The ship phase should be the second validator in the array
-        const validators = phases.filter((p) => p.agent === "validator");
-        assert.equal(pm.ship, validators[1]);
-    });
-
-    it("falls back to first validator for ship when only one validator exists", () => {
-        const phases: PhaseState[] = [
-            testPhase("planner"),
-            testPhase("critic"),
-            testPhase("implementer"),
-            testPhase("tester"),
-            testPhase("validator"),
-            testPhase("documenter"),
-        ];
-        const pm = buildPhaseMap(phases);
-        const validators = phases.filter((p) => p.agent === "validator");
-        assert.equal(pm.ship, validators[0]);
+        assert.equal(pm.shipper.agent, "shipper");
     });
 
     it("returns undefined for scout when not present", () => {
@@ -264,7 +234,7 @@ describe("buildPhaseMap", () => {
             testPhase("tester"),
             testPhase("validator"),
             testPhase("documenter"),
-            testPhase("validator"),
+            testPhase("shipper"),
         ];
         const pm = buildPhaseMap(phases);
         assert.equal(pm.scout, undefined);
@@ -400,7 +370,7 @@ describe("freshPhases", () => {
             "tester",
             "validator",
             "documenter",
-            "validator",
+            "shipper",
         ]);
     });
 
@@ -440,6 +410,7 @@ describe("freshPhases", () => {
         assert.equal(phases[5].label, "Validate");
         assert.equal(phases[6].label, "Document");
         assert.equal(phases[7].label, "Ship");
+        assert.equal(phases[7].agent, "shipper");
     });
 });
 
@@ -518,8 +489,8 @@ describe("contextBundleForPhase", () => {
         assert.ok(!bundle.includes("Docs updated"));
     });
 
-    it("ship gets all artifacts", () => {
-        const bundle = contextBundleForPhase("ship", fullArtifacts);
+    it("shipper gets all artifacts", () => {
+        const bundle = contextBundleForPhase("shipper", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
         assert.ok(bundle.includes("The plan"));
         assert.ok(bundle.includes("Implementation done"));

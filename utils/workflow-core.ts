@@ -38,6 +38,7 @@ export const REQUIRED_AGENTS = [
     "tester",
     "documenter",
     "validator",
+    "shipper",
 ] as const;
 export const DEFAULT_MAX_LOOPS = 3;
 
@@ -1284,14 +1285,14 @@ export function contextBundle(a: RunArtifacts): string {
 // doesn't need the test report, the tester doesn't need the critique, etc.
 // Selective bundling reduces token consumption ~30% on complex runs.
 const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
-    scout: ["recon"], // scout produces recon, doesn't consume prior artifacts
-    planner: ["recon"], // plan uses recon but not critique/impl
-    critic: ["recon", "plan"], // critique reviews the plan
-    implementer: ["recon", "plan", "critique"], // impl needs plan + critique
-    tester: ["recon", "plan", "implSummary"], // test needs plan + impl, not critique
-    validator: ["recon", "plan", "implSummary", "testReport"], // validate needs impl + test
-    documenter: ["recon", "plan", "implSummary", "testReport"], // docs need impl + test
-    ship: ["recon", "plan", "implSummary", "testReport", "docReport"], // ship needs everything
+    scout: ["recon"],
+    planner: ["recon"],
+    critic: ["recon", "plan"],
+    implementer: ["recon", "plan", "critique"],
+    tester: ["recon", "plan", "implSummary"],
+    validator: ["recon", "plan", "implSummary", "testReport"],
+    documenter: ["recon", "plan", "implSummary", "testReport"],
+    shipper: ["recon", "plan", "implSummary", "testReport", "docReport"],
 };
 
 // Selective context bundle: only include artifacts the given phase actually
@@ -1680,7 +1681,7 @@ export interface PhaseMap {
     tester: PhaseState;
     validator: PhaseState;
     documenter: PhaseState;
-    ship: PhaseState;
+    shipper: PhaseState;
 }
 
 // Build a PhaseMap from the phases array. Phases are matched by agent name;
@@ -1689,16 +1690,15 @@ export interface PhaseMap {
 export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
     const byAgent = (name: string) =>
         phases.find((p) => p.agent === name.toLowerCase());
-    const validators = phases.filter((p) => p.agent === "validator");
     return {
         scout: byAgent("scout"),
         planner: byAgent("planner")!,
         critic: byAgent("critic")!,
         implementer: byAgent("implementer")!,
         tester: byAgent("tester")!,
-        validator: validators[0]!,
+        validator: byAgent("validator")!,
         documenter: byAgent("documenter")!,
-        ship: validators[1] ?? validators[0]!,
+        shipper: byAgent("shipper")!,
     };
 }
 
@@ -1762,7 +1762,7 @@ export function freshPhases(
         mkPhase("Test", "tester"),
         mkPhase("Validate", "validator"),
         mkPhase("Document", "documenter"),
-        mkPhase("Ship", "validator"),
+        mkPhase("Ship", "shipper"),
     ];
 }
 
