@@ -99,6 +99,8 @@ import {
     runSpecWorkflowCore,
     dispatchAgentCore,
     selectAgentsCore,
+    runFullWorkflowCommand,
+    runSpecWorkflowCommand,
 } from "../utils/orchestrator-core";
 
 // Run before any process.env reads below (WORKER_MODEL, loadAgentModels, …).
@@ -872,70 +874,23 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 return st.isSpecMode
-                    ? runSpecWorkflowCommand(finalRequest, ctx)
-                    : runFullWorkflowCommand(finalRequest, ctx, maxLoops);
+                    ? runSpecWorkflowCommand(
+                          st,
+                          host,
+                          finalRequest,
+                          ctx,
+                          publishReport,
+                      )
+                    : runFullWorkflowCommand(
+                          st,
+                          host,
+                          finalRequest,
+                          ctx,
+                          publishReport,
+                          maxLoops,
+                      );
             },
         });
-
-    async function runFullWorkflowCommand(
-        request: string,
-        ctx: any,
-        maxLoops: number = DEFAULT_MAX_LOOPS,
-    ) {
-        ctx.ui.notify(
-            `Starting workflow: ${request} (max retries: ${maxLoops})`,
-            "info",
-        );
-        const result = await runWorkflowCore(st, host, request, maxLoops, ctx);
-
-        const level =
-            result.status === "shipped"
-                ? "success"
-                : result.status.startsWith("error") ||
-                    result.status === "failed-after-retries"
-                  ? "error"
-                  : "warning";
-        ctx.ui.notify(
-            `Workflow ${result.status} in ${secs(st.runElapsedMs)}. Report is shown below.`,
-            level as any,
-        );
-        if (st.totalDroppedLines > 0) {
-            ctx.ui.notify(
-                `Heads up: ${st.totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
-                "warning",
-            );
-        }
-
-        if (result.report && result.report.trim().length > 0) {
-            publishReport(result.report);
-        }
-    }
-
-    async function runSpecWorkflowCommand(request: string, ctx: any) {
-        ctx.ui.notify(`Generating implementation spec: ${request}`, "info");
-        const result = await runSpecWorkflowCore(st, host, request, ctx);
-
-        const level =
-            result.status === "done"
-                ? "success"
-                : result.status.startsWith("error")
-                  ? "error"
-                  : "warning";
-        ctx.ui.notify(
-            `Spec generation ${result.status} in ${secs(st.runElapsedMs)}. Report is shown below.`,
-            level as any,
-        );
-        if (st.totalDroppedLines > 0) {
-            ctx.ui.notify(
-                `Heads up: ${st.totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
-                "warning",
-            );
-        }
-
-        if (result.report && result.report.trim().length > 0) {
-            publishReport(result.report);
-        }
-    }
 
     if (active)
         pi.registerCommand("agent-team-clear", {
@@ -1147,7 +1102,11 @@ export default function (pi: ExtensionAPI) {
             // Only fold the turn time into a total when work actually ran this turn,
             // so a plain "done" reply doesn't overwrite the last total.
             if (st.dispatchedThisTurn) st.dispatchElapsedMs = turnMs;
-            if (st.pipelineRanThisTurn) st.runElapsedMs = turnMs;
+            // Only overwrite runElapsedMs if the pipeline is still running (aborted
+            // mid-run). When the pipeline completed, runWorkflowCore already set the
+            // correct value from runStartedAt; overwriting it with the full turn time
+            // (which includes orchestrator reasoning) would inflate the dashboard.
+            if (st.pipelineRanThisTurn && st.running) st.runElapsedMs = turnMs;
             if (st.dispatchedThisTurn || st.pipelineRanThisTurn) updateWidget();
         });
 

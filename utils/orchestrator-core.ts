@@ -136,6 +136,80 @@ export interface OrchestratorHost {
 type RunResult = { status: string; report: string };
 type ToolResult = { content: { type: string; text: string }[]; details?: any };
 
+// ── Shared command handlers ──────────────────────
+// runFullWorkflowCommand and runSpecWorkflowCommand are byte-identical between
+// agent-pipeline and agent-team (same notifications, same dropped-lines warning,
+// same publishReport call). Extracted here so both extensions share one copy.
+
+export async function runFullWorkflowCommand(
+    s: OrchestratorState,
+    h: OrchestratorHost,
+    request: string,
+    ctx: any,
+    publishReport: (report: string) => void,
+    maxLoops: number = DEFAULT_MAX_LOOPS,
+): Promise<void> {
+    ctx.ui.notify(
+        `Starting workflow: ${request} (max retries: ${maxLoops})`,
+        "info",
+    );
+    const result = await runWorkflowCore(s, h, request, maxLoops, ctx);
+
+    const level =
+        result.status === "shipped"
+            ? "success"
+            : result.status.startsWith("error") ||
+                result.status === "failed-after-retries"
+              ? "error"
+              : "warning";
+    ctx.ui.notify(
+        `Workflow ${result.status} in ${secs(s.runElapsedMs)}. Report is shown below.`,
+        level as any,
+    );
+    if (s.totalDroppedLines > 0) {
+        ctx.ui.notify(
+            `Heads up: ${s.totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
+            "warning",
+        );
+    }
+
+    if (result.report && result.report.trim().length > 0) {
+        publishReport(result.report);
+    }
+}
+
+export async function runSpecWorkflowCommand(
+    s: OrchestratorState,
+    h: OrchestratorHost,
+    request: string,
+    ctx: any,
+    publishReport: (report: string) => void,
+): Promise<void> {
+    ctx.ui.notify(`Generating implementation spec: ${request}`, "info");
+    const result = await runSpecWorkflowCore(s, h, request, ctx);
+
+    const level =
+        result.status === "done"
+            ? "success"
+            : result.status.startsWith("error")
+              ? "error"
+              : "warning";
+    ctx.ui.notify(
+        `Spec generation ${result.status} in ${secs(s.runElapsedMs)}. Report is shown below.`,
+        level as any,
+    );
+    if (s.totalDroppedLines > 0) {
+        ctx.ui.notify(
+            `Heads up: ${s.totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
+            "warning",
+        );
+    }
+
+    if (result.report && result.report.trim().length > 0) {
+        publishReport(result.report);
+    }
+}
+
 // Team members that resolve to a loaded agent .md.
 function activeMembers(s: OrchestratorState): string[] {
     return (s.teams[s.activeTeamName] || []).filter((m) =>

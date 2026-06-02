@@ -945,6 +945,18 @@ function summaryLine(label: string, phase: PhaseState, body: string): string {
     return `- **${label}** (${secs(phase.elapsed)}${tokenNote(phase)}) — ${body}${dropped}`;
 }
 
+// Cap individual phase output in the details section to prevent reports from
+// growing unbounded when an agent produces very long output. The summary section
+// already uses digest() which is bounded; this bounds the raw details section.
+const REPORT_PHASE_MAX = 12000;
+function truncatePhaseOutput(text: string): string {
+    if (text.length <= REPORT_PHASE_MAX) return text;
+    return (
+        text.slice(0, REPORT_PHASE_MAX) +
+        `\n\n... [truncated — phase output exceeded ${REPORT_PHASE_MAX} chars]`
+    );
+}
+
 export function buildWorkflowReport(o: {
     request: string;
     status: string;
@@ -1015,29 +1027,45 @@ export function buildWorkflowReport(o: {
         ``,
         `## Details`,
         ``,
-        ...(o.scoutP ? [`### Reconnaissance`, ``, o.scoutFindings, ``] : []),
+        ...(o.scoutP
+            ? [
+                  `### Reconnaissance`,
+                  ``,
+                  truncatePhaseOutput(o.scoutFindings),
+                  ``,
+              ]
+            : []),
         `### Plan`,
         ``,
-        o.plan,
+        truncatePhaseOutput(o.plan),
         ``,
         `### Critique`,
         ``,
-        o.critique,
+        truncatePhaseOutput(o.critique),
         ``,
         `### Implementation`,
         ``,
-        o.impl,
+        truncatePhaseOutput(o.impl),
         ``,
         `### Test Report`,
         ``,
-        o.test,
+        truncatePhaseOutput(o.test),
         ``,
         `### Validation`,
         ``,
-        o.val,
+        truncatePhaseOutput(o.val),
         ``,
         ...(o.passed
-            ? [`### Documentation`, ``, o.doc, ``, `### Ship`, ``, o.ship, ``]
+            ? [
+                  `### Documentation`,
+                  ``,
+                  truncatePhaseOutput(o.doc),
+                  ``,
+                  `### Ship`,
+                  ``,
+                  truncatePhaseOutput(o.ship),
+                  ``,
+              ]
             : []),
     ].join("\n");
 }
@@ -1079,18 +1107,25 @@ export function buildSpecReport(o: {
         ``,
         `## Details`,
         ``,
-        ...(o.scoutP ? [`### Reconnaissance`, ``, o.scoutFindings, ``] : []),
+        ...(o.scoutP
+            ? [
+                  `### Reconnaissance`,
+                  ``,
+                  truncatePhaseOutput(o.scoutFindings),
+                  ``,
+              ]
+            : []),
         `### Plan`,
         ``,
-        o.plan,
+        truncatePhaseOutput(o.plan),
         ``,
         `### Critique`,
         ``,
-        o.critique,
+        truncatePhaseOutput(o.critique),
         ``,
         `### Implementation Spec`,
         ``,
-        o.doc,
+        truncatePhaseOutput(o.doc),
     ].join("\n");
 }
 
@@ -1795,6 +1830,8 @@ export async function runPhaseCore(
         label: `${phase.label}${attemptNote} [${secs(elapsed)}]`,
         log: phase.log,
     });
+    // Cap phaseLogs so a very long workflow doesn't grow unbounded.
+    if (opts.phaseLogs.length > 200) opts.phaseLogs.shift();
     opts.updateWidget();
 
     // Notify the user when a phase completes so they have peripheral awareness
@@ -2111,11 +2148,19 @@ export function spawnAgentWithModel(
 // install-level `agents/../prompts/<name>.md` (shipped alongside the extension),
 // then to the provided `fallback` string. Templates use `{{variable}}` placeholders
 // replaced at call time.
+// Cache for prompt templates so we only read from disk once per session.
+// Keyed by `cwd:name` so project-level and install-level templates don't clash.
+const promptTemplateCache = new Map<string, string>();
+
 export function loadPromptTemplate(
     name: string,
     fallback: string,
     cwd?: string,
 ): string {
+    const cacheKey = `${cwd ?? ""}:${name}`;
+    const cached = promptTemplateCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
     const candidates: string[] = [];
     if (cwd) candidates.push(join(cwd, ".pi", "prompts", `${name}.md`));
     // Install-level prompts: <ext>/../prompts/<name>.md
@@ -2126,12 +2171,23 @@ export function loadPromptTemplate(
     for (const path of candidates) {
         if (existsSync(path)) {
             try {
-                return readFileSync(path, "utf-8");
+                const content = readFileSync(path, "utf-8");
+                promptTemplateCache.set(cacheKey, content);
+                return content;
             } catch {}
         }
     }
+    promptTemplateCache.set(cacheKey, fallback);
     return fallback;
 }
+
+// Clear the prompt template cache (for tests).
+export function clearPromptTemplateCache(): void {
+    promptTemplateCache.clear();
+}
+
+// Track which template warnings have been emitted so we only warn once per session.
+const renderedTemplateWarnings = new Set<string>();
 
 // Replace `{{key}}` placeholders in a template with values from the map.
 export function renderTemplate(
@@ -2143,12 +2199,17 @@ export function renderTemplate(
         (_, key) => vars[key] ?? `{{${key}}}`,
     );
     // Warn about unreplaced placeholders — indicates a broken template.
+    // Deduped to once per session so the log isn't spammed every turn.
     const unreplaced = result.match(/\{\{\w+\}\}/g);
     if (unreplaced && unreplaced.length > 0) {
         const unique = [...new Set(unreplaced)];
-        console.warn(
-            `[workflow] Orchestrator prompt template has unreplaced placeholders: ${unique.join(", ")}. Check prompts/orchestrator.md for typos or missing variables.`,
-        );
+        const warnKey = unique.join(",");
+        if (!renderedTemplateWarnings.has(warnKey)) {
+            renderedTemplateWarnings.add(warnKey);
+            console.warn(
+                `[workflow] Orchestrator prompt template has unreplaced placeholders: ${unique.join(", ")}. Check prompts/orchestrator.md for typos or missing variables.`,
+            );
+        }
     }
     return result;
 }
