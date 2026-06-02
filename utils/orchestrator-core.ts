@@ -974,8 +974,12 @@ export function selectAgentsCore(
     h.ui.updateWidget();
 
     // Display the original list (with duplicates) to show parallel intent
-    // Use ∥ separator for parallel, arrow for sequential
-    const separator = hasDuplicates ? " ∥ " : " → ";
+    // Use ∥ separator for parallel execution:
+    // - Duplicate agent names (e.g., ['seeker', 'seeker'])
+    // - Multiple different agents selected (ad-hoc dispatches are typically parallel)
+    // Use → only for single-agent selections
+    const isParallel = hasDuplicates || resolved.length > 1;
+    const separator = isParallel ? " ∥ " : " → ";
     const displayNames = names.map((n) => displayName(n.toLowerCase()));
     const order = displayNames.join(separator);
 
