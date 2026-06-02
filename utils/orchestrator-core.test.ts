@@ -680,3 +680,401 @@ describe("runSpecWorkflowCore re-entry guard", () => {
         assert.ok(result.report.includes("already running"));
     });
 });
+
+// ── runWorkflowCore — full lifecycle tests ─────────
+
+describe("runWorkflowCore", () => {
+    function mkFullAgentSet(): Map<string, AgentDef> {
+        const agents = new Map<string, AgentDef>();
+        for (const name of [
+            "planner",
+            "critic",
+            "implementer",
+            "tester",
+            "documenter",
+            "validator",
+        ]) {
+            agents.set(name, mkAgent(name));
+        }
+        return agents;
+    }
+
+    // Helper: create a valid plan that passes validatePlan()
+    function mkValidPlan(): string {
+        return `## Phase 1: Implementation
+Build feature X according to the requirements.
+
+## Acceptance Criteria
+- Feature X works as specified
+- All tests pass
+
+## Critical Files
+- src/feature-x.ts`;
+    }
+
+    it("runs happy path: all phases pass", async () => {
+        const agents = mkFullAgentSet();
+        const runPhaseCalls: string[] = [];
+        const host = mkHost({
+            loadAgents: () => agents,
+            runPhase: async (phase) => {
+                runPhaseCalls.push(phase.agent);
+                if (phase.agent === "planner") {
+                    return { output: mkValidPlan(), ok: true };
+                }
+                if (phase.agent === "validator") {
+                    return { output: "VERDICT: PASS", ok: true };
+                }
+                if (phase.agent === "critic") {
+                    return { output: "APPROVED\nPlan looks good", ok: true };
+                }
+                if (phase.agent === "ship") {
+                    return {
+                        output: "SHIP: SHIPPED\nhttps://github.com/test/pull/1",
+                        ok: true,
+                    };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Build feature X",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "shipped");
+        assert.ok(st.running === false);
+        assert.ok(st.runElapsedMs > 0);
+        // Verify phases were created
+        assert.ok(st.phases.length > 0);
+        // Verify all required agents ran
+        assert.ok(runPhaseCalls.includes("planner"));
+        assert.ok(runPhaseCalls.includes("implementer"));
+        assert.ok(runPhaseCalls.includes("tester"));
+        assert.ok(runPhaseCalls.includes("validator"));
+        assert.ok(runPhaseCalls.includes("documenter"));
+    });
+
+    it("handles critique revision loop", async () => {
+        const agents = mkFullAgentSet();
+        let criticCalls = 0;
+        const host = mkHost({
+            loadAgents: () => agents,
+            runPhase: async (phase) => {
+                if (phase.agent === "planner") {
+                    return { output: mkValidPlan(), ok: true };
+                }
+                if (phase.agent === "critic") {
+                    criticCalls++;
+                    if (criticCalls === 1) {
+                        return {
+                            output: "REVISE BEFORE IMPLEMENTING\nNeeds more detail",
+                            ok: true,
+                        };
+                    }
+                    return { output: "APPROVED\nPlan approved", ok: true };
+                }
+                if (phase.agent === "validator") {
+                    return { output: "VERDICT: PASS", ok: true };
+                }
+                if (phase.agent === "ship") {
+                    return { output: "SHIP: SHIPPED", ok: true };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Build feature X",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "shipped");
+        assert.equal(criticCalls, 2);
+    });
+
+    it("handles validation FAIL → re-implementation loop", async () => {
+        const agents = mkFullAgentSet();
+        let validatorCalls = 0;
+        let implementerCalls = 0;
+        const host = mkHost({
+            loadAgents: () => agents,
+            runPhase: async (phase) => {
+                if (phase.agent === "planner") {
+                    return { output: mkValidPlan(), ok: true };
+                }
+                if (phase.agent === "validator") {
+                    validatorCalls++;
+                    if (validatorCalls === 1) {
+                        return {
+                            output: "VERDICT: FAIL\nIssues found",
+                            ok: true,
+                        };
+                    }
+                    return { output: "VERDICT: PASS", ok: true };
+                }
+                if (phase.agent === "implementer") {
+                    implementerCalls++;
+                    return { output: "Implementation complete", ok: true };
+                }
+                if (phase.agent === "critic") {
+                    return { output: "APPROVED\nPlan approved", ok: true };
+                }
+                if (phase.agent === "ship") {
+                    return { output: "SHIP: SHIPPED", ok: true };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Build feature X",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "shipped");
+        // Validator is called 3 times: validate (FAIL), validate (PASS), and ship
+        assert.equal(validatorCalls, 3);
+        assert.equal(implementerCalls, 2);
+    });
+
+    it("exhausts max retries and returns failed-after-retries", async () => {
+        const agents = mkFullAgentSet();
+        const host = mkHost({
+            loadAgents: () => agents,
+            runPhase: async (phase) => {
+                if (phase.agent === "planner") {
+                    return { output: mkValidPlan(), ok: true };
+                }
+                if (phase.agent === "validator") {
+                    return { output: "VERDICT: FAIL\nStill broken", ok: true };
+                }
+                if (phase.agent === "critic") {
+                    return { output: "APPROVED\nPlan approved", ok: true };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Build feature X",
+            2,
+            mkCtx(),
+        );
+        assert.equal(result.status, "failed-after-retries");
+        assert.ok(st.running === false);
+    });
+
+    it("exits early on scout failure", async () => {
+        const agents = mkFullAgentSet();
+        agents.set("scout", mkAgent("scout"));
+        const runPhaseCalls: string[] = [];
+        const host = mkHost({
+            loadAgents: () => agents,
+            runPhase: async (phase) => {
+                runPhaseCalls.push(phase.agent);
+                if (phase.agent === "scout") {
+                    return { output: "Scout failed", ok: false };
+                }
+                if (phase.agent === "planner") {
+                    return { output: mkValidPlan(), ok: true };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: {
+                all: [
+                    "scout",
+                    "planner",
+                    "critic",
+                    "implementer",
+                    "tester",
+                    "documenter",
+                    "validator",
+                ],
+            },
+            activeTeamName: "all",
+        });
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Build feature X",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "error");
+        assert.ok(result.report.includes("Scout"));
+        // Verify planner never ran
+        assert.ok(!runPhaseCalls.includes("planner"));
+    });
+
+    it("continues to ship when documenter fails", async () => {
+        const agents = mkFullAgentSet();
+        const host = mkHost({
+            loadAgents: () => agents,
+            runPhase: async (phase) => {
+                if (phase.agent === "planner") {
+                    return { output: mkValidPlan(), ok: true };
+                }
+                if (phase.agent === "validator") {
+                    return { output: "VERDICT: PASS", ok: true };
+                }
+                if (phase.agent === "critic") {
+                    return { output: "APPROVED\nPlan approved", ok: true };
+                }
+                if (phase.agent === "documenter") {
+                    return { output: "Documentation failed", ok: false };
+                }
+                if (phase.agent === "ship") {
+                    return { output: "SHIP: SHIPPED", ok: true };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Build feature X",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "shipped");
+    });
+
+    it("respects abort signal between phases", async () => {
+        const agents = mkFullAgentSet();
+        const controller = new AbortController();
+        let phaseCount = 0;
+        const host = mkHost({
+            loadAgents: () => agents,
+            signal: controller.signal,
+            runPhase: async (phase) => {
+                phaseCount++;
+                if (phaseCount === 2) {
+                    controller.abort();
+                }
+                if (phase.agent === "planner") {
+                    return { output: mkValidPlan(), ok: true };
+                }
+                if (phase.agent === "validator") {
+                    return { output: "VERDICT: PASS", ok: true };
+                }
+                if (phase.agent === "critic") {
+                    return { output: "APPROVED\nPlan approved", ok: true };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Build feature X",
+            3,
+            mkCtx(),
+        );
+        // Abort is checked before each phase, so status should be aborted
+        assert.equal(result.status, "aborted");
+        assert.ok(st.running === false);
+    });
+});
+
+// ── runSpecWorkflowCore — lifecycle tests ──────────
+
+describe("runSpecWorkflowCore", () => {
+    function mkSpecAgentSet(): Map<string, AgentDef> {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        agents.set("critic", mkAgent("critic"));
+        agents.set("documenter", mkAgent("documenter"));
+        return agents;
+    }
+
+    it("runs happy path: plan → document", async () => {
+        const agents = mkSpecAgentSet();
+        const runPhaseCalls: string[] = [];
+        const host = mkHost({
+            loadAgents: () => agents,
+            runPhase: async (phase) => {
+                runPhaseCalls.push(phase.agent);
+                if (phase.agent === "critic") {
+                    return { output: "APPROVED\nSpec approved", ok: true };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runSpecWorkflowCore(
+            st,
+            host,
+            "Design feature Y",
+            mkCtx(),
+        );
+        assert.equal(result.status, "done");
+        assert.ok(st.running === false);
+        assert.ok(runPhaseCalls.includes("planner"));
+        assert.ok(runPhaseCalls.includes("documenter"));
+    });
+
+    it("returns needs-review when critic rejects", async () => {
+        const agents = mkSpecAgentSet();
+        const host = mkHost({
+            loadAgents: () => agents,
+            runPhase: async (phase) => {
+                if (phase.agent === "critic") {
+                    return {
+                        output: "REVISE BEFORE DOCUMENTING\nNeeds more detail",
+                        ok: true,
+                    };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runSpecWorkflowCore(
+            st,
+            host,
+            "Design feature Y",
+            mkCtx(),
+        );
+        assert.equal(result.status, "needs-review");
+        assert.ok(st.running === false);
+    });
+
+    it("exits early on planner failure", async () => {
+        const agents = mkSpecAgentSet();
+        const runPhaseCalls: string[] = [];
+        const host = mkHost({
+            loadAgents: () => agents,
+            runPhase: async (phase) => {
+                runPhaseCalls.push(phase.agent);
+                if (phase.agent === "planner") {
+                    return { output: "Planning failed", ok: false };
+                }
+                return { output: `${phase.agent} output`, ok: true };
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runSpecWorkflowCore(
+            st,
+            host,
+            "Design feature Y",
+            mkCtx(),
+        );
+        assert.equal(result.status, "error");
+        assert.ok(result.report.includes("Planning"));
+        // Verify documenter never ran
+        assert.ok(!runPhaseCalls.includes("documenter"));
+    });
+});
