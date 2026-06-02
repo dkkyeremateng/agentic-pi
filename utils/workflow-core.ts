@@ -2121,6 +2121,180 @@ export function computeSpawnResult(
     };
 }
 
+// Fallback version of spawnAgentWithModel that uses the main session directory
+// without creating project-specific subdirectories. Used when subdirectory
+// creation fails (e.g., permission issues).
+function spawnAgentWithModelFallback(
+    agentDef: AgentDef,
+    task: string,
+    phase: PhaseState,
+    cwd: string,
+    model: string,
+    config: SpawnConfig,
+): Promise<SpawnResult> {
+    const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
+    const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
+
+    // Use the main session directory with project hash in filename
+    const projectHash = cwd
+        .replace(/[^a-zA-Z0-9]/g, "-")
+        .replace(/-+/g, "-")
+        .substring(0, 50);
+
+    const useSharedSession = config.sharedSession && !phase.dispatchId;
+    const sessionFile = join(
+        config.sessionDir,
+        useSharedSession
+            ? `pipeline-${projectHash}.json`
+            : `${sessionKey}-${projectHash}.json`,
+    );
+
+    // Validate session file before using it
+    let hasSession = false;
+    if (existsSync(sessionFile)) {
+        try {
+            const stats = statSync(sessionFile);
+            if (stats.size < 10 || stats.size > 10 * 1024 * 1024) {
+                console.error(
+                    `[spawnAgentWithModel] Session file ${sessionFile} has suspicious size (${stats.size} bytes), deleting and starting fresh`,
+                );
+                unlinkSync(sessionFile);
+            } else {
+                const content = readFileSync(sessionFile, "utf-8");
+                const firstLine = content.split("\n")[0];
+                JSON.parse(firstLine);
+                hasSession = true;
+            }
+        } catch (error) {
+            console.error(
+                `[spawnAgentWithModel] Session file ${sessionFile} is corrupted or invalid, deleting and starting fresh:`,
+                error instanceof Error ? error.message : String(error),
+            );
+            try {
+                unlinkSync(sessionFile);
+            } catch (deleteError) {
+                console.error(
+                    `[spawnAgentWithModel] Failed to delete corrupted session file:`,
+                    deleteError instanceof Error
+                        ? deleteError.message
+                        : String(deleteError),
+                );
+            }
+        }
+    }
+
+    const args = [
+        "--mode",
+        "json",
+        "-p",
+        "--tools",
+        agentDef.tools,
+        "--append-system-prompt",
+        agentDef.systemPrompt,
+        "--session",
+        sessionFile,
+    ];
+
+    const cleanModel = model?.trim();
+    if (cleanModel && !/\s/.test(cleanModel)) {
+        const firstSlash = cleanModel.indexOf("/");
+        const modelId =
+            firstSlash > 0 ? cleanModel.slice(firstSlash + 1) : cleanModel;
+        args.push("--model", modelId);
+    }
+    if (hasSession) args.push("-c");
+    args.push(task);
+
+    phase.activeModel = cleanModel || undefined;
+
+    const state: SpawnEventState = {
+        answer: [],
+        finalText: "",
+        finalError: "",
+        activity: "",
+        stderrTail: "",
+        droppedLines: 0,
+        toolCount: 0,
+    };
+    const start = Date.now();
+
+    return new Promise((resolve) => {
+        const proc = spawn("pi", args, {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, PI_SUBAGENT: "1" },
+            cwd,
+        });
+
+        config.setCurrentProc(proc);
+
+        const watchdog = config.agentTimeoutMs
+            ? setTimeout(() => {
+                  console.error(
+                      `[spawnAgentWithModel] Agent ${agentDef.name} timed out after ${config.agentTimeoutMs}ms, killing process`,
+                  );
+                  proc.kill("SIGTERM");
+                  setTimeout(() => {
+                      if (!proc.killed) {
+                          proc.kill("SIGKILL");
+                      }
+                  }, 5000);
+              }, config.agentTimeoutMs)
+            : null;
+
+        proc.stdout?.on("data", (data: Buffer) => {
+            const lines = data.toString().split("\n");
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    handleSpawnEvent(event, state, phase, () => {});
+                } catch (error) {
+                    state.droppedLines++;
+                }
+            }
+        });
+
+        proc.stderr?.on("data", (data: Buffer) => {
+            const stderrText = data.toString();
+            state.stderrTail += stderrText;
+            if (state.stderrTail.length > STDERR_TAIL_CAP) {
+                state.stderrTail = state.stderrTail.slice(-STDERR_TAIL_CAP);
+            }
+        });
+
+        proc.on("close", (code) => {
+            if (watchdog) clearTimeout(watchdog);
+            config.setCurrentProc(null);
+
+            const elapsed = Date.now() - start;
+            const timedOut = elapsed >= (config.agentTimeoutMs || Infinity);
+
+            const result = computeSpawnResult(
+                state,
+                code,
+                timedOut,
+                config.agentTimeoutMs || 0,
+                state.stderrTail,
+            );
+
+            resolve(result);
+        });
+
+        proc.on("error", (error) => {
+            if (watchdog) clearTimeout(watchdog);
+            config.setCurrentProc(null);
+            console.error(
+                `[spawnAgentWithModel] Failed to spawn pi process for ${agentDef.name}:`,
+                error.message,
+            );
+            resolve({
+                output: `[spawn error] ${error.message}`,
+                exitCode: 1,
+            });
+        });
+    });
+}
+
 export function spawnAgentWithModel(
     agentDef: AgentDef,
     task: string,
@@ -2133,22 +2307,42 @@ export function spawnAgentWithModel(
     // Use dispatchId for unique session files when running parallel instances
     const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
 
-    // Create project-specific session files to avoid cross-project context pollution
-    // Hash the cwd path to create a unique, filesystem-safe identifier
+    // Create project-specific subdirectory for better session organization
     const projectHash = cwd
         .replace(/[^a-zA-Z0-9]/g, "-")
         .replace(/-+/g, "-")
         .substring(0, 50); // Limit length
+    const projectSessionDir = join(config.sessionDir, projectHash);
+
+    // Ensure the project session directory exists
+    if (!existsSync(projectSessionDir)) {
+        try {
+            mkdirSync(projectSessionDir, { recursive: true });
+        } catch (error) {
+            console.error(
+                `[spawnAgentWithModel] Failed to create project session directory ${projectSessionDir}:`,
+                error instanceof Error ? error.message : String(error),
+            );
+            // Fall back to the main session directory if subdirectory creation fails
+            return spawnAgentWithModelFallback(
+                agentDef,
+                task,
+                phase,
+                cwd,
+                model,
+                config,
+            );
+        }
+    }
 
     // For parallel dispatches (when dispatchId exists), always use unique session files
     // to prevent race conditions. Only use shared sessions for sequential pipeline phases.
     const useSharedSession = config.sharedSession && !phase.dispatchId;
 
+    // Use simple filenames inside the project subdirectory
     const sessionFile = join(
-        config.sessionDir,
-        useSharedSession
-            ? `pipeline-${projectHash}.json`
-            : `${sessionKey}-${projectHash}.json`,
+        projectSessionDir,
+        useSharedSession ? "pipeline.json" : `${sessionKey}.json`,
     );
 
     // Validate session file before using it
