@@ -48,11 +48,10 @@ To dispatch in parallel:
 Wait for all results before summarizing.
 
 **Important for parallel dispatches of the SAME agent:**
-- Call `select_agents` ONCE with the agent name (e.g., `select_agents(['seeker'])`)
-- This shows ONE card in the dashboard representing your plan
-- Then call `dispatch_agent` multiple times with different tasks
+- Call `select_agents` with the agent name repeated for each parallel instance (e.g., `select_agents(['seeker', 'seeker'])` for 2 parallel seekers)
+- This shows the parallel plan in the dashboard (e.g., "Seeker ∥ Seeker")
+- Then call `dispatch_agent` multiple times with different tasks (one per parallel instance)
 - The system will automatically create separate phases for each parallel instance
-- DO NOT call `select_agents(['seeker', 'seeker'])` — duplicates are ignored
 
 **Sequential dispatches** are still needed when:
 - Agent B needs output from agent A (e.g. implementer needs planner's output)
