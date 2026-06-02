@@ -9,8 +9,6 @@
 // as an extension — it has no default export and is imported, like
 // ./workflow-utils.
 
-process.stderr.write("\n\n========== workflow-core.ts LOADED ==========\n\n");
-
 import { spawn } from "child_process";
 import { homedir } from "os";
 import {
@@ -922,9 +920,6 @@ export function makeSpawnWrapper(opts: {
             ? sessionDirOpt
             : () => sessionDirOpt;
     return (agentDef, task, phase, cwd, model) => {
-        process.stderr.write(
-            `[makeSpawnWrapper] called with agent=${agentDef.name} model="${model}"\n`,
-        );
         const cfg: SpawnConfig = {
             sessionDir: getSessionDir(),
             sharedSession,
@@ -1808,9 +1803,6 @@ export async function runAgentWithFallback(
         ) => void;
     },
 ): Promise<{ output: string; exitCode: number }> {
-    process.stderr.write(
-        `\n===== runAgentWithFallback CALLED =====\nagent=${agentDef.name}\nprimaryModel="${primaryModel}"\nfallbackModel="${fallbackModel}"\n========================================\n\n`,
-    );
     const result = await spawnFn(agentDef, task, phase, cwd, primaryModel);
 
     // Only model-specific load/run failures trigger a fallback — timeouts,
@@ -2133,17 +2125,6 @@ export function spawnAgentWithModel(
     model: string,
     config: SpawnConfig,
 ): Promise<SpawnResult> {
-    // Write to file to bypass any caching
-    writeFileSync(
-        "/tmp/pi-spawn-debug.log",
-        `[${new Date().toISOString()}] spawnAgentWithModel called\n` +
-            `agent=${agentDef.name}\n` +
-            `model="${model}"\n`,
-        { flag: "a" },
-    );
-    process.stderr.write(
-        `[spawnAgentWithModel] agent=${agentDef.name} received model="${model}"\n`,
-    );
     const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
     // Use dispatchId for unique session files when running parallel instances
     const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
@@ -2151,7 +2132,42 @@ export function spawnAgentWithModel(
         config.sessionDir,
         config.sharedSession ? "pipeline-shared.json" : `${sessionKey}.json`,
     );
-    const hasSession = existsSync(sessionFile);
+
+    // Validate session file before using it
+    let hasSession = false;
+    if (existsSync(sessionFile)) {
+        try {
+            const stats = statSync(sessionFile);
+            // Check if file is too small (likely corrupted) or too large (might be incompatible)
+            if (stats.size < 10 || stats.size > 10 * 1024 * 1024) {
+                console.error(
+                    `[spawnAgentWithModel] Session file ${sessionFile} has suspicious size (${stats.size} bytes), deleting and starting fresh`,
+                );
+                unlinkSync(sessionFile);
+            } else {
+                // Try to parse the first line to validate it's proper JSON
+                const content = readFileSync(sessionFile, "utf-8");
+                const firstLine = content.split("\n")[0];
+                JSON.parse(firstLine); // Will throw if invalid JSON
+                hasSession = true;
+            }
+        } catch (error) {
+            console.error(
+                `[spawnAgentWithModel] Session file ${sessionFile} is corrupted or invalid, deleting and starting fresh:`,
+                error instanceof Error ? error.message : String(error),
+            );
+            try {
+                unlinkSync(sessionFile);
+            } catch (deleteError) {
+                console.error(
+                    `[spawnAgentWithModel] Failed to delete corrupted session file:`,
+                    deleteError instanceof Error
+                        ? deleteError.message
+                        : String(deleteError),
+                );
+            }
+        }
+    }
 
     const args = [
         "--mode",
@@ -2174,10 +2190,6 @@ export function spawnAgentWithModel(
         const firstSlash = cleanModel.indexOf("/");
         const modelId =
             firstSlash > 0 ? cleanModel.slice(firstSlash + 1) : cleanModel;
-        // Log to stderr for debugging
-        process.stderr.write(
-            `[spawnAgentWithModel] agent=${agentDef.name} extracted modelId="${modelId}" from="${cleanModel}"\n`,
-        );
         args.push("--model", modelId);
     }
     if (hasSession) args.push("-c");
