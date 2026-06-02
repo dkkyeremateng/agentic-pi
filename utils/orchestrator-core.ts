@@ -762,6 +762,11 @@ export async function dispatchAgentCore(
 
     if (onUpdate) onUpdate(textResult(`Dispatching to ${def.name}...`));
 
+    // Capture the session model from the context (same as runWorkflowCore does).
+    // This ensures subagents inherit the primary agent's model when no explicit
+    // model is configured.
+    h.setup.prepareRun(ctx);
+
     // dispatch_agent can be called standalone, so ensure the session dir exists.
     h.setup.setupSessions(ctx.cwd, false);
 
