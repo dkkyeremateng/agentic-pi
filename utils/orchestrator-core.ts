@@ -736,6 +736,9 @@ export async function dispatchAgentCore(
     onUpdate: ((u: ToolResult) => void) | undefined,
     ctx: any,
 ): Promise<ToolResult> {
+    process.stderr.write(
+        `\n\n===== dispatchAgentCore CALLED =====\nagent="${agent}"\ntask="${task.slice(0, 50)}..."\n====================================\n\n`,
+    );
     if (s.running)
         return textResult(
             "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
