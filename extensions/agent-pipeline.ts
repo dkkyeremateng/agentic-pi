@@ -2,11 +2,11 @@
 // ABOUTME: The validator gates a correctness loop (FAIL -> back to implementer); only after PASS does the documenter
 // ABOUTME: run, then the validator ships — commits code+tests+docs and opens the PR (or pauses if there is no remote).
 /**
- * Workflow — plan / implement / test / validate / document / ship orchestrator
+ * Workflow — scout / plan / critique / implement / test / validate / document / ship orchestrator
  *
- * Runs the five agents defined in .pi/agents/*.md (the validator twice — to
- * validate, then to ship):
- *   planner -> implementer -> tester -> validator(gate) -> documenter -> validator(ship)
+ * Runs the agents defined in .pi/agents/*.md (the validator twice — to validate,
+ * then to ship), optionally led by a read-only scout recon pass:
+ *   scout? -> planner -> critic -> implementer -> tester -> validator(gate) -> documenter -> validator(ship)
  *
  * Unlike a static chain, the validator's verdict drives a feedback loop:
  *   - PASS    -> done (PR opened by validator if a remote exists)
@@ -152,6 +152,14 @@ const AGENT_TIMEOUT_MS =
 // a likely compaction partway through a long run — for complete cross-agent
 // history. The curated bundle still applies on top.
 const SHARED_SESSION = process.env.PI_AGENT_PIPELINE_SHARED_SESSION === "1";
+// Cap dispatches per orchestrator turn so a weak model can't loop forever.
+const MAX_DISPATCHES_PER_TURN = Math.max(
+    1,
+    parseInt(process.env.PI_MAX_DISPATCHES_PER_TURN || "20", 10) || 20,
+);
+// A dispatched agent that returns fewer than this many chars did no real work,
+// so treat the dispatch as failed (steer the orchestrator to re-dispatch).
+const MIN_DISPATCH_OUTPUT_CHARS = 40;
 
 // ── Extension ────────────────────────────────────
 
@@ -171,7 +179,6 @@ export default function (pi: ExtensionAPI) {
     let lastStatus = "idle";
     let running = false;
     let currentProc: any = null;
-    let abortController: AbortController | null = null;
     let phaseLogs: { label: string; log: string }[] = []; // collected per run, posted as one card at the end
     let totalDroppedLines = 0; // count of JSON lines dropped during this run (diagnostic signal)
     let totalToolCalls = 0; // cumulative tool calls across all phases this run (incl. retries)
@@ -606,7 +613,6 @@ export default function (pi: ExtensionAPI) {
         maxLoops: number,
         ctx: any,
     ): Promise<{ status: string; report: string }> {
-        abortController = new AbortController();
         isSpecMode = false; // never inherit spec mode from a prior invocation
         sessionModel = sessionModelOf(ctx); // all agents run on the session model
         const cwd = ctx.cwd;
@@ -964,18 +970,15 @@ export default function (pi: ExtensionAPI) {
 
         publishLogs();
 
-        abortController = null;
         return { status, report };
     }
 
-    // ── Custom message renderer for workflow reports ──
     // ── Orchestrate the spec-only workflow ────────
 
     async function runSpecWorkflow(
         request: string,
         ctx: any,
     ): Promise<{ status: string; report: string }> {
-        abortController = new AbortController();
         isSpecMode = true;
         sessionModel = sessionModelOf(ctx); // all agents run on the session model
         const cwd = ctx.cwd;
@@ -995,7 +998,11 @@ export default function (pi: ExtensionAPI) {
         running = true;
         updateWidget();
 
-        const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
+        // Spec mode only runs planner -> critic -> documenter (+ optional scout),
+        // so don't require the implement/test/validate agents the full pipeline needs.
+        const missing = ["planner", "critic", "documenter"].filter(
+            (a) => !agents.has(a),
+        );
         if (missing.length) {
             running = false;
             lastStatus = "error";
@@ -1165,7 +1172,6 @@ export default function (pi: ExtensionAPI) {
 
         publishLogs();
 
-        abortController = null;
         return { status, report };
     }
 
@@ -1242,7 +1248,11 @@ export default function (pi: ExtensionAPI) {
                 teams = loadTeams(ctx.cwd);
                 if (Object.keys(teams).length === 0)
                     teams = { all: Array.from(agents.keys()) };
-                const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
+                // Gate on the agents BOTH modes need; the full pipeline checks the
+                // implement/test/validate agents itself inside runWorkflow.
+                const missing = ["planner", "critic", "documenter"].filter(
+                    (a) => !agents.has(a),
+                );
                 if (missing.length) {
                     ctx.ui.notify(
                         `Missing agents in .pi/agents/: ${missing.join(", ")}`,
@@ -1520,10 +1530,6 @@ export default function (pi: ExtensionAPI) {
                     };
                 }
 
-                const MAX_DISPATCHES_PER_TURN = parseInt(
-                    process.env.PI_MAX_DISPATCHES_PER_TURN || "20",
-                    10,
-                );
                 if (dispatchesThisTurn >= MAX_DISPATCHES_PER_TURN) {
                     return {
                         content: [
@@ -1612,7 +1618,8 @@ export default function (pi: ExtensionAPI) {
                 // An agent that exits cleanly but returns (near-)empty output did
                 // not actually do the work — treat it as a FAILED dispatch so the
                 // orchestrator re-dispatches it instead of building on nothing.
-                const emptyOutput = res.output.trim().length < 40;
+                const emptyOutput =
+                    res.output.trim().length < MIN_DISPATCH_OUTPUT_CHARS;
                 const ok = res.exitCode === 0 && !emptyOutput;
 
                 phase.status = ok ? "done" : "error";
@@ -1896,6 +1903,7 @@ export default function (pi: ExtensionAPI) {
         activateTeam(Object.keys(teams)[0] ?? "");
         phases = [];
         dispatchMode = false;
+        isSpecMode = false;
 
         // Only the active workflow extension owns the chrome. When both are
         // auto-discovered, the inactive one clears its widget and bows out so it
@@ -1913,13 +1921,8 @@ export default function (pi: ExtensionAPI) {
         // itself. Re-asserted each turn in before_agent_start.
         if (active) pi.setActiveTools(ORCHESTRATOR_TOOLS);
         (globalThis as any).__piKillWorkflowProc = (): boolean => {
-            // Abort any running workflow on dispose.
-            if (abortController) {
-                try {
-                    abortController.abort();
-                } catch {}
-                abortController = null;
-            }
+            // Kill the running agent subprocess so a cancelled workflow doesn't
+            // keep running detached in the background.
             if (currentProc) {
                 try {
                     currentProc.kill("SIGTERM");
