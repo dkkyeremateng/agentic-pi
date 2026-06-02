@@ -948,17 +948,33 @@ export function selectAgentsCore(
     h.setup.setupSessions(ctx.cwd, false);
     h.ui.updateWidget();
 
-    const order = resolved.map((k) => displayName(k)).join(" → ");
+    // Check if the original request had duplicates (parallel dispatch intent)
+    const originalNames = names.map((n) => n.toLowerCase());
+    const hasDuplicates = new Set(originalNames).size < originalNames.length;
+
+    // Use different separator and message for parallel vs sequential
+    const separator = hasDuplicates ? " ∥ " : " → ";
+    const order = resolved.map((k) => displayName(k)).join(separator);
     const warn = unknown.length
         ? ` (ignored unknown: ${unknown.join(", ")})`
         : "";
+
+    const parallelNote = hasDuplicates
+        ? " For parallel execution, dispatch the same agent multiple times with different tasks."
+        : "";
+
     return {
         content: [
             {
                 type: "text",
-                text: `Selected ${resolved.length} agent${resolved.length === 1 ? "" : "s"} for the work: ${order}.${warn} The dashboard now shows them queued — dispatch them in order.`,
+                text: `Selected ${resolved.length} agent${resolved.length === 1 ? "" : "s"} for the work: ${order}.${warn}${parallelNote} The dashboard now shows them queued — dispatch them in order.`,
             },
         ],
-        details: { selected: resolved, order, unknown },
+        details: {
+            selected: resolved,
+            order,
+            unknown,
+            isParallel: hasDuplicates,
+        },
     };
 }
