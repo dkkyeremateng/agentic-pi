@@ -2138,7 +2138,6 @@ export function spawnAgentWithModel(
         "--mode",
         "json",
         "-p",
-        "--no-extensions",
         "--tools",
         agentDef.tools,
         "--append-system-prompt",
