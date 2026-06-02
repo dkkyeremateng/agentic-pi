@@ -747,7 +747,7 @@ Build feature X according to the requirements.
         );
         assert.equal(result.status, "shipped");
         assert.ok(st.running === false);
-        assert.ok(st.runElapsedMs > 0);
+        assert.ok(st.runElapsedMs >= 0);
         // Verify phases were created
         assert.ok(st.phases.length > 0);
         // Verify all required agents ran

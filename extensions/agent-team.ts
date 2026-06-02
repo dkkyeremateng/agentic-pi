@@ -47,6 +47,13 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { secs } from "../utils/workflow-utils";
 import {
+    calculateGridLayout,
+    renderCardGrid,
+    renderPipelineTitle,
+    renderPhaseCardsWithArrows,
+    renderEmptyAgentMessage,
+} from "../utils/workflow-widgets";
+import {
     REQUIRED_AGENTS,
     DEFAULT_MAX_LOOPS,
     WORKFLOW_REPORT_TYPE,
@@ -485,23 +492,13 @@ export default function (pi: ExtensionAPI) {
         const lines: string[] = [header, hint, ""];
 
         if (members.length === 0) {
-            lines.push(
-                theme.fg(
-                    "dim",
-                    " No agents in this team. Check .pi/agents/teams.yaml and .pi/agents/*.md.",
-                ),
-            );
+            lines.push(...renderEmptyAgentMessage(theme));
             return lines;
         }
 
-        const cols = Math.min(
-            members.length <= 3 ? members.length : 3,
+        const { cols, gap, colWidth } = calculateGridLayout(
             members.length,
-        );
-        const gap = 1;
-        const colWidth = Math.max(
-            18,
-            Math.floor((width - gap * (cols - 1)) / cols),
+            width,
         );
 
         for (let i = 0; i < members.length; i += cols) {
@@ -509,14 +506,7 @@ export default function (pi: ExtensionAPI) {
             const cards = rowMembers.map((m) =>
                 renderAgentCard(m, colWidth, theme),
             );
-            const cardH = cards[0]?.length ?? 6;
-            while (cards.length < cols)
-                cards.push(Array(cardH).fill(" ".repeat(colWidth)));
-            for (let line = 0; line < cardH; line++) {
-                lines.push(
-                    cards.map((c) => c[line] || "").join(" ".repeat(gap)),
-                );
-            }
+            lines.push(...renderCardGrid(cards, cols, gap, colWidth));
         }
         return lines;
     }
@@ -599,7 +589,6 @@ export default function (pi: ExtensionAPI) {
                     const cards = st.phases.map((p) =>
                         renderCard(p, colWidth, theme),
                     );
-                    const cardHeight = cards[0].length;
                     const lines: string[] = [];
 
                     const passInfo =
@@ -631,17 +620,8 @@ export default function (pi: ExtensionAPI) {
                     for (const row of modelRows) lines.push(row);
                     lines.push("");
 
-                    for (let line = 0; line < cardHeight; line++) {
-                        let row = cards[0][line];
-                        for (let c = 1; c < cols; c++) {
-                            row +=
-                                line === arrowRow
-                                    ? theme.fg("dim", " ──▶ ")
-                                    : " ".repeat(arrowWidth);
-                            row += cards[c][line];
-                        }
-                        lines.push(row);
-                    }
+                    // Use shared arrow layout renderer
+                    lines.push(...renderPhaseCardsWithArrows(cards, theme));
 
                     // Live log of the currently running agent — grows to fill the
                     // available vertical space, pushing the editor down, then tails.
