@@ -6,7 +6,6 @@
 //
 // Lives in .pi/utils/ so pi does not auto-load it — imported, not discovered.
 
-import { spawn } from "child_process";
 import { existsSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
@@ -37,6 +36,9 @@ import {
     failPhase,
     displayName,
     validatePlan,
+    spawnAgentWithModel as coreSpawnAgent,
+    type SpawnConfig as CoreSpawnConfig,
+    type SpawnResult as CoreSpawnResult,
     scoutTask,
     planTask,
     implementTask,
@@ -130,9 +132,7 @@ export class WorkflowRuntime {
     }
 
     freshPhases(): PhaseState[] {
-        const lead = this.includeScout
-            ? [this.mkPhase("Scout", "scout")]
-            : [];
+        const lead = this.includeScout ? [this.mkPhase("Scout", "scout")] : [];
         if (this.isSpecMode) {
             return [
                 ...lead,
@@ -159,9 +159,7 @@ export class WorkflowRuntime {
 
     setActiveTeamMembers(members: string[]) {
         this.activeTeamMembers = members;
-        this.includeScout = members.some(
-            (m) => m.toLowerCase() === "scout",
-        );
+        this.includeScout = members.some((m) => m.toLowerCase() === "scout");
     }
 
     // ── Spawn ────────────────────────────────────
@@ -173,220 +171,25 @@ export class WorkflowRuntime {
         cwd: string,
         model: string,
     ): Promise<SpawnResult> {
-        const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
-        const sessionFile = join(
-            this.sessionDir,
-            this.config.sharedSession
-                ? "pipeline-shared.json"
-                : `${key}.json`,
+        const cfg: CoreSpawnConfig = {
+            sessionDir: this.sessionDir,
+            sharedSession: this.config.sharedSession,
+            agentTimeoutMs: this.config.agentTimeoutMs,
+            updateWidget: () => this.config.updateWidget(),
+            setCurrentProc: (p: any) => {
+                this.currentProc = p;
+            },
+        };
+        const prevToolCount = phase.toolCount;
+        const prevDroppedLines = phase.droppedLines;
+        return coreSpawnAgent(agentDef, task, phase, cwd, model, cfg).then(
+            (result) => {
+                // Accumulate module-level counters from the shared spawn.
+                this.totalToolCalls += phase.toolCount - prevToolCount;
+                this.totalDroppedLines += phase.droppedLines - prevDroppedLines;
+                return result;
+            },
         );
-        const hasSession = existsSync(sessionFile);
-
-        const args = [
-            "--mode",
-            "json",
-            "-p",
-            "--no-extensions",
-            "--tools",
-            agentDef.tools,
-            "--append-system-prompt",
-            agentDef.systemPrompt,
-            "--session",
-            sessionFile,
-        ];
-        if (model) args.push("--model", model);
-        if (hasSession) args.push("-c");
-        args.push(task);
-
-        // Record the model this run is actually using so the card reflects it.
-        phase.activeModel = model || undefined;
-
-        const answer: string[] = [];
-        let activity = "";
-        let stderrTail = "";
-        let timedOut = false;
-        let capturedTokens: TokenUsage | undefined;
-        const start = Date.now();
-
-        return new Promise((resolve) => {
-            const proc = spawn("pi", args, {
-                stdio: ["ignore", "pipe", "pipe"],
-                env: { ...process.env, PI_SUBAGENT: "1" },
-                cwd,
-            });
-            this.currentProc = proc;
-
-            const watchdog =
-                this.config.agentTimeoutMs > 0
-                    ? setTimeout(() => {
-                          timedOut = true;
-                          try {
-                              proc.kill("SIGTERM");
-                          } catch {}
-                      }, this.config.agentTimeoutMs)
-                    : null;
-
-            let lastPaint = 0;
-            const paint = (force = false) => {
-                const now = Date.now();
-                if (!force && now - lastPaint < 120) return;
-                lastPaint = now;
-                this.config.updateWidget();
-            };
-            const pushActivity = (s: string) => {
-                activity += s;
-                if (activity.length > LOG_CAP_CHARS)
-                    activity = activity.slice(-LOG_CAP_CHARS);
-                phase.log = activity;
-                phase.note =
-                    activity
-                        .split("\n")
-                        .filter((l: string) => l.trim())
-                        .pop() || "";
-            };
-            const compactArgs = (a: any): string => {
-                if (!a || typeof a !== "object") return "";
-                const s = Object.entries(a)
-                    .map(
-                        ([k, v]) =>
-                            `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`,
-                    )
-                    .join(" ");
-                return s.length > 70 ? s.slice(0, 69) + "…" : s;
-            };
-
-            const timer = setInterval(() => {
-                phase.elapsed = Date.now() - start;
-                this.config.updateWidget();
-            }, 1000);
-
-            let buffer = "";
-            proc.stdout!.setEncoding("utf-8");
-            proc.stdout!.on("data", (chunk: string) => {
-                buffer += chunk;
-                const lines = buffer.split("\n");
-                buffer = lines.pop() || "";
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    try {
-                        const event = JSON.parse(line);
-                        if (event.type === "message_update") {
-                            const ev = event.assistantMessageEvent;
-                            if (ev?.type === "text_delta") {
-                                answer.push(ev.delta || "");
-                                pushActivity(ev.delta || "");
-                                paint();
-                            } else if (ev?.type === "thinking_delta") {
-                                pushActivity(ev.delta || "");
-                                paint();
-                            }
-                        } else if (event.type === "tool_execution_start") {
-                            phase.toolCount++;
-                            this.totalToolCalls++;
-                            pushActivity(
-                                `\n→ ${event.toolName} ${compactArgs(event.args)}\n`,
-                            );
-                            paint(true);
-                        } else if (event.type === "tool_execution_end") {
-                            pushActivity(`✓ ${event.toolName}\n`);
-                            paint(true);
-                        } else if (
-                            event.type === "message_end" ||
-                            event.type === "agent_end"
-                        ) {
-                            const msg =
-                                event.type === "message_end"
-                                    ? event.message
-                                    : (event.messages || []).find(
-                                          (m: any) => m.role === "assistant",
-                                      );
-                            if (msg?.usage?.input) {
-                                const ctxWindow =
-                                    msg.usage.contextWindow ||
-                                    msg.usage.max_tokens ||
-                                    200_000;
-                                phase.contextPct = Math.min(
-                                    100,
-                                    Math.round(
-                                        (msg.usage.input / ctxWindow) * 100,
-                                    ),
-                                );
-                                // Track token usage for the report (#5)
-                                capturedTokens = {
-                                    input: msg.usage.input || 0,
-                                    output: msg.usage.output || 0,
-                                    contextWindow: ctxWindow,
-                                };
-                                paint();
-                            }
-                        }
-                    } catch {
-                        phase.droppedLines++;
-                        this.totalDroppedLines++;
-                    }
-                }
-            });
-            proc.stderr!.setEncoding("utf-8");
-            proc.stderr!.on("data", (chunk: string) => {
-                stderrTail += chunk;
-                if (stderrTail.length > STDERR_TAIL_CAP)
-                    stderrTail = stderrTail.slice(-STDERR_TAIL_CAP);
-            });
-
-            proc.on("close", (code) => {
-                this.currentProc = null;
-                if (buffer.trim()) {
-                    try {
-                        const event = JSON.parse(buffer);
-                        if (
-                            event.type === "message_update" &&
-                            event.assistantMessageEvent?.type === "text_delta"
-                        ) {
-                            answer.push(
-                                event.assistantMessageEvent.delta || "",
-                            );
-                        }
-                    } catch {
-                        phase.droppedLines++;
-                        this.totalDroppedLines++;
-                    }
-                }
-                clearInterval(timer);
-                if (watchdog) clearTimeout(watchdog);
-                phase.elapsed = Date.now() - start;
-                let output = answer.join("");
-                if (timedOut) {
-                    output +=
-                        (output ? "\n\n" : "") +
-                        `[timed out after ${Math.round(this.config.agentTimeoutMs / 60_000)}m — killed by PI_WORKFLOW_AGENT_TIMEOUT]`;
-                }
-                if ((code ?? 1) !== 0 && stderrTail.trim()) {
-                    output +=
-                        (output ? "\n\n" : "") +
-                        `[stderr]\n${stderrTail.trim()}`;
-                }
-                phase.note =
-                    output
-                        .split("\n")
-                        .filter((l) => l.trim())
-                        .pop() || phase.note;
-                resolve({
-                    output,
-                    exitCode: timedOut ? 1 : (code ?? 1),
-                    tokens: capturedTokens,
-                });
-            });
-
-            proc.on("error", (err: any) => {
-                this.currentProc = null;
-                clearInterval(timer);
-                if (watchdog) clearTimeout(watchdog);
-                resolve({
-                    output: `Error spawning agent: ${err.message}`,
-                    exitCode: 1,
-                });
-            });
-        });
     }
 
     // ── Run a single agent (with fallback) ───────
@@ -405,13 +208,9 @@ export class WorkflowRuntime {
         const ctx = this.config.getWidgetCtx();
         const sm = ctx?.model;
         const sessionModel =
-            sm?.provider && sm?.id
-                ? `${sm.provider}/${sm.id}`
-                : sm?.id || "";
+            sm?.provider && sm?.id ? `${sm.provider}/${sm.id}` : sm?.id || "";
         const fallbackModel =
-            sessionModel && sessionModel !== primaryModel
-                ? sessionModel
-                : "";
+            sessionModel && sessionModel !== primaryModel ? sessionModel : "";
 
         const result = await this.spawnAgentWithModel(
             agentDef,
@@ -722,14 +521,7 @@ export class WorkflowRuntime {
             impl = await this.runPhase(
                 agents,
                 implP,
-                shared(
-                    fixTask(
-                        request,
-                        plan.output,
-                        val.output,
-                        impl.output,
-                    ),
-                ),
+                shared(fixTask(request, plan.output, val.output, impl.output)),
                 cwd,
             );
             if (!impl.ok) {

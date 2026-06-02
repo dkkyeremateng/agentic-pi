@@ -100,7 +100,10 @@ export function digest(text: string, maxLen = 280): string {
         picked.push(l.replace(/^#{1,6}\s+/, "").replace(/^[-*]\s+/, ""));
         if (picked.join(" ").length >= maxLen) break;
     }
-    let s = picked.join(" ").trim() || text.trim().slice(0, maxLen);
+    let s =
+        picked.join(" ").trim() ||
+        text.trim().slice(0, maxLen) ||
+        "[no output]";
     s = s.replace(/\s+/g, " ");
     return s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s;
 }

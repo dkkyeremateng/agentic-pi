@@ -9,6 +9,7 @@
 // as an extension — it has no default export and is imported, like
 // ./workflow-utils.
 
+import { spawn } from "child_process";
 import {
     readFileSync,
     existsSync,
@@ -463,7 +464,15 @@ export async function chooseTeam(
 // Default TTL for orphaned session files: 7 days. Files older than this are
 // removed during cleanup so the session directory doesn't grow unbounded when
 // dispatch-mode sessions accumulate across runs.
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_TTL_MS =
+    Math.max(
+        1,
+        parseFloat(process.env.PI_WORKFLOW_SESSION_TTL_DAYS || "7") || 7,
+    ) *
+    24 *
+    60 *
+    60 *
+    1000;
 
 // Ensure the per-agent session directory exists; optionally wipe stale sessions.
 // When `wipe` is false, still removes orphaned files older than SESSION_TTL_MS
@@ -553,27 +562,21 @@ interface PlanCheck {
  */
 export function validatePlan(plan: string): PlanCheck {
     const missing: string[] = [];
-    const lower = plan.toLowerCase();
-    if (
-        !/##?\s*phase\s/i.test(plan) &&
-        !lower.includes("phase 1") &&
-        !lower.includes("phase: ")
-    ) {
-        missing.push("at least one labelled phase (## Phase N)");
+    if (!/^#{1,6}\s+phase[\s:]/im.test(plan)) {
+        missing.push("at least one labelled phase heading (## Phase N)");
+    }
+    if (!/^#{1,6}\s+acceptance\s+criteri/im.test(plan)) {
+        missing.push("an Acceptance Criteria heading (## Acceptance Criteria)");
     }
     if (
-        !/##?\s*acceptance\s*criteri/i.test(plan) &&
-        !lower.includes("acceptance criteria")
-    ) {
-        missing.push("an Acceptance Criteria section");
-    }
-    if (
-        !/##?\s*critical\s*files/i.test(plan) &&
-        !lower.includes("files changed") &&
-        !/\b(modify|new file|create)\b/i.test(plan)
+        !/^#{1,6}\s+(critical\s+files|files?\s+changed)/im.test(plan) &&
+        !/^[-*]\s+\S+\.(ts|js|py|go|rs|md|json|yaml|yml)\b/im.test(plan) &&
+        !/\b(modify|new file|create)\b.*\S+\.(ts|js|py|go|rs|md|json|yaml|yml)\b/i.test(
+            plan,
+        )
     ) {
         missing.push(
-            "file-level specificity (Critical Files table or explicit file paths in phases)",
+            "file-level specificity (Critical Files heading or explicit file paths in phases)",
         );
     }
     return { ok: missing.length === 0, missing };
@@ -599,8 +602,12 @@ export interface RunArtifacts {
 export function contextBundle(a: RunArtifacts): string {
     const parts: string[] = [];
     const add = (title: string, body?: string) => {
-        if (body && body.trim())
-            parts.push(`### ${title}`, "", body.trim(), "");
+        if (!body || !body.trim()) return;
+        let trimmed = body.trim();
+        if (trimmed.length > 3000) {
+            trimmed = trimmed.slice(0, 2997) + "...";
+        }
+        parts.push(`### ${title}`, "", trimmed, "");
     };
     add("Reconnaissance (scout)", a.recon);
     add("Approved plan (planner)", a.plan);
@@ -1036,6 +1043,243 @@ export interface TokenUsage {
     contextWindow: number;
 }
 
+// ── Shared agent spawn ────────────────────────────
+
+// Configuration for spawning a sub-agent subprocess. Extracted so both
+// extensions (agent-pipeline, agent-team) and the WorkflowRuntime class
+// share one implementation instead of carrying ~220-line copies.
+export interface SpawnConfig {
+    sessionDir: string;
+    sharedSession: boolean;
+    agentTimeoutMs: number;
+    updateWidget: () => void;
+    setCurrentProc: (proc: any) => void;
+}
+
+// Result of a spawned agent subprocess.
+export interface SpawnResult {
+    output: string;
+    exitCode: number;
+    tokens?: TokenUsage;
+}
+
+// Spawn a pi subprocess for an agent, stream its output, and return the result.
+// This is the single shared implementation used by agent-pipeline, agent-team,
+// and the WorkflowRuntime class. Each caller handles model resolution and
+// fallback differently, so this function only handles the spawn itself.
+export function spawnAgentWithModel(
+    agentDef: AgentDef,
+    task: string,
+    phase: PhaseState,
+    cwd: string,
+    model: string,
+    config: SpawnConfig,
+): Promise<SpawnResult> {
+    const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
+    const sessionFile = join(
+        config.sessionDir,
+        config.sharedSession ? "pipeline-shared.json" : `${key}.json`,
+    );
+    const hasSession = existsSync(sessionFile);
+
+    const args = [
+        "--mode",
+        "json",
+        "-p",
+        "--no-extensions",
+        "--tools",
+        agentDef.tools,
+        "--append-system-prompt",
+        agentDef.systemPrompt,
+        "--session",
+        sessionFile,
+    ];
+    if (model) args.push("--model", model);
+    if (hasSession) args.push("-c");
+    args.push(task);
+
+    // Record the model this run is actually using so the card reflects it.
+    phase.activeModel = model || undefined;
+
+    const answer: string[] = [];
+    let activity = "";
+    let stderrTail = "";
+    let timedOut = false;
+    let capturedTokens: TokenUsage | undefined;
+    const start = Date.now();
+
+    return new Promise((resolve) => {
+        const proc = spawn("pi", args, {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, PI_SUBAGENT: "1" },
+            cwd,
+        });
+        config.setCurrentProc(proc);
+
+        const watchdog =
+            config.agentTimeoutMs > 0
+                ? setTimeout(() => {
+                      timedOut = true;
+                      try {
+                          proc.kill("SIGTERM");
+                      } catch {}
+                  }, config.agentTimeoutMs)
+                : null;
+
+        let lastPaint = 0;
+        const paint = (force = false) => {
+            const now = Date.now();
+            if (!force && now - lastPaint < 120) return;
+            lastPaint = now;
+            config.updateWidget();
+        };
+        const pushActivity = (s: string) => {
+            activity += s;
+            if (activity.length > LOG_CAP_CHARS)
+                activity = activity.slice(-LOG_CAP_CHARS);
+            phase.log = activity;
+            phase.note =
+                activity
+                    .split("\n")
+                    .filter((l: string) => l.trim())
+                    .pop() || "";
+        };
+        const compactArgs = (a: any): string => {
+            if (!a || typeof a !== "object") return "";
+            const s = Object.entries(a)
+                .map(
+                    ([k, v]) =>
+                        `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`,
+                )
+                .join(" ");
+            return s.length > 70 ? s.slice(0, 69) + "…" : s;
+        };
+
+        const timer = setInterval(() => {
+            phase.elapsed = Date.now() - start;
+            config.updateWidget();
+        }, 1000);
+
+        let buffer = "";
+        proc.stdout!.setEncoding("utf-8");
+        proc.stdout!.on("data", (chunk: string) => {
+            buffer += chunk;
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    if (event.type === "message_update") {
+                        const ev = event.assistantMessageEvent;
+                        if (ev?.type === "text_delta") {
+                            answer.push(ev.delta || "");
+                            pushActivity(ev.delta || "");
+                            paint();
+                        } else if (ev?.type === "thinking_delta") {
+                            pushActivity(ev.delta || "");
+                            paint();
+                        }
+                    } else if (event.type === "tool_execution_start") {
+                        phase.toolCount++;
+                        pushActivity(
+                            `\n→ ${event.toolName} ${compactArgs(event.args)}\n`,
+                        );
+                        paint(true);
+                    } else if (event.type === "tool_execution_end") {
+                        pushActivity(`✓ ${event.toolName}\n`);
+                        paint(true);
+                    } else if (
+                        event.type === "message_end" ||
+                        event.type === "agent_end"
+                    ) {
+                        const msg =
+                            event.type === "message_end"
+                                ? event.message
+                                : (event.messages || []).find(
+                                      (m: any) => m.role === "assistant",
+                                  );
+                        if (msg?.usage?.input) {
+                            const ctxWindow =
+                                msg.usage.contextWindow ||
+                                msg.usage.max_tokens ||
+                                200_000;
+                            phase.contextPct = Math.min(
+                                100,
+                                Math.round((msg.usage.input / ctxWindow) * 100),
+                            );
+                            capturedTokens = {
+                                input: msg.usage.input || 0,
+                                output: msg.usage.output || 0,
+                                contextWindow: ctxWindow,
+                            };
+                            paint();
+                        }
+                    }
+                } catch {
+                    phase.droppedLines++;
+                }
+            }
+        });
+        proc.stderr!.setEncoding("utf-8");
+        proc.stderr!.on("data", (chunk: string) => {
+            stderrTail += chunk;
+            if (stderrTail.length > STDERR_TAIL_CAP)
+                stderrTail = stderrTail.slice(-STDERR_TAIL_CAP);
+        });
+
+        proc.on("close", (code) => {
+            config.setCurrentProc(null);
+            if (buffer.trim()) {
+                try {
+                    const event = JSON.parse(buffer);
+                    if (
+                        event.type === "message_update" &&
+                        event.assistantMessageEvent?.type === "text_delta"
+                    ) {
+                        answer.push(event.assistantMessageEvent.delta || "");
+                    }
+                } catch {
+                    phase.droppedLines++;
+                }
+            }
+            clearInterval(timer);
+            if (watchdog) clearTimeout(watchdog);
+            phase.elapsed = Date.now() - start;
+            let output = answer.join("");
+            if (timedOut) {
+                output +=
+                    (output ? "\n\n" : "") +
+                    `[timed out after ${Math.round(config.agentTimeoutMs / 60_000)}m — killed by PI_WORKFLOW_AGENT_TIMEOUT]`;
+            }
+            if ((code ?? 1) !== 0 && stderrTail.trim()) {
+                output +=
+                    (output ? "\n\n" : "") + `[stderr]\n${stderrTail.trim()}`;
+            }
+            phase.note =
+                output
+                    .split("\n")
+                    .filter((l: string) => l.trim())
+                    .pop() || phase.note;
+            resolve({
+                output,
+                exitCode: timedOut ? 1 : (code ?? 1),
+                tokens: capturedTokens,
+            });
+        });
+
+        proc.on("error", (err: any) => {
+            config.setCurrentProc(null);
+            clearInterval(timer);
+            if (watchdog) clearTimeout(watchdog);
+            resolve({
+                output: `Error spawning agent: ${err.message}`,
+                exitCode: 1,
+            });
+        });
+    });
+}
+
 // ── Prompt template loader ───────────────────────
 
 // Load a prompt template from `.pi/prompts/<name>.md`. Falls back to the
@@ -1069,8 +1313,17 @@ export function renderTemplate(
     template: string,
     vars: Record<string, string>,
 ): string {
-    return template.replace(
+    const result = template.replace(
         /\{\{(\w+)\}\}/g,
         (_, key) => vars[key] ?? `{{${key}}}`,
     );
+    // Warn about unreplaced placeholders — indicates a broken template.
+    const unreplaced = result.match(/\{\{\w+\}\}/g);
+    if (unreplaced && unreplaced.length > 0) {
+        const unique = [...new Set(unreplaced)];
+        console.warn(
+            `[workflow] Orchestrator prompt template has unreplaced placeholders: ${unique.join(", ")}. Check prompts/orchestrator.md for typos or missing variables.`,
+        );
+    }
+    return result;
 }

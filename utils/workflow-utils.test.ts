@@ -6,6 +6,7 @@ import {
     digest,
     testSignal,
     outcomeLine,
+    isModelFailure,
 } from "./workflow-utils";
 
 // Run with: npx tsx --test workflow-utils.test.ts
@@ -187,8 +188,8 @@ describe("digest", () => {
         assert.ok(result.endsWith("…"));
     });
 
-    it("returns empty string for empty input", () => {
-        assert.equal(digest(""), "");
+    it("returns '[no output]' for empty input", () => {
+        assert.equal(digest(""), "[no output]");
     });
 
     it("collapses multiple whitespace into single spaces", () => {
@@ -238,5 +239,82 @@ describe("outcomeLine", () => {
 
     it("uppercases unknown statuses", () => {
         assert.equal(outcomeLine("mystery", 1), "MYSTERY");
+    });
+});
+
+describe("isModelFailure", () => {
+    it("detects 'Model not found' error", () => {
+        assert.equal(
+            isModelFailure('Error: Model "gpt-5-turbo" not found'),
+            true,
+        );
+    });
+
+    it("detects 'unknown model' error", () => {
+        assert.equal(isModelFailure("unknown model: claude-opus-99"), true);
+    });
+
+    it("detects 'provider is not supported' error", () => {
+        assert.equal(
+            isModelFailure('provider "openai" is not supported'),
+            true,
+        );
+    });
+
+    it("detects 'failed to load model' error", () => {
+        assert.equal(isModelFailure("failed to load model xyz"), true);
+    });
+
+    it("detects 'api key invalid for model' error", () => {
+        assert.equal(isModelFailure("api key invalid for model abc"), true);
+    });
+
+    it("detects '--list-models' suggestion", () => {
+        assert.equal(
+            isModelFailure(
+                "Try running with --list-models to see available models",
+            ),
+            true,
+        );
+    });
+
+    it("returns false for tool errors", () => {
+        assert.equal(
+            isModelFailure("Tool read_file failed: permission denied"),
+            false,
+        );
+    });
+
+    it("returns false for timeout errors", () => {
+        assert.equal(
+            isModelFailure(
+                "[timed out after 5m — killed by PI_WORKFLOW_AGENT_TIMEOUT]",
+            ),
+            false,
+        );
+    });
+
+    it("returns false for empty output", () => {
+        assert.equal(isModelFailure(""), false);
+    });
+
+    it("returns false for agent reasoning mentioning 'model'", () => {
+        assert.equal(
+            isModelFailure("The model suggested using a different approach"),
+            false,
+        );
+    });
+
+    it("returns false for normal passing output", () => {
+        assert.equal(isModelFailure("All tests passed successfully"), false);
+    });
+
+    it("returns false for normal output about acceptance criteria", () => {
+        assert.equal(
+            isModelFailure(
+                "This implementation does not pass the acceptance criteria",
+            ),
+            false,
+        );
     });
 });

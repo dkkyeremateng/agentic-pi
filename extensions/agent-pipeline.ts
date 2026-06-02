@@ -101,6 +101,9 @@ import {
     specDocumentTask,
     loadPromptTemplate,
     renderTemplate,
+    spawnAgentWithModel as coreSpawnAgent,
+    type SpawnConfig,
+    type SpawnResult as CoreSpawnResult,
 } from "../utils/workflow-core";
 
 // Run before any process.env reads below (WORKER_MODEL, …).
@@ -161,6 +164,7 @@ export default function (pi: ExtensionAPI) {
     let lastStatus = "idle";
     let running = false;
     let currentProc: any = null;
+    let abortController: AbortController | null = null;
     let phaseLogs: { label: string; log: string }[] = []; // collected per run, posted as one card at the end
     let totalDroppedLines = 0; // count of JSON lines dropped during this run (diagnostic signal)
     let totalToolCalls = 0; // cumulative tool calls across all phases this run (incl. retries)
@@ -178,6 +182,7 @@ export default function (pi: ExtensionAPI) {
     let primaryTurnStartedAt = 0; // wall-clock start of the primary agent's turn
     let pipelineRanThisTurn = false; // run_agent_pipeline fired during this turn
     let dispatchedThisTurn = false; // dispatch_agent fired during this turn
+    let dispatchesThisTurn = 0;
 
     // The only tools the primary agent (orchestrator) may use — it has NO direct
     // codebase tools and must delegate. Re-asserted before every turn (see
@@ -534,8 +539,9 @@ export default function (pi: ExtensionAPI) {
 
     // ── Run a single agent as a subprocess ───────
 
-    // Spawn a pi subprocess for a single agent run. Extracted so runAgent can
-    // retry with a fallback model when the primary model fails to load.
+    // Thin wrapper around the shared spawnAgentWithModel from workflow-core.
+    // Builds a SpawnConfig from module-level state and accumulates token/tool/
+    // dropped-line totals back into the module counters after each spawn.
     function spawnAgentWithModel(
         agentDef: AgentDef,
         task: string,
@@ -543,218 +549,28 @@ export default function (pi: ExtensionAPI) {
         cwd: string,
         model: string,
     ): Promise<{ output: string; exitCode: number }> {
-        const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
-        // With SHARED_SESSION, every agent resumes one shared session file so it
-        // sees the full transcript of the agents that ran before it; otherwise
-        // each agent has its own session (resumed across retry loops).
-        const sessionFile = join(
+        const cfg: SpawnConfig = {
             sessionDir,
-            SHARED_SESSION ? "pipeline-shared.json" : `${key}.json`,
+            sharedSession: SHARED_SESSION,
+            agentTimeoutMs: AGENT_TIMEOUT_MS,
+            updateWidget,
+            setCurrentProc: (p: any) => {
+                currentProc = p;
+            },
+        };
+        const prevToolCount = phase.toolCount;
+        const prevDroppedLines = phase.droppedLines;
+        return coreSpawnAgent(agentDef, task, phase, cwd, model, cfg).then(
+            (result) => {
+                if (result.tokens) {
+                    totalTokens.input += result.tokens.input;
+                    totalTokens.output += result.tokens.output;
+                }
+                totalToolCalls += phase.toolCount - prevToolCount;
+                totalDroppedLines += phase.droppedLines - prevDroppedLines;
+                return { output: result.output, exitCode: result.exitCode };
+            },
         );
-        const hasSession = existsSync(sessionFile);
-
-        const args = [
-            "--mode",
-            "json",
-            "-p",
-            "--no-extensions",
-            "--tools",
-            agentDef.tools,
-            "--append-system-prompt",
-            agentDef.systemPrompt,
-            "--session",
-            sessionFile,
-        ];
-        if (model) args.push("--model", model);
-        if (hasSession) args.push("-c");
-        args.push(task);
-
-        const answer: string[] = []; // only the final answer text — feeds the next phase
-        let activity = ""; // live feed: thinking + tool calls + answer text
-        let stderrTail = ""; // bounded stderr, surfaced only when the agent fails
-        let timedOut = false; // set when the watchdog kills a too-long-running agent
-        const start = Date.now();
-
-        return new Promise((resolve) => {
-            const proc = spawn("pi", args, {
-                stdio: ["ignore", "pipe", "pipe"],
-                env: { ...process.env, PI_SUBAGENT: "1" },
-                cwd,
-            });
-            currentProc = proc;
-
-            // Optional watchdog: kill an agent that exceeds the configured limit.
-            const watchdog =
-                AGENT_TIMEOUT_MS > 0
-                    ? setTimeout(() => {
-                          timedOut = true;
-                          try {
-                              proc.kill("SIGTERM");
-                          } catch {}
-                      }, AGENT_TIMEOUT_MS)
-                    : null;
-
-            let lastPaint = 0;
-            function paint(force = false) {
-                const now = Date.now();
-                if (!force && now - lastPaint < 120) return;
-                lastPaint = now;
-                updateWidget();
-            }
-            function pushActivity(s: string) {
-                activity += s;
-                if (activity.length > LOG_CAP_CHARS)
-                    activity = activity.slice(-LOG_CAP_CHARS);
-                phase.log = activity;
-                phase.note =
-                    activity
-                        .split("\n")
-                        .filter((l: string) => l.trim())
-                        .pop() || "";
-            }
-            function compactArgs(a: any): string {
-                if (!a || typeof a !== "object") return "";
-                const s = Object.entries(a)
-                    .map(
-                        ([k, v]) =>
-                            `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`,
-                    )
-                    .join(" ");
-                return s.length > 70 ? s.slice(0, 69) + "…" : s;
-            }
-
-            const timer = setInterval(() => {
-                phase.elapsed = Date.now() - start;
-                updateWidget();
-            }, 1000);
-
-            let buffer = "";
-            proc.stdout!.setEncoding("utf-8");
-            proc.stdout!.on("data", (chunk: string) => {
-                buffer += chunk;
-                const lines = buffer.split("\n");
-                buffer = lines.pop() || "";
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    try {
-                        const event = JSON.parse(line);
-                        if (event.type === "message_update") {
-                            const ev = event.assistantMessageEvent;
-                            if (ev?.type === "text_delta") {
-                                answer.push(ev.delta || "");
-                                pushActivity(ev.delta || "");
-                                paint();
-                            } else if (ev?.type === "thinking_delta") {
-                                pushActivity(ev.delta || "");
-                                paint();
-                            }
-                        } else if (event.type === "tool_execution_start") {
-                            phase.toolCount++;
-                            totalToolCalls++;
-                            pushActivity(
-                                `\n→ ${event.toolName} ${compactArgs(event.args)}\n`,
-                            );
-                            paint(true);
-                        } else if (event.type === "tool_execution_end") {
-                            pushActivity(`✓ ${event.toolName}\n`);
-                            paint(true);
-                        } else if (
-                            event.type === "message_end" ||
-                            event.type === "agent_end"
-                        ) {
-                            const msg =
-                                event.type === "message_end"
-                                    ? event.message
-                                    : (event.messages || []).find(
-                                          (m: any) => m.role === "assistant",
-                                      );
-                            if (msg?.usage?.input) {
-                                const ctxWindow =
-                                    msg.usage.contextWindow ||
-                                    msg.usage.max_tokens ||
-                                    200_000;
-                                phase.contextPct = Math.min(
-                                    100,
-                                    Math.round(
-                                        (msg.usage.input / ctxWindow) * 100,
-                                    ),
-                                );
-                                // Track token usage for the report
-                                totalTokens.input += msg.usage.input || 0;
-                                totalTokens.output += msg.usage.output || 0;
-                                paint();
-                            }
-                        }
-                    } catch {
-                        // Malformed JSON line from pi's subprocess — track it per phase
-                        // and globally so we can surface a diagnostic signal in the report.
-                        // Do not fail the run; the output stream may still be recoverable.
-                        phase.droppedLines++;
-                        totalDroppedLines++;
-                    }
-                }
-            });
-            proc.stderr!.setEncoding("utf-8");
-            proc.stderr!.on("data", (chunk: string) => {
-                stderrTail += chunk;
-                if (stderrTail.length > STDERR_TAIL_CAP)
-                    stderrTail = stderrTail.slice(-STDERR_TAIL_CAP);
-            });
-
-            proc.on("close", (code) => {
-                currentProc = null;
-                if (buffer.trim()) {
-                    try {
-                        const event = JSON.parse(buffer);
-                        if (
-                            event.type === "message_update" &&
-                            event.assistantMessageEvent?.type === "text_delta"
-                        ) {
-                            answer.push(
-                                event.assistantMessageEvent.delta || "",
-                            );
-                        }
-                    } catch {
-                        phase.droppedLines++;
-                        totalDroppedLines++;
-                    }
-                }
-                clearInterval(timer);
-                if (watchdog) clearTimeout(watchdog);
-                phase.elapsed = Date.now() - start;
-                let output = answer.join("");
-                // Surface a watchdog timeout, then any captured stderr, so a
-                // failed phase is diagnosable instead of showing empty output.
-                if (timedOut) {
-                    output +=
-                        (output ? "\n\n" : "") +
-                        `[timed out after ${Math.round(AGENT_TIMEOUT_MS / 60_000)}m — killed by PI_WORKFLOW_AGENT_TIMEOUT]`;
-                }
-                if ((code ?? 1) !== 0 && stderrTail.trim()) {
-                    output +=
-                        (output ? "\n\n" : "") +
-                        `[stderr]\n${stderrTail.trim()}`;
-                }
-                phase.note =
-                    output
-                        .split("\n")
-                        .filter((l: string) => l.trim())
-                        .pop() || phase.note;
-                // A timeout kill can exit with code 0 on some platforms; force a
-                // non-zero code so the orchestrator treats it as a failure.
-                resolve({ output, exitCode: timedOut ? 1 : (code ?? 1) });
-            });
-
-            proc.on("error", (err) => {
-                currentProc = null;
-                clearInterval(timer);
-                if (watchdog) clearTimeout(watchdog);
-                resolve({
-                    output: `Error spawning agent: ${err.message}`,
-                    exitCode: 1,
-                });
-            });
-        });
     }
 
     function runAgent(
@@ -879,6 +695,7 @@ export default function (pi: ExtensionAPI) {
         maxLoops: number,
         ctx: any,
     ): Promise<{ status: string; report: string }> {
+        abortController = new AbortController();
         isSpecMode = false; // never inherit spec mode from a prior invocation
         sessionModel = sessionModelOf(ctx); // all agents run on the session model
         const cwd = ctx.cwd;
@@ -928,6 +745,17 @@ export default function (pi: ExtensionAPI) {
         const valP = pm.validator;
         const docP = pm.documenter;
         const shipP = pm.ship;
+
+        const validatorCount = phases.filter(
+            (p) => p.agent === "validator",
+        ).length;
+        if (validatorCount < 2) {
+            widgetCtx?.ui?.notify?.(
+                `Only ${validatorCount} validator(s) configuredured — the ship phase will reuse the validator's session. Add a second validator entry in teams.yaml for independent ship validation.`,
+                "warning",
+            );
+        }
+
         let scoutFindings = "";
         if (scoutP) {
             const scoutRes = await runPhase(scoutP, scoutTask(request), cwd);
@@ -999,6 +827,7 @@ export default function (pi: ExtensionAPI) {
                 lastStatus = "error";
                 return failPhase("Plan revision", plan.output);
             }
+            runArtifacts.plan = plan.output;
         }
 
         // The critic's verdict is now settled — share it with every later agent.
@@ -1210,20 +1039,27 @@ export default function (pi: ExtensionAPI) {
         const reportPath = join(cwd, "workflow-report.md");
         try {
             writeFileSync(reportPath, report, "utf-8");
-        } catch {}
+        } catch (e: any) {
+            widgetCtx?.ui?.notify?.(
+                `Could not write workflow-report.md: ${e.message}`,
+                "warning",
+            );
+        }
 
-        // Post the consolidated, scrollable activity log before returning.
         publishLogs();
 
+        abortController = null;
         return { status, report };
     }
 
+    // ── Custom message renderer for workflow reports ──
     // ── Orchestrate the spec-only workflow ────────
 
     async function runSpecWorkflow(
         request: string,
         ctx: any,
     ): Promise<{ status: string; report: string }> {
+        abortController = new AbortController();
         isSpecMode = true;
         sessionModel = sessionModelOf(ctx); // all agents run on the session model
         const cwd = ctx.cwd;
@@ -1331,6 +1167,7 @@ export default function (pi: ExtensionAPI) {
                 lastStatus = "error";
                 return failPhase("Plan revision", plan.output);
             }
+            runArtifacts.plan = plan.output;
         }
 
         // The critic's verdict is settled — share it with the documenter.
@@ -1403,10 +1240,16 @@ export default function (pi: ExtensionAPI) {
         const reportPath = join(cwd, "workflow-report.md");
         try {
             writeFileSync(reportPath, report, "utf-8");
-        } catch {}
+        } catch (e: any) {
+            widgetCtx?.ui?.notify?.(
+                `Could not write workflow-report.md: ${e.message}`,
+                "warning",
+            );
+        }
 
         publishLogs();
 
+        abortController = null;
         return { status, report };
     }
 
@@ -1810,6 +1653,21 @@ export default function (pi: ExtensionAPI) {
                     };
                 }
 
+                const MAX_DISPATCHES_PER_TURN = parseInt(
+                    process.env.PI_MAX_DISPATCHES_PER_TURN || "20",
+                    10,
+                );
+                if (dispatchesThisTurn >= MAX_DISPATCHES_PER_TURN) {
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `Dispatch limit reached (${MAX_DISPATCHES_PER_TURN} per turn). Summarize what has been done and stop — do not dispatch more agents this turn.`,
+                            },
+                        ],
+                    };
+                }
+
                 agents = loadAgents(ctx.cwd);
                 widgetCtx = ctx;
                 const def = agents.get(agent.toLowerCase());
@@ -1855,6 +1713,7 @@ export default function (pi: ExtensionAPI) {
                 }
                 freshDispatchSession = false;
                 dispatchedThisTurn = true;
+                dispatchesThisTurn++;
 
                 // Track this agent as a phase so its card reflects live status.
                 // Re-dispatching the same agent reuses (and resets) its phase so the
@@ -2157,6 +2016,7 @@ export default function (pi: ExtensionAPI) {
             primaryTurnStartedAt = Date.now();
             pipelineRanThisTurn = false;
             dispatchedThisTurn = false;
+            dispatchesThisTurn = 0;
         });
     if (active)
         pi.on("agent_end", async () => {
@@ -2256,15 +2116,21 @@ export default function (pi: ExtensionAPI) {
         // itself. Re-asserted each turn in before_agent_start.
         if (active) pi.setActiveTools(ORCHESTRATOR_TOOLS);
         (globalThis as any).__piKillWorkflowProc = (): boolean => {
+            // Abort any running workflow on dispose.
+            if (abortController) {
+                try {
+                    abortController.abort();
+                } catch {}
+                abortController = null;
+            }
             if (currentProc) {
                 try {
                     currentProc.kill("SIGTERM");
                 } catch {}
                 currentProc = null;
-                running = false;
-                return true;
             }
-            return false;
+            running = false;
+            return true;
         };
         (globalThis as any).__piHasRunningWorkflow = (): boolean => running;
         const present = REQUIRED_AGENTS.filter((a) => agents.has(a));
