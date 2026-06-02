@@ -42,6 +42,7 @@ import {
     detectShip,
     detectCritique,
     secs,
+    isModelFailure,
 } from "./workflow-utils";
 import { writeFileSync } from "fs";
 import { join } from "path";
@@ -829,15 +830,19 @@ export async function dispatchAgentCore(
     s.dispatchElapsedMs = Date.now() - s.dispatchStartedAt;
     h.ui.updateWidget();
 
+    // Build error message: show actual output for diagnosis, flag model failures
+    const modelFail = !ok && isModelFailure(res.output);
     const errMsg = !ok
         ? emptyOutput
-            ? ": returned no usable output"
+            ? res.output.trim()
+                ? `: ${res.output.trim().slice(0, 120)}${modelFail ? " (model failure)" : ""}`
+                : ": returned no usable output"
             : `: ${res.output
                   .split("\n")
                   .filter((l) => l.trim())
                   .slice(-2)
                   .join(" ")
-                  .slice(0, 120)}`
+                  .slice(0, 120)}${modelFail ? " (model failure)" : ""}`
         : "";
     h.ui.notify(
         `${def.name} ${ok ? "done" : "failed"} in ${secs(phase.elapsed)}${errMsg}`,
