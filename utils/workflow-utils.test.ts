@@ -317,4 +317,26 @@ describe("isModelFailure", () => {
             false,
         );
     });
+
+    it("detects 502 request failed error", () => {
+        assert.equal(isModelFailure("[agent error] 502 Request failed"), true);
+    });
+
+    it("detects 404 request failed error", () => {
+        assert.equal(
+            isModelFailure("[agent error] 404 Request failed (not found)"),
+            true,
+        );
+    });
+
+    it("detects 400 bad request error", () => {
+        assert.equal(
+            isModelFailure("[agent error] 400 Bad request - invalid model"),
+            true,
+        );
+    });
+
+    it("detects request failed with 502", () => {
+        assert.equal(isModelFailure("Request failed with status 502"), true);
+    });
 });

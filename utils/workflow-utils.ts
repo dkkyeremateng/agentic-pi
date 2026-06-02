@@ -136,6 +136,21 @@ export function isModelFailure(output: string): boolean {
     // Dead giveaway: pi suggests --list-models when it can't resolve a model.
     if (/--list[- ]models/.test(combined)) return true;
 
+    // HTTP error codes that indicate model endpoint not found
+    // 502 Bad Gateway, 404 Not Found, 400 Bad Request (invalid model)
+    if (
+        /\b(?:502|404|400)\b[^\n]{0,40}(?:request\s+failed|not\s+found|bad\s+request|error)/.test(
+            combined,
+        )
+    )
+        return true;
+    if (
+        /(?:request\s+failed|error|failed)[^\n]{0,40}\b(?:502|404|400)\b/.test(
+            combined,
+        )
+    )
+        return true;
+
     // Structured patterns — model/provider followed by an error keyword,
     // with optional quoted model name in between.
     if (
