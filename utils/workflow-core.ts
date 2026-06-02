@@ -1803,8 +1803,8 @@ export async function runAgentWithFallback(
         ) => void;
     },
 ): Promise<{ output: string; exitCode: number }> {
-    console.error(
-        `[runAgentWithFallback] agent=${agentDef.name} primaryModel="${primaryModel}" fallbackModel="${fallbackModel}"`,
+    process.stderr.write(
+        `[runAgentWithFallback] agent=${agentDef.name} primaryModel="${primaryModel}" fallbackModel="${fallbackModel}"\n`,
     );
     const result = await spawnFn(agentDef, task, phase, cwd, primaryModel);
 
@@ -2128,8 +2128,8 @@ export function spawnAgentWithModel(
     model: string,
     config: SpawnConfig,
 ): Promise<SpawnResult> {
-    console.error(
-        `[spawnAgentWithModel] agent=${agentDef.name} received model="${model}"`,
+    process.stderr.write(
+        `[spawnAgentWithModel] agent=${agentDef.name} received model="${model}"\n`,
     );
     const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
     // Use dispatchId for unique session files when running parallel instances
