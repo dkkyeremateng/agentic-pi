@@ -2136,9 +2136,13 @@ export function spawnAgentWithModel(
         .replace(/-+/g, "-")
         .substring(0, 50); // Limit length
 
+    // For parallel dispatches (when dispatchId exists), always use unique session files
+    // to prevent race conditions. Only use shared sessions for sequential pipeline phases.
+    const useSharedSession = config.sharedSession && !phase.dispatchId;
+
     const sessionFile = join(
         config.sessionDir,
-        config.sharedSession
+        useSharedSession
             ? `pipeline-${projectHash}.json`
             : `${sessionKey}-${projectHash}.json`,
     );
