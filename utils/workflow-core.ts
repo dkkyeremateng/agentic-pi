@@ -1903,6 +1903,14 @@ export function spawnAgentWithModel(
     phase.activeModel = model || undefined;
 
     const answer: string[] = [];
+    // Captured from the terminal message_end/agent_end event:
+    //  - finalText: the assistant's final content[], a fallback for models that
+    //    don't stream text_delta (so we don't report "no usable output").
+    //  - finalError: a model-level failure (e.g. quota/auth) that pi reports via
+    //    stopReason:"error" while still exiting 0 with empty content — otherwise
+    //    swallowed, leaving the agent looking mysteriously empty.
+    let finalText = "";
+    let finalError = "";
     let activity = "";
     let stderrTail = "";
     let timedOut = false;
@@ -2000,6 +2008,18 @@ export function spawnAgentWithModel(
                                 : (event.messages || []).find(
                                       (m: any) => m.role === "assistant",
                                   );
+                        // Capture the final assistant text (subagent mode emits
+                        // it only here, not as streaming deltas). The last
+                        // assistant message wins — earlier ones carry tool-use.
+                        if (msg?.role === "assistant" && Array.isArray(msg.content)) {
+                            const text = msg.content
+                                .filter((c: any) => c?.type === "text")
+                                .map((c: any) => c.text || "")
+                                .join("");
+                            if (text) finalText = text;
+                            if (msg.stopReason === "error" && msg.errorMessage)
+                                finalError = String(msg.errorMessage);
+                        }
                         if (msg?.usage?.input) {
                             const ctxWindow =
                                 msg.usage.contextWindow ||
@@ -2047,7 +2067,17 @@ export function spawnAgentWithModel(
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
             phase.elapsed = Date.now() - start;
-            let output = answer.join("");
+            // Prefer streamed deltas; fall back to the terminal message content
+            // (the only place text appears in subagent mode).
+            let output = answer.join("") || finalText;
+            // A model-level error (e.g. quota/auth) makes pi exit 0 with empty
+            // content. Surface it and force a non-zero exit so the orchestrator
+            // treats it as a failure instead of "no usable output".
+            if (finalError) {
+                output +=
+                    (output ? "\n\n" : "") +
+                    `[agent error] ${finalError.slice(0, STDERR_TAIL_CAP)}`;
+            }
             if (timedOut) {
                 output +=
                     (output ? "\n\n" : "") +
@@ -2064,7 +2094,7 @@ export function spawnAgentWithModel(
                     .pop() || phase.note;
             resolve({
                 output,
-                exitCode: timedOut ? 1 : (code ?? 1),
+                exitCode: timedOut || finalError ? 1 : (code ?? 1),
                 tokens: capturedTokens,
             });
         });
