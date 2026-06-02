@@ -2128,9 +2128,19 @@ export function spawnAgentWithModel(
     const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
     // Use dispatchId for unique session files when running parallel instances
     const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
+
+    // Create project-specific session files to avoid cross-project context pollution
+    // Hash the cwd path to create a unique, filesystem-safe identifier
+    const projectHash = cwd
+        .replace(/[^a-zA-Z0-9]/g, "-")
+        .replace(/-+/g, "-")
+        .substring(0, 50); // Limit length
+
     const sessionFile = join(
         config.sessionDir,
-        config.sharedSession ? "pipeline-shared.json" : `${sessionKey}.json`,
+        config.sharedSession
+            ? `pipeline-${projectHash}.json`
+            : `${sessionKey}-${projectHash}.json`,
     );
 
     // Validate session file before using it
