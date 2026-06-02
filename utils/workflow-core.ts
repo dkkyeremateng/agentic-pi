@@ -849,31 +849,17 @@ const SESSION_TTL_MS =
 // Ensure the per-agent session directory exists; optionally wipe stale sessions.
 // When `wipe` is false, still removes orphaned files older than SESSION_TTL_MS
 // so dispatch-mode sessions don't accumulate indefinitely.
-// The session directory is read from `.pi/settings.json` (`sessionDir` key);
-// falls back to `~/.pi/agent/sessions/` if the file or key is absent.
+// The session directory is read from PI_WORKFLOW_SESSION_DIR env var;
+// falls back to `~/.pi/agent/sessions/` if unset. Supports `~` expansion.
 // Returns the directory path (the caller stores it as its sessionDir).
 export function setupSessions(cwd: string, wipe: boolean): string {
     const defaultDir = join(homedir(), ".pi", "agent", "sessions");
-    let sessionDir = defaultDir;
-    try {
-        const settingsPath = join(cwd, ".pi", "settings.json");
-        if (existsSync(settingsPath)) {
-            const raw = readFileSync(settingsPath, "utf-8");
-            const parsed = JSON.parse(raw);
-            if (
-                typeof parsed.sessionDir === "string" &&
-                parsed.sessionDir.trim()
-            ) {
-                const dir = parsed.sessionDir.trim();
-                // Expand ~ to home directory
-                sessionDir = dir.startsWith("~")
-                    ? join(homedir(), dir.slice(1))
-                    : dir;
-            }
-        }
-    } catch {
-        sessionDir = defaultDir;
-    }
+    const envDir = (process.env.PI_WORKFLOW_SESSION_DIR || "").trim();
+    const sessionDir = envDir
+        ? envDir.startsWith("~")
+            ? join(homedir(), envDir.slice(1))
+            : envDir
+        : defaultDir;
     if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true });
     const now = Date.now();
     for (const f of readdirSync(sessionDir)) {
