@@ -195,16 +195,9 @@ function loadModelOverrides(cwd: string): Record<string, string> {
 function loadAgentModels(cwd?: string): AgentModelConfig {
     const file = cwd ? loadModelOverrides(cwd) : {};
     const fallback = WORKER_MODEL || file.default || "";
-    const pick = (agent: string, envVar: string) => {
-        const envVal = process.env[envVar];
-        const fileVal = file[agent];
-        const result = envVal || fileVal || fallback;
-        console.error(
-            `[loadAgentModels] ${agent}: env=${envVal || "(none)"}, file=${fileVal || "(none)"}, fallback=${fallback || "(none)"} → ${result || "(none)"}`,
-        );
-        return result;
-    };
-    const models = {
+    const pick = (agent: string, envVar: string) =>
+        process.env[envVar] || file[agent] || fallback;
+    return {
         scout: pick("scout", "PI_AGENT_SCOUT_MODEL"),
         planner: pick("planner", "PI_AGENT_PLANNER_MODEL"),
         critic: pick("critic", "PI_AGENT_CRITIC_MODEL"),
@@ -213,8 +206,6 @@ function loadAgentModels(cwd?: string): AgentModelConfig {
         validator: pick("validator", "PI_AGENT_VALIDATOR_MODEL"),
         documenter: pick("documenter", "PI_AGENT_DOCUMENTER_MODEL"),
     };
-    console.error(`[loadAgentModels] Final models:`, models);
-    return models;
 }
 
 // ── Extension ────────────────────────────────────

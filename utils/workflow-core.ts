@@ -148,19 +148,13 @@ export function loadDotEnv(cwd: string): void {
     const piConfigDir = join(homedir(), "Documents", ".configs", "pi");
     const piConfigPath = join(piConfigDir, ".env");
     if (existsSync(piConfigPath)) {
-        console.error(
-            `[loadDotEnv] Loading global config from ${piConfigPath}`,
-        );
         loadEnvFile(piConfigPath, false); // Don't override existing env vars
     }
 
     // Then, load from cwd (project-specific overrides)
     const cwdPath = join(cwd, ".env");
     if (existsSync(cwdPath)) {
-        console.error(`[loadDotEnv] Loading project config from ${cwdPath}`);
         loadEnvFile(cwdPath, true); // Allow overrides
-    } else {
-        console.error(`[loadDotEnv] No .env file found at ${cwdPath}`);
     }
 }
 
@@ -182,21 +176,11 @@ function loadEnvFile(path: string, allowOverride: boolean): void {
             }
 
             if (allowOverride || !(key in process.env)) {
-                const oldValue = process.env[key];
                 process.env[key] = val;
-                if (oldValue !== undefined && allowOverride) {
-                    console.error(
-                        `[loadEnvFile] Override ${key}: ${oldValue} → ${val}`,
-                    );
-                } else {
-                    console.error(`[loadEnvFile] Set ${key}=${val}`);
-                }
-            } else {
-                console.error(`[loadEnvFile] Skipped ${key} (already in env)`);
             }
         }
-    } catch (error) {
-        console.error(`[loadEnvFile] Error loading ${path}:`, error);
+    } catch {
+        // Silently ignore errors loading .env files
     }
 }
 
