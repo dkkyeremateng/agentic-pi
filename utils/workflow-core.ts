@@ -2126,9 +2126,11 @@ export function spawnAgentWithModel(
     config: SpawnConfig,
 ): Promise<SpawnResult> {
     const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
+    // Use dispatchId for unique session files when running parallel instances
+    const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
     const sessionFile = join(
         config.sessionDir,
-        config.sharedSession ? "pipeline-shared.json" : `${key}.json`,
+        config.sharedSession ? "pipeline-shared.json" : `${sessionKey}.json`,
     );
     const hasSession = existsSync(sessionFile);
 
