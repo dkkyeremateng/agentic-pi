@@ -2147,14 +2147,16 @@ export function spawnAgentWithModel(
     ];
     // Only pass --model if the string looks valid (non-empty, no whitespace).
     // Extract just the model ID if the string contains a provider prefix
-    // (format: provider/model). The provider is determined from session context.
+    // (format: provider/model or provider/namespace/model). The provider is
+    // determined from session context.
     const cleanModel = model?.trim();
     if (cleanModel && !/\s/.test(cleanModel)) {
-        // If the model string contains slashes, extract the last part as the model ID
-        // e.g., "gate_frame_private/gateframe/mimo-v2.5" -> "gateframe/mimo-v2.5"
-        const slashIdx = cleanModel.indexOf("/");
+        // Extract the last segment after the final slash as the model ID
+        // e.g., "gate_frame_private/gateframe/mimo-v2.5" -> "mimo-v2.5"
+        // e.g., "anthropic/claude-3-opus" -> "claude-3-opus"
+        const lastSlash = cleanModel.lastIndexOf("/");
         const modelId =
-            slashIdx > 0 ? cleanModel.slice(slashIdx + 1) : cleanModel;
+            lastSlash > 0 ? cleanModel.slice(lastSlash + 1) : cleanModel;
         args.push("--model", modelId);
     }
     if (hasSession) args.push("-c");
