@@ -968,7 +968,7 @@ export default function (pi: ExtensionAPI) {
         ).length;
         if (validatorCount < 2) {
             widgetCtx?.ui?.notify?.(
-                `Only ${validatorCount} validator(s) configuredured — the ship phase will reuse the validator's session. Add a second validator entry in teams.yaml for independent ship validation.`,
+                `Only ${validatorCount} validator(s) configured — the ship phase will reuse the validator's session. Add a second validator entry in teams.yaml for independent ship validation.`,
                 "warning",
             );
         }
@@ -1276,7 +1276,6 @@ export default function (pi: ExtensionAPI) {
     ): Promise<{ status: string; report: string }> {
         abortController = new AbortController();
         isSpecMode = true;
-        sessionModel = sessionModelOf(ctx); // all agents run on the session model
         const cwd = ctx.cwd;
         agentModels = loadAgentModels(cwd);
         includeScout = activeMembers().some((m) => m.toLowerCase() === "scout");
