@@ -37,17 +37,9 @@ import {
     visibleWidth,
 } from "@mariozechner/pi-tui";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import {
-    type Verdict,
-    type CritiqueVerdict,
-    detectVerdict,
-    detectShip,
-    detectCritique,
-    secs,
-} from "../utils/workflow-utils";
+import { secs } from "../utils/workflow-utils";
 import {
     REQUIRED_AGENTS,
     DEFAULT_MAX_LOOPS,
@@ -67,16 +59,8 @@ import {
     renderCard,
     appendLiveLog as appendLiveLogCore,
     renderWorkflowFooter,
-    buildWorkflowReport,
-    buildSpecReport,
     teamsBlock as teamsBlockCore,
     chooseTeam as chooseTeamCore,
-    contextBundleForPhase,
-    type RunArtifacts,
-    buildPhaseMap,
-    failPhase,
-    mkPhase as mkPhaseCore,
-    freshPhases as freshPhasesCore,
     runPhaseCore,
     runAgentWithFallback,
     renderDispatchAgentCall,
@@ -90,26 +74,10 @@ import {
     loadAgents as loadAgentsCore,
     loadTeams as loadTeamsCore,
     teamIsSpec,
-    validatePlan,
-    scoutTask,
-    planTask,
-    implementTask,
-    fixTask,
-    testTask,
-    documentTask,
-    validateTask,
-    shipTask,
-    criticTask,
-    revisePlanTask,
-    specPlanTask,
-    specReviseTask,
-    specCriticTask,
-    specDocumentTask,
     loadPromptTemplate,
     renderTemplate,
     spawnAgentWithModel as coreSpawnAgent,
     type SpawnConfig,
-    type SpawnResult as CoreSpawnResult,
 } from "../utils/workflow-core";
 import {
     newOrchestratorState,
