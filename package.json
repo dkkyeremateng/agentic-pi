@@ -1,0 +1,12 @@
+{
+  "name": "pi-config",
+  "private": true,
+  "description": "pi extensions + agent definitions (workflow orchestrators)",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

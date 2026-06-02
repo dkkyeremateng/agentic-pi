@@ -1,4 +1,5 @@
 .env
 .DS_Store
 */DS_Store
-.claude
+.claude/
+node_modules/
