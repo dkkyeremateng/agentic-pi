@@ -787,16 +787,25 @@ export async function dispatchAgentCore(
     const dispatchId = `${agentKey}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Look for an existing phase with the same agent name:
-    // - If it's RUNNING, create a new phase (parallel dispatch)
-    // - If it's PENDING/DONE/ERROR, reuse and reset it (sequential re-dispatch)
+    // - If there's a PENDING phase, reuse it (from select_agents)
+    // - If all existing phases are RUNNING, create a new phase (parallel dispatch)
+    // - If there's a DONE/ERROR phase and no pending, reuse it (sequential re-dispatch)
+    const existingPending = s.phases.find(
+        (p) => p.agent === agentKey && p.status === "pending",
+    );
     const existingRunning = s.phases.find(
         (p) => p.agent === agentKey && p.status === "running",
     );
     const existingPhase = s.phases.find((p) => p.agent === agentKey);
 
     let phase: PhaseState;
-    if (existingRunning) {
-        // Another instance is already running - create new phase for parallel dispatch
+    if (existingPending) {
+        // Reuse pending phase (from select_agents or previous dispatch)
+        const fresh = mkPhase(displayName(def.name), agentKey, dispatchId);
+        Object.assign(existingPending, fresh);
+        phase = existingPending;
+    } else if (existingRunning) {
+        // All existing phases are running - create new phase for parallel dispatch
         phase = mkPhase(displayName(def.name), agentKey, dispatchId);
         s.phases.push(phase);
     } else if (existingPhase) {
