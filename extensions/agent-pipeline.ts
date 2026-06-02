@@ -417,12 +417,12 @@ export default function (pi: ExtensionAPI) {
     // the module counters after each spawn.
     const spawnAgentWithModel = makeSpawnWrapper({
         state: st,
-        sessionDir,
-        sharedSession: SHARED_SESSION,
+        sessionDir: () => sessionDir,
+        sharedSession: true,
         agentTimeoutMs: AGENT_TIMEOUT_MS,
-        updateWidget,
-        setCurrentProc: (p: any) => {
-            currentProc = p;
+        updateWidget: () => updateWidget(),
+        setCurrentProc: (proc: any) => {
+            currentProc = proc;
         },
     });
 

@@ -893,7 +893,7 @@ export function makeSpawnWrapper(opts: {
         totalToolCalls: number;
         totalDroppedLines: number;
     };
-    sessionDir: string;
+    sessionDir: string | (() => string);
     sharedSession: boolean;
     agentTimeoutMs: number;
     updateWidget: () => void;
@@ -907,15 +907,19 @@ export function makeSpawnWrapper(opts: {
 ) => Promise<{ output: string; exitCode: number }> {
     const {
         state,
-        sessionDir,
+        sessionDir: sessionDirOpt,
         sharedSession,
         agentTimeoutMs,
         updateWidget,
         setCurrentProc,
     } = opts;
+    const getSessionDir =
+        typeof sessionDirOpt === "function"
+            ? sessionDirOpt
+            : () => sessionDirOpt;
     return (agentDef, task, phase, cwd, model) => {
         const cfg: SpawnConfig = {
-            sessionDir,
+            sessionDir: getSessionDir(),
             sharedSession,
             agentTimeoutMs,
             updateWidget,

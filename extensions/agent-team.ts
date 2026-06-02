@@ -655,10 +655,10 @@ export default function (pi: ExtensionAPI) {
     // sessions (sharedSession: false).
     const spawnAgentWithModel = makeSpawnWrapper({
         state: st,
-        sessionDir,
+        sessionDir: () => sessionDir,
         sharedSession: false,
         agentTimeoutMs: AGENT_TIMEOUT_MS,
-        updateWidget,
+        updateWidget: () => updateWidget(),
         setCurrentProc: (p: any) => {
             currentProc = p;
         },
