@@ -1804,7 +1804,7 @@ export async function runAgentWithFallback(
     },
 ): Promise<{ output: string; exitCode: number }> {
     process.stderr.write(
-        `[runAgentWithFallback] agent=${agentDef.name} primaryModel="${primaryModel}" fallbackModel="${fallbackModel}"\n`,
+        `\n===== runAgentWithFallback CALLED =====\nagent=${agentDef.name}\nprimaryModel="${primaryModel}"\nfallbackModel="${fallbackModel}"\n========================================\n\n`,
     );
     const result = await spawnFn(agentDef, task, phase, cwd, primaryModel);
 
