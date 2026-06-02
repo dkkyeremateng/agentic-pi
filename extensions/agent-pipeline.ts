@@ -83,8 +83,7 @@ import {
     teamIsSpec,
     loadPromptTemplate,
     renderTemplate,
-    spawnAgentWithModel as coreSpawnAgent,
-    type SpawnConfig,
+    makeSpawnWrapper,
 } from "../utils/workflow-core";
 import {
     newOrchestratorState,
@@ -405,39 +404,18 @@ export default function (pi: ExtensionAPI) {
     // ── Run a single agent as a subprocess ───────
 
     // Thin wrapper around the shared spawnAgentWithModel from workflow-core.
-    // Builds a SpawnConfig from module-level state and accumulates token/tool/
-    // dropped-line totals back into the module counters after each spawn.
-    function spawnAgentWithModel(
-        agentDef: AgentDef,
-        task: string,
-        phase: PhaseState,
-        cwd: string,
-        model: string,
-    ): Promise<{ output: string; exitCode: number }> {
-        const cfg: SpawnConfig = {
-            sessionDir,
-            sharedSession: SHARED_SESSION,
-            agentTimeoutMs: AGENT_TIMEOUT_MS,
-            updateWidget,
-            setCurrentProc: (p: any) => {
-                currentProc = p;
-            },
-        };
-        const prevToolCount = phase.toolCount;
-        const prevDroppedLines = phase.droppedLines;
-        return coreSpawnAgent(agentDef, task, phase, cwd, model, cfg).then(
-            (result) => {
-                if (result.tokens) {
-                    st.totalTokens.input += result.tokens.input;
-                    st.totalTokens.output += result.tokens.output;
-                    phase.tokens = result.tokens;
-                }
-                st.totalToolCalls += phase.toolCount - prevToolCount;
-                st.totalDroppedLines += phase.droppedLines - prevDroppedLines;
-                return { output: result.output, exitCode: result.exitCode };
-            },
-        );
-    }
+    // Uses makeSpawnWrapper to accumulate token/tool/dropped-line totals into
+    // the module counters after each spawn.
+    const spawnAgentWithModel = makeSpawnWrapper({
+        state: st,
+        sessionDir,
+        sharedSession: SHARED_SESSION,
+        agentTimeoutMs: AGENT_TIMEOUT_MS,
+        updateWidget,
+        setCurrentProc: (p: any) => {
+            currentProc = p;
+        },
+    });
 
     function runAgent(
         agentDef: AgentDef,

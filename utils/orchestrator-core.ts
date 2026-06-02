@@ -342,7 +342,6 @@ export async function runWorkflowCore(
 
     // Phase 2 — Critique (plan ⇄ critic loop)
     let critique = { output: "", ok: true };
-    let critiqueVerdict: CritiqueVerdict = "unknown";
 
     for (let loop = 1; loop <= maxLoops; loop++) {
         aborted = checkAbort(s, h);
@@ -356,7 +355,7 @@ export async function runWorkflowCore(
         );
         if (!critique.ok) return fail(s, "Critique", critique.output);
 
-        critiqueVerdict = detectCritique(critique.output);
+        const critiqueVerdict = detectCritique(critique.output);
         if (critiqueVerdict !== "revise") break;
 
         if (loop === maxLoops) break;

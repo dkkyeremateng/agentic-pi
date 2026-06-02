@@ -881,6 +881,64 @@ export function setupSessions(cwd: string, wipe: boolean): string {
     return sessionDir;
 }
 
+// Create a spawn wrapper that accumulates token/tool/dropped-line totals into
+// the orchestrator state. Both extensions had identical 30-line wrappers that
+// differed only in the `sharedSession` flag; this factory eliminates the
+// duplication while keeping the per-extension state ownership clear.
+// `state` is the extension's OrchestratorState (typed loosely to avoid a
+// circular import with orchestrator-core.ts).
+export function makeSpawnWrapper(opts: {
+    state: {
+        totalTokens: { input: number; output: number };
+        totalToolCalls: number;
+        totalDroppedLines: number;
+    };
+    sessionDir: string;
+    sharedSession: boolean;
+    agentTimeoutMs: number;
+    updateWidget: () => void;
+    setCurrentProc: (proc: any) => void;
+}): (
+    agentDef: AgentDef,
+    task: string,
+    phase: PhaseState,
+    cwd: string,
+    model: string,
+) => Promise<{ output: string; exitCode: number }> {
+    const {
+        state,
+        sessionDir,
+        sharedSession,
+        agentTimeoutMs,
+        updateWidget,
+        setCurrentProc,
+    } = opts;
+    return (agentDef, task, phase, cwd, model) => {
+        const cfg: SpawnConfig = {
+            sessionDir,
+            sharedSession,
+            agentTimeoutMs,
+            updateWidget,
+            setCurrentProc,
+        };
+        const prevToolCount = phase.toolCount;
+        const prevDroppedLines = phase.droppedLines;
+        return spawnAgentWithModel(agentDef, task, phase, cwd, model, cfg).then(
+            (result) => {
+                if (result.tokens) {
+                    state.totalTokens.input += result.tokens.input;
+                    state.totalTokens.output += result.tokens.output;
+                    phase.tokens = result.tokens;
+                }
+                state.totalToolCalls += phase.toolCount - prevToolCount;
+                state.totalDroppedLines +=
+                    phase.droppedLines - prevDroppedLines;
+                return { output: result.output, exitCode: result.exitCode };
+            },
+        );
+    };
+}
+
 // Post the final workflow report inline as a collapsible card. `pi` is the
 // ExtensionAPI (kept `any` so core has no UI-type dependency).
 export function publishReport(
