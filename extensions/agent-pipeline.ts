@@ -2,8 +2,6 @@
 // ABOUTME: The validator gates a correctness loop (FAIL -> back to implementer); only after PASS does the documenter
 // ABOUTME: run, then the validator ships — commits code+tests+docs and opens the PR (or pauses if there is no remote).
 
-process.stderr.write("[agent-pipeline] Extension loaded\n");
-
 /**
  * Workflow — scout / plan / critique / implement / test / validate / document / ship orchestrator
  *
@@ -437,9 +435,6 @@ export default function (pi: ExtensionAPI) {
         phase: PhaseState,
         cwd: string,
     ): Promise<{ output: string; exitCode: number }> {
-        process.stderr.write(
-            `[agent-pipeline runAgent] agent=${agentDef.name} primaryModel="${primaryModel}" fallbackModel="${fallbackModel}"\n`,
-        );
         // PI_WORKFLOW_MODEL is an explicit override; otherwise every agent runs
         // on the current session's model. Note: unlike agent-team, the agent's
         // frontmatter `model:` field is intentionally ignored here — the pipeline
@@ -451,7 +446,6 @@ export default function (pi: ExtensionAPI) {
         // with the session model since it's known to work — pi itself is using it.
         const fallbackModel =
             sessionModel && sessionModel !== primaryModel ? sessionModel : "";
-
         // Delegate to shared core (eliminates ~50 lines of near-identical
         // fallback logic with notification API drift).
         return runAgentWithFallback(
