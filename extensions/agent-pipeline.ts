@@ -111,11 +111,18 @@ import {
     type SpawnConfig,
     type SpawnResult as CoreSpawnResult,
 } from "../utils/workflow-core";
+import {
+    newOrchestratorState,
+    type OrchestratorHost,
+    runWorkflowCore,
+    runSpecWorkflowCore,
+    dispatchAgentCore,
+    selectAgentsCore,
+} from "../utils/orchestrator-core";
 
 // Run before any process.env reads below (WORKER_MODEL, …).
 loadDotEnv(process.cwd());
 
-let isSpecMode = false; // true during spec-only runs; hides impl/test/validate/ship phases
 
 // This file is the base "agent-pipeline"; it owns the chrome by default. See
 // workflow-core for loadedExplicitly / selectedWorkflowExtension / isActiveWorkflow.
@@ -163,39 +170,34 @@ const MIN_DISPATCH_OUTPUT_CHARS = 40;
 // ── Extension ────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-    let agents: Map<string, AgentDef> = new Map();
-    let teams: Record<string, string[]> = {};
-    let activeTeamName = "";
-    // The model the current pi session is running on (provider/id) — every agent
-    // in the workflow runs on it, so the one model you launch with drives the
-    // whole pipeline. Captured from ctx.model when a run starts.
+    // Shared run/session state — mutated by the orchestration in orchestrator-core
+    // and read by this extension's widget/footer/hooks. (agents, teams, phases,
+    // running, the dispatch/turn timers, totals, …)
+    const st = newOrchestratorState();
+    // Extension-local: the single model every agent runs on (the pipeline ignores
+    // per-agent `model:` frontmatter), the live ctx, the session dir, and the
+    // running subprocess handle. None of these belong in the shared state.
     let sessionModel = "";
     let widgetCtx: any;
     let sessionDir = "";
-    let phases: PhaseState[] = [];
-    let iteration = 0;
-    let maxLoopsRef = DEFAULT_MAX_LOOPS;
-    let lastStatus = "idle";
-    let running = false;
     let currentProc: any = null;
-    let phaseLogs: { label: string; log: string }[] = []; // collected per run, posted as one card at the end
-    let totalDroppedLines = 0; // count of JSON lines dropped during this run (diagnostic signal)
-    let totalToolCalls = 0; // cumulative tool calls across all phases this run (incl. retries)
-    let totalTokens = { input: 0, output: 0 }; // cumulative token usage across all phases
-    let runStartedAt = 0; // wall-clock start of the current run
-    let runElapsedMs = 0; // total wall-clock of the last completed run (frozen at completion)
-    let includeScout = false; // prepend a read-only Scout recon phase (team has `scout`)
-    // Orchestrator (ad-hoc dispatch) state. When no team is selected, the primary
-    // agent determines the agents itself, driving select_agents/dispatch_agent.
-    // These track the dispatch session so each new user request starts clean.
-    let dispatchMode = false;
-    let freshDispatchSession = false;
-    let dispatchStartedAt = 0; // wall-clock start of the current dispatch session
-    let dispatchElapsedMs = 0; // total wall-clock of the dispatch session so far
-    let primaryTurnStartedAt = 0; // wall-clock start of the primary agent's turn
-    let pipelineRanThisTurn = false; // run_agent_pipeline fired during this turn
-    let dispatchedThisTurn = false; // dispatch_agent fired during this turn
-    let dispatchesThisTurn = 0;
+
+    // Callbacks + config the shared orchestration delegates back to.
+    const host: OrchestratorHost = {
+        runPhase: (phase, task, cwd) => runPhase(phase, task, cwd),
+        runAgent: (def, task, phase, cwd) => runAgent(def, task, phase, cwd),
+        updateWidget: () => updateWidget(),
+        notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
+        setupSessions: (cwd, wipe) => setupSessions(cwd, wipe),
+        loadAgents: (cwd) => loadAgents(cwd),
+        prepareRun: (ctx) => {
+            sessionModel = sessionModelOf(ctx);
+        },
+        publishLogs: () => publishLogs(),
+        sharedContext: true, // the pipeline always applies the curated bundle
+        maxDispatchesPerTurn: MAX_DISPATCHES_PER_TURN,
+        minDispatchOutputChars: MIN_DISPATCH_OUTPUT_CHARS,
+    };
 
     // The only tools the primary agent (orchestrator) may use — it has NO direct
     // codebase tools and must delegate. Re-asserted before every turn (see
@@ -206,13 +208,6 @@ export default function (pi: ExtensionAPI) {
         "dispatch_agent",
         "run_agent_pipeline",
     ];
-
-    // Delegate to shared core implementations (extracted to eliminate ~60 lines
-    // of pure duplication across extensions and runtime).
-    const mkPhase = (label: string, agent: string): PhaseState =>
-        mkPhaseCore(label, agent);
-    const freshPhases = (): PhaseState[] =>
-        freshPhasesCore(includeScout, isSpecMode);
 
     const setupSessions = (cwd: string, wipe: boolean) => {
         sessionDir = setupSessionsCore(cwd, wipe);
@@ -234,16 +229,17 @@ export default function (pi: ExtensionAPI) {
     }
     // Members of the active team that actually resolve to a loaded agent .md.
     function activeMembers(): string[] {
-        const raw = teams[activeTeamName] || [];
-        return raw.filter((m) => agents.has(m.toLowerCase()));
+        const raw = st.teams[st.activeTeamName] || [];
+        return raw.filter((m) => st.agents.has(m.toLowerCase()));
     }
     // Pick a team, falling back to the first defined team if the name is unknown.
     function activateTeam(name: string) {
-        const names = Object.keys(teams);
-        activeTeamName = teams[name] ? name : (names[0] ?? "");
+        const names = Object.keys(st.teams);
+        st.activeTeamName = st.teams[name] ? name : (names[0] ?? "");
     }
-    const teamsBlock = () => teamsBlockCore(teams, agents, activeTeamName);
-    const chooseTeam = (ctx: any) => chooseTeamCore(ctx, teams);
+    const teamsBlock = () =>
+        teamsBlockCore(st.teams, st.agents, st.activeTeamName);
+    const chooseTeam = (ctx: any) => chooseTeamCore(ctx, st.teams);
 
     // ── Widget (horizontal cards) ────────────────
 
@@ -261,9 +257,9 @@ export default function (pi: ExtensionAPI) {
         const truncate = (s: string, max: number) =>
             s.length > max ? s.slice(0, Math.max(0, max - 1)) + "…" : s;
 
-        const def = agents.get(agentKey.toLowerCase());
+        const def = st.agents.get(agentKey.toLowerCase());
         const { status, elapsed, toolCount } = agentPhaseStatus(
-            phases,
+            st.phases,
             agentKey,
         );
         const { icon, color } = statusMeta(status);
@@ -313,13 +309,13 @@ export default function (pi: ExtensionAPI) {
     // one model, shown once in the header. Mirrors the agent-team layout.
     function renderAgentGrid(width: number, theme: any): string[] {
         const members = activeMembers();
-        const teamNames = Object.keys(teams);
+        const teamNames = Object.keys(st.teams);
 
         const header =
             " " +
             theme.fg("accent", theme.bold("agent-pipeline")) +
             theme.fg("dim", "  ·  team ") +
-            theme.fg("accent", activeTeamName || "—") +
+            theme.fg("accent", st.activeTeamName || "—") +
             theme.fg(
                 "dim",
                 ` (${members.length} agent${members.length === 1 ? "" : "s"}` +
@@ -379,6 +375,14 @@ export default function (pi: ExtensionAPI) {
             const text = new Text("", 0, 1);
             return {
                 render(width: number): string[] {
+                    const {
+                        phases,
+                        running,
+                        lastStatus,
+                        iteration,
+                        maxLoopsRef,
+                        runElapsedMs,
+                    } = st;
                     if (phases.length === 0) {
                         // Idle: show the active team as a grid of agent cards,
                         // each annotated with the model it runs.
@@ -496,12 +500,12 @@ export default function (pi: ExtensionAPI) {
         return coreSpawnAgent(agentDef, task, phase, cwd, model, cfg).then(
             (result) => {
                 if (result.tokens) {
-                    totalTokens.input += result.tokens.input;
-                    totalTokens.output += result.tokens.output;
+                    st.totalTokens.input += result.tokens.input;
+                    st.totalTokens.output += result.tokens.output;
                     phase.tokens = result.tokens;
                 }
-                totalToolCalls += phase.toolCount - prevToolCount;
-                totalDroppedLines += phase.droppedLines - prevDroppedLines;
+                st.totalToolCalls += phase.toolCount - prevToolCount;
+                st.totalDroppedLines += phase.droppedLines - prevDroppedLines;
                 return { output: result.output, exitCode: result.exitCode };
             },
         );
@@ -549,518 +553,11 @@ export default function (pi: ExtensionAPI) {
     ): Promise<{ output: string; ok: boolean }> {
         // Delegate to shared core (eliminates behavioral drift across 3 copies:
         // the runtime was resetting phase.log/phase.note; extensions were not).
-        return runPhaseCore(agents, phase, task, cwd, runAgent, {
+        return runPhaseCore(st.agents, phase, task, cwd, runAgent, {
             updateWidget,
             notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
-            phaseLogs,
+            phaseLogs: st.phaseLogs,
         });
-    }
-
-    // ── Orchestrate the full lifecycle ───────────
-
-    async function runWorkflow(
-        request: string,
-        maxLoops: number,
-        ctx: any,
-    ): Promise<{ status: string; report: string }> {
-        isSpecMode = false; // never inherit spec mode from a prior invocation
-        sessionModel = sessionModelOf(ctx); // all agents run on the session model
-        const cwd = ctx.cwd;
-        includeScout = activeMembers().some((m) => m.toLowerCase() === "scout");
-        dispatchMode = false; // a full pipeline run uses the linear card view
-        setupSessions(cwd, true);
-        phases = freshPhases();
-        phaseLogs = [];
-        totalDroppedLines = 0;
-        totalToolCalls = 0;
-        totalTokens = { input: 0, output: 0 };
-        runStartedAt = Date.now();
-        runElapsedMs = 0;
-        iteration = 0;
-        maxLoopsRef = maxLoops;
-        lastStatus = "running";
-        running = true;
-        updateWidget();
-
-        const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
-        if (missing.length) {
-            running = false;
-            lastStatus = "error";
-            return {
-                status: "error",
-                report: `Missing agent definitions: ${missing.join(", ")}. Expected them in .pi/agents/.`,
-            };
-        }
-
-        // Shared curated context — the artifacts each later agent would not
-        // otherwise see (recon, critique). Builders already thread the rest
-        // (plan, impl summary, test report) into the phases that need them, so
-        // we only accumulate the dropped ones here to avoid duplication.
-        const runArtifacts: RunArtifacts = {};
-        const shared = (task: string, phaseAgent: string) => {
-            const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
-            return bundle ? `${bundle}\n\n---\n\n${task}` : task;
-        };
-
-        // Type-safe phase access — matched by agent name, not position
-        const pm = buildPhaseMap(phases);
-        const scoutP = pm.scout ?? null;
-        const planP = pm.planner;
-        const critiqueP = pm.critic;
-        const implP = pm.implementer;
-        const testP = pm.tester;
-        const valP = pm.validator;
-        const docP = pm.documenter;
-        const shipP = pm.ship;
-
-        const validatorCount = phases.filter(
-            (p) => p.agent === "validator",
-        ).length;
-        if (validatorCount < 2) {
-            widgetCtx?.ui?.notify?.(
-                `Only ${validatorCount} validator(s) configured — the ship phase will reuse the validator's session. Add a second validator entry in teams.yaml for independent ship validation.`,
-                "warning",
-            );
-        }
-
-        let scoutFindings = "";
-        if (scoutP) {
-            const scoutRes = await runPhase(scoutP, scoutTask(request), cwd);
-            if (!scoutRes.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Scouting", scoutRes.output);
-            }
-            scoutFindings = scoutRes.output;
-            runArtifacts.recon = scoutFindings;
-        }
-
-        // Phase 1 — Plan (once)
-        let plan = await runPhase(planP, planTask(request, scoutFindings), cwd);
-        if (!plan.ok) {
-            running = false;
-            lastStatus = "error";
-            return failPhase("Planning", plan.output);
-        }
-        runArtifacts.plan = plan.output;
-
-        // Structural check: reject clearly malformed plans before handing to implementer.
-        const planCheck = validatePlan(plan.output);
-        if (!planCheck.ok) {
-            running = false;
-            lastStatus = "error";
-            return {
-                status: "error",
-                report: `Plan is missing required structure. The planner's output lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe implementer cannot act reliably on this plan. Re-run with a more specific request, or check that the planner agent definition is complete.`,
-            };
-        }
-
-        // Phase 2 — Critique (plan ⇄ critic loop)
-        let critique = { output: "", ok: true };
-        let critiqueVerdict: CritiqueVerdict = "unknown";
-
-        for (let loop = 1; loop <= maxLoops; loop++) {
-            critiqueP.status = "pending";
-            updateWidget();
-            critique = await runPhase(
-                critiqueP,
-                shared(criticTask(request, plan.output), "critic"),
-                cwd,
-            );
-            if (!critique.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Critique", critique.output);
-            }
-
-            critiqueVerdict = detectCritique(critique.output);
-            if (critiqueVerdict !== "revise") break;
-
-            // REVISE — loop back to the planner unless we are out of attempts
-            if (loop === maxLoops) break;
-            planP.status = "pending";
-            planP.note = "";
-            updateWidget();
-            plan = await runPhase(
-                planP,
-                revisePlanTask(request, plan.output, critique.output),
-                cwd,
-            );
-            if (!plan.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Plan revision", plan.output);
-            }
-            runArtifacts.plan = plan.output;
-        }
-
-        // The critic's verdict is now settled — share it with every later agent.
-        runArtifacts.critique = critique.output;
-
-        // Phase 3 — Implement (first pass)
-        let impl = await runPhase(
-            implP,
-            shared(implementTask(request, plan.output), "implementer"),
-            cwd,
-        );
-        if (!impl.ok) {
-            running = false;
-            lastStatus = "error";
-            return failPhase("Implementation", impl.output);
-        }
-        runArtifacts.implSummary = impl.output;
-
-        let test = { output: "", ok: false };
-        let val = { output: "", ok: false };
-        let doc = { output: "", ok: false };
-        let ship = { output: "", ok: false };
-        let verdict: Verdict = "unknown";
-
-        // Correctness loop — test ⇄ validate, gated by the validator.
-        for (let loop = 1; loop <= maxLoops; loop++) {
-            iteration = loop;
-
-            // Test
-            testP.status = "pending";
-            valP.status = "pending";
-            updateWidget();
-            test = await runPhase(
-                testP,
-                shared(testTask(request, plan.output, impl.output), "tester"),
-                cwd,
-            );
-            if (!test.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Testing", test.output);
-            }
-            runArtifacts.testReport = test.output;
-
-            // Validate (the gate — no commit, no PR yet)
-            val = await runPhase(
-                valP,
-                shared(
-                    validateTask(request, plan.output, test.output),
-                    "validator",
-                ),
-                cwd,
-            );
-            if (!val.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Validation", val.output);
-            }
-
-            verdict = detectVerdict(val.output);
-            if (verdict !== "fail") break;
-
-            // FAIL — loop back to the implementer unless we are out of attempts
-            if (loop === maxLoops) break;
-            implP.status = "pending";
-            implP.note = "";
-            updateWidget();
-            impl = await runPhase(
-                implP,
-                shared(
-                    fixTask(request, plan.output, val.output, impl.output),
-                    "implementer",
-                ),
-                cwd,
-            );
-            if (!impl.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Re-implementation", impl.output);
-            }
-            runArtifacts.implSummary = `[attempt ${implP.attempt}] ${impl.output}`;
-        }
-
-        // Document + ship only once the change has passed validation.
-        let status: string;
-        if (verdict === "pass") {
-            doc = await runPhase(
-                docP,
-                shared(
-                    documentTask(
-                        request,
-                        plan.output,
-                        impl.output,
-                        test.output,
-                    ),
-                    "documenter",
-                ),
-                cwd,
-            );
-            if (!doc.ok) {
-                // Graceful degradation: doc failure doesn't kill a passing build
-                widgetCtx?.ui?.notify?.(
-                    "Documenter failed — code changes are valid but docs were not updated. Proceeding to ship.",
-                    "warning",
-                );
-                doc = {
-                    output: "[Documenter failed — see activity logs]",
-                    ok: false,
-                };
-            } else {
-                runArtifacts.docReport = doc.output;
-            }
-
-            ship = await runPhase(
-                shipP,
-                shared(shipTask(request, test.output, doc.output), "ship"),
-                cwd,
-            );
-            if (!ship.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Shipping", ship.output);
-            }
-
-            status =
-                detectShip(ship.output) === "paused"
-                    ? "paused-no-remote"
-                    : "shipped";
-        } else {
-            status =
-                verdict === "fail" ? "failed-after-retries" : "needs-review";
-        }
-
-        runElapsedMs = Date.now() - runStartedAt;
-        running = false;
-        lastStatus = status;
-        updateWidget();
-
-        const passes = iteration;
-        const passed = verdict === "pass";
-        const prUrl =
-            (ship.output.match(/https?:\/\/\S*\/pull\/\d+/) || [])[0] || "";
-
-        const report = buildWorkflowReport({
-            request,
-            status,
-            verdict,
-            passes,
-            maxLoops,
-            passed,
-            prUrl,
-            totals: {
-                runElapsedMs,
-                totalToolCalls,
-                totalTokens,
-                totalDroppedLines,
-            },
-            scoutP,
-            planP,
-            critiqueP,
-            implP,
-            testP,
-            valP,
-            docP,
-            shipP,
-            scoutFindings,
-            plan: plan.output,
-            critique: critique.output,
-            impl: impl.output,
-            test: test.output,
-            val: val.output,
-            doc: doc.output,
-            ship: ship.output,
-        });
-
-        const reportPath = join(cwd, "workflow-report.md");
-        try {
-            writeFileSync(reportPath, report, "utf-8");
-        } catch (e: any) {
-            widgetCtx?.ui?.notify?.(
-                `Could not write workflow-report.md: ${e.message}`,
-                "warning",
-            );
-        }
-
-        publishLogs();
-
-        return { status, report };
-    }
-
-    // ── Orchestrate the spec-only workflow ────────
-
-    async function runSpecWorkflow(
-        request: string,
-        ctx: any,
-    ): Promise<{ status: string; report: string }> {
-        isSpecMode = true;
-        sessionModel = sessionModelOf(ctx); // all agents run on the session model
-        const cwd = ctx.cwd;
-        includeScout = activeMembers().some((m) => m.toLowerCase() === "scout");
-        dispatchMode = false; // a full pipeline run uses the linear card view
-        setupSessions(cwd, true);
-        phases = freshPhases();
-        phaseLogs = [];
-        totalDroppedLines = 0;
-        totalToolCalls = 0;
-        totalTokens = { input: 0, output: 0 };
-        runStartedAt = Date.now();
-        runElapsedMs = 0;
-        iteration = 1;
-        maxLoopsRef = 1;
-        lastStatus = "running";
-        running = true;
-        updateWidget();
-
-        // Spec mode only runs planner -> critic -> documenter (+ optional scout),
-        // so don't require the implement/test/validate agents the full pipeline needs.
-        const missing = ["planner", "critic", "documenter"].filter(
-            (a) => !agents.has(a),
-        );
-        if (missing.length) {
-            running = false;
-            lastStatus = "error";
-            return {
-                status: "error",
-                report: `Missing agent definitions: ${missing.join(", ")}. Expected them in .pi/agents/.`,
-            };
-        }
-
-        // Type-safe phase access — matched by agent name, not position
-        const pm = buildPhaseMap(phases);
-        const scoutP = pm.scout ?? null;
-        const planP = pm.planner;
-        const critiqueP = pm.critic;
-        const docP = pm.documenter;
-
-        // Shared curated context (recon + critique) — see runWorkflow. Builders
-        // already thread the plan, so only the dropped artifacts go in here.
-        const runArtifacts: RunArtifacts = {};
-        const shared = (task: string, phaseAgent: string) => {
-            const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
-            return bundle ? `${bundle}\n\n---\n\n${task}` : task;
-        };
-
-        // Optional Phase 0 — Scout (read-only recon, feeds the planner)
-        let scoutFindings = "";
-        if (scoutP) {
-            const scoutRes = await runPhase(scoutP, scoutTask(request), cwd);
-            if (!scoutRes.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Scouting", scoutRes.output);
-            }
-            scoutFindings = scoutRes.output;
-            runArtifacts.recon = scoutFindings;
-        }
-
-        // Plan ⇄ Critique loop — the planner revises until the critic approves.
-        const maxCritiqueLoops =
-            maxLoopsRef > 0 ? maxLoopsRef : DEFAULT_MAX_LOOPS;
-        let plan = await runPhase(
-            planP,
-            specPlanTask(request, scoutFindings),
-            cwd,
-        );
-        if (!plan.ok) {
-            running = false;
-            lastStatus = "error";
-            return failPhase("Planning", plan.output);
-        }
-        runArtifacts.plan = plan.output;
-
-        let critique = { output: "", ok: true };
-        let critiqueVerdict: CritiqueVerdict = "unknown";
-
-        for (let loop = 1; loop <= maxCritiqueLoops; loop++) {
-            critiqueP.status = "pending";
-            updateWidget();
-            critique = await runPhase(
-                critiqueP,
-                shared(specCriticTask(request, plan.output), "critic"),
-                cwd,
-            );
-            if (!critique.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Critique", critique.output);
-            }
-
-            critiqueVerdict = detectCritique(critique.output);
-            if (critiqueVerdict !== "revise") break;
-
-            // REVISE — loop back to the planner unless we are out of attempts
-            if (loop === maxCritiqueLoops) break;
-            planP.status = "pending";
-            planP.note = "";
-            updateWidget();
-            plan = await runPhase(
-                planP,
-                specReviseTask(request, plan.output, critique.output),
-                cwd,
-            );
-            if (!plan.ok) {
-                running = false;
-                lastStatus = "error";
-                return failPhase("Plan revision", plan.output);
-            }
-            runArtifacts.plan = plan.output;
-        }
-
-        // The critic's verdict is settled — share it with the documenter.
-        runArtifacts.critique = critique.output;
-
-        // Phase 3 — Document (produce the spec)
-        const doc = await runPhase(
-            docP,
-            shared(specDocumentTask(request, plan.output), "documenter"),
-            cwd,
-        );
-        if (!doc.ok) {
-            running = false;
-            lastStatus = "error";
-            return failPhase("Documentation", doc.output);
-        }
-        runArtifacts.docReport = doc.output;
-
-        const critiqueApproved = critiqueVerdict !== "revise";
-        const status = critiqueApproved ? "done" : "needs-review";
-        runElapsedMs = Date.now() - runStartedAt;
-        running = false;
-        lastStatus = status;
-        updateWidget();
-
-        const outcome = critiqueApproved
-            ? "SPEC COMPLETE — implementation spec saved to specs/"
-            : `NEEDS REVIEW — the critic did not approve the plan after ${maxCritiqueLoops} attempt(s). The spec was generated from the last plan revision; review the critique before using it.`;
-
-        const report = buildSpecReport({
-            request,
-            outcome,
-            totals: {
-                runElapsedMs,
-                totalToolCalls,
-                totalTokens,
-                totalDroppedLines,
-            },
-            scoutP,
-            planP,
-            critiqueP,
-            docP,
-            scoutFindings,
-            plan: plan.output,
-            critique: critique.output,
-            doc: doc.output,
-        });
-
-        const reportPath = join(cwd, "workflow-report.md");
-        try {
-            writeFileSync(reportPath, report, "utf-8");
-        } catch (e: any) {
-            widgetCtx?.ui?.notify?.(
-                `Could not write workflow-report.md: ${e.message}`,
-                "warning",
-            );
-        }
-
-        publishLogs();
-
-        return { status, report };
     }
 
     // ── Custom message renderer for workflow reports ──
@@ -1083,7 +580,7 @@ export default function (pi: ExtensionAPI) {
         );
 
     const publishReport = (report: string) =>
-        publishReportCore(pi, report, lastStatus);
+        publishReportCore(pi, report, st.lastStatus);
 
     // ── Consolidated activity log → one scrollable conversation message ──
 
@@ -1113,7 +610,7 @@ export default function (pi: ExtensionAPI) {
             },
         );
 
-    const publishLogs = () => publishLogsCore(pi, phaseLogs);
+    const publishLogs = () => publishLogsCore(pi, st.phaseLogs);
 
     // ── Command ──────────────────────────────────
 
@@ -1127,19 +624,19 @@ export default function (pi: ExtensionAPI) {
                 "Run a workflow: '/agent-pipeline <request>' for full lifecycle, '/agent-pipeline spec <request>' for implementation spec only",
             handler: async (args, ctx) => {
                 widgetCtx = ctx;
-                if (running) {
+                if (st.running) {
                     ctx.ui.notify("A workflow is already running.", "warning");
                     return;
                 }
 
-                agents = loadAgents(ctx.cwd);
-                teams = loadTeams(ctx.cwd);
-                if (Object.keys(teams).length === 0)
-                    teams = { all: Array.from(agents.keys()) };
+                st.agents = loadAgents(ctx.cwd);
+                st.teams = loadTeams(ctx.cwd);
+                if (Object.keys(st.teams).length === 0)
+                    st.teams = { all: Array.from(st.agents.keys()) };
                 // Gate on the agents BOTH modes need; the full pipeline checks the
                 // implement/test/validate agents itself inside runWorkflow.
                 const missing = ["planner", "critic", "documenter"].filter(
-                    (a) => !agents.has(a),
+                    (a) => !st.agents.has(a),
                 );
                 if (missing.length) {
                     ctx.ui.notify(
@@ -1180,16 +677,16 @@ export default function (pi: ExtensionAPI) {
                         : rawArgs;
 
                 if (explicitSpec || explicitFull) {
-                    isSpecMode = explicitSpec;
+                    st.isSpecMode = explicitSpec;
                 } else {
                     const picked = await chooseTeam(ctx);
                     if (picked === null) return; // user cancelled the picker
                     activateTeam(picked);
                     updateWidget();
-                    isSpecMode = teamIsSpec(activeMembers());
+                    st.isSpecMode = teamIsSpec(activeMembers());
                     // Move the active marker to the selected team and surface it.
                     ctx.ui.notify(
-                        `Active team → ${activeTeamName}\nTeams:\n${teamsBlock()}`,
+                        `Active team → ${st.activeTeamName}\nTeams:\n${teamsBlock()}`,
                         "info",
                     );
                 }
@@ -1198,7 +695,7 @@ export default function (pi: ExtensionAPI) {
                 // dispatch a workflow on an empty string.
                 let finalRequest = request;
                 if (!finalRequest) {
-                    const prompt = isSpecMode
+                    const prompt = st.isSpecMode
                         ? "What should be specified?"
                         : "What should the workflow build or fix?";
                     const typed = await ctx.ui.input(prompt, "");
@@ -1207,7 +704,7 @@ export default function (pi: ExtensionAPI) {
                     if (!finalRequest) return;
                 }
 
-                return isSpecMode
+                return st.isSpecMode
                     ? runSpecWorkflowCommand(finalRequest, ctx)
                     : runFullWorkflowCommand(finalRequest, ctx, maxLoops);
             },
@@ -1222,7 +719,7 @@ export default function (pi: ExtensionAPI) {
             `Starting workflow: ${request} (max retries: ${maxLoops})`,
             "info",
         );
-        const result = await runWorkflow(request, maxLoops, ctx);
+        const result = await runWorkflowCore(st, host, request, maxLoops, ctx);
 
         const level =
             result.status === "shipped"
@@ -1232,12 +729,12 @@ export default function (pi: ExtensionAPI) {
                   ? "error"
                   : "warning";
         ctx.ui.notify(
-            `Workflow ${result.status} in ${secs(runElapsedMs)}. Report is shown below.`,
+            `Workflow ${result.status} in ${secs(st.runElapsedMs)}. Report is shown below.`,
             level as any,
         );
-        if (totalDroppedLines > 0) {
+        if (st.totalDroppedLines > 0) {
             ctx.ui.notify(
-                `Heads up: ${totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
+                `Heads up: ${st.totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
                 "warning",
             );
         }
@@ -1249,7 +746,7 @@ export default function (pi: ExtensionAPI) {
 
     async function runSpecWorkflowCommand(request: string, ctx: any) {
         ctx.ui.notify(`Generating implementation spec: ${request}`, "info");
-        const result = await runSpecWorkflow(request, ctx);
+        const result = await runSpecWorkflowCore(st, host, request, ctx);
 
         const level =
             result.status === "done"
@@ -1258,12 +755,12 @@ export default function (pi: ExtensionAPI) {
                   ? "error"
                   : "warning";
         ctx.ui.notify(
-            `Spec generation ${result.status} in ${secs(runElapsedMs)}. Report is shown below.`,
+            `Spec generation ${result.status} in ${secs(st.runElapsedMs)}. Report is shown below.`,
             level as any,
         );
-        if (totalDroppedLines > 0) {
+        if (st.totalDroppedLines > 0) {
             ctx.ui.notify(
-                `Heads up: ${totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
+                `Heads up: ${st.totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
                 "warning",
             );
         }
@@ -1306,7 +803,7 @@ export default function (pi: ExtensionAPI) {
                     request: string;
                     max_loops?: number;
                 };
-                if (running) {
+                if (st.running) {
                     return {
                         content: [
                             {
@@ -1316,9 +813,9 @@ export default function (pi: ExtensionAPI) {
                         ],
                     };
                 }
-                agents = loadAgents(ctx.cwd);
+                st.agents = loadAgents(ctx.cwd);
                 widgetCtx = ctx;
-                pipelineRanThisTurn = true; // fold the primary's turn time into the total
+                st.pipelineRanThisTurn = true; // fold the primary's turn time into the total
                 if (onUpdate)
                     onUpdate({
                         content: [
@@ -1333,7 +830,9 @@ export default function (pi: ExtensionAPI) {
                 const onAbort = () =>
                     (globalThis as any).__piKillWorkflowProc?.();
                 signal?.addEventListener?.("abort", onAbort);
-                const result = await runWorkflow(
+                const result = await runWorkflowCore(
+                    st,
+                    host,
                     request,
                     max_loops && max_loops > 0 ? max_loops : DEFAULT_MAX_LOOPS,
                     ctx,
@@ -1349,7 +848,7 @@ export default function (pi: ExtensionAPI) {
                     content: [
                         {
                             type: "text",
-                            text: `Status: ${result.status} · completed in ${secs(runElapsedMs)}\n\n${truncated}`,
+                            text: `Status: ${result.status} · completed in ${secs(st.runElapsedMs)}\n\n${truncated}`,
                         },
                     ],
                     details: { status: result.status, report: truncated },
@@ -1406,178 +905,8 @@ export default function (pi: ExtensionAPI) {
                     agent: string;
                     task: string;
                 };
-
-                if (running) {
-                    return {
-                        content: [
-                            {
-                                type: "text",
-                                text: "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
-                            },
-                        ],
-                    };
-                }
-
-                if (dispatchesThisTurn >= MAX_DISPATCHES_PER_TURN) {
-                    return {
-                        content: [
-                            {
-                                type: "text",
-                                text: `Dispatch limit reached (${MAX_DISPATCHES_PER_TURN} per turn). Summarize what has been done and stop — do not dispatch more agents this turn.`,
-                            },
-                        ],
-                    };
-                }
-
-                agents = loadAgents(ctx.cwd);
                 widgetCtx = ctx;
-                const def = agents.get(agent.toLowerCase());
-                if (!def) {
-                    const available = Array.from(agents.values())
-                        .map((d) => d.name)
-                        .join(", ");
-                    return {
-                        content: [
-                            {
-                                type: "text",
-                                text: `Agent "${agent}" not found. Available agents: ${available}`,
-                            },
-                        ],
-                    };
-                }
-
-                if (onUpdate)
-                    onUpdate({
-                        content: [
-                            {
-                                type: "text",
-                                text: `Dispatching to ${def.name}...`,
-                            },
-                        ],
-                    });
-
-                // Ensure session directory is initialized. setupSessions is
-                // normally called by runWorkflow/runSpecWorkflow, but
-                // dispatch_agent can be called standalone.
-                setupSessions(ctx.cwd, false);
-
-                // Enter dispatch mode. A new user request (freshDispatchSession)
-                // starts from a clean slate so the new work never shows the
-                // previous request's cards.
-                if (!dispatchMode || freshDispatchSession) {
-                    dispatchMode = true;
-                    phases = [];
-                    // Time from the primary agent's turn start (its pre-dispatch
-                    // reasoning counts), falling back to now if unknown.
-                    dispatchStartedAt = primaryTurnStartedAt || Date.now();
-                    dispatchElapsedMs = 0;
-                }
-                freshDispatchSession = false;
-                dispatchedThisTurn = true;
-                dispatchesThisTurn++;
-
-                // Track this agent as a phase so its card reflects live status.
-                // Re-dispatching the same agent reuses (and resets) its phase so the
-                // view never grows duplicate cards; other selections stay marked.
-                const agentKey = def.name.toLowerCase();
-                let phase = phases.find((p) => p.agent === agentKey);
-                if (phase) {
-                    phase.status = "pending";
-                    phase.elapsed = 0;
-                    phase.note = "";
-                    phase.log = "";
-                    phase.droppedLines = 0;
-                    phase.toolCount = 0;
-                    phase.contextPct = 0;
-                    phase.attempt = 0;
-                } else {
-                    phase = mkPhase(displayName(def.name), agentKey);
-                    phases.push(phase);
-                }
-                updateWidget();
-
-                const start = Date.now();
-                phase.attempt = 1;
-                phase.status = "running";
-                updateWidget();
-
-                const res = await runAgent(def, task, phase, ctx.cwd);
-
-                // An agent that exits cleanly but returns (near-)empty output did
-                // not actually do the work — treat it as a FAILED dispatch so the
-                // orchestrator re-dispatches it instead of building on nothing.
-                const emptyOutput =
-                    res.output.trim().length < MIN_DISPATCH_OUTPUT_CHARS;
-                const ok = res.exitCode === 0 && !emptyOutput;
-
-                phase.status = ok ? "done" : "error";
-                phase.elapsed = Date.now() - start;
-                dispatchElapsedMs = Date.now() - dispatchStartedAt; // session total so far
-                updateWidget();
-
-                if (widgetCtx?.ui?.notify) {
-                    const elapsed = secs(phase.elapsed);
-                    const errMsg = !ok
-                        ? emptyOutput
-                            ? ": returned no usable output"
-                            : `: ${res.output
-                                  .split("\n")
-                                  .filter((l) => l.trim())
-                                  .slice(-2)
-                                  .join(" ")
-                                  .slice(0, 120)}`
-                        : "";
-                    widgetCtx.ui.notify(
-                        `${def.name} ${ok ? "done" : "failed"} in ${elapsed}${errMsg}`,
-                        ok ? "success" : "error",
-                    );
-                }
-
-                const truncated =
-                    res.output.length > 8000
-                        ? res.output.slice(0, 8000) + "\n\n... [truncated]"
-                        : res.output;
-
-                const status = ok ? "done" : "error";
-                const summary = `[${def.name}] ${status} in ${secs(phase.elapsed)}`;
-
-                // Steer the orchestrator (via the tool result it reads next):
-                // - empty output -> the dispatch failed; re-dispatch, do not skip;
-                // - if selected agents are still queued, dispatch the next one;
-                // - if none remain, the task is done — summarize and STOP. Without
-                //   these signals, weak models skip a failed agent or re-dispatch a
-                //   finished one instead of doing the right thing.
-                const remaining = phases
-                    .filter((p) => p.status === "pending")
-                    .map((p) => displayName(p.agent));
-                const nextStep = emptyOutput
-                    ? `\n\n${def.name} returned almost no output — this dispatch FAILED. It is NOT a result to build on. RE-DISPATCH ${def.name} with a clearer, more specific task. Do NOT skip it, do NOT do its work yourself, and do NOT hand its job to a different agent.`
-                    : remaining.length
-                      ? `\n\nNOT DONE YET — still queued: ${remaining.join(", ")}. ` +
-                        `Dispatch the next one (${remaining[0]}) now. Do not stop until every selected agent has run.`
-                      : status === "done"
-                        ? `\n\nDONE — every selected agent has completed and this dispatch succeeded. ` +
-                          `Write your final summary of the result for the user and STOP. ` +
-                          `Do NOT call select_agents or dispatch_agent again (no re-runs, no "verify" passes) unless the user asks for more.`
-                        : "";
-
-                return {
-                    content: [
-                        {
-                            type: "text",
-                            text: `${summary}\n\n${truncated}${nextStep}`,
-                        },
-                    ],
-                    details: {
-                        agent: def.name,
-                        task,
-                        status,
-                        elapsed: phase.elapsed,
-                        exitCode: res.exitCode,
-                        fullOutput: res.output,
-                        remainingQueued: remaining,
-                    },
-                };
+                return dispatchAgentCore(st, host, agent, task, onUpdate, ctx);
             },
 
             renderCall(args, theme) {
@@ -1618,76 +947,8 @@ export default function (pi: ExtensionAPI) {
 
             async execute(_id, params, _signal, _onUpdate, ctx) {
                 const names = (params as { agents: string[] }).agents || [];
-
-                if (running) {
-                    return {
-                        content: [
-                            {
-                                type: "text",
-                                text: "Cannot change the selection while a full workflow is running.",
-                            },
-                        ],
-                    };
-                }
-
-                agents = loadAgents(ctx.cwd);
                 widgetCtx = ctx;
-
-                const resolved: string[] = [];
-                const unknown: string[] = [];
-                for (const n of names) {
-                    const def = agents.get(n.toLowerCase());
-                    if (def) resolved.push(def.name.toLowerCase());
-                    else unknown.push(n);
-                }
-
-                if (resolved.length === 0) {
-                    const available = Array.from(agents.values())
-                        .map((d) => d.name)
-                        .join(", ");
-                    return {
-                        content: [
-                            {
-                                type: "text",
-                                text: `No valid agents in selection. Available agents: ${available}`,
-                            },
-                        ],
-                    };
-                }
-
-                // Enter dispatch mode and rebuild the phase list from the declared
-                // selection. On a new request (freshDispatchSession) every card is
-                // built fresh — the previous workflow's cards are dropped and reused
-                // agents reset to queued. Within the same request (refining the
-                // selection) we preserve the status of agents already worked.
-                dispatchMode = true;
-                if (freshDispatchSession) {
-                    dispatchStartedAt = primaryTurnStartedAt || Date.now();
-                    dispatchElapsedMs = 0;
-                }
-                const byAgent = freshDispatchSession
-                    ? new Map<string, PhaseState>()
-                    : new Map(phases.map((p) => [p.agent, p]));
-                freshDispatchSession = false;
-                phases = resolved.map(
-                    (key) => byAgent.get(key) ?? mkPhase(displayName(key), key),
-                );
-                setupSessions(ctx.cwd, false);
-                updateWidget();
-
-                const order = resolved.map((k) => displayName(k)).join(" → ");
-                const warn = unknown.length
-                    ? ` (ignored unknown: ${unknown.join(", ")})`
-                    : "";
-                return {
-                    content: [
-                        {
-                            type: "text",
-                            text: `Selected ${resolved.length} agent${resolved.length === 1 ? "" : "s"} for the work: ${order}.${warn} The dashboard now shows them queued — dispatch them in order.`,
-                        },
-                    ],
-                    details: { selected: resolved, order, unknown },
-                };
+                return selectAgentsCore(st, host, names, ctx);
             },
 
             renderCall(args, theme) {
@@ -1705,20 +966,20 @@ export default function (pi: ExtensionAPI) {
     // At turn end we fold that into the dispatch / pipeline totals.
     if (active)
         pi.on("agent_start", async () => {
-            primaryTurnStartedAt = Date.now();
-            pipelineRanThisTurn = false;
-            dispatchedThisTurn = false;
-            dispatchesThisTurn = 0;
+            st.primaryTurnStartedAt = Date.now();
+            st.pipelineRanThisTurn = false;
+            st.dispatchedThisTurn = false;
+            st.dispatchesThisTurn = 0;
         });
     if (active)
         pi.on("agent_end", async () => {
-            if (primaryTurnStartedAt <= 0) return;
-            const turnMs = Date.now() - primaryTurnStartedAt;
+            if (st.primaryTurnStartedAt <= 0) return;
+            const turnMs = Date.now() - st.primaryTurnStartedAt;
             // Only fold the turn time into a total when work actually ran this turn,
             // so a plain "done" reply doesn't overwrite the last total.
-            if (dispatchedThisTurn) dispatchElapsedMs = turnMs;
-            if (pipelineRanThisTurn) runElapsedMs = turnMs;
-            if (dispatchedThisTurn || pipelineRanThisTurn) updateWidget();
+            if (st.dispatchedThisTurn) st.dispatchElapsedMs = turnMs;
+            if (st.pipelineRanThisTurn) st.runElapsedMs = turnMs;
+            if (st.dispatchedThisTurn || st.pipelineRanThisTurn) updateWidget();
         });
 
     // ── Orchestrator system prompt + tool lockdown ──
@@ -1739,17 +1000,17 @@ export default function (pi: ExtensionAPI) {
             // A new user request = a new workflow. Mark it so the first
             // select_agents / dispatch_agent of this request rebuilds the cards from
             // scratch instead of carrying over the previous workflow's state.
-            freshDispatchSession = true;
+            st.freshDispatchSession = true;
 
             // Build a dynamic catalog of all loaded agents
-            const agentCatalog = Array.from(agents.values())
+            const agentCatalog = Array.from(st.agents.values())
                 .map(
                     (def) =>
                         `### ${displayName(def.name)}\n**Dispatch as:** \`${def.name}\`\n${def.description}\n**Tools:** ${def.tools}`,
                 )
                 .join("\n\n");
 
-            const teamMembers = Array.from(agents.values())
+            const teamMembers = Array.from(st.agents.values())
                 .map((d) => displayName(d.name))
                 .join(", ");
 
@@ -1761,7 +1022,7 @@ export default function (pi: ExtensionAPI) {
             const template = loadPromptTemplate("orchestrator", "", _ctx.cwd);
             const orchestratorAddendum = renderTemplate(template, {
                 run_tool_name: "run_agent_pipeline",
-                team_name: activeTeamName,
+                team_name: st.activeTeamName,
                 team_members: teamMembers,
                 agent_catalog: agentCatalog,
             });
@@ -1781,17 +1042,17 @@ export default function (pi: ExtensionAPI) {
     pi.on("session_start", async (_event, ctx) => {
         widgetCtx = ctx;
         loadDotEnv(ctx.cwd); // pick up cwd/.env in case pi launched from elsewhere
-        agents = loadAgents(ctx.cwd);
-        teams = loadTeams(ctx.cwd);
+        st.agents = loadAgents(ctx.cwd);
+        st.teams = loadTeams(ctx.cwd);
         // Fall back to an "all" team if teams.yaml is absent/empty, so the
         // dashboard still has something to show.
-        if (Object.keys(teams).length === 0) {
-            teams = { all: Array.from(agents.keys()) };
+        if (Object.keys(st.teams).length === 0) {
+            st.teams = { all: Array.from(st.agents.keys()) };
         }
-        activateTeam(Object.keys(teams)[0] ?? "");
-        phases = [];
-        dispatchMode = false;
-        isSpecMode = false;
+        activateTeam(Object.keys(st.teams)[0] ?? "");
+        st.phases = [];
+        st.dispatchMode = false;
+        st.isSpecMode = false;
 
         // Only the active workflow extension owns the chrome. When both are
         // auto-discovered, the inactive one clears its widget and bows out so it
@@ -1817,12 +1078,12 @@ export default function (pi: ExtensionAPI) {
                 } catch {}
                 currentProc = null;
             }
-            running = false;
+            st.running = false;
             return true;
         };
-        (globalThis as any).__piHasRunningWorkflow = (): boolean => running;
-        const present = REQUIRED_AGENTS.filter((a) => agents.has(a));
-        const missing = REQUIRED_AGENTS.filter((a) => !agents.has(a));
+        (globalThis as any).__piHasRunningWorkflow = (): boolean => st.running;
+        const present = REQUIRED_AGENTS.filter((a) => st.agents.has(a));
+        const missing = REQUIRED_AGENTS.filter((a) => !st.agents.has(a));
         ctx.ui.setStatus(
             "agent-pipeline",
             `Workflow: ${present.length}/${REQUIRED_AGENTS.length} agents`,
@@ -1868,14 +1129,14 @@ export default function (pi: ExtensionAPI) {
                     theme,
                     selfName: "agent-pipeline",
                     model,
-                    running,
-                    lastStatus,
-                    iteration,
-                    maxLoopsRef,
-                    dispatchMode,
-                    phases,
-                    dispatchElapsedMs,
-                    runElapsedMs,
+                    running: st.running,
+                    lastStatus: st.lastStatus,
+                    iteration: st.iteration,
+                    maxLoopsRef: st.maxLoopsRef,
+                    dispatchMode: st.dispatchMode,
+                    phases: st.phases,
+                    dispatchElapsedMs: st.dispatchElapsedMs,
+                    runElapsedMs: st.runElapsedMs,
                     contextUsage: () => ctx.getContextUsage?.(),
                     visibleWidth,
                     truncateToWidth,
