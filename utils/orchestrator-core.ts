@@ -965,8 +965,8 @@ export function selectAgentsCore(
     h.ui.updateWidget();
 
     // Display the original list (with duplicates) to show parallel intent
-    // Use comma separator for parallel, arrow for sequential
-    const separator = hasDuplicates ? ", " : " → ";
+    // Use || separator for parallel, arrow for sequential
+    const separator = hasDuplicates ? " || " : " → ";
     const displayNames = names.map((n) => displayName(n.toLowerCase()));
     const order = displayNames.join(separator);
 

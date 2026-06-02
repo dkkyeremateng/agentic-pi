@@ -657,10 +657,10 @@ export function renderSelectAgentsCall(
     displayNameFn: (s: string) => string,
 ): any {
     const list = (args.agents || []) as string[];
-    // Use comma separator for parallel execution (duplicates), arrow for sequential
+    // Use || separator for parallel execution (duplicates), arrow for sequential
     const hasDuplicates =
         new Set(list.map((a) => a.toLowerCase())).size < list.length;
-    const separator = hasDuplicates ? ", " : " → ";
+    const separator = hasDuplicates ? " || " : " → ";
     const preview = list.map((a) => displayNameFn(a)).join(separator);
     return new TextCtor(
         theme.fg("toolTitle", theme.bold("select_agents ")) +
