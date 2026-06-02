@@ -41,8 +41,11 @@ dispatch multiple agents in the SAME response:
 - **User explicitly requests parallelism** — "do these in parallel", "run both at once", "concurrently"
 - **No dependencies** — agent B does not need output from agent A
 
-To dispatch in parallel, call `dispatch_agent` multiple times in one response.
-The agents will run concurrently. Wait for all results before summarizing.
+To dispatch in parallel:
+- **If your model supports multiple tool calls per response**: Call `dispatch_agent` multiple times in one response. The agents will run concurrently.
+- **If your model only supports one tool call per response**: Call `dispatch_agent` for the first agent, wait for it to complete, then immediately call `dispatch_agent` for the second agent in your next response. Do NOT summarize or wait between dispatches — keep dispatching until all parallel tasks are started.
+
+Wait for all results before summarizing.
 
 **Important for parallel dispatches of the SAME agent:**
 - Call `select_agents` ONCE with the agent name (e.g., `select_agents(['seeker'])`)
