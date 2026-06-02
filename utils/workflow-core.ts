@@ -2155,6 +2155,9 @@ export function spawnAgentWithModel(
         const firstSlash = cleanModel.indexOf("/");
         const modelId =
             firstSlash > 0 ? cleanModel.slice(firstSlash + 1) : cleanModel;
+        console.error(
+            `[spawnAgentWithModel] Extracted modelId: "${modelId}" from "${cleanModel}"`,
+        );
         args.push("--model", modelId);
     }
     if (hasSession) args.push("-c");
