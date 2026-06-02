@@ -128,6 +128,9 @@ export interface OrchestratorHost {
     sharedContext: boolean; // apply the curated context bundle
     maxDispatchesPerTurn: number;
     minDispatchOutputChars: number;
+    // Optional abort signal from the tool handler. When aborted, the pipeline
+    // stops before the next phase instead of spawning a new subprocess.
+    signal?: AbortSignal;
 }
 
 type RunResult = { status: string; report: string };
@@ -146,6 +149,25 @@ function fail(s: OrchestratorState, label: string, output: string): RunResult {
     return failPhase(label, output);
 }
 
+// Check if the workflow was aborted externally (e.g. user pressed escape).
+// Returns an error RunResult if aborted, or null to continue.
+function checkAbort(
+    s: OrchestratorState,
+    h: OrchestratorHost,
+): RunResult | null {
+    if (h.signal?.aborted) {
+        s.running = false;
+        s.lastStatus = "aborted";
+        s.runElapsedMs = Date.now() - s.runStartedAt;
+        h.updateWidget();
+        return {
+            status: "aborted",
+            report: "Workflow aborted by user.",
+        };
+    }
+    return null;
+}
+
 // ── Full plan → implement → test → validate → document → ship pipeline ──
 export async function runWorkflowCore(
     s: OrchestratorState,
@@ -154,6 +176,13 @@ export async function runWorkflowCore(
     maxLoops: number,
     ctx: any,
 ): Promise<RunResult> {
+    // Re-entry guard: prevent a second invocation from corrupting state.
+    if (s.running) {
+        return {
+            status: "error",
+            report: "A workflow is already running.",
+        };
+    }
     s.isSpecMode = false;
     h.prepareRun(ctx);
     const cwd = ctx.cwd;
@@ -212,6 +241,8 @@ export async function runWorkflowCore(
 
     let scoutFindings = "";
     if (scoutP) {
+        const abort = checkAbort(s, h);
+        if (abort) return abort;
         const scoutRes = await h.runPhase(scoutP, scoutTask(request), cwd);
         if (!scoutRes.ok) return fail(s, "Scouting", scoutRes.output);
         scoutFindings = scoutRes.output;
@@ -219,6 +250,8 @@ export async function runWorkflowCore(
     }
 
     // Phase 1 — Plan (once)
+    let aborted = checkAbort(s, h);
+    if (aborted) return aborted;
     let plan = await h.runPhase(planP, planTask(request, scoutFindings), cwd);
     if (!plan.ok) return fail(s, "Planning", plan.output);
     runArtifacts.plan = plan.output;
@@ -238,6 +271,8 @@ export async function runWorkflowCore(
     let critiqueVerdict: CritiqueVerdict = "unknown";
 
     for (let loop = 1; loop <= maxLoops; loop++) {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
         critiqueP.status = "pending";
         h.updateWidget();
         critique = await h.runPhase(
@@ -251,6 +286,8 @@ export async function runWorkflowCore(
         if (critiqueVerdict !== "revise") break;
 
         if (loop === maxLoops) break;
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
         planP.status = "pending";
         planP.note = "";
         h.updateWidget();
@@ -266,6 +303,8 @@ export async function runWorkflowCore(
     runArtifacts.critique = critique.output;
 
     // Phase 3 — Implement (first pass)
+    aborted = checkAbort(s, h);
+    if (aborted) return aborted;
     let impl = await h.runPhase(
         implP,
         shared(implementTask(request, plan.output), "implementer"),
@@ -282,6 +321,8 @@ export async function runWorkflowCore(
 
     // Correctness loop — test ⇄ validate, gated by the validator.
     for (let loop = 1; loop <= maxLoops; loop++) {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
         s.iteration = loop;
 
         testP.status = "pending";
@@ -309,6 +350,8 @@ export async function runWorkflowCore(
         if (verdict !== "fail") break;
 
         if (loop === maxLoops) break;
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
         implP.status = "pending";
         implP.note = "";
         h.updateWidget();
@@ -327,6 +370,8 @@ export async function runWorkflowCore(
     // Document + ship only once the change has passed validation.
     let status: string;
     if (verdict === "pass") {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
         doc = await h.runPhase(
             docP,
             shared(
@@ -348,6 +393,8 @@ export async function runWorkflowCore(
             runArtifacts.docReport = doc.output;
         }
 
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
         ship = await h.runPhase(
             shipP,
             shared(shipTask(request, test.output, doc.output), "ship"),
@@ -417,6 +464,13 @@ export async function runSpecWorkflowCore(
     request: string,
     ctx: any,
 ): Promise<RunResult> {
+    // Re-entry guard.
+    if (s.running) {
+        return {
+            status: "error",
+            report: "A workflow is already running.",
+        };
+    }
     s.isSpecMode = true;
     h.prepareRun(ctx);
     const cwd = ctx.cwd;
@@ -465,12 +519,16 @@ export async function runSpecWorkflowCore(
 
     let scoutFindings = "";
     if (scoutP) {
+        const abort = checkAbort(s, h);
+        if (abort) return abort;
         const scoutRes = await h.runPhase(scoutP, scoutTask(request), cwd);
         if (!scoutRes.ok) return fail(s, "Scouting", scoutRes.output);
         scoutFindings = scoutRes.output;
         runArtifacts.recon = scoutFindings;
     }
 
+    let aborted = checkAbort(s, h);
+    if (aborted) return aborted;
     let plan = await h.runPhase(
         planP,
         specPlanTask(request, scoutFindings),
@@ -483,6 +541,8 @@ export async function runSpecWorkflowCore(
     let critiqueVerdict: CritiqueVerdict = "unknown";
 
     for (let loop = 1; loop <= maxCritiqueLoops; loop++) {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
         critiqueP.status = "pending";
         h.updateWidget();
         critique = await h.runPhase(
@@ -496,6 +556,8 @@ export async function runSpecWorkflowCore(
         if (critiqueVerdict !== "revise") break;
 
         if (loop === maxCritiqueLoops) break;
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
         planP.status = "pending";
         planP.note = "";
         h.updateWidget();
@@ -510,6 +572,8 @@ export async function runSpecWorkflowCore(
 
     runArtifacts.critique = critique.output;
 
+    aborted = checkAbort(s, h);
+    if (aborted) return aborted;
     const doc = await h.runPhase(
         docP,
         shared(specDocumentTask(request, plan.output), "documenter"),
@@ -584,7 +648,10 @@ export async function dispatchAgentCore(
             `Dispatch limit reached (${h.maxDispatchesPerTurn} per turn). Summarize what has been done and stop — do not dispatch more agents this turn.`,
         );
 
-    s.agents = h.loadAgents(ctx.cwd);
+    // Only refresh agents from disk on a fresh user request. During a burst
+    // of dispatches within the same turn the agent definitions don't change,
+    // so re-reading from disk is wasted I/O.
+    if (s.freshDispatchSession) s.agents = h.loadAgents(ctx.cwd);
     const def = s.agents.get(agent.toLowerCase());
     if (!def) {
         const available = Array.from(s.agents.values())
@@ -712,7 +779,8 @@ export function selectAgentsCore(
             "Cannot change the selection while a full workflow is running.",
         );
 
-    s.agents = h.loadAgents(ctx.cwd);
+    // Only refresh agents on a fresh session (new user request).
+    if (s.freshDispatchSession) s.agents = h.loadAgents(ctx.cwd);
 
     const resolved: string[] = [];
     const unknown: string[] = [];

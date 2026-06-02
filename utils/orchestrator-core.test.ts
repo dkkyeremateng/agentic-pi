@@ -6,6 +6,8 @@ import {
     type OrchestratorHost,
     dispatchAgentCore,
     selectAgentsCore,
+    runWorkflowCore,
+    runSpecWorkflowCore,
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState } from "./workflow-core";
 
@@ -44,6 +46,14 @@ function mkState(
     overrides: Partial<OrchestratorState> = {},
 ): OrchestratorState {
     return { ...newOrchestratorState(), ...overrides };
+}
+
+// Helper: create a state pre-loaded with agents (as session_start would).
+function mkStateWithAgents(
+    agents: Map<string, AgentDef>,
+    overrides: Partial<OrchestratorState> = {},
+): OrchestratorState {
+    return { ...newOrchestratorState(), agents, ...overrides };
 }
 
 function mkCtx(): any {
@@ -112,7 +122,7 @@ describe("dispatchAgentCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         const host = mkHost({ loadAgents: () => agents });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
             st,
             host,
@@ -135,7 +145,7 @@ describe("dispatchAgentCore", () => {
                 exitCode: 0,
             }),
         });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
             st,
             host,
@@ -160,7 +170,7 @@ describe("dispatchAgentCore", () => {
                 exitCode: 1,
             }),
         });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
             st,
             host,
@@ -180,7 +190,7 @@ describe("dispatchAgentCore", () => {
             loadAgents: () => agents,
             runAgent: async () => ({ output: "   ", exitCode: 0 }),
         });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
             st,
             host,
@@ -205,7 +215,7 @@ describe("dispatchAgentCore", () => {
                 return { output: "Done.", exitCode: 0 };
             },
         });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
             st,
             host,
@@ -241,7 +251,7 @@ describe("dispatchAgentCore", () => {
                 };
             },
         });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const ctx = mkCtx();
 
         // First dispatch — triggers model fallback
@@ -273,7 +283,7 @@ describe("dispatchAgentCore", () => {
                 exitCode: 0,
             }),
         });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const ctx = mkCtx();
         assert.equal(st.dispatchesThisTurn, 0);
         await dispatchAgentCore(st, host, "planner", "plan", undefined, ctx);
@@ -290,7 +300,7 @@ describe("dispatchAgentCore", () => {
             loadAgents: () => agents,
             runAgent: async () => ({ output: longOutput, exitCode: 0 }),
         });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
             st,
             host,
@@ -312,7 +322,7 @@ describe("dispatchAgentCore", () => {
                 exitCode: 0,
             }),
         });
-        const st = mkState({ dispatchMode: false });
+        const st = mkStateWithAgents(agents, { dispatchMode: false });
         await dispatchAgentCore(
             st,
             host,
@@ -373,7 +383,7 @@ describe("dispatchAgentCore", () => {
             loadAgents: () => agents,
             runAgent: async () => ({ output: "   ", exitCode: 0 }),
         });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
             st,
             host,
@@ -395,7 +405,7 @@ describe("dispatchAgentCore", () => {
                 exitCode: 0,
             }),
         });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = await dispatchAgentCore(
             st,
             host,
@@ -406,6 +416,62 @@ describe("dispatchAgentCore", () => {
         );
         // Only one agent dispatched, no pending phases remain
         assert.ok(result.content[0].text.includes("DONE"));
+    });
+
+    it("does not reload agents when freshDispatchSession is false", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        let loadCount = 0;
+        const host = mkHost({
+            loadAgents: () => {
+                loadCount++;
+                return agents;
+            },
+            runAgent: async () => ({
+                output: "enough output for this test case to pass the minimum character threshold",
+                exitCode: 0,
+            }),
+        });
+        const st = mkStateWithAgents(agents, {
+            freshDispatchSession: false,
+        });
+        await dispatchAgentCore(
+            st,
+            host,
+            "planner",
+            "plan",
+            undefined,
+            mkCtx(),
+        );
+        assert.equal(loadCount, 0, "loadAgents should not be called");
+    });
+
+    it("reloads agents when freshDispatchSession is true", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        let loadCount = 0;
+        const host = mkHost({
+            loadAgents: () => {
+                loadCount++;
+                return agents;
+            },
+            runAgent: async () => ({
+                output: "enough output for this test case to pass the minimum character threshold",
+                exitCode: 0,
+            }),
+        });
+        const st = mkStateWithAgents(agents, {
+            freshDispatchSession: true,
+        });
+        await dispatchAgentCore(
+            st,
+            host,
+            "planner",
+            "plan",
+            undefined,
+            mkCtx(),
+        );
+        assert.equal(loadCount, 1, "loadAgents should be called once");
     });
 });
 
@@ -423,7 +489,7 @@ describe("selectAgentsCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         const host = mkHost({ loadAgents: () => agents });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = selectAgentsCore(st, host, ["nonexistent"], mkCtx());
         assert.ok(result.content[0].text.includes("No valid agents"));
     });
@@ -433,7 +499,7 @@ describe("selectAgentsCore", () => {
         agents.set("planner", mkAgent("planner"));
         agents.set("tester", mkAgent("tester"));
         const host = mkHost({ loadAgents: () => agents });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = selectAgentsCore(
             st,
             host,
@@ -451,7 +517,7 @@ describe("selectAgentsCore", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         const host = mkHost({ loadAgents: () => agents });
-        const st = mkState({ dispatchMode: false });
+        const st = mkStateWithAgents(agents, { dispatchMode: false });
         selectAgentsCore(st, host, ["planner"], mkCtx());
         assert.equal(st.dispatchMode, true);
     });
@@ -474,7 +540,7 @@ describe("selectAgentsCore", () => {
             modelFallback: false,
         };
         const host = mkHost({ loadAgents: () => agents });
-        const st = mkState({
+        const st = mkStateWithAgents(agents, {
             dispatchMode: true,
             freshDispatchSession: false,
             phases: [existingPhase],
@@ -519,13 +585,98 @@ describe("selectAgentsCore", () => {
         agents.set("planner", mkAgent("planner"));
         agents.set("tester", mkAgent("tester"));
         const host = mkHost({ loadAgents: () => agents });
-        const st = mkState();
+        const st = mkStateWithAgents(agents);
         const result = selectAgentsCore(
             st,
             host,
             ["planner", "tester"],
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("Planner → Tester"));
+        assert.ok(result.content[0].text.includes("Planner \u2192 Tester"));
+    });
+
+    it("does not reload agents when freshDispatchSession is false", () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        let loadCount = 0;
+        const host = mkHost({
+            loadAgents: () => {
+                loadCount++;
+                return agents;
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            freshDispatchSession: false,
+        });
+        selectAgentsCore(st, host, ["planner"], mkCtx());
+        assert.equal(loadCount, 0, "loadAgents should not be called");
+    });
+
+    it("reloads agents when freshDispatchSession is true", () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        let loadCount = 0;
+        const host = mkHost({
+            loadAgents: () => {
+                loadCount++;
+                return agents;
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            freshDispatchSession: true,
+        });
+        selectAgentsCore(st, host, ["planner"], mkCtx());
+        assert.equal(loadCount, 1, "loadAgents should be called once");
+        assert.equal(st.freshDispatchSession, false);
+    });
+});
+
+// ── runWorkflowCore — re-entry guard ─────────────
+
+describe("runWorkflowCore re-entry guard", () => {
+    it("rejects when a workflow is already running", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const name of [
+            "planner",
+            "critic",
+            "implementer",
+            "tester",
+            "documenter",
+            "validator",
+        ]) {
+            agents.set(name, mkAgent(name));
+        }
+        const host = mkHost({ loadAgents: () => agents });
+        const st = mkStateWithAgents(agents, { running: true });
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "test request",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "error");
+        assert.ok(result.report.includes("already running"));
+    });
+});
+
+// ── runSpecWorkflowCore — re-entry guard ──────────
+
+describe("runSpecWorkflowCore re-entry guard", () => {
+    it("rejects when a workflow is already running", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        agents.set("critic", mkAgent("critic"));
+        agents.set("documenter", mkAgent("documenter"));
+        const host = mkHost({ loadAgents: () => agents });
+        const st = mkStateWithAgents(agents, { running: true });
+        const result = await runSpecWorkflowCore(
+            st,
+            host,
+            "test spec",
+            mkCtx(),
+        );
+        assert.equal(result.status, "error");
+        assert.ok(result.report.includes("already running"));
     });
 });

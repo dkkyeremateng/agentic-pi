@@ -1017,15 +1017,18 @@ export default function (pi: ExtensionAPI) {
                 const onAbort = () =>
                     (globalThis as any).__piKillWorkflowProc?.();
                 signal?.addEventListener?.("abort", onAbort);
+                // Pass the abort signal to the orchestrator so it stops between phases
+                host.signal = signal ?? undefined;
                 const result = await runWorkflowCore(
                     st,
                     host,
                     request,
                     max_loops && max_loops > 0 ? max_loops : DEFAULT_MAX_LOOPS,
                     ctx,
-                ).finally(() =>
-                    signal?.removeEventListener?.("abort", onAbort),
-                );
+                ).finally(() => {
+                    signal?.removeEventListener?.("abort", onAbort);
+                    host.signal = undefined;
+                });
                 const truncated =
                     result.report.length > 8000
                         ? result.report.slice(0, 8000) +
@@ -1035,7 +1038,7 @@ export default function (pi: ExtensionAPI) {
                     content: [
                         {
                             type: "text",
-                            text: `Status: ${result.status}\n\n${truncated}`,
+                            text: `Status: ${result.status} · completed in ${secs(st.runElapsedMs)}\n\n${truncated}`,
                         },
                     ],
                     details: { status: result.status, report: truncated },
