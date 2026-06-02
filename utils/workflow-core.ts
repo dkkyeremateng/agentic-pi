@@ -1843,12 +1843,12 @@ export async function runAgentWithFallback(
         }
 
         // Retry once with the fallback model and inform the user.
-        phase.note = `⚠ ${primaryModel} failed → ${fallbackModel}`;
+        phase.note = `⚠ ${primaryModel} failed → ${fallbackModel} (context reset)`;
         phase.modelFallback = true;
         phase.toolCount = 0;
         phase.contextPct = 0;
         phase.droppedLines = 0;
-        phase.log += `\n⚠ Model ${primaryModel} failed — retrying with ${fallbackModel}\n`;
+        phase.log += `\n⚠ Model ${primaryModel} failed — retrying with ${fallbackModel} (context reset)\n`;
         opts.notify?.(
             `${agentName}: model "${primaryModel}" failed to load or run — falling back to ${fallbackModel} and retrying.`,
             "warning",
@@ -1913,7 +1913,8 @@ export async function runPhaseCore(
     phase.attempt++;
     phase.status = "running";
     phase.log = "";
-    phase.note = "";
+    phase.note =
+        phase.attempt > 1 ? `Attempt ${phase.attempt} (context reset)` : "";
     phase.toolCount = 0;
     phase.contextPct = 0;
     phase.droppedLines = 0;
