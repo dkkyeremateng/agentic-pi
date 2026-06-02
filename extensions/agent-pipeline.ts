@@ -387,7 +387,9 @@ export default function (pi: ExtensionAPI) {
                     );
 
                     // Use shared arrow layout renderer
-                    lines.push(...renderPhaseCardsWithArrows(cards, theme));
+                    lines.push(
+                        ...renderPhaseCardsWithArrows(cards, theme, phases),
+                    );
 
                     // Live log of the running agent (stable-height panel — shared
                     // with agent-team via workflow-core).

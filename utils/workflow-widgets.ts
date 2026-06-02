@@ -15,10 +15,7 @@ export function calculateGridLayout(
     memberCount: number,
     totalWidth: number,
 ): { cols: number; gap: number; colWidth: number } {
-    const cols = Math.min(
-        memberCount <= 3 ? memberCount : 3,
-        memberCount,
-    );
+    const cols = Math.min(memberCount <= 3 ? memberCount : 3, memberCount);
     const gap = 1;
     const colWidth = Math.max(
         18,
@@ -46,9 +43,7 @@ export function renderCardGrid(
 
     // Render each row
     for (let line = 0; line < cardH; line++) {
-        lines.push(
-            cards.map((c) => c[line] || "").join(" ".repeat(gap)),
-        );
+        lines.push(cards.map((c) => c[line] || "").join(" ".repeat(gap)));
     }
 
     return lines;
@@ -98,23 +93,36 @@ export function renderPipelineTitle(
 
 // Render phase cards with arrows between them.
 // Returns an array of lines with cards laid out horizontally and arrows on the middle row.
+// When multiple phases are running concurrently, arrows are omitted (replaced with spaces).
 export function renderPhaseCardsWithArrows(
     cards: string[][],
     theme: any,
+    phases?: PhaseState[],
 ): string[] {
     const arrowWidth = 5; // " ──▶ "
     const cols = cards.length;
     const arrowRow = 2; // middle row for arrows
     const cardHeight = cards[0].length;
 
+    // Check if multiple phases are running concurrently
+    const concurrentRunning = phases
+        ? phases.filter((p) => p.status === "running").length > 1
+        : false;
+
     const lines: string[] = [];
     for (let line = 0; line < cardHeight; line++) {
         let row = cards[0][line];
         for (let c = 1; c < cols; c++) {
-            row +=
-                line === arrowRow
-                    ? theme.fg("dim", " ──▶ ")
-                    : " ".repeat(arrowWidth);
+            if (concurrentRunning) {
+                // No arrows when running concurrently - just space
+                row += " ".repeat(arrowWidth);
+            } else {
+                // Show arrows when running sequentially or idle
+                row +=
+                    line === arrowRow
+                        ? theme.fg("dim", " ──▶ ")
+                        : " ".repeat(arrowWidth);
+            }
             row += cards[c][line];
         }
         lines.push(row);

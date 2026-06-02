@@ -631,7 +631,9 @@ export default function (pi: ExtensionAPI) {
                     lines.push("");
 
                     // Use shared arrow layout renderer
-                    lines.push(...renderPhaseCardsWithArrows(cards, theme));
+                    lines.push(
+                        ...renderPhaseCardsWithArrows(cards, theme, st.phases),
+                    );
 
                     // Live log of the currently running agent — grows to fill the
                     // available vertical space, pushing the editor down, then tails.
