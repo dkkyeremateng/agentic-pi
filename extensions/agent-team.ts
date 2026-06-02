@@ -52,7 +52,6 @@ import {
     detectVerdict,
     detectShip,
     detectCritique,
-    isModelFailure,
     secs,
     digest,
     testSignal,
@@ -70,11 +69,21 @@ import {
     setupSessions as setupSessionsCore,
     publishReport as publishReportCore,
     publishLogs as publishLogsCore,
-    contextBundle,
+    contextBundleForPhase,
     type RunArtifacts,
     buildPhaseMap,
     failPhase,
     tokenNote,
+    mkPhase as mkPhaseCore,
+    freshPhases as freshPhasesCore,
+    runPhaseCore,
+    runAgentWithFallback,
+    renderDispatchAgentCall,
+    renderDispatchAgentResult,
+    renderRunWorkflowCall,
+    renderRunWorkflowResult,
+    renderSelectAgentsCall,
+    renderSelectAgentsResult,
     type AgentDef,
     type PhaseState,
     loadDotEnv,
@@ -259,43 +268,12 @@ export default function (pi: ExtensionAPI) {
         "run_agent_team",
     ];
 
-    const mkPhase = (label: string, agent: string): PhaseState => ({
-        label,
-        agent,
-        status: "pending",
-        elapsed: 0,
-        note: "",
-        log: "",
-        droppedLines: 0,
-        toolCount: 0,
-        contextPct: 0,
-        attempt: 0,
-        modelFallback: false,
-    });
-
-    function freshPhases(): PhaseState[] {
-        // Optional read-only recon pass, prepended when the active team has scout.
-        const lead = includeScout ? [mkPhase("Scout", "scout")] : [];
-        if (isSpecMode) {
-            return [
-                ...lead,
-                mkPhase("Plan", "planner"),
-                mkPhase("Critique", "critic"),
-                mkPhase("Document", "documenter"),
-            ];
-        }
-
-        return [
-            ...lead,
-            mkPhase("Plan", "planner"),
-            mkPhase("Critique", "critic"),
-            mkPhase("Implement", "implementer"),
-            mkPhase("Test", "tester"),
-            mkPhase("Validate", "validator"),
-            mkPhase("Document", "documenter"),
-            mkPhase("Ship", "validator"),
-        ];
-    }
+    // Delegate to shared core implementations (extracted to eliminate ~60 lines
+    // of pure duplication across extensions and runtime).
+    const mkPhase = (label: string, agent: string): PhaseState =>
+        mkPhaseCore(label, agent);
+    const freshPhases = (): PhaseState[] =>
+        freshPhasesCore(includeScout, isSpecMode);
 
     const setupSessions = (cwd: string, wipe: boolean) => {
         sessionDir = setupSessionsCore(cwd, wipe);
@@ -805,64 +783,21 @@ export default function (pi: ExtensionAPI) {
         const fallbackModel =
             sessionModel && sessionModel !== primaryModel ? sessionModel : "";
 
-        return spawnAgentWithModel(
+        // Delegate to shared core (eliminates ~50 lines of near-identical
+        // fallback logic with notification API drift).
+        return runAgentWithFallback(
             agentDef,
             task,
             phase,
             cwd,
             primaryModel,
-        ).then(async (result) => {
-            // Only model-specific load/run failures trigger a fallback — timeouts,
-            // tool failures, and bad output are not retried.
-            if (result.exitCode !== 0 && isModelFailure(result.output)) {
-                const agentName = displayName(agentDef.name);
-
-                // If the agent is already on the primary agent's model (no distinct
-                // fallback), there is nothing to fall back to — tell the user.
-                if (!fallbackModel) {
-                    widgetCtx?.ui?.notify?.(
-                        `${agentName}: model "${primaryModel}" failed to load or run, and no fallback is available (already on the primary agent's model).`,
-                        "error",
-                    );
-                    return result;
-                }
-
-                // Retry once with the primary agent's (session) model, which is known
-                // to work, and inform the user of the failure and the action taken.
-                phase.note = `⚠ ${primaryModel} failed → ${fallbackModel}`;
-                phase.modelFallback = true;
-                phase.toolCount = 0;
-                phase.contextPct = 0;
-                phase.droppedLines = 0;
-                phase.log += `\n⚠ Model ${primaryModel} failed — retrying with ${fallbackModel}\n`;
-                widgetCtx?.ui?.notify?.(
-                    `${agentName}: model "${primaryModel}" failed to load or run — falling back to the primary agent's model (${fallbackModel}) and retrying.`,
-                    "warning",
-                );
-                updateWidget();
-
-                const retry = await spawnAgentWithModel(
-                    agentDef,
-                    task,
-                    phase,
-                    cwd,
-                    fallbackModel,
-                );
-                if (retry.exitCode !== 0 && isModelFailure(retry.output)) {
-                    widgetCtx?.ui?.notify?.(
-                        `${agentName}: the fallback model (${fallbackModel}) also failed to load or run.`,
-                        "error",
-                    );
-                } else if (retry.exitCode === 0) {
-                    widgetCtx?.ui?.notify?.(
-                        `${agentName}: recovered on the primary agent's model (${fallbackModel}).`,
-                        "success",
-                    );
-                }
-                return retry;
-            }
-            return result;
-        });
+            fallbackModel,
+            spawnAgentWithModel,
+            {
+                updateWidget,
+                notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
+            },
+        );
     }
 
     async function runPhase(
@@ -870,39 +805,13 @@ export default function (pi: ExtensionAPI) {
         task: string,
         cwd: string,
     ): Promise<{ output: string; ok: boolean }> {
-        const def = agents.get(phase.agent);
-        if (!def) {
-            phase.status = "error";
-            phase.note = `Agent "${phase.agent}" not found`;
-            updateWidget();
-            return {
-                output: `Agent "${phase.agent}" not found in .pi/agents/`,
-                ok: false,
-            };
-        }
-        phase.attempt++;
-        phase.status = "running";
-        phase.toolCount = 0; // reset for reused phases (loop-back, test⇄validate cycles)
-        phase.contextPct = 0;
-        updateWidget();
-        const res = await runAgent(def, task, phase, cwd);
-        phase.status = res.exitCode === 0 ? "done" : "error";
-        updateWidget();
-        // Notify the user when a phase completes so they have peripheral awareness
-        // without staring at the dashboard.
-        if (widgetCtx?.ui?.notify) {
-            const elapsed = secs(phase.elapsed);
-            const statusWord = phase.status === "done" ? "done" : "failed";
-            const attemptNote =
-                phase.attempt > 1 ? ` (attempt ${phase.attempt})` : "";
-            widgetCtx.ui.notify(
-                `${phase.label} ${statusWord} in ${elapsed}${attemptNote}`,
-                phase.status === "done" ? "success" : "error",
-            );
-        }
-        if (phase.log && phase.log.trim())
-            phaseLogs.push({ label: phase.label, log: phase.log });
-        return { output: res.output, ok: res.exitCode === 0 };
+        // Delegate to shared core (eliminates behavioral drift across 3 copies:
+        // the runtime was resetting phase.log/phase.note; extensions were not).
+        return runPhaseCore(agents, phase, task, cwd, runAgent, {
+            updateWidget,
+            notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
+            phaseLogs,
+        });
     }
 
     // ── Orchestrate the full lifecycle ───────────
@@ -948,9 +857,9 @@ export default function (pi: ExtensionAPI) {
         // we only accumulate the dropped ones here to avoid duplication.
         // Controlled by PI_AGENT_TEAM_SHARED_CONTEXT (on by default).
         const runArtifacts: RunArtifacts = {};
-        const shared = (task: string) => {
+        const shared = (task: string, phaseAgent: string) => {
             if (!SHARED_CONTEXT) return task;
-            const bundle = contextBundle(runArtifacts);
+            const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
             return bundle ? `${bundle}\n\n---\n\n${task}` : task;
         };
 
@@ -1016,7 +925,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             critique = await runPhase(
                 critiqueP,
-                shared(criticTask(request, plan.output)),
+                shared(criticTask(request, plan.output), "critic"),
                 cwd,
             );
             if (!critique.ok) {
@@ -1052,7 +961,7 @@ export default function (pi: ExtensionAPI) {
         // Phase 3 — Implement (first pass)
         let impl = await runPhase(
             implP,
-            shared(implementTask(request, plan.output)),
+            shared(implementTask(request, plan.output), "implementer"),
             cwd,
         );
         if (!impl.ok) {
@@ -1078,7 +987,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             test = await runPhase(
                 testP,
-                shared(testTask(request, plan.output, impl.output)),
+                shared(testTask(request, plan.output, impl.output), "tester"),
                 cwd,
             );
             if (!test.ok) {
@@ -1091,7 +1000,10 @@ export default function (pi: ExtensionAPI) {
             // Validate (the gate — no commit, no PR yet)
             val = await runPhase(
                 valP,
-                shared(validateTask(request, plan.output, test.output)),
+                shared(
+                    validateTask(request, plan.output, test.output),
+                    "validator",
+                ),
                 cwd,
             );
             if (!val.ok) {
@@ -1110,7 +1022,10 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             impl = await runPhase(
                 implP,
-                shared(fixTask(request, plan.output, val.output, impl.output)),
+                shared(
+                    fixTask(request, plan.output, val.output, impl.output),
+                    "implementer",
+                ),
                 cwd,
             );
             if (!impl.ok) {
@@ -1133,6 +1048,7 @@ export default function (pi: ExtensionAPI) {
                         impl.output,
                         test.output,
                     ),
+                    "documenter",
                 ),
                 cwd,
             );
@@ -1152,7 +1068,7 @@ export default function (pi: ExtensionAPI) {
 
             ship = await runPhase(
                 shipP,
-                shared(shipTask(request, test.output, doc.output)),
+                shared(shipTask(request, test.output, doc.output), "ship"),
                 cwd,
             );
             if (!ship.ok) {
@@ -1316,9 +1232,9 @@ export default function (pi: ExtensionAPI) {
         // Shared curated context (recon + critique) — see runWorkflow. Builders
         // already thread the plan, so only the dropped artifacts go in here.
         const runArtifacts: RunArtifacts = {};
-        const shared = (task: string) => {
+        const shared = (task: string, phaseAgent: string) => {
             if (!SHARED_CONTEXT) return task;
-            const bundle = contextBundle(runArtifacts);
+            const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
             return bundle ? `${bundle}\n\n---\n\n${task}` : task;
         };
 
@@ -1358,7 +1274,7 @@ export default function (pi: ExtensionAPI) {
             updateWidget();
             critique = await runPhase(
                 critiqueP,
-                shared(specCriticTask(request, plan.output)),
+                shared(specCriticTask(request, plan.output), "critic"),
                 cwd,
             );
             if (!critique.ok) {
@@ -1394,7 +1310,7 @@ export default function (pi: ExtensionAPI) {
         // Phase 3 — Document (produce the spec)
         const doc = await runPhase(
             docP,
-            shared(specDocumentTask(request, plan.output)),
+            shared(specDocumentTask(request, plan.output), "documenter"),
             cwd,
         );
         if (!doc.ok) {
@@ -1762,75 +1678,26 @@ export default function (pi: ExtensionAPI) {
             },
 
             renderCall(args, theme) {
-                const req = (args as any).request || "";
-                const preview =
-                    req.length > 56 ? req.slice(0, 53) + "..." : req;
-                // Reflect the agents this run will actually use (from the active
-                // team) rather than a fixed label — Scout only when the team has it.
-                const members = activeMembers();
-                const flow = [
-                    ...(members.some((m) => m.toLowerCase() === "scout")
-                        ? ["Scout"]
-                        : []),
-                    "Plan",
-                    "Critique",
-                    "Implement",
-                    "Test",
-                    "Validate",
-                    "Document",
-                    "Ship",
-                ].join("→");
-                return new Text(
-                    theme.fg("toolTitle", theme.bold("run_agent_team ")) +
-                        theme.fg("accent", flow) +
-                        theme.fg("dim", " — ") +
-                        theme.fg("muted", preview),
-                    0,
-                    0,
+                return renderRunWorkflowCall(
+                    "run_agent_team",
+                    args,
+                    theme,
+                    activeMembers,
+                    Text,
                 );
             },
 
             renderResult(result, options, theme) {
-                const details = result.details as any;
-                if (!details) {
-                    const t = result.content[0];
-                    return new Text(t?.type === "text" ? t.text : "", 0, 0);
-                }
-                if (options.isPartial) {
-                    return new Text(
-                        theme.fg("accent", "● agent-team") +
-                            theme.fg("dim", " running..."),
-                        0,
-                        0,
-                    );
-                }
-                const meta: Record<string, { icon: string; color: string }> = {
-                    shipped: { icon: "✓", color: "success" },
-                    "paused-no-remote": { icon: "‖", color: "accent" },
-                    "failed-after-retries": { icon: "✗", color: "error" },
-                    "needs-review": { icon: "✗", color: "error" },
-                    error: { icon: "✗", color: "error" },
-                };
-                const m = meta[details.status] || { icon: "•", color: "muted" };
-                const header = theme.fg(
-                    m.color,
-                    `${m.icon} agent-team ${details.status}`,
+                return renderRunWorkflowResult(
+                    "agent-team",
+                    result,
+                    options,
+                    theme,
+                    Text,
+                    Markdown,
+                    getMarkdownTheme(),
+                    WORKFLOW_REPORT_MAX,
                 );
-                if (options.expanded && details.report) {
-                    const mdTheme = getMarkdownTheme();
-                    const trimmed =
-                        details.report.length > WORKFLOW_REPORT_MAX
-                            ? details.report.slice(0, WORKFLOW_REPORT_MAX) +
-                              "\n... [truncated — see workflow-report.md]"
-                            : details.report;
-                    return new Markdown(
-                        header + "\n\n" + trimmed,
-                        1,
-                        0,
-                        mdTheme,
-                    );
-                }
-                return new Text(header, 0, 0);
             },
         });
 
@@ -2050,71 +1917,18 @@ export default function (pi: ExtensionAPI) {
             },
 
             renderCall(args, theme) {
-                const agentName = (args as any).agent || "?";
-                const task = (args as any).task || "";
-                const preview =
-                    task.length > 60 ? task.slice(0, 57) + "..." : task;
-                return new Text(
-                    theme.fg("toolTitle", theme.bold("dispatch_agent ")) +
-                        theme.fg("accent", agentName) +
-                        theme.fg("dim", " — ") +
-                        theme.fg("muted", preview),
-                    0,
-                    0,
-                );
+                return renderDispatchAgentCall(args, theme, Text);
             },
 
             renderResult(result, options, theme) {
-                const details = result.details as any;
-                if (!details) {
-                    const t = result.content[0];
-                    return new Text(t?.type === "text" ? t.text : "", 0, 0);
-                }
-                if (options.isPartial) {
-                    return new Text(
-                        theme.fg("accent", `● ${details.agent || "?"}`) +
-                            theme.fg("dim", " working..."),
-                        0,
-                        0,
-                    );
-                }
-                const icon = details.status === "done" ? "✓" : "✗";
-                const color = details.status === "done" ? "success" : "error";
-                const elapsed =
-                    typeof details.elapsed === "number"
-                        ? secs(details.elapsed)
-                        : "0s";
-                const header =
-                    theme.fg(color, `${icon} ${details.agent}`) +
-                    theme.fg("dim", ` ${elapsed}`);
-                if (options.expanded && details.fullOutput) {
-                    const output =
-                        details.fullOutput.length > 4000
-                            ? details.fullOutput.slice(0, 4000) +
-                              "\n... [truncated]"
-                            : details.fullOutput;
-                    return new Markdown(
-                        header + "\n\n" + output,
-                        1,
-                        0,
-                        getMarkdownTheme(),
-                    );
-                }
-                // Collapsed view: show error snippet on failure
-                if (details.status === "error" && details.fullOutput) {
-                    const errSnippet = details.fullOutput
-                        .split("\n")
-                        .filter((l: string) => l.trim())
-                        .slice(-3)
-                        .join(" ")
-                        .slice(0, 200);
-                    return new Text(
-                        header + theme.fg("error", `\n${errSnippet}`),
-                        0,
-                        0,
-                    );
-                }
-                return new Text(header, 0, 0);
+                return renderDispatchAgentResult(
+                    result,
+                    options,
+                    theme,
+                    Text,
+                    Markdown,
+                    getMarkdownTheme(),
+                );
             },
         });
 
@@ -2214,28 +2028,11 @@ export default function (pi: ExtensionAPI) {
             },
 
             renderCall(args, theme) {
-                const list = ((args as any).agents || []) as string[];
-                const preview = list.map((a) => displayName(a)).join(" → ");
-                return new Text(
-                    theme.fg("toolTitle", theme.bold("select_agents ")) +
-                        theme.fg("accent", preview || "—"),
-                    0,
-                    0,
-                );
+                return renderSelectAgentsCall(args, theme, Text, displayName);
             },
 
             renderResult(result, _options, theme) {
-                const details = result.details as any;
-                if (details?.order) {
-                    return new Text(
-                        theme.fg("success", "▸ queued ") +
-                            theme.fg("accent", details.order),
-                        0,
-                        0,
-                    );
-                }
-                const t = result.content[0];
-                return new Text(t?.type === "text" ? t.text : "", 0, 0);
+                return renderSelectAgentsResult(result, _options, theme, Text);
             },
         });
 

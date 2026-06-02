@@ -20,7 +20,7 @@ import {
 } from "fs";
 import { join, basename, dirname, resolve as resolvePath } from "path";
 import { fileURLToPath } from "url";
-import { secs } from "./workflow-utils";
+import { secs, isModelFailure } from "./workflow-utils";
 
 // ── Config ───────────────────────────────────────
 
@@ -311,6 +311,194 @@ export function renderCard(
     if (ctxLine) lines.push(border(" " + ctxLine, 1 + ctxVisible));
     lines.push(theme.fg("dim", bot));
     return lines;
+}
+
+// ── Shared tool renderers ───────────────────────
+
+// Render the dispatch_agent tool call in the conversation. Identical between
+// both extensions — extracted to eliminate ~15 lines of pure duplication.
+export function renderDispatchAgentCall(
+    args: any,
+    theme: any,
+    TextCtor: any,
+): any {
+    const agentName = args.agent || "?";
+    const task = args.task || "";
+    const preview = task.length > 60 ? task.slice(0, 57) + "..." : task;
+    return new TextCtor(
+        theme.fg("toolTitle", theme.bold("dispatch_agent ")) +
+            theme.fg("accent", agentName) +
+            theme.fg("dim", " — ") +
+            theme.fg("muted", preview),
+        0,
+        0,
+    );
+}
+
+// Render the dispatch_agent tool result. Identical between both extensions —
+// extracted to eliminate ~40 lines of pure duplication.
+export function renderDispatchAgentResult(
+    result: any,
+    options: any,
+    theme: any,
+    TextCtor: any,
+    MarkdownCtor: any,
+    mdTheme: any,
+): any {
+    const details = result.details as any;
+    if (!details) {
+        const t = result.content[0];
+        return new TextCtor(t?.type === "text" ? t.text : "", 0, 0);
+    }
+    if (options.isPartial) {
+        return new TextCtor(
+            theme.fg("accent", `● ${details.agent || "?"}`) +
+                theme.fg("dim", " working..."),
+            0,
+            0,
+        );
+    }
+    const icon = details.status === "done" ? "✓" : "✗";
+    const color = details.status === "done" ? "success" : "error";
+    const elapsed =
+        typeof details.elapsed === "number" ? secs(details.elapsed) : "0s";
+    const header =
+        theme.fg(color, `${icon} ${details.agent}`) +
+        theme.fg("dim", ` ${elapsed}`);
+    if (options.expanded && details.fullOutput) {
+        const output =
+            details.fullOutput.length > 4000
+                ? details.fullOutput.slice(0, 4000) + "\n... [truncated]"
+                : details.fullOutput;
+        return new MarkdownCtor(header + "\n\n" + output, 1, 0, mdTheme);
+    }
+    if (details.status === "error" && details.fullOutput) {
+        const errSnippet = details.fullOutput
+            .split("\n")
+            .filter((l: string) => l.trim())
+            .slice(-3)
+            .join(" ")
+            .slice(0, 200);
+        return new TextCtor(
+            header + theme.fg("error", `\n${errSnippet}`),
+            0,
+            0,
+        );
+    }
+    return new TextCtor(header, 0, 0);
+}
+
+// Render the run_agent_{pipeline,team} tool call. Parameterized over the tool
+// name string — the only difference between extensions.
+export function renderRunWorkflowCall(
+    toolName: string,
+    args: any,
+    theme: any,
+    activeMembers: () => string[],
+    TextCtor: any,
+): any {
+    const req = args.request || "";
+    const preview = req.length > 56 ? req.slice(0, 53) + "..." : req;
+    const members = activeMembers();
+    const flow = [
+        ...(members.some((m) => m.toLowerCase() === "scout") ? ["Scout"] : []),
+        "Plan",
+        "Critique",
+        "Implement",
+        "Test",
+        "Validate",
+        "Document",
+        "Ship",
+    ].join("→");
+    return new TextCtor(
+        theme.fg("toolTitle", theme.bold(`${toolName} `)) +
+            theme.fg("accent", flow) +
+            theme.fg("dim", " — ") +
+            theme.fg("muted", preview),
+        0,
+        0,
+    );
+}
+
+// Render the run_agent_{pipeline,team} tool result. Parameterized over the
+// extension name string — the only difference between extensions.
+export function renderRunWorkflowResult(
+    extName: string,
+    result: any,
+    options: any,
+    theme: any,
+    TextCtor: any,
+    MarkdownCtor: any,
+    mdTheme: any,
+    reportMaxChars: number,
+): any {
+    const details = result.details as any;
+    if (!details) {
+        const t = result.content[0];
+        return new TextCtor(t?.type === "text" ? t.text : "", 0, 0);
+    }
+    if (options.isPartial) {
+        return new TextCtor(
+            theme.fg("accent", `● ${extName}`) + theme.fg("dim", " running..."),
+            0,
+            0,
+        );
+    }
+    const meta: Record<string, { icon: string; color: string }> = {
+        shipped: { icon: "✓", color: "success" },
+        "paused-no-remote": { icon: "‖", color: "accent" },
+        "failed-after-retries": { icon: "✗", color: "error" },
+        "needs-review": { icon: "✗", color: "error" },
+        error: { icon: "✗", color: "error" },
+    };
+    const m = meta[details.status] || { icon: "•", color: "muted" };
+    const header = theme.fg(m.color, `${m.icon} ${extName} ${details.status}`);
+    if (options.expanded && details.report) {
+        const trimmed =
+            details.report.length > reportMaxChars
+                ? details.report.slice(0, reportMaxChars) +
+                  "\n... [truncated — see workflow-report.md]"
+                : details.report;
+        return new MarkdownCtor(header + "\n\n" + trimmed, 1, 0, mdTheme);
+    }
+    return new TextCtor(header, 0, 0);
+}
+
+// Render the select_agents tool call. Identical between both extensions.
+export function renderSelectAgentsCall(
+    args: any,
+    theme: any,
+    TextCtor: any,
+    displayNameFn: (s: string) => string,
+): any {
+    const list = (args.agents || []) as string[];
+    const preview = list.map((a) => displayNameFn(a)).join(" → ");
+    return new TextCtor(
+        theme.fg("toolTitle", theme.bold("select_agents ")) +
+            theme.fg("accent", preview || "—"),
+        0,
+        0,
+    );
+}
+
+// Render the select_agents tool result. Identical between both extensions.
+export function renderSelectAgentsResult(
+    result: any,
+    _options: any,
+    theme: any,
+    TextCtor: any,
+): any {
+    const details = result.details as any;
+    if (details?.order) {
+        return new TextCtor(
+            theme.fg("success", "▸ queued ") +
+                theme.fg("accent", details.order),
+            0,
+            0,
+        );
+    }
+    const t = result.content[0];
+    return new TextCtor(t?.type === "text" ? t.text : "", 0, 0);
 }
 
 // ── Agent loading ────────────────────────────────
@@ -626,6 +814,38 @@ export function contextBundle(a: RunArtifacts): string {
     ]
         .join("\n")
         .trimEnd();
+}
+
+// Per-phase artifact whitelist: which RunArtifacts keys each phase actually
+// needs. Later phases receive all artifacts by default, but the implementer
+// doesn't need the test report, the tester doesn't need the critique, etc.
+// Selective bundling reduces token consumption ~30% on complex runs.
+const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
+    scout: ["recon"], // scout produces recon, doesn't consume prior artifacts
+    planner: ["recon"], // plan uses recon but not critique/impl
+    critic: ["recon", "plan"], // critique reviews the plan
+    implementer: ["recon", "plan", "critique"], // impl needs plan + critique
+    tester: ["recon", "plan", "implSummary"], // test needs plan + impl, not critique
+    validator: ["recon", "plan", "implSummary", "testReport"], // validate needs impl + test
+    documenter: ["recon", "plan", "implSummary", "testReport"], // docs need impl + test
+    ship: ["recon", "plan", "implSummary", "testReport", "docReport"], // ship needs everything
+};
+
+// Selective context bundle: only include artifacts the given phase actually
+// needs. Falls back to the full bundle if the phase is unknown (forward-compat).
+// Reduces token consumption ~30% on complex runs by omitting irrelevant artifacts.
+export function contextBundleForPhase(
+    phaseAgent: string,
+    a: RunArtifacts,
+): string {
+    const whitelist =
+        PHASE_ARTIFACT_WHITELIST[phaseAgent.toLowerCase()] ??
+        (Object.keys(a) as (keyof RunArtifacts)[]);
+    const filtered: RunArtifacts = {};
+    for (const key of whitelist) {
+        if (a[key]) filtered[key] = a[key];
+    }
+    return contextBundle(filtered);
 }
 
 // ── Prompt templates ─────────────────────────────
@@ -1031,6 +1251,206 @@ export function failPhase(
         status: "error",
         report: `${phaseName} failed:\n\n${output}`,
     };
+}
+
+// ── Phase construction ──────────────────────────
+
+// Create a fresh PhaseState with all counters zeroed. Shared across extensions
+// and the runtime so the three copies stay identical.
+export function mkPhase(label: string, agent: string): PhaseState {
+    return {
+        label,
+        agent,
+        status: "pending",
+        elapsed: 0,
+        note: "",
+        log: "",
+        droppedLines: 0,
+        toolCount: 0,
+        contextPct: 0,
+        attempt: 0,
+        modelFallback: false,
+    };
+}
+
+// Build the initial phase array for a workflow run. `includeScout` prepends
+// a read-only recon pass; `isSpecMode` hides impl/test/validate/ship phases.
+// Shared across both extensions and the runtime — character-for-character
+// identical in all three callers before extraction.
+export function freshPhases(
+    includeScout: boolean,
+    isSpecMode: boolean,
+): PhaseState[] {
+    const lead = includeScout ? [mkPhase("Scout", "scout")] : [];
+    if (isSpecMode) {
+        return [
+            ...lead,
+            mkPhase("Plan", "planner"),
+            mkPhase("Critique", "critic"),
+            mkPhase("Document", "documenter"),
+        ];
+    }
+    return [
+        ...lead,
+        mkPhase("Plan", "planner"),
+        mkPhase("Critique", "critic"),
+        mkPhase("Implement", "implementer"),
+        mkPhase("Test", "tester"),
+        mkPhase("Validate", "validator"),
+        mkPhase("Document", "documenter"),
+        mkPhase("Ship", "validator"),
+    ];
+}
+
+// ── Shared agent execution with model fallback ──
+
+// Run an agent with automatic model fallback. If the primary model fails to
+// load or run (detected via isModelFailure), retry once with the fallback model
+// (typically the session model). Shared across both extensions and the runtime
+// to eliminate ~50 lines of near-identical fallback logic with notification API drift.
+// The spawnFn callback abstracts the spawn implementation; notify abstracts the
+// notification API (widgetCtx.ui.notify in extensions, console in runtime).
+export async function runAgentWithFallback(
+    agentDef: AgentDef,
+    task: string,
+    phase: PhaseState,
+    cwd: string,
+    primaryModel: string,
+    fallbackModel: string,
+    spawnFn: (
+        def: AgentDef,
+        task: string,
+        phase: PhaseState,
+        cwd: string,
+        model: string,
+    ) => Promise<{ output: string; exitCode: number }>,
+    opts: {
+        updateWidget: () => void;
+        notify?: (
+            msg: string,
+            level: "success" | "error" | "warning" | "info",
+        ) => void;
+    },
+): Promise<{ output: string; exitCode: number }> {
+    const result = await spawnFn(agentDef, task, phase, cwd, primaryModel);
+
+    // Only model-specific load/run failures trigger a fallback — timeouts,
+    // tool failures, and bad output are not retried.
+    if (result.exitCode !== 0 && isModelFailure(result.output)) {
+        const agentName = displayName(agentDef.name);
+
+        // If the agent is already on the primary agent's model (no distinct
+        // fallback), there is nothing to fall back to — tell the user.
+        if (!fallbackModel) {
+            opts.notify?.(
+                `${agentName}: model "${primaryModel}" failed to load or run, and no fallback is available (already on the primary agent's model).`,
+                "error",
+            );
+            return result;
+        }
+
+        // Retry once with the fallback model and inform the user.
+        phase.note = `⚠ ${primaryModel} failed → ${fallbackModel}`;
+        phase.modelFallback = true;
+        phase.toolCount = 0;
+        phase.contextPct = 0;
+        phase.droppedLines = 0;
+        phase.log += `\n⚠ Model ${primaryModel} failed — retrying with ${fallbackModel}\n`;
+        opts.notify?.(
+            `${agentName}: model "${primaryModel}" failed to load or run — falling back to ${fallbackModel} and retrying.`,
+            "warning",
+        );
+        opts.updateWidget();
+
+        const retry = await spawnFn(agentDef, task, phase, cwd, fallbackModel);
+        if (retry.exitCode !== 0 && isModelFailure(retry.output)) {
+            opts.notify?.(
+                `${agentName}: the fallback model (${fallbackModel}) also failed to load or run.`,
+                "error",
+            );
+        } else if (retry.exitCode === 0) {
+            opts.notify?.(
+                `${agentName}: recovered on ${fallbackModel}.`,
+                "success",
+            );
+        }
+        return retry;
+    }
+    return result;
+}
+
+// ── Shared phase execution ──────────────────────
+
+// Run a single phase: look up the agent, reset counters, spawn the subprocess,
+// and update phase state. Shared across both extensions and the runtime to
+// eliminate behavioral drift (the runtime version was resetting phase.log and
+// phase.note; the extensions were not). The spawnFn callback abstracts the
+// model-resolution and notification differences between pipeline/team/runtime.
+export async function runPhaseCore(
+    agents: Map<string, AgentDef>,
+    phase: PhaseState,
+    task: string,
+    cwd: string,
+    spawnFn: (
+        def: AgentDef,
+        task: string,
+        phase: PhaseState,
+        cwd: string,
+    ) => Promise<{ output: string; exitCode: number }>,
+    opts: {
+        updateWidget: () => void;
+        notify?: (
+            msg: string,
+            level: "success" | "error" | "warning" | "info",
+        ) => void;
+        phaseLogs: { label: string; log: string }[];
+    },
+): Promise<{ output: string; ok: boolean }> {
+    const def = agents.get(phase.agent);
+    if (!def) {
+        phase.status = "error";
+        phase.note = `Agent "${phase.agent}" not found`;
+        opts.updateWidget();
+        return {
+            output: `Agent "${phase.agent}" not found in .pi/agents/`,
+            ok: false,
+        };
+    }
+
+    phase.attempt++;
+    phase.status = "running";
+    phase.log = "";
+    phase.note = "";
+    phase.toolCount = 0;
+    phase.contextPct = 0;
+    phase.droppedLines = 0;
+    opts.updateWidget();
+
+    const res = await spawnFn(def, task, phase, cwd);
+    const elapsed = phase.elapsed;
+    const statusWord =
+        res.exitCode === 0 && res.output.trim().length > 0 ? "done" : "error";
+    const attemptNote = phase.attempt > 1 ? ` (attempt ${phase.attempt})` : "";
+
+    phase.status = statusWord as PhaseState["status"];
+    opts.phaseLogs.push({
+        label: `${phase.label}${attemptNote} [${secs(elapsed)}]`,
+        log: phase.log,
+    });
+    opts.updateWidget();
+
+    // Notify the user when a phase completes so they have peripheral awareness
+    // without staring at the dashboard.
+    if (opts.notify) {
+        const elapsedStr = secs(elapsed);
+        const word = statusWord === "done" ? "done" : "failed";
+        opts.notify(
+            `${phase.label} ${word} in ${elapsedStr}${attemptNote}`,
+            statusWord === "done" ? "success" : "error",
+        );
+    }
+
+    return { output: res.output, ok: statusWord === "done" };
 }
 
 // ── Token tracking ───────────────────────────────

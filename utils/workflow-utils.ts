@@ -30,10 +30,6 @@ export function detectVerdict(output: string): Verdict {
 }
 
 /**
- * Detect the ship step's outcome: PR opened or paused (no remote).
- * Prefers the explicit SHIP: marker; falls back to the first 20 lines only.
- */
-/**
  * Detect the critic's verdict from its output.
  * Prefers the explicit REVISE BEFORE DOCUMENTING / APPROVED WITH RESERVATIONS /
  * APPROVED marker; falls back to scanning only the first 20 lines.
@@ -63,6 +59,10 @@ export function detectCritique(output: string): CritiqueVerdict {
     return "unknown";
 }
 
+/**
+ * Detect the ship step's outcome: PR opened or paused (no remote).
+ * Prefers the explicit SHIP: marker; falls back to the first 20 lines only.
+ */
 export function detectShip(output: string): "shipped" | "paused" {
     const marker = output.match(/SHIP:\s*(SHIPPED|PAUSED)/i);
     if (marker)

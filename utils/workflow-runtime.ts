@@ -36,7 +36,7 @@ import {
     LOG_CAP_CHARS,
     STDERR_TAIL_CAP,
     setupSessions as setupSessionsCore,
-    contextBundle,
+    contextBundleForPhase,
     type RunArtifacts,
     type AgentDef,
     type PhaseState,
@@ -47,6 +47,10 @@ import {
     tokenNote,
     displayName,
     validatePlan,
+    mkPhase as mkPhaseCore,
+    freshPhases as freshPhasesCore,
+    runPhaseCore,
+    runAgentWithFallback,
     spawnAgentWithModel as coreSpawnAgent,
     type SpawnConfig as CoreSpawnConfig,
     type SpawnResult as CoreSpawnResult,
@@ -126,42 +130,14 @@ export class WorkflowRuntime {
 
     // ── Helpers ──────────────────────────────────
 
+    // Delegate to shared core implementations (extracted to eliminate ~60 lines
+    // of pure duplication across extensions and runtime).
     mkPhase(label: string, agent: string): PhaseState {
-        return {
-            label,
-            agent,
-            status: "pending",
-            elapsed: 0,
-            note: "",
-            log: "",
-            droppedLines: 0,
-            toolCount: 0,
-            contextPct: 0,
-            attempt: 0,
-            modelFallback: false,
-        };
+        return mkPhaseCore(label, agent);
     }
 
     freshPhases(): PhaseState[] {
-        const lead = this.includeScout ? [this.mkPhase("Scout", "scout")] : [];
-        if (this.isSpecMode) {
-            return [
-                ...lead,
-                this.mkPhase("Plan", "planner"),
-                this.mkPhase("Critique", "critic"),
-                this.mkPhase("Document", "documenter"),
-            ];
-        }
-        return [
-            ...lead,
-            this.mkPhase("Plan", "planner"),
-            this.mkPhase("Critique", "critic"),
-            this.mkPhase("Implement", "implementer"),
-            this.mkPhase("Test", "tester"),
-            this.mkPhase("Validate", "validator"),
-            this.mkPhase("Document", "documenter"),
-            this.mkPhase("Ship", "validator"),
-        ];
+        return freshPhasesCore(this.includeScout, this.isSpecMode);
     }
 
     setupSessions(cwd: string, wipe: boolean) {
@@ -228,67 +204,21 @@ export class WorkflowRuntime {
         const fallbackModel =
             sessionModel && sessionModel !== primaryModel ? sessionModel : "";
 
-        const result = await this.spawnAgentWithModel(
+        // Delegate to shared core (eliminates ~50 lines of near-identical
+        // fallback logic with notification API drift).
+        return runAgentWithFallback(
             agentDef,
             task,
             phase,
             cwd,
             primaryModel,
+            fallbackModel,
+            (def, t, p, c, m) => this.spawnAgentWithModel(def, t, p, c, m),
+            {
+                updateWidget: () => this.config.updateWidget(),
+                notify: (msg, level) => this.config.notify?.(msg, level),
+            },
         );
-
-        // Accumulate tokens (#5)
-        if (result.tokens) {
-            this.totalTokens.input += result.tokens.input;
-            this.totalTokens.output += result.tokens.output;
-        }
-
-        if (result.exitCode !== 0 && isModelFailure(result.output)) {
-            const agentName = displayName(agentDef.name);
-            if (!fallbackModel) {
-                this.config.notify?.(
-                    `${agentName}: model "${primaryModel}" failed to load or run, and no fallback is available.`,
-                    "error",
-                );
-                return result;
-            }
-
-            phase.note = `⚠ ${primaryModel} failed → ${fallbackModel}`;
-            phase.modelFallback = true;
-            phase.toolCount = 0;
-            phase.contextPct = 0;
-            phase.droppedLines = 0;
-            phase.log += `\n⚠ Model ${primaryModel} failed — retrying with ${fallbackModel}\n`;
-            this.config.notify?.(
-                `${agentName}: model "${primaryModel}" failed — falling back to ${fallbackModel}.`,
-                "warning",
-            );
-            this.config.updateWidget();
-
-            const retry = await this.spawnAgentWithModel(
-                agentDef,
-                task,
-                phase,
-                cwd,
-                fallbackModel,
-            );
-            if (retry.tokens) {
-                this.totalTokens.input += retry.tokens.input;
-                this.totalTokens.output += retry.tokens.output;
-            }
-            if (retry.exitCode !== 0 && isModelFailure(retry.output)) {
-                this.config.notify?.(
-                    `${agentName}: the fallback model (${fallbackModel}) also failed.`,
-                    "error",
-                );
-            } else if (retry.exitCode === 0) {
-                this.config.notify?.(
-                    `${agentName}: recovered on ${fallbackModel}.`,
-                    "success",
-                );
-            }
-            return retry;
-        }
-        return result;
     }
 
     // ── Run a phase ──────────────────────────────
@@ -299,42 +229,19 @@ export class WorkflowRuntime {
         task: string,
         cwd: string,
     ): Promise<{ output: string; ok: boolean }> {
-        const def = agents.get(phase.agent);
-        if (!def) {
-            phase.status = "error";
-            this.config.updateWidget();
-            return {
-                output: `Agent "${phase.agent}" not found.`,
-                ok: false,
-            };
-        }
-
-        phase.attempt++;
-        phase.status = "running";
-        phase.log = "";
-        phase.note = "";
-        phase.toolCount = 0;
-        phase.contextPct = 0;
-        phase.droppedLines = 0;
-        this.config.updateWidget();
-
-        const res = await this.runAgent(def, task, phase, cwd);
-        const elapsed = phase.elapsed;
-        const statusWord =
-            res.exitCode === 0 && res.output.trim().length > 0
-                ? "done"
-                : "error";
-        const attemptNote =
-            phase.attempt > 1 ? ` (attempt ${phase.attempt})` : "";
-
-        phase.status = statusWord as PhaseState["status"];
-        this.phaseLogs.push({
-            label: `${phase.label}${attemptNote} [${secs(elapsed)}]`,
-            log: phase.log,
-        });
-        this.config.updateWidget();
-
-        return { output: res.output, ok: statusWord === "done" };
+        // Delegate to shared core (eliminates behavioral drift across 3 copies).
+        return runPhaseCore(
+            agents,
+            phase,
+            task,
+            cwd,
+            (def, t, p, c) => this.runAgent(def, t, p, c),
+            {
+                updateWidget: () => this.config.updateWidget(),
+                notify: (msg, level) => this.config.notify?.(msg, level),
+                phaseLogs: this.phaseLogs,
+            },
+        );
     }
 
     // ── Full workflow ────────────────────────────
@@ -372,9 +279,9 @@ export class WorkflowRuntime {
 
         // Shared curated context (#2)
         const runArtifacts: RunArtifacts = {};
-        const shared = (task: string) => {
+        const shared = (task: string, phaseAgent: string) => {
             if (!this.config.sharedContext) return task;
-            const bundle = contextBundle(runArtifacts);
+            const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
             return bundle ? `${bundle}\n\n---\n\n${task}` : task;
         };
 
@@ -443,7 +350,7 @@ export class WorkflowRuntime {
             critique = await this.runPhase(
                 agents,
                 critiqueP,
-                shared(criticTask(request, plan.output)),
+                shared(criticTask(request, plan.output), "critic"),
                 cwd,
             );
             if (!critique.ok) {
@@ -479,7 +386,7 @@ export class WorkflowRuntime {
         let impl = await this.runPhase(
             agents,
             implP,
-            shared(implementTask(request, plan.output)),
+            shared(implementTask(request, plan.output), "implementer"),
             cwd,
         );
         if (!impl.ok) {
@@ -505,7 +412,7 @@ export class WorkflowRuntime {
             test = await this.runPhase(
                 agents,
                 testP,
-                shared(testTask(request, plan.output, impl.output)),
+                shared(testTask(request, plan.output, impl.output), "tester"),
                 cwd,
             );
             if (!test.ok) {
@@ -518,7 +425,10 @@ export class WorkflowRuntime {
             val = await this.runPhase(
                 agents,
                 valP,
-                shared(validateTask(request, plan.output, test.output)),
+                shared(
+                    validateTask(request, plan.output, test.output),
+                    "validator",
+                ),
                 cwd,
             );
             if (!val.ok) {
@@ -537,7 +447,10 @@ export class WorkflowRuntime {
             impl = await this.runPhase(
                 agents,
                 implP,
-                shared(fixTask(request, plan.output, val.output, impl.output)),
+                shared(
+                    fixTask(request, plan.output, val.output, impl.output),
+                    "implementer",
+                ),
                 cwd,
             );
             if (!impl.ok) {
@@ -562,6 +475,7 @@ export class WorkflowRuntime {
                         impl.output,
                         test.output,
                     ),
+                    "documenter",
                 ),
                 cwd,
             );
@@ -582,7 +496,7 @@ export class WorkflowRuntime {
             ship = await this.runPhase(
                 agents,
                 shipP,
-                shared(shipTask(request, test.output, doc.output)),
+                shared(shipTask(request, test.output, doc.output), "ship"),
                 cwd,
             );
             if (!ship.ok) {
@@ -736,9 +650,9 @@ export class WorkflowRuntime {
 
         // Shared curated context (#2)
         const runArtifacts: RunArtifacts = {};
-        const shared = (task: string) => {
+        const shared = (task: string, phaseAgent: string) => {
             if (!this.config.sharedContext) return task;
-            const bundle = contextBundle(runArtifacts);
+            const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
             return bundle ? `${bundle}\n\n---\n\n${task}` : task;
         };
 
@@ -789,7 +703,7 @@ export class WorkflowRuntime {
             critique = await this.runPhase(
                 agents,
                 critiqueP,
-                shared(specCriticTask(request, plan.output)),
+                shared(specCriticTask(request, plan.output), "critic"),
                 cwd,
             );
             if (!critique.ok) {
@@ -824,7 +738,7 @@ export class WorkflowRuntime {
         const doc = await this.runPhase(
             agents,
             docP,
-            shared(specDocumentTask(request, plan.output)),
+            shared(specDocumentTask(request, plan.output), "documenter"),
             cwd,
         );
         if (!doc.ok) {
