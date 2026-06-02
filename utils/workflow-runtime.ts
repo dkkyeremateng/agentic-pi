@@ -1,8 +1,18 @@
-// ABOUTME: Shared stateful orchestration engine for agent-pipeline and agent-team.
+// ABOUTME: Canonical reference implementation of the workflow orchestration engine.
 // ABOUTME: Encapsulates spawnAgentWithModel, runPhase, runWorkflow, and runSpecWorkflow
 // ABOUTME: with all improvements: populated RunArtifacts, token tracking, failPhase helper,
 // ABOUTME: PhaseMap access, progress estimation, graceful degradation, and retry logging.
-// ABOUTME: Each extension creates an instance with its own config (modelFor, widget name, etc.)
+//
+// STATUS: This class is the canonical, tested implementation. Both agent-pipeline.ts
+// and agent-team.ts currently carry their own inline copies of runWorkflow/runSpecWorkflow
+// because their widget renderers reference module-level state directly. Adopting this
+// class fully requires either (a) refactoring widget renderers to read from a runtime
+// instance, or (b) adding a sync bridge that copies state between the runtime and module
+// variables before/after each workflow call. Either approach is a ~500-line refactor that
+// should be done with widget-renderer test coverage in place.
+//
+// The shared spawnAgentWithModel in workflow-core.ts IS already used by both extensions
+// and this class — the spawn extraction is complete.
 //
 // Lives in .pi/utils/ so pi does not auto-load it — imported, not discovered.
 
