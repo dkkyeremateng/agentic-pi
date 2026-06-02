@@ -52,9 +52,6 @@ import {
     detectShip,
     detectCritique,
     secs,
-    digest,
-    testSignal,
-    outcomeLine,
 } from "../utils/workflow-utils";
 import {
     REQUIRED_AGENTS,
@@ -69,7 +66,6 @@ import {
     type RunArtifacts,
     buildPhaseMap,
     failPhase,
-    tokenNote,
     mkPhase as mkPhaseCore,
     freshPhases as freshPhasesCore,
     runPhaseCore,
@@ -90,6 +86,8 @@ import {
     renderCard,
     appendLiveLog as appendLiveLogCore,
     renderWorkflowFooter,
+    buildWorkflowReport,
+    buildSpecReport,
     teamsBlock as teamsBlockCore,
     chooseTeam as chooseTeamCore,
     loadedExplicitly as loadedExplicitlyCore,
@@ -1051,78 +1049,37 @@ export default function (pi: ExtensionAPI) {
         const prUrl =
             (ship.output.match(/https?:\/\/\S*\/pull\/\d+/) || [])[0] || "";
 
-        const report = [
-            `# Workflow Report`,
-            ``,
-            `**Request:** ${request}`,
-            `**Outcome:** ${outcomeLine(status, passes)}`,
-            `**Result:** ${status} · verdict ${verdict.toUpperCase()} · ${passes} attempt(s) of ${maxLoops}`,
-            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)${totalTokens.input > 0 ? ` · ${(totalTokens.input + totalTokens.output).toLocaleString()} tokens (${totalTokens.input.toLocaleString()} in / ${totalTokens.output.toLocaleString()} out)` : ""}`,
-            ...(prUrl ? [`**Pull request:** ${prUrl}`] : []),
-            ...(totalDroppedLines > 0
-                ? [
-                      ``,
-                      `> **Diagnostic:** ${totalDroppedLines} malformed JSON line(s) were dropped from agent output streams during this run. This may indicate a pi subprocess protocol issue. Full agent logs are appended below.`,
-                  ]
-                : []),
-            ``,
-            `## Summary of work`,
-            ``,
-            ...(scoutP
-                ? [
-                      `- **Scout** (${secs(scoutP.elapsed)}${tokenNote(scoutP)}) — ${digest(scoutFindings)}${scoutP.droppedLines > 0 ? ` [${scoutP.droppedLines} dropped]` : ""}`,
-                  ]
-                : []),
-            `- **Planner** (${secs(planP.elapsed)}${tokenNote(planP)}) — ${digest(plan.output)}${planP.droppedLines > 0 ? ` [${planP.droppedLines} dropped]` : ""}`,
-            `- **Critic** (${secs(critiqueP.elapsed)}${tokenNote(critiqueP)}) — ${digest(critique.output)}${critiqueP.droppedLines > 0 ? ` [${critiqueP.droppedLines} dropped]` : ""}`,
-            `- **Implementer** (${secs(implP.elapsed)}${tokenNote(implP)}) — ${digest(impl.output)}${implP.droppedLines > 0 ? ` [${implP.droppedLines} dropped]` : ""}`,
-            `- **Tester** (${secs(testP.elapsed)}${tokenNote(testP)}) — ${digest(test.output)}${testSignal(test.output)}${testP.droppedLines > 0 ? ` [${testP.droppedLines} dropped]` : ""}`,
-            `- **Validator** (${secs(valP.elapsed)}${tokenNote(valP)}) — verdict ${verdict.toUpperCase()}. ${digest(val.output)}${valP.droppedLines > 0 ? ` [${valP.droppedLines} dropped]` : ""}`,
-            ...(passed
-                ? [
-                      `- **Documenter** (${secs(docP.elapsed)}${tokenNote(docP)}) — ${digest(doc.output)}${docP.droppedLines > 0 ? ` [${docP.droppedLines} dropped]` : ""}`,
-                      `- **Ship** (${secs(shipP.elapsed)}${tokenNote(shipP)}) — ${digest(ship.output)}${shipP.droppedLines > 0 ? ` [${shipP.droppedLines} dropped]` : ""}`,
-                  ]
-                : [
-                      `- **Documenter / Ship** — skipped (change did not pass validation)`,
-                  ]),
-            ``,
-            `## Details`,
-            ``,
-            ...(scoutP ? [`### Reconnaissance`, ``, scoutFindings, ``] : []),
-            `### Plan`,
-            ``,
-            plan.output,
-            ``,
-            `### Critique`,
-            ``,
-            critique.output,
-            ``,
-            `### Implementation`,
-            ``,
-            impl.output,
-            ``,
-            `### Test Report`,
-            ``,
-            test.output,
-            ``,
-            `### Validation`,
-            ``,
-            val.output,
-            ``,
-            ...(passed
-                ? [
-                      `### Documentation`,
-                      ``,
-                      doc.output,
-                      ``,
-                      `### Ship`,
-                      ``,
-                      ship.output,
-                      ``,
-                  ]
-                : []),
-        ].join("\n");
+        const report = buildWorkflowReport({
+            request,
+            status,
+            verdict,
+            passes,
+            maxLoops,
+            passed,
+            prUrl,
+            totals: {
+                runElapsedMs,
+                totalToolCalls,
+                totalTokens,
+                totalDroppedLines,
+            },
+            scoutP,
+            planP,
+            critiqueP,
+            implP,
+            testP,
+            valP,
+            docP,
+            shipP,
+            scoutFindings,
+            plan: plan.output,
+            critique: critique.output,
+            impl: impl.output,
+            test: test.output,
+            val: val.output,
+            doc: doc.output,
+            ship: ship.output,
+        });
 
         const reportPath = join(cwd, "workflow-report.md");
         try {
@@ -1288,45 +1245,24 @@ export default function (pi: ExtensionAPI) {
             ? "SPEC COMPLETE — implementation spec saved to specs/"
             : `NEEDS REVIEW — the critic did not approve the plan after ${maxCritiqueLoops} attempt(s). The spec was generated from the last plan revision; review the critique before using it.`;
 
-        const report = [
-            `# Spec Workflow Report`,
-            ``,
-            `**Request:** ${request}`,
-            `**Outcome:** ${outcome}`,
-            `**Totals:** ${secs(runElapsedMs)} wall-clock · ${totalToolCalls} tool call(s)${totalTokens.input > 0 ? ` · ${(totalTokens.input + totalTokens.output).toLocaleString()} tokens (${totalTokens.input.toLocaleString()} in / ${totalTokens.output.toLocaleString()} out)` : ""}`,
-            ...(totalDroppedLines > 0
-                ? [
-                      ``,
-                      `> **Diagnostic:** ${totalDroppedLines} malformed JSON line(s) were dropped from agent output streams during this run.`,
-                  ]
-                : []),
-            ``,
-            `## Summary`,
-            ``,
-            ...(scoutP
-                ? [
-                      `- **Scout** (${secs(scoutP.elapsed)}${tokenNote(scoutP)}) — ${digest(scoutFindings)}`,
-                  ]
-                : []),
-            `- **Planner** (${secs(planP.elapsed)}${tokenNote(planP)}) — ${digest(plan.output)}`,
-            `- **Critic** (${secs(critiqueP.elapsed)}${tokenNote(critiqueP)}) — ${digest(critique.output)}`,
-            `- **Documenter** (${secs(docP.elapsed)}${tokenNote(docP)}) — ${digest(doc.output)}`,
-            ``,
-            `## Details`,
-            ``,
-            ...(scoutP ? [`### Reconnaissance`, ``, scoutFindings, ``] : []),
-            `### Plan`,
-            ``,
-            plan.output,
-            ``,
-            `### Critique`,
-            ``,
-            critique.output,
-            ``,
-            `### Implementation Spec`,
-            ``,
-            doc.output,
-        ].join("\n");
+        const report = buildSpecReport({
+            request,
+            outcome,
+            totals: {
+                runElapsedMs,
+                totalToolCalls,
+                totalTokens,
+                totalDroppedLines,
+            },
+            scoutP,
+            planP,
+            critiqueP,
+            docP,
+            scoutFindings,
+            plan: plan.output,
+            critique: critique.output,
+            doc: doc.output,
+        });
 
         const reportPath = join(cwd, "workflow-report.md");
         try {

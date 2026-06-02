@@ -20,7 +20,13 @@ import {
 } from "fs";
 import { join, basename, dirname, resolve as resolvePath } from "path";
 import { fileURLToPath } from "url";
-import { secs, isModelFailure } from "./workflow-utils";
+import {
+    secs,
+    isModelFailure,
+    digest,
+    testSignal,
+    outcomeLine,
+} from "./workflow-utils";
 
 // ── Config ───────────────────────────────────────
 
@@ -912,6 +918,190 @@ export function publishLogs(
         },
         { triggerTurn: false },
     );
+}
+
+// ── Report builders (pure) ───────────────────────
+// The final markdown report is identical between both extensions, so it lives
+// here. tokenNote/digest/testSignal/outcomeLine are resolved from this module.
+
+interface ReportTotals {
+    runElapsedMs: number;
+    totalToolCalls: number;
+    totalTokens: { input: number; output: number };
+    totalDroppedLines: number;
+}
+
+function totalsLine(t: ReportTotals): string {
+    const tok =
+        t.totalTokens.input > 0
+            ? ` · ${(t.totalTokens.input + t.totalTokens.output).toLocaleString()} tokens (${t.totalTokens.input.toLocaleString()} in / ${t.totalTokens.output.toLocaleString()} out)`
+            : "";
+    return `${secs(t.runElapsedMs)} wall-clock · ${t.totalToolCalls} tool call(s)${tok}`;
+}
+
+// One "- **Name** (Ns, tokens) — digest [N dropped]" summary line for a phase.
+function summaryLine(label: string, phase: PhaseState, body: string): string {
+    const dropped =
+        phase.droppedLines > 0 ? ` [${phase.droppedLines} dropped]` : "";
+    return `- **${label}** (${secs(phase.elapsed)}${tokenNote(phase)}) — ${body}${dropped}`;
+}
+
+export function buildWorkflowReport(o: {
+    request: string;
+    status: string;
+    verdict: string;
+    passes: number;
+    maxLoops: number;
+    passed: boolean;
+    prUrl: string;
+    totals: ReportTotals;
+    scoutP: PhaseState | null;
+    planP: PhaseState;
+    critiqueP: PhaseState;
+    implP: PhaseState;
+    testP: PhaseState;
+    valP: PhaseState;
+    docP: PhaseState;
+    shipP: PhaseState;
+    scoutFindings: string;
+    plan: string;
+    critique: string;
+    impl: string;
+    test: string;
+    val: string;
+    doc: string;
+    ship: string;
+}): string {
+    return [
+        `# Workflow Report`,
+        ``,
+        `**Request:** ${o.request}`,
+        `**Outcome:** ${outcomeLine(o.status, o.passes)}`,
+        `**Result:** ${o.status} · verdict ${o.verdict.toUpperCase()} · ${o.passes} attempt(s) of ${o.maxLoops}`,
+        `**Totals:** ${totalsLine(o.totals)}`,
+        ...(o.prUrl ? [`**Pull request:** ${o.prUrl}`] : []),
+        ...(o.totals.totalDroppedLines > 0
+            ? [
+                  ``,
+                  `> **Diagnostic:** ${o.totals.totalDroppedLines} malformed JSON line(s) were dropped from agent output streams during this run. This may indicate a pi subprocess protocol issue. Full agent logs are appended below.`,
+              ]
+            : []),
+        ``,
+        `## Summary of work`,
+        ``,
+        ...(o.scoutP
+            ? [summaryLine("Scout", o.scoutP, digest(o.scoutFindings))]
+            : []),
+        summaryLine("Planner", o.planP, digest(o.plan)),
+        summaryLine("Critic", o.critiqueP, digest(o.critique)),
+        summaryLine("Implementer", o.implP, digest(o.impl)),
+        summaryLine(
+            "Tester",
+            o.testP,
+            `${digest(o.test)}${testSignal(o.test)}`,
+        ),
+        summaryLine(
+            "Validator",
+            o.valP,
+            `verdict ${o.verdict.toUpperCase()}. ${digest(o.val)}`,
+        ),
+        ...(o.passed
+            ? [
+                  summaryLine("Documenter", o.docP, digest(o.doc)),
+                  summaryLine("Ship", o.shipP, digest(o.ship)),
+              ]
+            : [
+                  `- **Documenter / Ship** — skipped (change did not pass validation)`,
+              ]),
+        ``,
+        `## Details`,
+        ``,
+        ...(o.scoutP ? [`### Reconnaissance`, ``, o.scoutFindings, ``] : []),
+        `### Plan`,
+        ``,
+        o.plan,
+        ``,
+        `### Critique`,
+        ``,
+        o.critique,
+        ``,
+        `### Implementation`,
+        ``,
+        o.impl,
+        ``,
+        `### Test Report`,
+        ``,
+        o.test,
+        ``,
+        `### Validation`,
+        ``,
+        o.val,
+        ``,
+        ...(o.passed
+            ? [
+                  `### Documentation`,
+                  ``,
+                  o.doc,
+                  ``,
+                  `### Ship`,
+                  ``,
+                  o.ship,
+                  ``,
+              ]
+            : []),
+    ].join("\n");
+}
+
+export function buildSpecReport(o: {
+    request: string;
+    outcome: string;
+    totals: ReportTotals;
+    scoutP: PhaseState | null;
+    planP: PhaseState;
+    critiqueP: PhaseState;
+    docP: PhaseState;
+    scoutFindings: string;
+    plan: string;
+    critique: string;
+    doc: string;
+}): string {
+    return [
+        `# Spec Workflow Report`,
+        ``,
+        `**Request:** ${o.request}`,
+        `**Outcome:** ${o.outcome}`,
+        `**Totals:** ${totalsLine(o.totals)}`,
+        ...(o.totals.totalDroppedLines > 0
+            ? [
+                  ``,
+                  `> **Diagnostic:** ${o.totals.totalDroppedLines} malformed JSON line(s) were dropped from agent output streams during this run.`,
+              ]
+            : []),
+        ``,
+        `## Summary`,
+        ``,
+        ...(o.scoutP
+            ? [summaryLine("Scout", o.scoutP, digest(o.scoutFindings))]
+            : []),
+        summaryLine("Planner", o.planP, digest(o.plan)),
+        summaryLine("Critic", o.critiqueP, digest(o.critique)),
+        summaryLine("Documenter", o.docP, digest(o.doc)),
+        ``,
+        `## Details`,
+        ``,
+        ...(o.scoutP ? [`### Reconnaissance`, ``, o.scoutFindings, ``] : []),
+        `### Plan`,
+        ``,
+        o.plan,
+        ``,
+        `### Critique`,
+        ``,
+        o.critique,
+        ``,
+        `### Implementation Spec`,
+        ``,
+        o.doc,
+    ].join("\n");
 }
 
 // ── Plan structural validation ───────────────────
