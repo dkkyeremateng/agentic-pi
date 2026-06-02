@@ -942,19 +942,34 @@ export function selectAgentsCore(
         ? new Map<string, PhaseState>()
         : new Map(s.phases.map((p) => [p.agent, p]));
     s.freshDispatchSession = false;
-    s.phases = resolved.map(
-        (key) => byAgent.get(key) ?? mkPhase(displayName(key), key),
-    );
-    h.setup.setupSessions(ctx.cwd, false);
-    h.ui.updateWidget();
 
     // Check if the original request had duplicates (parallel dispatch intent)
     const originalNames = names.map((n) => n.toLowerCase());
     const hasDuplicates = new Set(originalNames).size < originalNames.length;
 
-    // Use different separator and message for parallel vs sequential
-    const separator = hasDuplicates ? " ∥ " : " → ";
-    const order = resolved.map((k) => displayName(k)).join(separator);
+    // For parallel execution, create one phase per requested agent (including duplicates)
+    // For sequential execution, create one phase per unique agent
+    if (hasDuplicates) {
+        // Parallel: create a phase for each request (e.g., 2 seekers = 2 phases)
+        s.phases = originalNames.map(
+            (key) => byAgent.get(key) ?? mkPhase(displayName(key), key),
+        );
+    } else {
+        // Sequential: create one phase per unique agent
+        s.phases = resolved.map(
+            (key) => byAgent.get(key) ?? mkPhase(displayName(key), key),
+        );
+    }
+
+    h.setup.setupSessions(ctx.cwd, false);
+    h.ui.updateWidget();
+
+    // Display the original list (with duplicates) to show parallel intent
+    // Use comma separator for parallel, arrow for sequential
+    const separator = hasDuplicates ? ", " : " → ";
+    const displayNames = names.map((n) => displayName(n.toLowerCase()));
+    const order = displayNames.join(separator);
+
     const warn = unknown.length
         ? ` (ignored unknown: ${unknown.join(", ")})`
         : "";
@@ -967,7 +982,7 @@ export function selectAgentsCore(
         content: [
             {
                 type: "text",
-                text: `Selected ${resolved.length} agent${resolved.length === 1 ? "" : "s"} for the work: ${order}.${warn}${parallelNote} The dashboard now shows them queued — dispatch them in order.`,
+                text: `Selected ${displayNames.length} agent${displayNames.length === 1 ? "" : "s"} for the work: ${order}.${warn}${parallelNote} The dashboard now shows them queued — dispatch them in order.`,
             },
         ],
         details: {
@@ -975,6 +990,7 @@ export function selectAgentsCore(
             order,
             unknown,
             isParallel: hasDuplicates,
+            originalCount: displayNames.length,
         },
     };
 }
