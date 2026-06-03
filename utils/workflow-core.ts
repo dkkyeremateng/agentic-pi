@@ -761,28 +761,24 @@ function parseAgentFile(filePath: string): AgentDef | null {
 // (`<ext>/../agents`); it's searched last so a project's own .pi/agents wins,
 // but a project that defines none still resolves the globally installed agents.
 export function loadAgents(
-    cwd: string,
-    fallbackDir?: string,
+    _cwd: string,
+    _fallbackDir?: string,
 ): Map<string, AgentDef> {
-    const dirs = [
-        join(cwd, ".pi", "agents"),
-        join(cwd, "agents"),
-        join(cwd, ".claude", "agents"),
-    ];
-    if (fallbackDir) dirs.push(fallbackDir);
+    // Only load from the pi config directory (~/.pi/agents/)
+    const configDir = join(homedir(), ".pi", "agents");
     const agents = new Map<string, AgentDef>();
-    for (const dir of dirs) {
-        if (!existsSync(dir)) continue;
-        try {
-            for (const file of readdirSync(dir)) {
-                if (!file.endsWith(".md")) continue;
-                const def = parseAgentFile(join(dir, file));
-                if (def && !agents.has(def.name.toLowerCase())) {
-                    agents.set(def.name.toLowerCase(), def);
-                }
-            }
-        } catch {}
+    if (!existsSync(configDir)) {
+        return agents;
     }
+    try {
+        for (const file of readdirSync(configDir)) {
+            if (!file.endsWith(".md")) continue;
+            const def = parseAgentFile(join(configDir, file));
+            if (def && !agents.has(def.name.toLowerCase())) {
+                agents.set(def.name.toLowerCase(), def);
+            }
+        }
+    } catch {}
     return agents;
 }
 
@@ -809,20 +805,19 @@ function parseTeamsYaml(raw: string): Record<string, string[]> {
 // `fallbackDir` (optional) is the extension's own install agents dir; its
 // teams.yaml is used when the cwd project has none (mirrors loadAgents).
 export function loadTeams(
-    cwd: string,
-    fallbackDir?: string,
+    _cwd: string,
+    _fallbackDir?: string,
 ): Record<string, string[]> {
-    const candidates = [join(cwd, ".pi", "agents", "teams.yaml")];
-    if (fallbackDir) candidates.push(join(fallbackDir, "teams.yaml"));
-    for (const path of candidates) {
-        if (!existsSync(path)) continue;
-        try {
-            return parseTeamsYaml(readFileSync(path, "utf-8"));
-        } catch {
-            return {};
-        }
+    // Only load from the pi config directory (~/.pi/agents/teams.yaml)
+    const configDir = join(homedir(), ".pi", "agents", "teams.yaml");
+    if (!existsSync(configDir)) {
+        return {};
     }
-    return {};
+    try {
+        return parseTeamsYaml(readFileSync(configDir, "utf-8"));
+    } catch {
+        return {};
+    }
 }
 
 // A team can run the full pipeline only if it has the implementer, tester,
