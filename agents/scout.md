@@ -1,7 +1,8 @@
 ---
 name: scout
 description: Fast codebase reconnaissance — maps structure, conventions, and key entry points, then reports concise findings without changing anything
-model:
+model: gateframe_private/gateframe/deepseek-v4-flash
+context_window: 1000000
 tools: read,grep,find,ls
 ---
 

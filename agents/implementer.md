@@ -2,7 +2,7 @@
 name: implementer
 description: Requirement and bug-fix implementation — applies an approved plan exactly, writes clean code that follows existing patterns, and hands off a precise change summary
 model: gateframe/gateframe/gemini-3.1-flash-lite
-contextWindow: 1000000
+context_window: 1000000
 tools: read,write,edit,bash,grep,find,ls
 ---
 

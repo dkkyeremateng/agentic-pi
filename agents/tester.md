@@ -2,6 +2,7 @@
 name: tester
 description: Test writing and execution — creates comprehensive tests, maps them to the plan's acceptance criteria, and reports a clear pass/fail result
 model:
+context_window:
 tools: read,write,edit,bash,grep,find,ls
 ---
 

@@ -1189,15 +1189,7 @@ export function formatContextUsage(opts: {
 }): { bar: string; display: string; known: boolean } {
     const { contextPct, tokenCount, contextWindow, barLength = 10 } = opts;
 
-    const known =
-        contextPct !== null &&
-        contextPct !== undefined &&
-        !Number.isNaN(contextPct);
-    const pct = known ? contextPct! : 0;
-    const filled = known
-        ? Math.max(0, Math.min(barLength, Math.round((pct / 100) * barLength)))
-        : 0;
-    const bar = "#".repeat(filled) + "-".repeat(barLength - filled);
+    const ctxKnown = contextWindow && contextWindow > 0;
 
     const fmtTok = (n: number) =>
         n >= 1_000_000
@@ -1213,10 +1205,35 @@ export function formatContextUsage(opts: {
             ? `${(n / 1_000_000).toFixed(1)}M`
             : `${Math.round(n / 1000)}K`;
 
-    const ctxKnown = contextWindow && contextWindow > 0;
     const ctxSuffix = ctxKnown ? `/${fmtCtxWindow(contextWindow!)}` : "";
 
-    const display = !known
+    // Recalculate percentage from tokenCount/contextWindow when both are
+    // available. The pre-computed contextPct may have been calculated against
+    // a different (or missing) context window from the API response, while the
+    // displayed contextWindow may come from the agent's .md frontmatter.
+    const known =
+        contextPct !== null &&
+        contextPct !== undefined &&
+        !Number.isNaN(contextPct);
+    let pct: number;
+    let pctKnown: boolean;
+    if (ctxKnown && tokenCount && tokenCount > 0) {
+        pct = Math.min(100, (tokenCount / contextWindow!) * 100);
+        pctKnown = true;
+    } else if (known) {
+        pct = contextPct!;
+        pctKnown = true;
+    } else {
+        pct = 0;
+        pctKnown = false;
+    }
+
+    const filled = pctKnown
+        ? Math.max(0, Math.min(barLength, Math.round((pct / 100) * barLength)))
+        : 0;
+    const bar = "#".repeat(filled) + "-".repeat(barLength - filled);
+
+    const display = !pctKnown
         ? ctxKnown
             ? `0.0%${ctxSuffix}`
             : "—"
@@ -1224,7 +1241,7 @@ export function formatContextUsage(opts: {
           ? `${pct.toFixed(1)}%${ctxSuffix} · ${fmtTok(tokenCount)}`
           : `${pct.toFixed(1)}%${ctxSuffix}`;
 
-    return { bar, display, known: known || !!ctxKnown };
+    return { bar, display, known: pctKnown || !!ctxKnown };
 }
 
 // ── Report builders (pure) ───────────────────────

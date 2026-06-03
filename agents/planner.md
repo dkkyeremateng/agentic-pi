@@ -2,6 +2,7 @@
 name: planner
 description: Architecture and implementation planning — produces structured, phased plans with file-level specificity
 model:
+context_window:
 tools: read,grep,find,ls
 ---
 
