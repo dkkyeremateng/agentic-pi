@@ -517,7 +517,12 @@ export function renderWorkflowFooter(opts: {
             usage && typeof usage.tokens === "number" && usage.tokens > 0
                 ? usage.tokens
                 : undefined;
-        contextWindow = undefined; // primary session doesn't report contextWindow
+        contextWindow =
+            usage && typeof usage.contextWindow === "number"
+                ? usage.contextWindow
+                : usage && typeof usage.context_window === "number"
+                  ? usage.context_window
+                  : undefined;
     }
 
     const { bar, display: pctStr } = formatContextUsage({
