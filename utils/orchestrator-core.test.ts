@@ -748,7 +748,7 @@ describe("selectAgentsCore", () => {
             ["planner", "tester"],
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("Planner \u2192 Tester"));
+        assert.ok(result.content[0].text.includes("Planner ∥ Tester"));
     });
 
     it("does not reload agents when freshDispatchSession is false", () => {
@@ -1356,6 +1356,11 @@ describe("handleSpawnEvent", () => {
             stderrTail: "",
             droppedLines: 0,
             toolCount: 0,
+            contextPct: 0,
+            cumulativeTokens: {
+                input: 0,
+                output: 0,
+            },
         };
     }
 
@@ -1559,6 +1564,11 @@ describe("computeSpawnResult", () => {
             stderrTail: "",
             droppedLines: 0,
             toolCount: 0,
+            contextPct: 0,
+            cumulativeTokens: {
+                input: 0,
+                output: 0,
+            },
             ...overrides,
         };
     }

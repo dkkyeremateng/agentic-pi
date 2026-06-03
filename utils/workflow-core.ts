@@ -2032,10 +2032,14 @@ export interface SpawnEventState {
     finalError: string;
     activity: string;
     stderrTail: string;
-    capturedTokens?: TokenUsage;
     droppedLines: number;
     toolCount: number;
-    contextPct?: number;
+    contextPct: number;
+    capturedTokens?: TokenUsage;
+    cumulativeTokens: {
+        input: number;
+        output: number;
+    };
 }
 
 export function handleSpawnEvent(
@@ -2123,18 +2127,23 @@ export function handleSpawnEvent(
         if (msg?.usage?.input) {
             const ctxWindow =
                 msg.usage.contextWindow || msg.usage.max_tokens || 200_000;
+
+            // Accumulate tokens across all messages in this spawn
+            state.cumulativeTokens.input += msg.usage.input || 0;
+            state.cumulativeTokens.output += msg.usage.output || 0;
+
             const pct = Math.min(
                 100,
-                Math.round((msg.usage.input / ctxWindow) * 100),
+                Math.round((state.cumulativeTokens.input / ctxWindow) * 100),
             );
             console.error(
-                `[handleSpawnEvent] Token usage: input=${msg.usage.input}, output=${msg.usage.output}, contextWindow=${ctxWindow}, pct=${pct}%`,
+                `[handleSpawnEvent] Token usage: input=${msg.usage.input}, output=${msg.usage.output}, cumulative=${state.cumulativeTokens.input}, contextWindow=${ctxWindow}, pct=${pct}%`,
             );
             phase.contextPct = pct;
             state.contextPct = phase.contextPct;
             state.capturedTokens = {
-                input: msg.usage.input || 0,
-                output: msg.usage.output || 0,
+                input: state.cumulativeTokens.input,
+                output: state.cumulativeTokens.output,
                 contextWindow: ctxWindow,
             };
             // Also set phase.tokens immediately so the card can display it during the spawn
@@ -2270,6 +2279,11 @@ function spawnAgentWithModelFallback(
         stderrTail: "",
         droppedLines: 0,
         toolCount: 0,
+        contextPct: 0,
+        cumulativeTokens: {
+            input: 0,
+            output: 0,
+        },
     };
     const start = Date.now();
 
@@ -2502,6 +2516,11 @@ export function spawnAgentWithModel(
         stderrTail: "",
         droppedLines: 0,
         toolCount: 0,
+        contextPct: 0,
+        cumulativeTokens: {
+            input: 0,
+            output: 0,
+        },
     };
     const start = Date.now();
 
