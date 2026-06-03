@@ -1,6 +1,7 @@
 ---
 name: critic
 description: Critical evaluation of implementation plans — identifies flaws, gaps, risks, and implicit assumptions before any code is written
+modes: 
 tools: read,grep,find,ls
 ---
 

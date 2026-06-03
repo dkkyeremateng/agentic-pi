@@ -91,6 +91,7 @@ import {
     teamIsSpec,
     allTeamAgents,
     makeSpawnWrapper,
+    resolveAgentModel,
 } from "../utils/workflow-core";
 import {
     newOrchestratorState,
@@ -212,10 +213,12 @@ export default function (pi: ExtensionAPI) {
         );
     }
     function modelFor(agentKey: string): string {
-        // Precedence: agent .md frontmatter → PI_WORKFLOW_MODEL → session model
-        const def = st.agents.get(agentKey.toLowerCase());
-        if (def?.model) return def.model;
-        return fallbackModel();
+        return resolveAgentModel(
+            agentKey,
+            st.agents,
+            WORKER_MODEL,
+            fallbackModel(),
+        );
     }
     // Members of the active team that actually resolve to a loaded agent .md.
     function activeMembers(): string[] {
@@ -615,8 +618,12 @@ export default function (pi: ExtensionAPI) {
         // Per-agent model: check the agent's own .md frontmatter first, then the
         // team config (env var override), then fall back to the global default.
         const agentKey = agentDef.name.toLowerCase();
-        // Precedence: agent .md frontmatter → PI_WORKFLOW_MODEL → session model
-        const primaryModel = agentDef.model || WORKER_MODEL || fallbackModel();
+        const primaryModel = resolveAgentModel(
+            agentKey,
+            st.agents,
+            WORKER_MODEL,
+            fallbackModel(),
+        );
         // Fallback: the model the current pi session is running on (the primary
         // agent's model). If an agent's configured model fails to load, we retry
         // with the session model since it's known to work — pi itself is using it.

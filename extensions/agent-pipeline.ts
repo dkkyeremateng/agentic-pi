@@ -86,6 +86,7 @@ import {
     loadPromptTemplate,
     renderTemplate,
     makeSpawnWrapper,
+    resolveAgentModel,
 } from "../utils/workflow-core";
 import {
     newOrchestratorState,
@@ -210,9 +211,12 @@ export default function (pi: ExtensionAPI) {
     }
     // Per-agent model: agent .md frontmatter → PI_WORKFLOW_MODEL → session model.
     function modelFor(agentKey: string): string {
-        const def = st.agents.get(agentKey.toLowerCase());
-        if (def?.model) return def.model;
-        return WORKER_MODEL || sessionModel || "default";
+        return resolveAgentModel(
+            agentKey,
+            st.agents,
+            WORKER_MODEL,
+            sessionModel || "default",
+        );
     }
     // Members of the active team that actually resolve to a loaded agent .md.
     function activeMembers(): string[] {
@@ -443,8 +447,12 @@ export default function (pi: ExtensionAPI) {
         phase: PhaseState,
         cwd: string,
     ): Promise<{ output: string; exitCode: number }> {
-        // Precedence: agent .md frontmatter → PI_WORKFLOW_MODEL → session model
-        const primaryModel = agentDef.model || WORKER_MODEL || sessionModel;
+        const primaryModel = resolveAgentModel(
+            agentDef.name.toLowerCase(),
+            st.agents,
+            WORKER_MODEL,
+            sessionModel,
+        );
         // Fallback: the model the current pi session is running on (the primary
         // agent's model). If an agent's configured model fails to load, we retry
         // with the session model since it's known to work — pi itself is using it.

@@ -144,10 +144,18 @@ export function isActiveWorkflow(selfName: string): boolean {
 
 // Whitelist of env vars that project-level .env files are allowed to override.
 // Security-sensitive operational settings are locked to the global config.
+// PI_AGENT_*_MODEL vars are also allowed (dynamic per-agent model overrides).
 const PROJECT_ENV_WHITELIST = new Set([
     "PI_WORKFLOW_MODEL",
     "PI_WORKFLOW_MAX_LOOPS",
 ]);
+
+// Check if an env var key is allowed in project-level .env overrides.
+// Matches the static whitelist plus any PI_AGENT_<NAME>_MODEL pattern.
+function isEnvAllowed(key: string): boolean {
+    if (PROJECT_ENV_WHITELIST.has(key)) return true;
+    return /^PI_AGENT_.+_MODEL$/.test(key);
+}
 
 // Load KEY=VALUE pairs from a `.env` file into process.env WITHOUT overwriting
 // values already set in the real environment (so the shell still wins). Lets you
@@ -200,7 +208,7 @@ function loadEnvFile(
             }
 
             // Apply whitelist for project-level overrides
-            if (applyWhitelist && !PROJECT_ENV_WHITELIST.has(key)) {
+            if (applyWhitelist && !isEnvAllowed(key)) {
                 continue;
             }
 
@@ -787,7 +795,30 @@ export function parseAgentFile(filePath: string): AgentDef | null {
     }
 }
 
-// Load agent definitions from both project-level and extension-level directories.
+// Derive the per-agent model env var name from an agent key.
+// e.g. "seeker" → "PI_AGENT_SEEKER_MODEL", "plan-build" → "PI_AGENT_PLAN_BUILD_MODEL"
+export function agentModelEnvVar(agentKey: string): string {
+    const name = agentKey.toUpperCase().replace(/[-\s]+/g, "_");
+    return `PI_AGENT_${name}_MODEL`;
+}
+
+// Resolve the model for an agent. Precedence:
+// 1. PI_AGENT_<NAME>_MODEL env var (e.g. PI_AGENT_SEEKER_MODEL)
+// 2. Agent .md frontmatter `model:` field
+// 3. PI_WORKFLOW_MODEL env var
+// 4. fallback (caller-provided)
+export function resolveAgentModel(
+    agentKey: string,
+    agents: Map<string, AgentDef>,
+    workflowModel: string,
+    fallback: string,
+): string {
+    const envModel = process.env[agentModelEnvVar(agentKey)];
+    if (envModel) return envModel;
+    const def = agents.get(agentKey.toLowerCase());
+    if (def?.model) return def.model;
+    return workflowModel || fallback;
+}
 // Project agents in `.pi/agents/` take precedence; extension agents serve as fallback.
 export function loadAgents(
     cwd: string,

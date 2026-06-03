@@ -1,6 +1,7 @@
 ---
 name: validator
 description: Validation gate — runs the full suite and renders a PASS/FAIL verdict
+model:
 tools: read,bash,grep,find,ls
 ---
 

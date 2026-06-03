@@ -1,6 +1,7 @@
 ---
 name: scout
 description: Fast codebase reconnaissance — maps structure, conventions, and key entry points, then reports concise findings without changing anything
+model:
 tools: read,grep,find,ls
 ---
 

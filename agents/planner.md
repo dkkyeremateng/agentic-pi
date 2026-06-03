@@ -1,6 +1,7 @@
 ---
 name: planner
 description: Architecture and implementation planning — produces structured, phased plans with file-level specificity
+model:
 tools: read,grep,find,ls
 ---
 
