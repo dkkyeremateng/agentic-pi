@@ -329,6 +329,12 @@ export function renderCard(
                           : n >= 1000
                             ? `${(n / 1000).toFixed(1)}k`
                             : `${n}`;
+                  // Debug logging
+                  console.error(`[renderCard] phase.tokens:`, phase.tokens);
+                  console.error(
+                      `[renderCard] phase.contextPct:`,
+                      phase.contextPct,
+                  );
                   const tokenCount =
                       phase.tokens && phase.tokens.input > 0
                           ? ` · ${fmtTok(phase.tokens.input)}`
