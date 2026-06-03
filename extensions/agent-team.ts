@@ -301,14 +301,16 @@ export default function (pi: ExtensionAPI) {
         const livePhase =
             own.find((p) => p.status === "running") ?? own[own.length - 1];
 
-        // Context-usage bar, shown on every card (empty `[-----] 0%` until run).
+        // Context-usage bar, shown on every card.
         const ctxPct = livePhase?.contextPct ?? 0;
+        const ctxWindow = livePhase?.tokens?.contextWindow;
         const ctxTotalTok = livePhase?.tokens
             ? (livePhase.tokens.input || 0) + (livePhase.tokens.output || 0)
             : undefined;
         const { bar: ctxBar, display: ctxDisplay } = formatContextUsage({
             contextPct: ctxPct,
             tokenCount: ctxTotalTok,
+            contextWindow: ctxWindow,
             barLength: 5,
         });
 

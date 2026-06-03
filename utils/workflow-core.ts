@@ -351,23 +351,26 @@ export function renderCard(
     const statusStr = theme.fg(color, truncate(statusRaw, w));
     const statusVisible = Math.min(statusRaw.length, w);
 
-    // Context usage bar: 5 blocks + percent + token count, only shown when we have data.
-    const ctxLine =
-        showContext && phase.contextPct > 0
-            ? (() => {
-                  const totalTok =
-                      (phase.tokens?.input || 0) + (phase.tokens?.output || 0);
-                  const { bar, display } = formatContextUsage({
-                      contextPct: phase.contextPct,
-                      tokenCount: totalTok || undefined,
-                      barLength: 5,
-                  });
-                  const ctxStr = `[${bar}] ${display}`;
-                  return theme.fg("dim", ctxStr);
-              })()
-            : null;
+    // Context usage bar: 5 blocks + percent + context window + token count.
+    const ctxWindow = phase.tokens?.contextWindow;
+    const showCtx =
+        showContext && (phase.contextPct > 0 || (ctxWindow && ctxWindow > 0));
+    const ctxLine = showCtx
+        ? (() => {
+              const totalTok =
+                  (phase.tokens?.input || 0) + (phase.tokens?.output || 0);
+              const { bar, display } = formatContextUsage({
+                  contextPct: phase.contextPct,
+                  tokenCount: totalTok || undefined,
+                  contextWindow: ctxWindow,
+                  barLength: 5,
+              });
+              const ctxStr = `[${bar}] ${display}`;
+              return theme.fg("dim", ctxStr);
+          })()
+        : null;
     const ctxVisible = ctxLine
-        ? Math.min(`[#####] ${phase.contextPct}% · 99.9k`.length, w)
+        ? Math.min(`[#####] 00.0%/0.0M · 99.9M`.length, w)
         : 0;
 
     const top = "┌" + "─".repeat(w) + "┐";
@@ -488,6 +491,7 @@ export function renderWorkflowFooter(opts: {
     const activePhase = phases.find((p) => p.status === "running");
     let contextPct: number | null;
     let tokenCount: number | undefined;
+    let contextWindow: number | undefined;
 
     if (activePhase && activePhase.contextPct > 0) {
         // Sub-agent is running - show its context usage
@@ -496,6 +500,7 @@ export function renderWorkflowFooter(opts: {
             ? (activePhase.tokens.input || 0) +
                   (activePhase.tokens.output || 0) || undefined
             : undefined;
+        contextWindow = activePhase.tokens?.contextWindow || undefined;
     } else {
         // No active sub-agent - show primary session's context
         let usage: any;
@@ -512,11 +517,13 @@ export function renderWorkflowFooter(opts: {
             usage && typeof usage.tokens === "number" && usage.tokens > 0
                 ? usage.tokens
                 : undefined;
+        contextWindow = undefined; // primary session doesn't report contextWindow
     }
 
     const { bar, display: pctStr } = formatContextUsage({
         contextPct,
         tokenCount,
+        contextWindow,
         barLength: 10,
     });
 
@@ -1159,13 +1166,14 @@ export function publishLogs(
 // ── Context usage helpers ────────────────────────
 
 // Format context usage for display in cards and footers.
-// Returns the progress bar and display string (percentage + optional token count).
+// Returns the progress bar and display string (percentage + token count + context window).
 export function formatContextUsage(opts: {
     contextPct: number | null | undefined;
     tokenCount?: number | undefined;
+    contextWindow?: number | undefined;
     barLength?: number;
 }): { bar: string; display: string; known: boolean } {
-    const { contextPct, tokenCount, barLength = 10 } = opts;
+    const { contextPct, tokenCount, contextWindow, barLength = 10 } = opts;
 
     const known =
         contextPct !== null &&
@@ -1178,19 +1186,31 @@ export function formatContextUsage(opts: {
     const bar = "#".repeat(filled) + "-".repeat(barLength - filled);
 
     const fmtTok = (n: number) =>
-        n >= 10000
-            ? `${Math.round(n / 1000)}k`
-            : n >= 1000
-              ? `${(n / 1000).toFixed(1)}k`
-              : `${n}`;
+        n >= 1_000_000
+            ? `${(n / 1_000_000).toFixed(1)}M`
+            : n >= 10_000
+              ? `${Math.round(n / 1000)}K`
+              : n >= 1000
+                ? `${(n / 1000).toFixed(1)}K`
+                : `${n}`;
+
+    const fmtCtxWindow = (n: number) =>
+        n >= 1_000_000
+            ? `${(n / 1_000_000).toFixed(1)}M`
+            : `${Math.round(n / 1000)}K`;
+
+    const ctxKnown = contextWindow && contextWindow > 0;
+    const ctxSuffix = ctxKnown ? `/${fmtCtxWindow(contextWindow!)}` : "";
 
     const display = !known
-        ? "—"
+        ? ctxKnown
+            ? `0.0%${ctxSuffix}`
+            : "—"
         : tokenCount && tokenCount > 0
-          ? `${Math.round(pct)}% · ${fmtTok(tokenCount)}`
-          : `${Math.round(pct)}%`;
+          ? `${pct.toFixed(1)}%${ctxSuffix} · ${fmtTok(tokenCount)}`
+          : `${pct.toFixed(1)}%${ctxSuffix}`;
 
-    return { bar, display, known };
+    return { bar, display, known: known || !!ctxKnown };
 }
 
 // ── Report builders (pure) ───────────────────────
