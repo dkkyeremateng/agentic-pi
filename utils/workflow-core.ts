@@ -2136,9 +2136,6 @@ export function handleSpawnEvent(
                 100,
                 Math.round((state.cumulativeTokens.input / ctxWindow) * 100),
             );
-            console.error(
-                `[handleSpawnEvent] Token usage: input=${msg.usage.input}, output=${msg.usage.output}, cumulative=${state.cumulativeTokens.input}, contextWindow=${ctxWindow}, pct=${pct}%`,
-            );
             phase.contextPct = pct;
             state.contextPct = phase.contextPct;
             state.capturedTokens = {
@@ -2148,9 +2145,6 @@ export function handleSpawnEvent(
             };
             // Also set phase.tokens immediately so the card can display it during the spawn
             phase.tokens = state.capturedTokens;
-            console.error(
-                `[handleSpawnEvent] Set phase.tokens: input=${phase.tokens.input}, output=${phase.tokens.output}`,
-            );
             paint();
         }
     }
