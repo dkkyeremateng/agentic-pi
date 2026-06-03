@@ -764,16 +764,19 @@ export function loadAgents(
     _cwd: string,
     _fallbackDir?: string,
 ): Map<string, AgentDef> {
-    // Only load from the pi config directory (~/.pi/agents/)
-    const configDir = join(homedir(), ".pi", "agents");
+    // Load from the agents folder one level up from the extensions folder
+    // Extension is at: /path/to/pi/extensions/agent-team.ts
+    // Agents are at: /path/to/pi/agents/
+    const extensionDir = dirname(fileURLToPath(import.meta.url));
+    const agentsDir = join(extensionDir, "..", "agents");
     const agents = new Map<string, AgentDef>();
-    if (!existsSync(configDir)) {
+    if (!existsSync(agentsDir)) {
         return agents;
     }
     try {
-        for (const file of readdirSync(configDir)) {
+        for (const file of readdirSync(agentsDir)) {
             if (!file.endsWith(".md")) continue;
-            const def = parseAgentFile(join(configDir, file));
+            const def = parseAgentFile(join(agentsDir, file));
             if (def && !agents.has(def.name.toLowerCase())) {
                 agents.set(def.name.toLowerCase(), def);
             }
@@ -808,13 +811,16 @@ export function loadTeams(
     _cwd: string,
     _fallbackDir?: string,
 ): Record<string, string[]> {
-    // Only load from the pi config directory (~/.pi/agents/teams.yaml)
-    const configDir = join(homedir(), ".pi", "agents", "teams.yaml");
-    if (!existsSync(configDir)) {
+    // Load from the agents folder one level up from the extensions folder
+    // Extension is at: /path/to/pi/extensions/agent-team.ts
+    // Teams are at: /path/to/pi/agents/teams.yaml
+    const extensionDir = dirname(fileURLToPath(import.meta.url));
+    const teamsFile = join(extensionDir, "..", "agents", "teams.yaml");
+    if (!existsSync(teamsFile)) {
         return {};
     }
     try {
-        return parseTeamsYaml(readFileSync(configDir, "utf-8"));
+        return parseTeamsYaml(readFileSync(teamsFile, "utf-8"));
     } catch {
         return {};
     }
