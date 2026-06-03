@@ -875,7 +875,7 @@ export default function (pi: ExtensionAPI) {
             pi.setActiveTools(ORCHESTRATOR_TOOLS);
 
             // A new user request = a new workflow. Mark it so the first
-            // select_agents / dispatch_agent of this request rebuilds the cards from
+            // dispatch_agent of this request rebuilds the cards from
             // scratch instead of carrying over the previous workflow's state.
             st.freshDispatchSession = true;
 
@@ -984,7 +984,7 @@ export default function (pi: ExtensionAPI) {
                         `/agent-pipeline [request]   Pick a team (Select Team), then run the lifecycle\n` +
                         `/agent-pipeline-clear       Clear the progress widget\n` +
                         `run_agent_pipeline          Tool — the agent can launch the full pipeline for non-trivial tasks\n` +
-                        `select_agents / dispatch_agent  Tools — the primary agent determines and dispatches the agents a task needs`,
+                        `dispatch_agent              Tools — dispatch task(s) to any loaded agent(s) outside the pipeline`,
                     "info",
                 );
             }
