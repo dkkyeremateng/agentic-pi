@@ -317,18 +317,28 @@ export function renderCard(
     const statusStr = theme.fg(color, truncate(statusRaw, w));
     const statusVisible = Math.min(statusRaw.length, w);
 
-    // Context usage bar: 5 blocks + percent, only shown when we have data.
+    // Context usage bar: 5 blocks + percent + token count, only shown when we have data.
     const ctxLine =
         showContext && phase.contextPct > 0
             ? (() => {
                   const filled = Math.ceil(phase.contextPct / 20);
                   const bar = "#".repeat(filled) + "-".repeat(5 - filled);
-                  const ctxStr = `[${bar}] ${phase.contextPct}%`;
+                  const fmtTok = (n: number) =>
+                      n >= 10000
+                          ? `${Math.round(n / 1000)}k`
+                          : n >= 1000
+                            ? `${(n / 1000).toFixed(1)}k`
+                            : `${n}`;
+                  const tokenCount =
+                      phase.tokens && phase.tokens.input > 0
+                          ? ` · ${fmtTok(phase.tokens.input)}`
+                          : "";
+                  const ctxStr = `[${bar}] ${phase.contextPct}%${tokenCount}`;
                   return theme.fg("dim", ctxStr);
               })()
             : null;
     const ctxVisible = ctxLine
-        ? Math.min(`[#####] ${phase.contextPct}%`.length, w)
+        ? Math.min(`[#####] ${phase.contextPct}% · 99.9k`.length, w)
         : 0;
 
     const top = "┌" + "─".repeat(w) + "┐";
