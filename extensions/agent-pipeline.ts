@@ -1017,7 +1017,6 @@ export default function (pi: ExtensionAPI) {
                     contextUsage: () => ctx.getContextUsage?.(),
                     visibleWidth,
                     truncateToWidth,
-                    showContextBar: false, // agent-pipeline shares primary context
                 });
             },
         }));
