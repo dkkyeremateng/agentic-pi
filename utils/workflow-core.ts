@@ -675,10 +675,14 @@ export function renderSelectAgentsCall(
     displayNameFn: (s: string) => string,
 ): any {
     const list = (args.agents || []) as string[];
-    // Use ∥ separator for parallel execution (duplicates), arrow for sequential
+    // Use ∥ separator for parallel execution:
+    // - Duplicate agent names (e.g., ['seeker', 'seeker'])
+    // - Multiple different agents selected (ad-hoc dispatches are typically parallel)
+    // Use → only for single-agent selections
     const hasDuplicates =
         new Set(list.map((a) => a.toLowerCase())).size < list.length;
-    const separator = hasDuplicates ? " ∥ " : " → ";
+    const isParallel = hasDuplicates || list.length > 1;
+    const separator = isParallel ? " ∥ " : " → ";
     const preview = list.map((a) => displayNameFn(a)).join(separator);
     return new TextCtor(
         theme.fg("toolTitle", theme.bold("select_agents ")) +
