@@ -36,14 +36,15 @@ export function renderCardGrid(
     const lines: string[] = [];
     const cardH = cards[0]?.length ?? 6;
 
-    // Pad incomplete rows with empty cards
-    while (cards.length < cols) {
-        cards.push(Array(cardH).fill(" ".repeat(colWidth)));
+    // Work on a copy to avoid mutating the input array
+    const padded = [...cards];
+    while (padded.length < cols) {
+        padded.push(Array(cardH).fill(" ".repeat(colWidth)));
     }
 
     // Render each row
     for (let line = 0; line < cardH; line++) {
-        lines.push(cards.map((c) => c[line] || "").join(" ".repeat(gap)));
+        lines.push(padded.map((c) => c[line] || "").join(" ".repeat(gap)));
     }
 
     return lines;

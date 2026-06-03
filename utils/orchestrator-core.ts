@@ -969,12 +969,17 @@ export function selectAgentsCore(
     // For parallel execution, create one phase per requested agent (including duplicates)
     // For sequential execution, create one phase per unique agent
     if (hasDuplicates) {
-        // Parallel: create a phase for each request (e.g., 2 seekers = 2 phases)
-        s.phases = originalNames.map(
-            (key) => byAgent.get(key) ?? mkPhase(displayName(key), key),
-        );
+        // Parallel: create a phase for each request with a unique dispatchId
+        // so that multiple instances of the same agent can be distinguished
+        s.phases = originalNames.map((key, index) => {
+            const existing = byAgent.get(key);
+            if (existing) return existing;
+            // Assign a unique dispatchId for parallel instances
+            const dispatchId = `${key}-${index + 1}`;
+            return mkPhase(displayName(key), key, dispatchId);
+        });
     } else {
-        // Sequential: create one phase per unique agent
+        // Sequential: create one phase per unique agent (no dispatchId needed)
         s.phases = resolved.map(
             (key) => byAgent.get(key) ?? mkPhase(displayName(key), key),
         );

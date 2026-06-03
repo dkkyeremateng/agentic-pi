@@ -18,6 +18,9 @@ import {
     mkdirSync,
     unlinkSync,
     statSync,
+    openSync,
+    readSync,
+    closeSync,
 } from "fs";
 import { join, basename, dirname, resolve as resolvePath } from "path";
 import { fileURLToPath } from "url";
@@ -139,6 +142,21 @@ export function isActiveWorkflow(selfName: string): boolean {
 
 // ── .env loader ──────────────────────────────────
 
+// Whitelist of env vars that project-level .env files are allowed to override.
+// Security-sensitive operational settings are locked to the global config.
+const PROJECT_ENV_WHITELIST = new Set([
+    "PI_WORKFLOW_MODEL",
+    "PI_WORKFLOW_MAX_LOOPS",
+    "PI_AGENT_SCOUT_MODEL",
+    "PI_AGENT_PLANNER_MODEL",
+    "PI_AGENT_CRITIC_MODEL",
+    "PI_AGENT_IMPLEMENTER_MODEL",
+    "PI_AGENT_TESTER_MODEL",
+    "PI_AGENT_VALIDATOR_MODEL",
+    "PI_AGENT_DOCUMENTER_MODEL",
+    "PI_AGENT_SHIPPER_MODEL",
+]);
+
 // Load KEY=VALUE pairs from a `.env` file into process.env WITHOUT overwriting
 // values already set in the real environment (so the shell still wins). Lets you
 // keep PI_WORKFLOW_MODEL / PI_AGENT_*_MODEL in a file instead of exporting them
@@ -155,19 +173,24 @@ export function loadDotEnv(cwd: string): void {
     for (const configDir of possibleConfigDirs) {
         const configPath = join(configDir, ".env");
         if (existsSync(configPath)) {
-            loadEnvFile(configPath, false); // Don't override existing env vars
+            loadEnvFile(configPath, false, false); // Don't override existing env vars
             break; // Use the first one we find
         }
     }
 
     // Then, load from cwd (project-specific overrides)
+    // Only whitelisted vars can be overridden by project-level config
     const cwdPath = join(cwd, ".env");
     if (existsSync(cwdPath)) {
-        loadEnvFile(cwdPath, true); // Allow overrides
+        loadEnvFile(cwdPath, true, true); // Allow overrides for whitelisted vars only
     }
 }
 
-function loadEnvFile(path: string, allowOverride: boolean): void {
+function loadEnvFile(
+    path: string,
+    allowOverride: boolean,
+    applyWhitelist: boolean,
+): void {
     try {
         for (const raw of readFileSync(path, "utf-8").split("\n")) {
             let line = raw.trim();
@@ -182,6 +205,11 @@ function loadEnvFile(path: string, allowOverride: boolean): void {
                 (val.startsWith("'") && val.endsWith("'"))
             ) {
                 val = val.slice(1, -1);
+            }
+
+            // Apply whitelist for project-level overrides
+            if (applyWhitelist && !PROJECT_ENV_WHITELIST.has(key)) {
+                continue;
             }
 
             if (allowOverride || !(key in process.env)) {
@@ -240,14 +268,20 @@ export function agentPhaseStatus(
             elapsed: running.elapsed,
             toolCount: running.toolCount,
         };
-    if (own.some((p) => p.status === "error"))
-        return { status: "error", elapsed: 0, toolCount: 0 };
+    if (own.some((p) => p.status === "error")) {
+        const errorPhase = own.find((p) => p.status === "error");
+        return {
+            status: "error",
+            elapsed: errorPhase?.elapsed ?? 0,
+            toolCount: errorPhase?.toolCount ?? 0,
+        };
+    }
     const done = own.filter((p) => p.status === "done");
     if (done.length)
         return {
             status: "done",
             elapsed: done.reduce((s, p) => s + p.elapsed, 0),
-            toolCount: 0,
+            toolCount: done.reduce((s, p) => s + p.toolCount, 0),
         };
     return { status: "pending", elapsed: 0, toolCount: 0 };
 }
@@ -728,7 +762,7 @@ export function renderSelectAgentsResult(
 
 // ── Agent loading ────────────────────────────────
 
-function parseAgentFile(filePath: string): AgentDef | null {
+export function parseAgentFile(filePath: string): AgentDef | null {
     try {
         const raw = readFileSync(filePath, "utf-8");
         const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
@@ -736,8 +770,17 @@ function parseAgentFile(filePath: string): AgentDef | null {
         const fm: Record<string, string> = {};
         for (const line of match[1].split("\n")) {
             const idx = line.indexOf(":");
-            if (idx > 0)
-                fm[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+            if (idx <= 0) continue;
+            const key = line.slice(0, idx).trim();
+            let val = line.slice(idx + 1).trim();
+            // Handle quoted values that may contain colons
+            if (
+                (val.startsWith('"') && val.endsWith('"')) ||
+                (val.startsWith("'") && val.endsWith("'"))
+            ) {
+                val = val.slice(1, -1);
+            }
+            fm[key] = val;
         }
         if (!fm.name) return null;
         return {
@@ -752,31 +795,43 @@ function parseAgentFile(filePath: string): AgentDef | null {
     }
 }
 
-// `fallbackDir` (optional) is the extension's own install agents dir
-// (`<ext>/../agents`); it's searched last so a project's own .pi/agents wins,
-// but a project that defines none still resolves the globally installed agents.
+// Load agent definitions from both project-level and extension-level directories.
+// Project agents in `.pi/agents/` take precedence; extension agents serve as fallback.
 export function loadAgents(
-    _cwd: string,
-    _fallbackDir?: string,
+    cwd: string,
+    fallbackDir?: string,
 ): Map<string, AgentDef> {
-    // Load from the agents folder one level up from the extensions folder
-    // Extension is at: /path/to/pi/extensions/agent-team.ts
-    // Agents are at: /path/to/pi/agents/
+    const agents = new Map<string, AgentDef>();
+
+    // First, load project-level agents from cwd/.pi/agents/
+    const projectAgentsDir = join(cwd, ".pi", "agents");
+    if (existsSync(projectAgentsDir)) {
+        try {
+            for (const file of readdirSync(projectAgentsDir)) {
+                if (!file.endsWith(".md")) continue;
+                const def = parseAgentFile(join(projectAgentsDir, file));
+                if (def && !agents.has(def.name.toLowerCase())) {
+                    agents.set(def.name.toLowerCase(), def);
+                }
+            }
+        } catch {}
+    }
+
+    // Then load extension-level agents as fallback
     const extensionDir = dirname(fileURLToPath(import.meta.url));
     const agentsDir = join(extensionDir, "..", "agents");
-    const agents = new Map<string, AgentDef>();
-    if (!existsSync(agentsDir)) {
-        return agents;
-    }
-    try {
-        for (const file of readdirSync(agentsDir)) {
-            if (!file.endsWith(".md")) continue;
-            const def = parseAgentFile(join(agentsDir, file));
-            if (def && !agents.has(def.name.toLowerCase())) {
-                agents.set(def.name.toLowerCase(), def);
+    if (existsSync(agentsDir)) {
+        try {
+            for (const file of readdirSync(agentsDir)) {
+                if (!file.endsWith(".md")) continue;
+                const def = parseAgentFile(join(agentsDir, file));
+                if (def && !agents.has(def.name.toLowerCase())) {
+                    agents.set(def.name.toLowerCase(), def);
+                }
             }
-        }
-    } catch {}
+        } catch {}
+    }
+
     return agents;
 }
 
@@ -787,6 +842,8 @@ export function loadAgents(
 function parseTeamsYaml(raw: string): Record<string, string[]> {
     const teams: Record<string, string[]> = {};
     let current: string | null = null;
+    const orphanedItems: string[] = [];
+
     for (const line of raw.split("\n")) {
         const teamMatch = line.match(/^(\S[^:]*):\s*$/);
         if (teamMatch) {
@@ -795,30 +852,50 @@ function parseTeamsYaml(raw: string): Record<string, string[]> {
             continue;
         }
         const itemMatch = line.match(/^\s+-\s+(.+)$/);
-        if (itemMatch && current) teams[current].push(itemMatch[1].trim());
+        if (itemMatch) {
+            if (current) {
+                teams[current].push(itemMatch[1].trim());
+            } else {
+                // Track orphaned items before the first team header
+                orphanedItems.push(itemMatch[1].trim());
+            }
+        }
     }
+
+    // Warn about orphaned items that appeared before any team header
+    if (orphanedItems.length > 0) {
+        console.warn(
+            `[parseTeamsYaml] ${orphanedItems.length} item(s) found before first team header and were ignored: ${orphanedItems.join(", ")}`,
+        );
+    }
+
     return teams;
 }
 
-// `fallbackDir` (optional) is the extension's own install agents dir; its
-// teams.yaml is used when the cwd project has none (mirrors loadAgents).
+// Load team definitions from both project-level and extension-level files.
+// Project teams in `.pi/agents/teams.yaml` take precedence; extension teams serve as fallback.
 export function loadTeams(
-    _cwd: string,
-    _fallbackDir?: string,
+    cwd: string,
+    fallbackDir?: string,
 ): Record<string, string[]> {
-    // Load from the agents folder one level up from the extensions folder
-    // Extension is at: /path/to/pi/extensions/agent-team.ts
-    // Teams are at: /path/to/pi/agents/teams.yaml
+    // First, try project-level teams from cwd/.pi/agents/teams.yaml
+    const projectTeamsFile = join(cwd, ".pi", "agents", "teams.yaml");
+    if (existsSync(projectTeamsFile)) {
+        try {
+            return parseTeamsYaml(readFileSync(projectTeamsFile, "utf-8"));
+        } catch {}
+    }
+
+    // Fallback to extension-level teams
     const extensionDir = dirname(fileURLToPath(import.meta.url));
     const teamsFile = join(extensionDir, "..", "agents", "teams.yaml");
-    if (!existsSync(teamsFile)) {
-        return {};
+    if (existsSync(teamsFile)) {
+        try {
+            return parseTeamsYaml(readFileSync(teamsFile, "utf-8"));
+        } catch {}
     }
-    try {
-        return parseTeamsYaml(readFileSync(teamsFile, "utf-8"));
-    } catch {
-        return {};
-    }
+
+    return {};
 }
 
 // A team can run the full pipeline only if it has the implementer, tester,
@@ -1769,15 +1846,38 @@ export interface PhaseMap {
 export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
     const byAgent = (name: string) =>
         phases.find((p) => p.agent === name.toLowerCase());
+
+    const required = [
+        "planner",
+        "critic",
+        "implementer",
+        "tester",
+        "validator",
+        "documenter",
+        "shipper",
+    ] as const;
+
+    // Find each required phase, throwing a clear error if any is missing
+    const requirePhase = (name: string): PhaseState => {
+        const p = byAgent(name);
+        if (!p) {
+            throw new Error(
+                `[buildPhaseMap] Required phase "${name}" not found in phases array. ` +
+                    `Available agents: ${phases.map((p) => p.agent).join(", ")}`,
+            );
+        }
+        return p;
+    };
+
     return {
         scout: byAgent("scout"),
-        planner: byAgent("planner")!,
-        critic: byAgent("critic")!,
-        implementer: byAgent("implementer")!,
-        tester: byAgent("tester")!,
-        validator: byAgent("validator")!,
-        documenter: byAgent("documenter")!,
-        shipper: byAgent("shipper")!,
+        planner: requirePhase("planner"),
+        critic: requirePhase("critic"),
+        implementer: requirePhase("implementer"),
+        tester: requirePhase("tester"),
+        validator: requirePhase("validator"),
+        documenter: requirePhase("documenter"),
+        shipper: requirePhase("shipper"),
     };
 }
 
@@ -2453,10 +2553,20 @@ export function spawnAgentWithModel(
                 );
                 unlinkSync(sessionFile);
             } else {
-                // Validate the session file more thoroughly
-                // Check first few lines to ensure it's valid JSONL
-                const content = readFileSync(sessionFile, "utf-8");
-                const lines = content.split("\n").filter((l) => l.trim());
+                // Validate the session file by reading only the first ~2KB
+                // instead of the entire file (which can be up to 10MB).
+                // This avoids blocking the event loop for large sessions.
+                const MAX_VALIDATE_BYTES = 2048;
+                const buf = Buffer.alloc(MAX_VALIDATE_BYTES);
+                let bytesRead = 0;
+                const fd = openSync(sessionFile, "r");
+                try {
+                    bytesRead = readSync(fd, buf, 0, MAX_VALIDATE_BYTES, 0);
+                } finally {
+                    closeSync(fd);
+                }
+                const head = buf.toString("utf-8", 0, bytesRead);
+                const lines = head.split("\n").filter((l) => l.trim());
                 let validLines = 0;
                 for (const line of lines.slice(0, 5)) {
                     try {
@@ -2567,6 +2677,12 @@ export function spawnAgentWithModel(
                       try {
                           proc.kill("SIGTERM");
                       } catch {}
+                      // Escalate to SIGKILL after 5s if SIGTERM doesn't work
+                      setTimeout(() => {
+                          if (!proc.killed) {
+                              proc.kill("SIGKILL");
+                          }
+                      }, 5000);
                   }, config.agentTimeoutMs)
                 : null;
 
