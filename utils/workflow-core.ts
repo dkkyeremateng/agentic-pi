@@ -2133,6 +2133,8 @@ export function handleSpawnEvent(
                 output: msg.usage.output || 0,
                 contextWindow: ctxWindow,
             };
+            // Also set phase.tokens immediately so the card can display it during the spawn
+            phase.tokens = state.capturedTokens;
             paint();
         }
     }
