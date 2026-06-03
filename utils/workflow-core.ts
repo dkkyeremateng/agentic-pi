@@ -455,22 +455,33 @@ export function renderWorkflowFooter(opts: {
         truncateToWidth,
     } = opts;
 
-    // Context usage of the PRIMARY (orchestrator) session — the subprocess phase
-    // agents each have their own window, not shown here. getContextUsage() returns
-    // undefined when the model's context window is unknown, and percent:null right
-    // after a compaction (untrustworthy until the next model response). Both are
-    // "unknown" — render "—", never a misleading 0%. When known, show the token
-    // count too so a small-but-nonzero context isn't hidden by a rounded-down 0%.
+    // Context usage: show active sub-agent's context if running, otherwise primary session
+    const activePhase = phases.find((p) => p.status === "running");
     let usage: any;
-    try {
-        usage = contextUsage();
-    } catch {}
-    const pct =
-        usage &&
-        typeof usage.percent === "number" &&
-        !Number.isNaN(usage.percent)
-            ? usage.percent
-            : null;
+    let pct: number | null;
+    let tokenCount: number | undefined;
+
+    if (activePhase && activePhase.contextPct > 0) {
+        // Sub-agent is running - show its context usage
+        pct = activePhase.contextPct;
+        tokenCount = activePhase.tokens?.input;
+    } else {
+        // No active sub-agent - show primary session's context
+        try {
+            usage = contextUsage();
+        } catch {}
+        pct =
+            usage &&
+            typeof usage.percent === "number" &&
+            !Number.isNaN(usage.percent)
+                ? usage.percent
+                : null;
+        tokenCount =
+            usage && typeof usage.tokens === "number" && usage.tokens > 0
+                ? usage.tokens
+                : undefined;
+    }
+
     const known = pct !== null;
     const filled = known ? Math.max(0, Math.min(10, Math.round(pct / 10))) : 0;
     const bar = "#".repeat(filled) + "-".repeat(10 - filled);
@@ -482,8 +493,8 @@ export function renderWorkflowFooter(opts: {
               : `${n}`;
     const pctStr = !known
         ? "—"
-        : typeof usage.tokens === "number" && usage.tokens > 0
-          ? `${Math.round(pct)}% · ${fmtTok(usage.tokens)}`
+        : tokenCount
+          ? `${Math.round(pct)}% · ${fmtTok(tokenCount)}`
           : `${Math.round(pct)}%`;
 
     // Ad-hoc dispatch doesn't set `running`, so derive its state from the phases
