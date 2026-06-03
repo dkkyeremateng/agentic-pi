@@ -355,9 +355,11 @@ export function renderCard(
     const ctxLine =
         showContext && phase.contextPct > 0
             ? (() => {
+                  const totalTok =
+                      (phase.tokens?.input || 0) + (phase.tokens?.output || 0);
                   const { bar, display } = formatContextUsage({
                       contextPct: phase.contextPct,
-                      tokenCount: phase.tokens?.input,
+                      tokenCount: totalTok || undefined,
                       barLength: 5,
                   });
                   const ctxStr = `[${bar}] ${display}`;
@@ -490,7 +492,10 @@ export function renderWorkflowFooter(opts: {
     if (activePhase && activePhase.contextPct > 0) {
         // Sub-agent is running - show its context usage
         contextPct = activePhase.contextPct;
-        tokenCount = activePhase.tokens?.input;
+        tokenCount = activePhase.tokens
+            ? (activePhase.tokens.input || 0) +
+                  (activePhase.tokens.output || 0) || undefined
+            : undefined;
     } else {
         // No active sub-agent - show primary session's context
         let usage: any;
@@ -2037,7 +2042,7 @@ export async function runPhaseCore(
 export interface TokenUsage {
     input: number;
     output: number;
-    contextWindow: number;
+    contextWindow: number; // 0 when unknown
 }
 
 // Format a per-phase token note for the workflow report summary line.
@@ -2178,17 +2183,29 @@ export function handleSpawnEvent(
                 state.finalError = String(msg.errorMessage);
         }
         if (msg?.usage?.input) {
-            const ctxWindow =
-                msg.usage.contextWindow || msg.usage.max_tokens || 200_000;
+            // contextWindow may not be reported by all providers. Do NOT fall
+            // back to max_tokens (that's the max output limit, not the context
+            // window) or a hardcoded value — both produce misleading percentages.
+            const ctxWindow = msg.usage.contextWindow || 0;
 
-            // Accumulate tokens across all messages in this spawn
-            state.cumulativeTokens.input += msg.usage.input || 0;
+            // input tokens: each message_end in a multi-turn spawn reports the
+            // FULL conversation context for that turn, not a delta. Take the
+            // max to avoid double-counting as the conversation grows.
+            state.cumulativeTokens.input = Math.max(
+                state.cumulativeTokens.input,
+                msg.usage.input || 0,
+            );
+            // output tokens: genuinely additive across turns
             state.cumulativeTokens.output += msg.usage.output || 0;
 
-            const pct = Math.min(
-                100,
-                Math.round((state.cumulativeTokens.input / ctxWindow) * 100),
-            );
+            const totalTokens =
+                state.cumulativeTokens.input + state.cumulativeTokens.output;
+
+            // Only compute percentage when the context window is known
+            const pct =
+                ctxWindow > 0
+                    ? Math.min(100, Math.round((totalTokens / ctxWindow) * 100))
+                    : 0;
             phase.contextPct = pct;
             state.contextPct = phase.contextPct;
             state.capturedTokens = {

@@ -303,9 +303,12 @@ export default function (pi: ExtensionAPI) {
 
         // Context-usage bar, shown on every card (empty `[-----] 0%` until run).
         const ctxPct = livePhase?.contextPct ?? 0;
+        const ctxTotalTok = livePhase?.tokens
+            ? (livePhase.tokens.input || 0) + (livePhase.tokens.output || 0)
+            : undefined;
         const { bar: ctxBar, display: ctxDisplay } = formatContextUsage({
             contextPct: ctxPct,
-            tokenCount: livePhase?.tokens?.input,
+            tokenCount: ctxTotalTok,
             barLength: 5,
         });
 

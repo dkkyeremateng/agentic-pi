@@ -1504,7 +1504,8 @@ describe("handleSpawnEvent", () => {
             output: 500,
             contextWindow: 100000,
         });
-        assert.equal(phase.contextPct, 1);
+        // pct = round((input + output) / contextWindow * 100) = round(1500/100000*100) = 2
+        assert.equal(phase.contextPct, 2);
     });
 
     it("captures finalError from message_end with stopReason error", () => {
