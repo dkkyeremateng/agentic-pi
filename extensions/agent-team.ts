@@ -90,6 +90,7 @@ import {
     loadPromptTemplate,
     renderTemplate,
     teamIsSpec,
+    allTeamAgents,
     makeSpawnWrapper,
 } from "../utils/workflow-core";
 import {
@@ -414,9 +415,13 @@ export default function (pi: ExtensionAPI) {
         ];
     }
 
-    // The idle dashboard: a 2-column grid of the active team's agents, each
-    // card showing the model it will run. Mirrors the agent-team layout.
+    // The idle dashboard: a grid of ALL agents across all teams in teams.yaml.
+    // Each card shows the model it will run.
     function renderAgentGrid(width: number, theme: any): string[] {
+        // Show every unique agent from all teams, filtered to those with loaded .md defs
+        const allRoster = allTeamAgents(st.teams).filter((m) =>
+            st.agents.has(m.toLowerCase()),
+        );
         const roster = activeMembers();
         const teamNames = Object.keys(st.teams);
 
@@ -429,18 +434,17 @@ export default function (pi: ExtensionAPI) {
         const selectedCount = selectedKeys.length;
         const selecting = st.dispatchMode && selectedCount > 0;
 
-        // Off-team: at least one dispatched agent is not a member of the active
-        // team. The team roster/info is then irrelevant, so we hide it (header and
-        // the team cards) and show only the dispatched agents.
+        // Off-team: at least one dispatched agent is not a member of any team.
         const offTeam =
             selecting &&
             selectedKeys.some(
-                (k) => !roster.some((m) => m.toLowerCase() === k.toLowerCase()),
+                (k) =>
+                    !allRoster.some((m) => m.toLowerCase() === k.toLowerCase()),
             );
 
-        // At bootup show the full team roster; once dispatching, show only the
-        // dispatched agents (team members or not).
-        const members = selecting ? selectedKeys : roster;
+        // At bootup show the full roster from all teams; once dispatching,
+        // show only the dispatched agents (team members or not).
+        const members = selecting ? selectedKeys : allRoster;
 
         const anyRunning = st.phases.some((p) => p.status === "running");
         const doneCount = st.phases.filter((p) => p.status === "done").length;
@@ -490,7 +494,7 @@ export default function (pi: ExtensionAPI) {
                 theme.fg("accent", st.activeTeamName || "—") +
                 theme.fg(
                     "dim",
-                    ` (${countSet.length} agent${countSet.length === 1 ? "" : "s"}` +
+                    ` (${roster.length}/${allRoster.length} agent${allRoster.length === 1 ? "" : "s"}` +
                         `${teamIsSpec(countSet) ? " · spec mode" : " · full pipeline"})`,
                 ) +
                 badge;

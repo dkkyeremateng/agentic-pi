@@ -82,6 +82,7 @@ import {
     loadAgents as loadAgentsCore,
     loadTeams as loadTeamsCore,
     teamIsSpec,
+    allTeamAgents,
     loadPromptTemplate,
     renderTemplate,
     makeSpawnWrapper,
@@ -290,11 +291,17 @@ export default function (pi: ExtensionAPI) {
         ];
     }
 
-    // The idle dashboard: a grid of the active team's agents. All agents run on
-    // one model, shown once in the header. Mirrors the agent-team layout.
+    // The idle dashboard: a grid of ALL agents across all teams in teams.yaml.
+    // All agents run on one model, shown once in the header.
     function renderAgentGrid(width: number, theme: any): string[] {
-        const members = activeMembers();
+        // Show every unique agent from all teams, filtered to those with loaded .md defs
+        const allMembers = allTeamAgents(st.teams).filter((m) =>
+            st.agents.has(m.toLowerCase()),
+        );
         const teamNames = Object.keys(st.teams);
+        const activeMembers = (st.teams[st.activeTeamName] || []).filter(
+            (m: string) => st.agents.has(m.toLowerCase()),
+        );
 
         const header =
             " " +
@@ -303,8 +310,8 @@ export default function (pi: ExtensionAPI) {
             theme.fg("accent", st.activeTeamName || "—") +
             theme.fg(
                 "dim",
-                ` (${members.length} agent${members.length === 1 ? "" : "s"}` +
-                    `${teamIsSpec(members) ? " · spec mode" : " · full pipeline"})`,
+                ` (${activeMembers.length}/${allMembers.length} agent${allMembers.length === 1 ? "" : "s"}` +
+                    `${teamIsSpec(activeMembers) ? " · spec mode" : " · full pipeline"})`,
             ) +
             theme.fg("dim", "  ·  model ") +
             theme.fg("muted", modelFor(""));
@@ -317,18 +324,18 @@ export default function (pi: ExtensionAPI) {
 
         const lines: string[] = [header, hint, ""];
 
-        if (members.length === 0) {
+        if (allMembers.length === 0) {
             lines.push(...renderEmptyAgentMessage(theme));
             return lines;
         }
 
         const { cols, gap, colWidth } = calculateGridLayout(
-            members.length,
+            allMembers.length,
             width,
         );
 
-        for (let i = 0; i < members.length; i += cols) {
-            const rowMembers = members.slice(i, i + cols);
+        for (let i = 0; i < allMembers.length; i += cols) {
+            const rowMembers = allMembers.slice(i, i + cols);
             const cards = rowMembers.map((m) =>
                 renderAgentCard(m, colWidth, theme),
             );

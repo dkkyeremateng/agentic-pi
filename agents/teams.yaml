@@ -17,3 +17,7 @@ plan-build:
     - planner
     - implementer
     - validator
+
+research-doc:
+    - seeker
+    - documenter

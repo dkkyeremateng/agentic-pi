@@ -909,6 +909,24 @@ export function teamIsSpec(members: string[]): boolean {
     );
 }
 
+// Collect all unique agent keys across every team, preserving first-seen order.
+// Used by the idle widget grid so the dashboard shows every agent defined in
+// teams.yaml — not just the active team's members.
+export function allTeamAgents(teams: Record<string, string[]>): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const members of Object.values(teams)) {
+        for (const m of members) {
+            const key = m.toLowerCase();
+            if (!seen.has(key)) {
+                seen.add(key);
+                result.push(key);
+            }
+        }
+    }
+    return result;
+}
+
 // Render the list of all defined teams (members + mode), marking the active one.
 // Used in the startup banner and re-emitted on team switch so the `← active`
 // marker follows the currently selected team.
