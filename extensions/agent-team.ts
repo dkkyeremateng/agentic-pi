@@ -366,7 +366,20 @@ export default function (pi: ExtensionAPI) {
         const ctxPct = livePhase?.contextPct ?? 0;
         const ctxFilled = Math.max(0, Math.min(5, Math.ceil(ctxPct / 20)));
         const ctxBar = "#".repeat(ctxFilled) + "-".repeat(5 - ctxFilled);
-        const ctxRaw = `[${ctxBar}] ${ctxPct}%`;
+
+        // Add token count if available
+        const fmtTok = (n: number) =>
+            n >= 10000
+                ? `${Math.round(n / 1000)}k`
+                : n >= 1000
+                  ? `${(n / 1000).toFixed(1)}k`
+                  : `${n}`;
+        const tokenCount =
+            livePhase?.tokens && livePhase.tokens.input > 0
+                ? ` · ${fmtTok(livePhase.tokens.input)}`
+                : "";
+
+        const ctxRaw = `[${ctxBar}] ${ctxPct}%${tokenCount}`;
         const ctxStr = theme.fg("dim", truncate(ctxRaw, w));
         const ctxVisible = Math.min(ctxRaw.length, w);
 
