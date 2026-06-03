@@ -2,6 +2,7 @@
 name: documenter
 description: Documentation — writes clear, concise docs, updates READMEs, adds inline comments where needed, and generates usage examples, matching the project's existing doc style
 model: gateframe_private/gateframe/deepseek-v4-flash
+context_window: 1000000
 tools: read,write,edit,bash,grep,find,ls
 ---
 

@@ -303,14 +303,17 @@ export default function (pi: ExtensionAPI) {
 
         // Context-usage bar, shown on every card.
         const ctxPct = livePhase?.contextPct ?? 0;
-        const ctxWindow = livePhase?.tokens?.contextWindow;
+        // Use live context window from the API response if available, otherwise
+        // fall back to the agent's declared context_window in its .md frontmatter.
+        const ctxWindow =
+            livePhase?.tokens?.contextWindow || def?.contextWindow || 0;
         const ctxTotalTok = livePhase?.tokens
             ? (livePhase.tokens.input || 0) + (livePhase.tokens.output || 0)
             : undefined;
         const { bar: ctxBar, display: ctxDisplay } = formatContextUsage({
             contextPct: ctxPct,
             tokenCount: ctxTotalTok,
-            contextWindow: ctxWindow,
+            contextWindow: ctxWindow || undefined,
             barLength: 5,
         });
 
@@ -544,9 +547,16 @@ export default function (pi: ExtensionAPI) {
                     );
                     const arrowRow = 2; // middle of the 5-line card
 
-                    const cards = st.phases.map((p) =>
-                        renderCard(p, colWidth, theme),
-                    );
+                    const cards = st.phases.map((p) => {
+                        const def = st.agents.get(p.agent);
+                        return renderCard(
+                            p,
+                            colWidth,
+                            theme,
+                            true,
+                            def?.contextWindow || undefined,
+                        );
+                    });
                     const lines: string[] = [];
 
                     const passInfo =

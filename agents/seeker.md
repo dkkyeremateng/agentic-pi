@@ -2,6 +2,7 @@
 name: seeker
 description: Browser automation and web research — headless browsing, parallel browser sessions, UI testing, screenshots, and web scraping via the bowser (Playwright) skill. Supports parallel instances. Reports concise, sourced results without changing the codebase
 model: gateframe/gateframe/gemini-3.1-flash-lite
+context_window: 1000000
 tools: bash,read,write,grep,find,ls
 ---
 

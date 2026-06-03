@@ -61,6 +61,7 @@ export interface AgentDef {
     description: string;
     tools: string;
     model: string;
+    contextWindow: number; // 0 when not declared in frontmatter
     systemPrompt: string;
 }
 
@@ -327,6 +328,7 @@ export function renderCard(
     colWidth: number,
     theme: any,
     showContext = true,
+    fallbackContextWindow?: number,
 ): string[] {
     const w = colWidth - 2;
     const truncate = (s: string, max: number) =>
@@ -352,9 +354,8 @@ export function renderCard(
     const statusVisible = Math.min(statusRaw.length, w);
 
     // Context usage bar: 5 blocks + percent + context window + token count.
-    const ctxWindow = phase.tokens?.contextWindow;
-    const showCtx =
-        showContext && (phase.contextPct > 0 || (ctxWindow && ctxWindow > 0));
+    const ctxWindow = phase.tokens?.contextWindow || fallbackContextWindow || 0;
+    const showCtx = showContext && (phase.contextPct > 0 || ctxWindow > 0);
     const ctxLine = showCtx
         ? (() => {
               const totalTok =
@@ -362,7 +363,7 @@ export function renderCard(
               const { bar, display } = formatContextUsage({
                   contextPct: phase.contextPct,
                   tokenCount: totalTok || undefined,
-                  contextWindow: ctxWindow,
+                  contextWindow: ctxWindow || undefined,
                   barLength: 5,
               });
               const ctxStr = `[${bar}] ${display}`;
@@ -805,6 +806,14 @@ export function parseAgentFile(filePath: string): AgentDef | null {
             description: fm.description || "",
             tools: fm.tools || "read,grep,find,ls",
             model: fm.model || "",
+            contextWindow:
+                parseInt(
+                    fm.context_window ||
+                        fm.contextwindow ||
+                        fm.contextWindow ||
+                        "0",
+                    10,
+                ) || 0,
             systemPrompt: match[2].trim(),
         };
     } catch {

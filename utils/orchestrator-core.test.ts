@@ -22,6 +22,7 @@ function mkAgent(name: string): AgentDef {
         description: `Test agent ${name}`,
         tools: "bash",
         model: "test/model",
+        contextWindow: 200000,
         systemPrompt: "You are a test agent.",
     };
 }
