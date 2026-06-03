@@ -208,9 +208,10 @@ export default function (pi: ExtensionAPI) {
         if (!m) return "";
         return m.provider && m.id ? `${m.provider}/${m.id}` : m.id || "";
     }
-    // The base workflow runs every agent on one model: PI_WORKFLOW_MODEL if set,
-    // otherwise the current session's model. The team variant overrides per agent.
-    function modelFor(_agentKey: string): string {
+    // Per-agent model: agent .md frontmatter → PI_WORKFLOW_MODEL → session model.
+    function modelFor(agentKey: string): string {
+        const def = st.agents.get(agentKey.toLowerCase());
+        if (def?.model) return def.model;
         return WORKER_MODEL || sessionModel || "default";
     }
     // Members of the active team that actually resolve to a loaded agent .md.
@@ -442,12 +443,8 @@ export default function (pi: ExtensionAPI) {
         phase: PhaseState,
         cwd: string,
     ): Promise<{ output: string; exitCode: number }> {
-        // PI_WORKFLOW_MODEL is an explicit override; otherwise every agent runs
-        // on the current session's model. Note: unlike agent-team, the agent's
-        // frontmatter `model:` field is intentionally ignored here — the pipeline
-        // runs all agents on a single model for consistency. Use agent-team if
-        // you need per-agent model control.
-        const primaryModel = WORKER_MODEL || sessionModel;
+        // Precedence: agent .md frontmatter → PI_WORKFLOW_MODEL → session model
+        const primaryModel = agentDef.model || WORKER_MODEL || sessionModel;
         // Fallback: the model the current pi session is running on (the primary
         // agent's model). If an agent's configured model fails to load, we retry
         // with the session model since it's known to work — pi itself is using it.

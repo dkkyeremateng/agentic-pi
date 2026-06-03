@@ -147,14 +147,6 @@ export function isActiveWorkflow(selfName: string): boolean {
 const PROJECT_ENV_WHITELIST = new Set([
     "PI_WORKFLOW_MODEL",
     "PI_WORKFLOW_MAX_LOOPS",
-    "PI_AGENT_SCOUT_MODEL",
-    "PI_AGENT_PLANNER_MODEL",
-    "PI_AGENT_CRITIC_MODEL",
-    "PI_AGENT_IMPLEMENTER_MODEL",
-    "PI_AGENT_TESTER_MODEL",
-    "PI_AGENT_VALIDATOR_MODEL",
-    "PI_AGENT_DOCUMENTER_MODEL",
-    "PI_AGENT_SHIPPER_MODEL",
 ]);
 
 // Load KEY=VALUE pairs from a `.env` file into process.env WITHOUT overwriting

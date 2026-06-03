@@ -42,7 +42,6 @@ import {
     visibleWidth,
 } from "@mariozechner/pi-tui";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { secs } from "../utils/workflow-utils";
@@ -104,7 +103,7 @@ import {
     runSpecWorkflowCommand,
 } from "../utils/orchestrator-core";
 
-// Run before any process.env reads below (WORKER_MODEL, loadAgentModels, …).
+// Run before any process.env reads below (WORKER_MODEL, …).
 loadDotEnv(process.cwd());
 
 // This file is "agent-team". See workflow-core for loadedExplicitly /
@@ -129,16 +128,8 @@ const loadTeams = (cwd: string) => loadTeamsCore(cwd, INSTALL_AGENTS_DIR);
 // ── Config ───────────────────────────────────────
 
 // Empty string = inherit pi's configured default model.
-// Per-agent model can be set two ways (env wins over the file):
-//   1. Env vars: PI_AGENT_PLANNER_MODEL, PI_AGENT_IMPLEMENTER_MODEL,
-//      PI_AGENT_TESTER_MODEL, PI_AGENT_VALIDATOR_MODEL, PI_AGENT_DOCUMENTER_MODEL
-//   2. A `.pi/agents/models.yaml` file (handy when pi is launched from an IDE
-//      or GUI that doesn't inherit your shell env). Flat `agent: model` lines,
-//      plus an optional `default:` for all unset agents. Example:
-//        planner: anthropic/claude-opus-4-8
-//        documenter: openrouter/google/gemini-3-flash
-//        default: anthropic/claude-haiku-4-5
-// PI_WORKFLOW_MODEL is the global env fallback for any agent left unset.
+// Per-agent model is set in each agent's .md frontmatter `model:` field.
+// PI_WORKFLOW_MODEL is the global env fallback for agents without a model.
 const WORKER_MODEL = process.env.PI_WORKFLOW_MODEL || "";
 // Optional per-agent watchdog: kill an agent that runs longer than N minutes
 // (PI_WORKFLOW_AGENT_TIMEOUT, in minutes). 0 / unset = no timeout.
@@ -160,64 +151,13 @@ const MAX_DISPATCHES_PER_TURN = Math.max(
 // so treat the dispatch as failed (steer the orchestrator to re-dispatch).
 const MIN_DISPATCH_OUTPUT_CHARS = 40;
 
-type AgentName =
-    | "scout"
-    | "planner"
-    | "critic"
-    | "implementer"
-    | "tester"
-    | "validator"
-    | "documenter";
-// Exactly the known agents — no loose string index, so typos and unknown keys
-// are caught. Look up arbitrary agent names via `agentModels[k as AgentName]`.
-type AgentModelConfig = Record<AgentName, string>;
-
-// Parse `.pi/agents/models.yaml` — flat `agent: model` key/value lines.
-function loadModelOverrides(cwd: string): Record<string, string> {
-    const path = join(cwd, ".pi", "agents", "models.yaml");
-    if (!existsSync(path)) return {};
-    const out: Record<string, string> = {};
-    try {
-        for (const line of readFileSync(path, "utf-8").split("\n")) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith("#")) continue;
-            const m = trimmed.match(/^([A-Za-z_][\w-]*)\s*:\s*(.+)$/);
-            if (m)
-                out[m[1].toLowerCase()] = m[2]
-                    .trim()
-                    .replace(/^["']|["']$/g, "");
-        }
-    } catch {}
-    return out;
-}
-
-// Resolve each agent's model. Precedence: per-agent env var → models.yaml entry
-// → PI_WORKFLOW_MODEL → models.yaml `default:` → inherit pi's default ("").
-// `cwd` enables the file source; omit it (module-load time) for env-only.
-function loadAgentModels(cwd?: string): AgentModelConfig {
-    const file = cwd ? loadModelOverrides(cwd) : {};
-    const fallback = WORKER_MODEL || file.default || "";
-    const pick = (agent: string, envVar: string) =>
-        process.env[envVar] || file[agent] || fallback;
-    return {
-        scout: pick("scout", "PI_AGENT_SCOUT_MODEL"),
-        planner: pick("planner", "PI_AGENT_PLANNER_MODEL"),
-        critic: pick("critic", "PI_AGENT_CRITIC_MODEL"),
-        implementer: pick("implementer", "PI_AGENT_IMPLEMENTER_MODEL"),
-        tester: pick("tester", "PI_AGENT_TESTER_MODEL"),
-        validator: pick("validator", "PI_AGENT_VALIDATOR_MODEL"),
-        documenter: pick("documenter", "PI_AGENT_DOCUMENTER_MODEL"),
-    };
-}
-
 // ── Extension ────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
     // Shared run/session state — mutated by orchestrator-core, read by this
     // extension's widget/footer/hooks.
     const st = newOrchestratorState();
-    // Extension-local: per-agent model config, live ctx, session dir, subprocess.
-    let agentModels: AgentModelConfig = loadAgentModels();
+    // Extension-local: live ctx, session dir, subprocess.
     let widgetCtx: any;
     let sessionDir = "";
     let currentProc: any = null;
@@ -236,15 +176,8 @@ export default function (pi: ExtensionAPI) {
         },
         setup: {
             setupSessions: (cwd, wipe) => setupSessions(cwd, wipe),
-            loadAgents: (cwd) => {
-                // The dispatch/select paths refresh per-agent models here (the
-                // pipeline variant has no per-agent models, so it just loads agents).
-                agentModels = loadAgentModels(cwd);
-                return loadAgents(cwd);
-            },
-            prepareRun: (ctx) => {
-                agentModels = loadAgentModels(ctx.cwd);
-            },
+            loadAgents: (cwd) => loadAgents(cwd),
+            prepareRun: () => {},
         },
         config: {
             sharedContext: SHARED_CONTEXT,
@@ -279,9 +212,10 @@ export default function (pi: ExtensionAPI) {
         );
     }
     function modelFor(agentKey: string): string {
-        return (
-            agentModels[agentKey.toLowerCase() as AgentName] || fallbackModel()
-        );
+        // Precedence: agent .md frontmatter → PI_WORKFLOW_MODEL → session model
+        const def = st.agents.get(agentKey.toLowerCase());
+        if (def?.model) return def.model;
+        return fallbackModel();
     }
     // Members of the active team that actually resolve to a loaded agent .md.
     function activeMembers(): string[] {
@@ -563,24 +497,21 @@ export default function (pi: ExtensionAPI) {
 
                     // ── Pipeline view (full run_agent_team) ───────────
                     // Per-agent model table, shown between the title and the cards.
-                    const fallbackModel =
+                    const fallbackModelStr =
                         WORKER_MODEL || widgetCtx?.model?.id || "default";
-                    const agentOrder = [
-                        "planner",
-                        "implementer",
-                        "tester",
-                        "validator",
-                        "documenter",
-                    ] as const;
+                    // Derive the agent order from the phases being run, not a
+                    // hardcoded list — so custom teams work too.
+                    const agentOrder = st.phases.map((p) => p.agent);
                     const maxAgentLen = Math.max(
                         ...agentOrder.map((a) => displayName(a).length),
-                    ); // "Implementer".length = 11
+                        11,
+                    );
                     const activeAgent =
                         st.phases.find((p) => p.status === "running")?.agent ??
                         "";
 
                     const modelRows: string[] = agentOrder.map((agentKey) => {
-                        const m = agentModels[agentKey] || fallbackModel;
+                        const m = modelFor(agentKey);
                         const label = displayName(agentKey).padEnd(maxAgentLen);
                         const isActive = agentKey === activeAgent;
                         const bullet = isActive
@@ -684,15 +615,15 @@ export default function (pi: ExtensionAPI) {
         // Per-agent model: check the agent's own .md frontmatter first, then the
         // team config (env var override), then fall back to the global default.
         const agentKey = agentDef.name.toLowerCase();
-        const teamModel = agentModels[agentKey as AgentName] ?? WORKER_MODEL;
-        const primaryModel = agentDef.model || teamModel;
+        // Precedence: agent .md frontmatter → PI_WORKFLOW_MODEL → session model
+        const primaryModel = agentDef.model || WORKER_MODEL || fallbackModel();
         // Fallback: the model the current pi session is running on (the primary
         // agent's model). If an agent's configured model fails to load, we retry
         // with the session model since it's known to work — pi itself is using it.
         const sm = widgetCtx?.model;
         const sessionModel =
             sm?.provider && sm?.id ? `${sm.provider}/${sm.id}` : sm?.id || "";
-        const fallbackModel =
+        const modelFallback =
             sessionModel && sessionModel !== primaryModel ? sessionModel : "";
 
         // Delegate to shared core (eliminates ~50 lines of near-identical
@@ -703,7 +634,7 @@ export default function (pi: ExtensionAPI) {
             phase,
             cwd,
             primaryModel,
-            fallbackModel,
+            modelFallback,
             spawnAgentWithModel,
             {
                 updateWidget,
@@ -796,7 +727,6 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 st.agents = loadAgents(ctx.cwd);
-                agentModels = loadAgentModels(ctx.cwd);
                 st.teams = loadTeams(ctx.cwd);
                 if (Object.keys(st.teams).length === 0)
                     st.teams = { all: Array.from(st.agents.keys()) };
@@ -1171,7 +1101,6 @@ export default function (pi: ExtensionAPI) {
         widgetCtx = ctx;
         loadDotEnv(ctx.cwd); // pick up cwd/.env in case pi launched from elsewhere
         st.agents = loadAgents(ctx.cwd);
-        agentModels = loadAgentModels(ctx.cwd);
         st.teams = loadTeams(ctx.cwd);
         // Fall back to an "all" team if teams.yaml is absent/empty, so the
         // dashboard still has something to show.
