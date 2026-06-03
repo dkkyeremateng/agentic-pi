@@ -329,9 +329,14 @@ export function renderCard(
                           : n >= 1000
                             ? `${(n / 1000).toFixed(1)}k`
                             : `${n}`;
-                  console.error(
-                      `[renderCard] phase.tokens=${JSON.stringify(phase.tokens)}, input=${phase.tokens?.input}`,
+
+                  // Debug: write to file
+                  const fs = require("fs");
+                  fs.appendFileSync(
+                      "/tmp/pi-renderCard.log",
+                      `[${new Date().toISOString()}] phase.tokens=${JSON.stringify(phase.tokens)}, input=${phase.tokens?.input}\n`,
                   );
+
                   const tokenCount =
                       phase.tokens && phase.tokens.input > 0
                           ? ` · ${fmtTok(phase.tokens.input)}`
