@@ -358,7 +358,7 @@ export default function (pi: ExtensionAPI) {
                         return text.render(width);
                     }
 
-                    const arrowWidth = 5; // " ──▶ "
+                    const arrowWidth = 5; // " ──▸ "
                     const cols = phases.length;
                     const colWidth = Math.max(
                         14,

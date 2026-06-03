@@ -50,3 +50,26 @@ Every document you produce MUST be written to disk with the `write` or `edit` to
 2. **Usage Examples** — the examples you added (so they can be reviewed)
 3. **Comments Added** — where and why (only the non-obvious spots)
 4. **Notes** — anything intentionally left undocumented, and why
+
+---
+
+## Spec Workflow (when asked to produce a specification)
+
+When you receive a raw implementation plan instead of a completed change, your job shifts: transform the plan into a clean, standalone implementation specification. The reader is ANY AI agent (Copilot, Claude, Cursor, Codex, a different pi session, etc.) or human developer who will pick this spec up later and build the feature from scratch. They have access to the codebase but NO other context from the planning conversation.
+
+### Spec Structure
+
+1. Restate the requirement in a single crisp summary paragraph at the top.
+2. List preconditions and assumptions explicitly (environment, existing files, dependencies).
+3. Re-organize the plan phases into clear, numbered build steps.
+4. For each step, state: the target file path(s), the exact change (New / Modify / Remove), function signatures or code snippets where helpful, integration points, and edge cases.
+5. Include a complete Acceptance Criteria section with testable, observable statements.
+6. Include a Verification section with the exact commands to run and what to expect.
+7. Include a Risks / Open Questions section if anything is unresolved.
+8. End with a one-line metadata block: `Original request: <text>` so the reader can cross-check.
+
+### Spec Constraints
+
+- Do NOT modify any production files — the spec file is the only deliverable.
+- Save the spec as markdown to `specs/<slug>.md` where `<slug>` is a short kebab-case identifier derived from the request. Create the `specs/` directory if it does not exist.
+- Style: dry and precise, no filler. Use headings, tables, and code fences liberally.

@@ -1484,69 +1484,33 @@ function reconBlock(recon: string): string[] {
 
 export function scoutTask(original: string): string {
     return [
-        "You are scouting the codebase ahead of a planning step. Investigate quickly and report concise findings the planner will use to ground its plan. You are strictly read-only — do NOT modify anything.",
+        "Scout the codebase for this request and report concise findings.",
         "",
-        "The team is about to work on this request:",
+        "Request:",
         original,
-        "",
-        "Report, tightly: the project type and stack; the structure relevant to this request; recurring patterns and conventions to follow; and the key entry points / seams where this change would plug in. Cite real `file:line` references. Omit anything irrelevant to the request.",
     ].join("\n");
 }
 
 export function planTask(original: string, recon = ""): string {
     return [
-        "You are the entry point of the plan-implement-test-validate workflow. Your plan is handed straight to the implementer.",
+        "Produce a structured, phased implementation plan.",
         "",
         "Request:",
         original,
         "",
         ...reconBlock(recon),
-        "First classify this request as a BUG FIX, NEW FEATURE, or NEW APP (greenfield), and state the type at the top of your plan.",
-        "- Bug fix: reproduce it, find the root cause, cite exact files and lines, then plan the minimal fix plus a regression test.",
-        "- New feature: plan it against the existing codebase — where it integrates, what it reuses, what it adds.",
-        "- New app: there may be no codebase yet. Recommend a stack, define the directory structure and scaffolding, and sequence the build so a minimal app runs by the end of Phase 1.",
-        "",
-        "Produce a structured, phased plan with file-level specificity, and state clear acceptance criteria the tester and validator can check.",
     ].join("\n");
 }
 
 export function criticTask(original: string, plan: string): string {
     return [
-        "You are critically evaluating an implementation plan before it is handed to the implementer. Your job is to find every problem that would cause the implementation to fail, the tests to miss regressions, or the acceptance criteria to go unmet.",
+        "Evaluate this implementation plan before it is handed to the implementer.",
         "",
         "Request:",
         original,
         "",
         "Plan to evaluate:",
         plan,
-        "",
-        "Work through these categories and report every finding:",
-        "1. Completeness — Are all affected files listed? Are any call sites, consumers, or dependents of touched code missing?",
-        "2. Correctness — Does the described logic actually solve the requirement? Are edge cases (empty inputs, concurrency, auth boundaries) unaccounted for?",
-        "3. Feasibility — Are the changes compatible with the existing code structure and patterns? Does any phase assume something that does not yet exist?",
-        "4. Dependency risks — Are new packages or versions introduced that could conflict with existing constraints?",
-        "5. Phase ordering — Can each phase be implemented and tested independently? Are there hidden ordering constraints?",
-        "6. Acceptance criteria quality — Is every criterion observable and unambiguous? Are error paths and regressions covered?",
-        "7. Unverified assumptions — Did the planner state or imply something that cannot be confirmed from the codebase as-is?",
-        "",
-        "Output your critique using this format:",
-        "",
-        "## Verdict",
-        "APPROVED | APPROVED WITH RESERVATIONS | REVISE BEFORE IMPLEMENTING",
-        "",
-        "## Critical Issues",
-        "(Issues that must be fixed before the plan is safe to implement. If none, write: None.)",
-        "",
-        "## Minor Issues",
-        "(Issues worth fixing but that will not block a careful implementer. If none, write: None.)",
-        "",
-        "## Unverified Assumptions",
-        "(Statements in the plan that could not be confirmed against the codebase. If none, write: None.)",
-        "",
-        "## Acceptance Criteria Assessment",
-        "(One line per criterion: abbreviated text | Testable? | Notes)",
-        "",
-        "If the verdict is REVISE BEFORE IMPLEMENTING, state exactly what the planner must fix. Do NOT rewrite the plan yourself.",
     ].join("\n");
 }
 
@@ -1556,7 +1520,7 @@ export function revisePlanTask(
     critique: string,
 ): string {
     return [
-        "The critic REJECTED your implementation plan. Revise it to address the issues raised. Do not start over — adjust the existing plan.",
+        "The critic REJECTED your plan. Revise it to address the issues raised. Do not start over — adjust the existing plan.",
         "",
         "Original request:",
         original,
@@ -1566,22 +1530,18 @@ export function revisePlanTask(
         "",
         "Critic findings to address:",
         critique,
-        "",
-        "Apply the fixes, then output an updated, complete plan. The critic will review your revision, so fix every critical issue it raised.",
     ].join("\n");
 }
 
 export function implementTask(original: string, plan: string): string {
     return [
-        "Implement the following approved plan exactly. Do not redesign it; if it is infeasible, stop and report why.",
+        "Implement the following approved plan.",
         "",
         "Original request:",
         original,
         "",
         "Plan:",
         plan,
-        "",
-        "When done, output a precise change summary: files changed, key code, how to exercise the new behavior, and the tests you ran.",
     ].join("\n");
 }
 
@@ -1592,7 +1552,7 @@ export function fixTask(
     prevSummary: string,
 ): string {
     return [
-        "The validator REJECTED the previous attempt. Fix exactly the issues it raised. Do not start over — adjust the existing work.",
+        "The validator REJECTED the previous attempt. Fix exactly the issues raised.",
         "",
         "Original request:",
         original,
@@ -1605,8 +1565,6 @@ export function fixTask(
         "",
         "Validator findings to address:",
         feedback,
-        "",
-        "Apply the fixes, then output an updated change summary including what you changed in this pass.",
     ].join("\n");
 }
 
@@ -1616,18 +1574,16 @@ export function testTask(
     implSummary: string,
 ): string {
     return [
-        "Test the change just implemented. Write the tests needed to cover the requirement and the plan's acceptance criteria, run the full relevant suite, and report pass/fail with output.",
+        "Test the change just implemented.",
         "",
         "Original requirement:",
         original,
         "",
-        "Plan (contains the acceptance criteria your tests must cover):",
+        "Plan (contains the acceptance criteria):",
         plan,
         "",
         "Implementer's change summary:",
         implSummary,
-        "",
-        "Map each test to an acceptance criterion. Start your report with a summary line `TESTS: <N> passed, <M> failed`, then list any failures with file:line.",
     ].join("\n");
 }
 
@@ -1638,7 +1594,7 @@ export function documentTask(
     testReport: string,
 ): string {
     return [
-        "Document the change just implemented and verified. Write clear, concise documentation that matches the project's existing style.",
+        "Document the change just implemented and verified.",
         "",
         "Original requirement:",
         original,
@@ -1651,12 +1607,6 @@ export function documentTask(
         "",
         "Tester's report:",
         testReport,
-        "",
-        "Do each of the following that applies:",
-        "- Update the relevant README(s) and any affected docs to reflect the change. Inspect the existing docs first and match their tone, structure, and formatting; if there is no doc style, keep it simple and consistent.",
-        "- Add concise inline comments only where the code is non-obvious — do not over-comment or restate the code.",
-        "- Add or update usage examples (commands, code snippets, or API calls) that show how to use the new behavior.",
-        "Edit the actual files. Do not change code behavior. Then report exactly which docs you changed and why.",
     ].join("\n");
 }
 
@@ -1666,7 +1616,7 @@ export function validateTask(
     testReport: string,
 ): string {
     return [
-        "Validate the completed work. You are the correctness gate — do NOT commit, push, or open a pull request; that happens in a later step once the change is documented.",
+        "Validate the completed work.",
         "",
         "Original requirement:",
         original,
@@ -1676,11 +1626,6 @@ export function validateTask(
         "",
         "Tester's report:",
         testReport,
-        "",
-        "Run the full build/lint/type-check/test suite yourself, confirm every acceptance criterion from the plan, and check the diff for regressions.",
-        "On the FIRST line output exactly `VERDICT: PASS` or `VERDICT: FAIL`.",
-        "- PASS: the change is correct and complete.",
-        "- FAIL: state exactly what must be fixed, where (file:line), so the implementer can address it.",
     ].join("\n");
 }
 
@@ -1690,7 +1635,7 @@ export function shipTask(
     docReport: string,
 ): string {
     return [
-        "The change has passed validation and been documented. Open the pull request now.",
+        "The change has passed validation and been documented. Ship it.",
         "",
         "Original requirement:",
         original,
@@ -1700,78 +1645,29 @@ export function shipTask(
         "",
         "Documenter's report (these doc changes must be committed too):",
         docReport,
-        "",
-        "Steps:",
-        "1. Run the test suite once more as a final sanity check. If it fails, STOP and report instead of opening a PR.",
-        "2. Check for a GitHub remote with `git remote -v`.",
-        "3. Create a feature branch (never the default branch) and commit ALL changes — code, tests, and docs.",
-        "- If a remote exists: push the branch and open a draft PR, then report the PR URL.",
-        "- If there is NO remote: do the local branch and commit only, then STOP and report the exact commands the user must run to add a remote. Do NOT create or push a remote on your own.",
-        "On the FIRST line output exactly `SHIP: SHIPPED` (PR opened) or `SHIP: PAUSED` (no remote).",
     ].join("\n");
 }
 
 export function specPlanTask(original: string, recon = ""): string {
     return [
-        "You are producing a standalone implementation specification. Your plan will NOT be handed to a pi implementer — it will be transformed into a document that ANY AI agent (Copilot, Claude, Cursor, Codex, a different pi session, etc.) or human developer can use to build the feature from scratch.",
+        "Produce a standalone implementation specification. The reader will have ONLY this document plus the codebase — no conversation history or prior context. Be unusually detailed: spell out file paths, function signatures, integration points, edge cases, and naming conventions for every phase.",
         "",
         "Request:",
         original,
         "",
         ...reconBlock(recon),
-        "First classify this request as a BUG FIX, NEW FEATURE, or NEW APP (greenfield).",
-        "",
-        "Because the reader will have ONLY this document (plus access to the codebase), you must be unusually detailed. For every phase, spell out:",
-        "- Exact file paths and the action for each (New / Modify / Reference)",
-        "- Function signatures, type definitions, or data structures when relevant",
-        "- Integration points: which existing modules to call, in what order, with what arguments",
-        "- Edge cases, error handling, and failure modes",
-        "- Naming conventions to follow (inspect the codebase before committing to a name)",
-        "- Dependencies to add, with versions where they matter",
-        "",
-        "The reader does NOT have access to conversation history, prior plans, or unstated context. Assume the codebase is their only reference besides your document.",
-        "",
-        "Produce a structured, phased plan with file-level specificity and a complete, numbered Acceptance Criteria section. Be explicit about what the reader must verify before declaring each step done.",
     ].join("\n");
 }
 
 export function specCriticTask(original: string, plan: string): string {
     return [
-        "You are critically evaluating an implementation plan before it is turned into a spec. Your job is to find every problem that would cause the spec to mislead, the implementation to fail, or the acceptance criteria to go unverified.",
+        "Evaluate this implementation plan before it is turned into a spec. Find every problem that would cause the spec to mislead or the implementation to fail.",
         "",
         "Request:",
         original,
         "",
         "Plan to evaluate:",
         plan,
-        "",
-        "Work through these categories and report every finding:",
-        "1. Completeness — Are all affected files listed? Are any call sites, consumers, or dependents of touched code missing?",
-        "2. Correctness — Does the described logic actually solve the requirement? Are edge cases (empty inputs, concurrency, auth boundaries) unaccounted for?",
-        "3. Feasibility — Are the changes compatible with the existing code structure and patterns? Does any phase assume something that does not yet exist?",
-        "4. Dependency risks — Are new packages or versions introduced that could conflict with existing constraints?",
-        "5. Phase ordering — Can each phase be implemented and tested independently? Are there hidden ordering constraints?",
-        "6. Acceptance criteria quality — Is every criterion observable and unambiguous? Are error paths and regressions covered?",
-        "7. Unverified assumptions — Did the planner state or imply something that cannot be confirmed from the codebase as-is?",
-        "",
-        "Output your critique using this format:",
-        "",
-        "## Verdict",
-        "APPROVED | APPROVED WITH RESERVATIONS | REVISE BEFORE DOCUMENTING",
-        "",
-        "## Critical Issues",
-        "(Issues that must be fixed before the plan is turned into a spec. If none, write: None.)",
-        "",
-        "## Minor Issues",
-        "(Issues worth fixing but that will not block a careful reader. If none, write: None.)",
-        "",
-        "## Unverified Assumptions",
-        "(Statements in the plan that could not be confirmed against the codebase. If none, write: None.)",
-        "",
-        "## Acceptance Criteria Assessment",
-        "(One line per criterion: abbreviated text | Testable? | Notes)",
-        "",
-        "If the verdict is REVISE BEFORE DOCUMENTING, state exactly what the planner must fix. Do NOT rewrite the plan yourself.",
     ].join("\n");
 }
 
@@ -1780,47 +1676,18 @@ export function specReviseTask(
     plan: string,
     critique: string,
 ): string {
-    return [
-        "The critic REJECTED your implementation plan. Revise it to address the issues raised. Do not start over — adjust the existing plan.",
-        "",
-        "Original request:",
-        original,
-        "",
-        "Your previous plan:",
-        plan,
-        "",
-        "Critic findings to address:",
-        critique,
-        "",
-        "Apply the fixes, then output an updated, complete plan. The critic will review your revision, so fix every critical issue it raised.",
-    ].join("\n");
+    return revisePlanTask(original, plan, critique);
 }
 
 export function specDocumentTask(original: string, plan: string): string {
     return [
-        "You are transforming a raw implementation plan into a clean, standalone implementation specification. The reader is ANY AI agent (Copilot, Claude, Cursor, Codex, a different pi session, etc.) or human developer who will pick this spec up later and build the feature from scratch. They have access to the codebase but NO other context from the planning conversation.",
-        "",
-        "Your job:",
-        "1. Restate the requirement in a single crisp summary paragraph at the top.",
-        "2. List preconditions and assumptions explicitly (environment, existing files, dependencies).",
-        "3. Re-organize the plan phases into clear, numbered build steps.",
-        "4. For each step, state: the target file path(s), the exact change (New / Modify / Remove), function signatures or code snippets where helpful, integration points, and edge cases.",
-        "5. Include a complete Acceptance Criteria section with testable, observable statements.",
-        "6. Include a Verification section with the exact commands to run and what to expect.",
-        "7. Include a Risks / Open Questions section if anything is unresolved.",
-        `8. End with a one-line metadata block: \`Original request: ${original.replace(/`/g, "'")}\` so the reader can cross-check.`,
-        "",
-        "Style: dry and precise, no filler, no emojis. Use headings, tables, and code fences liberally.",
-        "",
-        "After writing the spec, save it as markdown to `specs/<slug>.md` where `<slug>` is a short kebab-case identifier derived from the request (e.g. `csv-export-reports`). Create the `specs/` directory in the project root if it does not exist. Do NOT modify any production files — the spec file is the only deliverable.",
+        "Transform this raw implementation plan into a standalone specification (spec workflow).",
         "",
         "Original request:",
         original,
         "",
         "Raw plan:",
         plan,
-        "",
-        "Output the full spec as a single markdown document and report the path where it was saved.",
     ].join("\n");
 }
 
@@ -1840,24 +1707,21 @@ export interface PhaseMap {
     shipper: PhaseState;
 }
 
-// Build a PhaseMap from the phases array. Phases are matched by agent name;
-// the ship phase uses the second validator entry. Throws if required phases
-// are missing (callers should guard with REQUIRED_AGENTS check first).
+// Build a PhaseMap from the phases array. Phases are matched by agent name.
+// Only phases present in the array are required — spec workflows (planner, critic,
+// documenter) don't need implementer/tester/validator/shipper. Throws if a phase
+// expected for the detected workflow mode is missing.
 export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
     const byAgent = (name: string) =>
         phases.find((p) => p.agent === name.toLowerCase());
 
-    const required = [
-        "planner",
-        "critic",
-        "implementer",
-        "tester",
-        "validator",
-        "documenter",
-        "shipper",
-    ] as const;
+    const agents = new Set(phases.map((p) => p.agent));
+    const isSpecMode =
+        agents.has("planner") &&
+        agents.has("documenter") &&
+        !agents.has("implementer");
 
-    // Find each required phase, throwing a clear error if any is missing
+    // Find a phase, throwing a clear error if a required one is missing
     const requirePhase = (name: string): PhaseState => {
         const p = byAgent(name);
         if (!p) {
@@ -1869,6 +1733,21 @@ export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
         return p;
     };
 
+    if (isSpecMode) {
+        // Spec workflow: planner, critic, documenter are required
+        return {
+            scout: byAgent("scout"),
+            planner: requirePhase("planner"),
+            critic: requirePhase("critic"),
+            implementer: byAgent("implementer")!,
+            tester: byAgent("tester")!,
+            validator: byAgent("validator")!,
+            documenter: requirePhase("documenter"),
+            shipper: byAgent("shipper")!,
+        };
+    }
+
+    // Full pipeline: all phases required
     return {
         scout: byAgent("scout"),
         planner: requirePhase("planner"),

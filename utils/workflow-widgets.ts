@@ -117,7 +117,7 @@ export function renderPhaseCardsWithArrows(
     theme: any,
     phases?: PhaseState[],
 ): string[] {
-    const arrowWidth = 5; // " ──▶ "
+    const arrowWidth = 5; // " ──▸ "
     const cols = cards.length;
     const arrowRow = 2; // middle row for arrows
     const cardHeight = cards[0].length;
@@ -147,7 +147,7 @@ export function renderPhaseCardsWithArrows(
                 // Show arrows for sequential pipeline
                 row +=
                     line === arrowRow
-                        ? theme.fg("dim", " ──▶ ")
+                        ? theme.fg("dim", " ──▸ ")
                         : " ".repeat(arrowWidth);
             }
             row += cards[c][line];

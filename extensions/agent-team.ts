@@ -593,7 +593,7 @@ export default function (pi: ExtensionAPI) {
                         );
                     });
 
-                    const arrowWidth = 5; // " ──▶ "
+                    const arrowWidth = 5; // " ──▸ "
                     const cols = st.phases.length;
                     const colWidth = Math.max(
                         14,
