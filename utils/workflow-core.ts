@@ -321,19 +321,12 @@ export function renderCard(
     const ctxLine =
         showContext && phase.contextPct > 0
             ? (() => {
-                  const filled = Math.ceil(phase.contextPct / 20);
-                  const bar = "#".repeat(filled) + "-".repeat(5 - filled);
-                  const fmtTok = (n: number) =>
-                      n >= 10000
-                          ? `${Math.round(n / 1000)}k`
-                          : n >= 1000
-                            ? `${(n / 1000).toFixed(1)}k`
-                            : `${n}`;
-                  const tokenCount =
-                      phase.tokens && phase.tokens.input > 0
-                          ? ` · ${fmtTok(phase.tokens.input)}`
-                          : "";
-                  const ctxStr = `[${bar}] ${phase.contextPct}%${tokenCount}`;
+                  const { bar, display } = formatContextUsage({
+                      contextPct: phase.contextPct,
+                      tokenCount: phase.tokens?.input,
+                      barLength: 5,
+                  });
+                  const ctxStr = `[${bar}] ${display}`;
                   return theme.fg("dim", ctxStr);
               })()
             : null;
@@ -457,20 +450,20 @@ export function renderWorkflowFooter(opts: {
 
     // Context usage: show active sub-agent's context if running, otherwise primary session
     const activePhase = phases.find((p) => p.status === "running");
-    let usage: any;
-    let pct: number | null;
+    let contextPct: number | null;
     let tokenCount: number | undefined;
 
     if (activePhase && activePhase.contextPct > 0) {
         // Sub-agent is running - show its context usage
-        pct = activePhase.contextPct;
+        contextPct = activePhase.contextPct;
         tokenCount = activePhase.tokens?.input;
     } else {
         // No active sub-agent - show primary session's context
+        let usage: any;
         try {
             usage = contextUsage();
         } catch {}
-        pct =
+        contextPct =
             usage &&
             typeof usage.percent === "number" &&
             !Number.isNaN(usage.percent)
@@ -482,20 +475,11 @@ export function renderWorkflowFooter(opts: {
                 : undefined;
     }
 
-    const known = pct !== null;
-    const filled = known ? Math.max(0, Math.min(10, Math.round(pct / 10))) : 0;
-    const bar = "#".repeat(filled) + "-".repeat(10 - filled);
-    const fmtTok = (n: number) =>
-        n >= 10000
-            ? `${Math.round(n / 1000)}k`
-            : n >= 1000
-              ? `${(n / 1000).toFixed(1)}k`
-              : `${n}`;
-    const pctStr = !known
-        ? "—"
-        : tokenCount
-          ? `${Math.round(pct)}% · ${fmtTok(tokenCount)}`
-          : `${Math.round(pct)}%`;
+    const { bar, display: pctStr } = formatContextUsage({
+        contextPct,
+        tokenCount,
+        barLength: 10,
+    });
 
     // Ad-hoc dispatch doesn't set `running`, so derive its state from the phases
     // (otherwise the footer reads "idle" while a dispatched agent is working).
@@ -1047,6 +1031,43 @@ export function publishLogs(
         },
         { triggerTurn: false },
     );
+}
+
+// ── Context usage helpers ────────────────────────
+
+// Format context usage for display in cards and footers.
+// Returns the progress bar and display string (percentage + optional token count).
+export function formatContextUsage(opts: {
+    contextPct: number | null | undefined;
+    tokenCount?: number | undefined;
+    barLength?: number;
+}): { bar: string; display: string; known: boolean } {
+    const { contextPct, tokenCount, barLength = 10 } = opts;
+
+    const known =
+        contextPct !== null &&
+        contextPct !== undefined &&
+        !Number.isNaN(contextPct);
+    const pct = known ? contextPct! : 0;
+    const filled = known
+        ? Math.max(0, Math.min(barLength, Math.round((pct / 100) * barLength)))
+        : 0;
+    const bar = "#".repeat(filled) + "-".repeat(barLength - filled);
+
+    const fmtTok = (n: number) =>
+        n >= 10000
+            ? `${Math.round(n / 1000)}k`
+            : n >= 1000
+              ? `${(n / 1000).toFixed(1)}k`
+              : `${n}`;
+
+    const display = !known
+        ? "—"
+        : tokenCount && tokenCount > 0
+          ? `${Math.round(pct)}% · ${fmtTok(tokenCount)}`
+          : `${Math.round(pct)}%`;
+
+    return { bar, display, known };
 }
 
 // ── Report builders (pure) ───────────────────────

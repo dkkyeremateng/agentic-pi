@@ -78,6 +78,7 @@ import {
     statusBadge,
     agentPhaseStatus,
     renderCard,
+    formatContextUsage,
     appendLiveLog as appendLiveLogCore,
     renderWorkflowFooter,
     teamsBlock as teamsBlockCore,
@@ -364,22 +365,13 @@ export default function (pi: ExtensionAPI) {
 
         // Context-usage bar, shown on every card (empty `[-----] 0%` until run).
         const ctxPct = livePhase?.contextPct ?? 0;
-        const ctxFilled = Math.max(0, Math.min(5, Math.ceil(ctxPct / 20)));
-        const ctxBar = "#".repeat(ctxFilled) + "-".repeat(5 - ctxFilled);
+        const { bar: ctxBar, display: ctxDisplay } = formatContextUsage({
+            contextPct: ctxPct,
+            tokenCount: livePhase?.tokens?.input,
+            barLength: 5,
+        });
 
-        // Add token count if available
-        const fmtTok = (n: number) =>
-            n >= 10000
-                ? `${Math.round(n / 1000)}k`
-                : n >= 1000
-                  ? `${(n / 1000).toFixed(1)}k`
-                  : `${n}`;
-        const tokenCount =
-            livePhase?.tokens && livePhase.tokens.input > 0
-                ? ` · ${fmtTok(livePhase.tokens.input)}`
-                : "";
-
-        const ctxRaw = `[${ctxBar}] ${ctxPct}%${tokenCount}`;
+        const ctxRaw = `[${ctxBar}] ${ctxDisplay}`;
         const ctxStr = theme.fg("dim", truncate(ctxRaw, w));
         const ctxVisible = Math.min(ctxRaw.length, w);
 
@@ -1242,7 +1234,7 @@ export default function (pi: ExtensionAPI) {
                         `/agent-team [request]   Pick a team (Select Team), then run the lifecycle\n` +
                         `/agent-team-clear       Clear the progress widget\n` +
                         `run_agent_team          Tool — the agent can launch the workflow for non-trivial tasks\n` +
-                        `dispatch_agent          Tool — dispatch a task to any loaded agent outside the pipeline`,
+                        `dispatch_agent          Tool — dispatch task(s) to any loaded agent(s) outside the pipeline`,
                     "info",
                 );
                 // The per-agent model list is already visible on the dashboard cards
