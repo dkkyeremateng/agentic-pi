@@ -1242,7 +1242,7 @@ export default function (pi: ExtensionAPI) {
                         `/agent-team [request]   Pick a team (Select Team), then run the lifecycle\n` +
                         `/agent-team-clear       Clear the progress widget\n` +
                         `run_agent_team          Tool — the agent can launch the workflow for non-trivial tasks\n` +
-                        `dispatch_agent             Tool — dispatch a task to any loaded agent outside the pipeline`,
+                        `dispatch_agent          Tool — dispatch a task to any loaded agent outside the pipeline`,
                     "info",
                 );
                 // The per-agent model list is already visible on the dashboard cards
