@@ -368,8 +368,6 @@ export default function (pi: ExtensionAPI) {
 
                     // showContext=false: every phase shares the primary model
                     // and context, so the per-card context bar is omitted here.
-                    // showContext=false: every phase shares the primary model
-                    // and context, so the per-card context bar is omitted here.
                     const cards = phases.map((p) =>
                         renderCard(p, colWidth, theme, false),
                     );
@@ -1019,6 +1017,7 @@ export default function (pi: ExtensionAPI) {
                     contextUsage: () => ctx.getContextUsage?.(),
                     visibleWidth,
                     truncateToWidth,
+                    showContextBar: false, // agent-pipeline shares primary context
                 });
             },
         }));

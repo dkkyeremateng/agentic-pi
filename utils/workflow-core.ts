@@ -436,6 +436,7 @@ export function renderWorkflowFooter(opts: {
     contextUsage: () => any;
     visibleWidth: (s: string) => number;
     truncateToWidth: (s: string, w: number) => string;
+    showContextBar?: boolean;
 }): string[] {
     const {
         width,
@@ -453,6 +454,7 @@ export function renderWorkflowFooter(opts: {
         contextUsage,
         visibleWidth,
         truncateToWidth,
+        showContextBar = true,
     } = opts;
 
     // Context usage of the PRIMARY (orchestrator) session — the subprocess phase
@@ -528,7 +530,10 @@ export function renderWorkflowFooter(opts: {
         theme.fg("accent", selfName) +
         theme.fg("dim", " ") +
         theme.fg(statusColor, statusText);
-    const right = theme.fg("dim", `[${bar}] ${pctStr} `);
+
+    // Only show context bar if explicitly enabled and we have valid data
+    const right =
+        showContextBar && known ? theme.fg("dim", `[${bar}] ${pctStr} `) : "";
     const pad = " ".repeat(
         Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
     );
