@@ -369,7 +369,7 @@ export default function (pi: ExtensionAPI) {
                     // showContext=false: every phase shares the primary model
                     // and context, so the per-card context bar is omitted here.
                     const cards = phases.map((p) =>
-                        renderCard(p, colWidth, theme, false),
+                        renderCard(p, colWidth, theme),
                     );
                     const lines: string[] = [];
 
