@@ -2123,10 +2123,14 @@ export function handleSpawnEvent(
         if (msg?.usage?.input) {
             const ctxWindow =
                 msg.usage.contextWindow || msg.usage.max_tokens || 200_000;
-            phase.contextPct = Math.min(
+            const pct = Math.min(
                 100,
                 Math.round((msg.usage.input / ctxWindow) * 100),
             );
+            console.error(
+                `[handleSpawnEvent] Token usage: input=${msg.usage.input}, output=${msg.usage.output}, contextWindow=${ctxWindow}, pct=${pct}%`,
+            );
+            phase.contextPct = pct;
             state.contextPct = phase.contextPct;
             state.capturedTokens = {
                 input: msg.usage.input || 0,
@@ -2135,6 +2139,9 @@ export function handleSpawnEvent(
             };
             // Also set phase.tokens immediately so the card can display it during the spawn
             phase.tokens = state.capturedTokens;
+            console.error(
+                `[handleSpawnEvent] Set phase.tokens: input=${phase.tokens.input}, output=${phase.tokens.output}`,
+            );
             paint();
         }
     }
