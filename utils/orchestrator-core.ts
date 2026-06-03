@@ -801,8 +801,14 @@ export async function dispatchAgentCore(
     let phase: PhaseState;
     if (existingPending) {
         // Reuse pending phase (from select_agents or previous dispatch)
+        // Preserve the dispatchId to maintain session continuity
+        const preservedDispatchId = existingPending.dispatchId;
         const fresh = mkPhase(displayName(def.name), agentKey, dispatchId);
         Object.assign(existingPending, fresh);
+        // Restore the original dispatchId if it existed
+        if (preservedDispatchId) {
+            existingPending.dispatchId = preservedDispatchId;
+        }
         phase = existingPending;
     } else if (existingRunning) {
         // All existing phases are running - create new phase for parallel dispatch
@@ -810,8 +816,12 @@ export async function dispatchAgentCore(
         s.phases.push(phase);
     } else if (existingPhase) {
         // Reuse existing phase (reset it for sequential re-dispatch)
+        const preservedDispatchId = existingPhase.dispatchId;
         const fresh = mkPhase(displayName(def.name), agentKey, dispatchId);
         Object.assign(existingPhase, fresh);
+        if (preservedDispatchId) {
+            existingPhase.dispatchId = preservedDispatchId;
+        }
         phase = existingPhase;
     } else {
         // No existing phase - create new one

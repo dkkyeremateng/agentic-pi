@@ -145,10 +145,19 @@ export function isActiveWorkflow(selfName: string): boolean {
 // in every shell — handy when pi is launched from an IDE/GUI.
 export function loadDotEnv(cwd: string): void {
     // First, load from pi config directory (global defaults)
-    const piConfigDir = join(homedir(), "Documents", ".configs", "pi");
-    const piConfigPath = join(piConfigDir, ".env");
-    if (existsSync(piConfigPath)) {
-        loadEnvFile(piConfigPath, false); // Don't override existing env vars
+    // Try multiple possible locations for the config directory
+    const possibleConfigDirs = [
+        join(homedir(), "Documents", ".configs", "pi"),
+        join(homedir(), ".config", "pi"),
+        join(homedir(), ".pi"),
+    ];
+
+    for (const configDir of possibleConfigDirs) {
+        const configPath = join(configDir, ".env");
+        if (existsSync(configPath)) {
+            loadEnvFile(configPath, false); // Don't override existing env vars
+            break; // Use the first one we find
+        }
     }
 
     // Then, load from cwd (project-specific overrides)
@@ -2384,11 +2393,28 @@ export function spawnAgentWithModel(
                 );
                 unlinkSync(sessionFile);
             } else {
-                // Try to parse the first line to validate it's proper JSON
+                // Validate the session file more thoroughly
+                // Check first few lines to ensure it's valid JSONL
                 const content = readFileSync(sessionFile, "utf-8");
-                const firstLine = content.split("\n")[0];
-                JSON.parse(firstLine); // Will throw if invalid JSON
-                hasSession = true;
+                const lines = content.split("\n").filter((l) => l.trim());
+                let validLines = 0;
+                for (const line of lines.slice(0, 5)) {
+                    try {
+                        JSON.parse(line);
+                        validLines++;
+                    } catch {
+                        break;
+                    }
+                }
+                // Only use the session if at least the first line is valid
+                if (validLines > 0) {
+                    hasSession = true;
+                } else {
+                    console.error(
+                        `[spawnAgentWithModel] Session file ${sessionFile} has no valid JSON lines, deleting and starting fresh`,
+                    );
+                    unlinkSync(sessionFile);
+                }
             }
         } catch (error) {
             console.error(
@@ -2424,11 +2450,23 @@ export function spawnAgentWithModel(
     // Extract everything after the FIRST slash as the model ID.
     // e.g., "gate_frame_private/gateframe/mimo-v2.5" -> "gateframe/mimo-v2.5"
     // e.g., "anthropic/claude-3-opus" -> "claude-3-opus"
+    // e.g., "openai/gpt-4" -> "gpt-4"
     const cleanModel = model?.trim();
     if (cleanModel && !/\s/.test(cleanModel)) {
         const firstSlash = cleanModel.indexOf("/");
-        const modelId =
-            firstSlash > 0 ? cleanModel.slice(firstSlash + 1) : cleanModel;
+        let modelId = cleanModel;
+
+        if (firstSlash > 0) {
+            modelId = cleanModel.slice(firstSlash + 1);
+            // Validate the extracted model ID
+            if (!modelId || modelId.trim().length === 0) {
+                console.error(
+                    `[spawnAgentWithModel] Invalid model format: "${cleanModel}" - extracted model ID is empty, using original string`,
+                );
+                modelId = cleanModel;
+            }
+        }
+
         args.push("--model", modelId);
     }
     if (hasSession) args.push("-c");
