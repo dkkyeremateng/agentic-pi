@@ -72,7 +72,6 @@ import {
     statusMeta,
     statusBadge,
     agentPhaseStatus,
-    renderCard,
     formatContextUsage,
     appendLiveLog as appendLiveLogCore,
     renderWorkflowFooter,
@@ -512,56 +511,19 @@ export default function (pi: ExtensionAPI) {
                     }
 
                     // ── Pipeline view (full run_agent_team) ───────────
-                    // Per-agent model table, shown between the title and the cards.
-                    const fallbackModelStr =
-                        WORKER_MODEL || widgetCtx?.model?.id || "default";
-                    // Derive the agent order from the phases being run, not a
-                    // hardcoded list — so custom teams work too.
-                    const agentOrder = st.phases.map((p) => p.agent);
-                    const maxAgentLen = Math.max(
-                        ...agentOrder.map((a) => displayName(a).length),
-                        11,
-                    );
-                    const activeAgent =
-                        st.phases.find((p) => p.status === "running")?.agent ??
-                        "";
-
-                    const modelRows: string[] = agentOrder.map((agentKey) => {
-                        const m = modelFor(agentKey);
-                        const label = displayName(agentKey).padEnd(maxAgentLen);
-                        const isActive = agentKey === activeAgent;
-                        const bullet = isActive
-                            ? theme.fg("accent", " ● ")
-                            : theme.fg("dim", "   ");
-                        const labelStr = isActive
-                            ? theme.fg("accent", theme.bold(label))
-                            : theme.fg("dim", label);
-                        const modelStr = isActive
-                            ? theme.fg("accent", m)
-                            : theme.fg("muted", m);
-                        return (
-                            bullet + labelStr + theme.fg("dim", "  ") + modelStr
-                        );
-                    });
-
+                    // Use the SAME rich cards as the idle/dispatch dashboard
+                    // (name · status · context bar · model · description) so the
+                    // view is consistent before and during a run.
                     const arrowWidth = 5; // " ──▸ "
                     const cols = st.phases.length;
                     const colWidth = Math.max(
                         14,
                         Math.floor((width - arrowWidth * (cols - 1)) / cols),
                     );
-                    const arrowRow = 2; // middle of the 5-line card
 
-                    const cards = st.phases.map((p) => {
-                        const def = st.agents.get(p.agent);
-                        return renderCard(
-                            p,
-                            colWidth,
-                            theme,
-                            true,
-                            def?.contextWindow || undefined,
-                        );
-                    });
+                    const cards = st.phases.map((p) =>
+                        renderAgentCard(p.agent, colWidth, theme),
+                    );
                     const lines: string[] = [];
 
                     const passInfo =
@@ -586,11 +548,6 @@ export default function (pi: ExtensionAPI) {
                             passInfo +
                             statusBadge(theme, st.running, st.lastStatus),
                     );
-                    lines.push("");
-
-                    // Model table — between title and phase cards; active agent highlighted
-                    lines.push(theme.fg("dim", " Agent models:"));
-                    for (const row of modelRows) lines.push(row);
                     lines.push("");
 
                     // Use shared arrow layout renderer

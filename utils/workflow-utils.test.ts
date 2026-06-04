@@ -7,6 +7,7 @@ import {
     testSignal,
     outcomeLine,
     isModelFailure,
+    isTrivialPing,
 } from "./workflow-utils";
 
 // Run with: npx tsx --test workflow-utils.test.ts
@@ -339,4 +340,43 @@ describe("isModelFailure", () => {
     it("detects request failed with 502", () => {
         assert.equal(isModelFailure("Request failed with status 502"), true);
     });
+});
+
+describe("isTrivialPing", () => {
+    for (const s of [
+        "ping",
+        "Ping",
+        "ping!",
+        "ping all agents",
+        "ping agents",
+        "ping everyone",
+        "ping all",
+        "hi",
+        "hello",
+        "hey",
+        "test",
+        "status",
+        "health check",
+        "healthcheck",
+        "you there?",
+        "are you up",
+        "are you alive",
+    ]) {
+        it(`treats ${JSON.stringify(s)} as a ping`, () => {
+            assert.equal(isTrivialPing(s), true);
+        });
+    }
+
+    for (const s of [
+        "ping the database for latency",
+        "implement a ping endpoint",
+        "review WAL-2977 and generate queries",
+        "test the checkout flow end to end",
+        "",
+        "   ",
+    ]) {
+        it(`treats ${JSON.stringify(s)} as real work`, () => {
+            assert.equal(isTrivialPing(s), false);
+        });
+    }
 });

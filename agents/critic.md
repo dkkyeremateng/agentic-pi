@@ -1,8 +1,8 @@
 ---
 name: critic
-description: Critical evaluation of implementation plans — identifies flaws, gaps, risks, and implicit assumptions before any code is written
-modes:
-context_window:
+description: Critical evaluation of implementation plans and research/findings documents — identifies flaws, gaps, risks, unsupported claims, and implicit assumptions
+model:
+context_window: 1000000
 tools: read,grep,find,ls
 ---
 

@@ -2,7 +2,7 @@
 name: shipper
 description: Shipping — creates a feature branch, commits code + tests + docs, pushes to remote, and opens a draft pull request
 model:
-context_window:
+context_window: 1000000
 tools: read,bash,grep,find,ls
 ---
 

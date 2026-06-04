@@ -758,6 +758,54 @@ describe("dispatchParallelCore", () => {
         assert.equal(started.length, 2);
     });
 
+    it("reuses select_agents phases instead of duplicating cards", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        agents.set("seeker", mkAgent("seeker"));
+        const host = parallelHost(
+            async (def) => ({ output: longOutput(def.name), exitCode: 0 }),
+            agents,
+        );
+        const st = mkStateWithAgents(agents);
+        selectAgentsCore(st, host, ["scout", "seeker"], mkCtx());
+        assert.equal(st.phases.length, 2);
+        await dispatchParallelCore(
+            st,
+            host,
+            [
+                { agent: "scout", task: "t1" },
+                { agent: "seeker", task: "t2" },
+            ],
+            undefined,
+            mkCtx(),
+        );
+        assert.equal(st.phases.length, 2); // reused, not duplicated to 4
+        assert.deepEqual(
+            st.phases.map((p) => p.agent).sort(),
+            ["scout", "seeker"],
+        );
+    });
+
+    it("counts a short pong reply to a ping as success, not empty/error", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        const host = parallelHost(
+            async () => ({ output: "pong — ready", exitCode: 0 }),
+            agents,
+        );
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchParallelCore(
+            st,
+            host,
+            [{ agent: "scout", task: "ping" }],
+            undefined,
+            mkCtx(),
+        );
+        const text = (result.content[0] as { text: string }).text;
+        assert.ok(text.includes("1/1 succeeded"));
+        assert.equal(st.phases[0].status, "done");
+    });
+
     it("skips unknown agents and runs the rest", async () => {
         const agents = new Map<string, AgentDef>();
         agents.set("scout", mkAgent("scout"));
@@ -1629,6 +1677,59 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
         assert.ok(result.report.includes("Planning"));
         // Verify documenter never ran
         assert.ok(!runPhaseCalls.includes("documenter"));
+    });
+});
+
+// ── runWorkflowCore — ping mode ──
+
+describe("runWorkflowCore (ping mode)", () => {
+    it("pings every loaded agent in parallel instead of running the pipeline", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["planner", "critic", "implementer", "researcher"]) {
+            agents.set(n, mkAgent(n));
+        }
+        const calls: string[] = [];
+        let concurrent = 0;
+        let maxConcurrent = 0;
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase: any, task: string) => {
+                    calls.push(phase.agent);
+                    assert.equal(task, "ping all agents"); // raw request as task
+                    concurrent += 1;
+                    maxConcurrent = Math.max(maxConcurrent, concurrent);
+                    await new Promise((r) => setTimeout(r, 5));
+                    concurrent -= 1;
+                    return { output: "pong — ready", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { full: ["planner", "critic", "implementer"] },
+            activeTeamName: "full",
+        });
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "ping all agents",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "done");
+        // ALL loaded agents pinged (incl. researcher, not in the active team)...
+        assert.deepEqual(
+            calls.slice().sort(),
+            ["critic", "implementer", "planner", "researcher"],
+        );
+        // ...and they ran concurrently, not sequentially.
+        assert.ok(maxConcurrent > 1, "expected parallel execution");
+        assert.ok(result.report.includes("Ping Report"));
+        assert.ok(result.report.includes("in parallel"));
     });
 });
 

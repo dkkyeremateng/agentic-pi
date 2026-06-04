@@ -2,7 +2,7 @@
 name: researcher
 description: Research and solution writing — gathers information by dispatching specialists (seeker for the web, linear/atlassian for tickets, scout for the codebase, or any agent you add) ITSELF, reasons over what they return, and writes a single findings/solution document to the `findings/` folder in the working directory. Use for "investigate X and write it up", spikes, and decision write-ups — not for changing code. Dispatch it ALONE: it runs its own seeker/linear/atlassian/scout lookups, so do not also dispatch those alongside it.
 model:
-context_window:
+context_window: 1000000
 tools: dispatch_agent,dispatch_parallel,read,write,grep,find,ls,bash
 ---
 

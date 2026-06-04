@@ -45,6 +45,18 @@ export const REQUIRED_AGENTS = [
 ] as const;
 export const DEFAULT_MAX_LOOPS = 3;
 
+// Appended to EVERY spawned agent's system prompt so any agent answers a trivial
+// ping / health check directly instead of running its full workload.
+export const TRIVIAL_PING_RULE = `
+
+## Trivial pings
+If the ENTIRE request is a trivial ping, greeting, or health check — e.g. "ping",
+"pong", "hi", "hello", "hey", "test", "you there?", "status", "are you up?" — do
+NOT run your normal workload: no planning, dispatching, tool calls, file writes,
+browsing, or analysis. Reply with a single short line confirming you are ready
+(e.g. "pong — ready") and stop. Only do real work when the request actually asks
+for it.`;
+
 export const LOG_PANEL_RESERVE = 10; // rows kept clear below the live panel for the editor + footer
 export const LOG_CAP_CHARS = 16000; // bound the stored per-phase log
 export const STDERR_TAIL_CAP = 2000; // bound the captured stderr tail used in failure reports
@@ -2277,7 +2289,7 @@ function spawnAgentWithModelFallback(
         "--tools",
         agentDef.tools,
         "--append-system-prompt",
-        agentDef.systemPrompt,
+        agentDef.systemPrompt + TRIVIAL_PING_RULE,
         "--session",
         sessionFile,
         ...subagentExtArgs(agentDef.tools),
@@ -2508,7 +2520,7 @@ export function spawnAgentWithModel(
         "--tools",
         agentDef.tools,
         "--append-system-prompt",
-        agentDef.systemPrompt,
+        agentDef.systemPrompt + TRIVIAL_PING_RULE,
         "--session",
         sessionFile,
         ...subagentExtArgs(agentDef.tools),

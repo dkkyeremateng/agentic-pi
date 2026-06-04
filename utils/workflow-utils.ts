@@ -9,6 +9,22 @@ export type CritiqueVerdict =
     | "revise"
     | "unknown";
 
+const TRIVIAL_PING_RE =
+    /^(ping|pong|hi|hello|hey|yo|test|status|health\s?check|you\s+there|are\s+you\s+(there|up|alive)|ping\s+(all\s+)?(agents?|everyone|all))$/i;
+
+/**
+ * True when the entire request is a trivial ping / greeting / health check. In
+ * that case the workflow health-checks every agent (in parallel) instead of
+ * running the real pipeline.
+ */
+export function isTrivialPing(request: string): boolean {
+    const r = request
+        .trim()
+        .replace(/[!.?,…]+$/u, "")
+        .trim();
+    return r.length > 0 && r.length <= 40 && TRIVIAL_PING_RE.test(r);
+}
+
 /**
  * Detect the validator's verdict from its output.
  * Prefers the explicit VERDICT: marker; falls back to scanning only the first

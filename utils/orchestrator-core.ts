@@ -40,6 +40,7 @@ import {
     detectVerdict,
     detectShip,
     detectCritique,
+    isTrivialPing,
     secs,
     isModelFailure,
 } from "./workflow-utils";
@@ -245,6 +246,59 @@ export async function runWorkflowCore(
     }
     h.setup.prepareRun(ctx);
     const cwd = ctx.cwd;
+
+    // ── Ping mode ──
+    // A trivial ping / health check runs EVERY loaded agent in PARALLEL (each
+    // replies "pong" per the trivial-ping rule) instead of the real pipeline —
+    // which would otherwise fail plan validation on a non-task request.
+    if (isTrivialPing(request)) {
+        s.dispatchMode = false;
+        s.includeScout = false;
+        h.setup.setupSessions(cwd, true);
+        s.phases = Array.from(s.agents.keys()).map((k) =>
+            mkPhase(displayName(k), k),
+        );
+        s.phaseLogs = [];
+        s.totalDroppedLines = 0;
+        s.totalToolCalls = 0;
+        s.totalTokens = { input: 0, output: 0 };
+        s.runStartedAt = Date.now();
+        s.runElapsedMs = 0;
+        s.iteration = 0;
+        s.maxLoopsRef = 1;
+        s.lastStatus = "running";
+        s.running = true;
+        h.ui.updateWidget();
+
+        // Run them all at once — independent health checks, no ordering.
+        const results = await Promise.all(
+            s.phases.map(async (phase) => {
+                const res = await h.execution.runPhase(phase, request, cwd);
+                return { agent: phase.agent, ok: res.ok, output: res.output };
+            }),
+        );
+
+        s.runElapsedMs = Date.now() - s.runStartedAt;
+        s.running = false;
+        const okCount = results.filter((r) => r.ok).length;
+        s.lastStatus = okCount === results.length ? "done" : "needs-review";
+        h.ui.updateWidget();
+
+        const report = [
+            `# Ping Report`,
+            ``,
+            `**Request:** ${request}`,
+            `**Pinged ${results.length} agent(s) in parallel** — ${okCount}/${results.length} responded.`,
+            ``,
+            ...results.map(
+                (r) =>
+                    `- **${displayName(r.agent)}** — ${r.ok ? r.output.trim().split("\n")[0] || "pong" : "no response"}`,
+            ),
+        ].join("\n");
+        writeReport(h, cwd, report);
+        h.ui.publishLogs();
+        return { status: s.lastStatus, report };
+    }
 
     // The active team's roster IS the pipeline: run exactly the agents it lists,
     // in canonical order. With no team selected (e.g. the run_agent_team tool),
@@ -894,7 +948,10 @@ export async function dispatchAgentCore(
     // with only a terse summary; the captured output is just the final assistant
     // text, not the tool activity. So only treat short output as "empty" when the
     // agent also made no tool calls — that is the genuine did-nothing case.
+    // A trivial ping legitimately returns a short "pong" with no tools — don't
+    // count that as an empty/failed dispatch.
     const emptyOutput =
+        !isTrivialPing(task) &&
         res.output.trim().length < h.config.minDispatchOutputChars &&
         phase.toolCount === 0;
     const ok = res.exitCode === 0 && !emptyOutput;
@@ -1047,18 +1104,30 @@ export async function dispatchParallelCore(
             ),
         );
 
-    // One distinct phase per item, all marked running up front.
+    // One distinct phase per item, all marked running up front. Reuse a queued
+    // phase that select_agents already declared for this agent (each claimed at
+    // most once) so the cards are NOT duplicated; otherwise add a fresh one.
     const start = Date.now();
+    const claimed = new Set<PhaseState>();
     const entries = runnable.map(({ def, task }, i) => {
-        const dispatchId = `${def.name.toLowerCase()}-${start}-${i}`;
-        const phase = mkPhase(
-            displayName(def.name),
-            def.name.toLowerCase(),
-            dispatchId,
-        );
+        const agentKey = def.name.toLowerCase();
+        const dispatchId = `${agentKey}-${start}-${i}`;
+        let phase =
+            s.phases.find(
+                (p) =>
+                    p.agent === agentKey &&
+                    p.status === "pending" &&
+                    !claimed.has(p),
+            ) ?? null;
+        if (phase) {
+            claimed.add(phase);
+            phase.dispatchId = dispatchId;
+        } else {
+            phase = mkPhase(displayName(def.name), agentKey, dispatchId);
+            s.phases.push(phase);
+        }
         phase.attempt = 1;
         phase.status = "running";
-        s.phases.push(phase);
         return { def, task, phase };
     });
     h.ui.updateWidget();
@@ -1067,7 +1136,10 @@ export async function dispatchParallelCore(
         entries.map(async ({ def, task, phase }) => {
             const t0 = Date.now();
             const res = await h.execution.runAgent(def, task, phase, ctx.cwd);
+            // A trivial ping legitimately returns a short "pong" with no tools —
+            // don't count that as an empty/failed dispatch.
             const emptyOutput =
+                !isTrivialPing(task) &&
                 res.output.trim().length < h.config.minDispatchOutputChars &&
                 phase.toolCount === 0;
             const ok = res.exitCode === 0 && !emptyOutput;
