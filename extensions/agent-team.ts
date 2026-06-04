@@ -375,13 +375,17 @@ export default function (pi: ExtensionAPI) {
         const selectedCount = selectedKeys.length;
         const selecting = st.dispatchMode && selectedCount > 0;
 
-        // Off-team: at least one dispatched agent is not a member of any team.
-        const offTeam =
-            selecting &&
-            selectedKeys.some(
-                (k) =>
-                    !allRoster.some((m) => m.toLowerCase() === k.toLowerCase()),
-            );
+        // Agents selected that are NOT in the ACTIVE team — whether they belong to
+        // a different team or no team at all. When any are present, the header
+        // describes the dispatch by name instead of misclaiming "selected from
+        // <active team> (N/M)", which would be wrong for an off-team agent.
+        const offActive = selecting
+            ? selectedKeys.filter(
+                  (k) =>
+                      !roster.some((m) => m.toLowerCase() === k.toLowerCase()),
+              )
+            : [];
+        const offTeam = offActive.length > 0;
 
         // At bootup show the full roster from all teams; once dispatching,
         // show only the dispatched agents (team members or not).
@@ -411,22 +415,32 @@ export default function (pi: ExtensionAPI) {
         let header: string;
         let hint: string;
         if (offTeam) {
-            // Ad-hoc dispatch outside the workflow team — no team name/count/mode.
+            // One or more selected agents are outside the active team — name the
+            // dispatched agent(s) rather than claim a team-relative count.
+            const names = selectedKeys.map((k) => displayName(k)).join(", ");
+            const allOff = offActive.length === selectedKeys.length;
             header =
                 " " +
                 theme.fg("accent", theme.bold("agent-team")) +
                 theme.fg("dim", "  ·  ") +
-                theme.fg("dim", "ad-hoc dispatch") +
+                theme.fg("dim", allOff ? "off-team dispatch: " : "cross-team dispatch: ") +
+                theme.fg("accent", names) +
                 badge;
+            const offNames = offActive.map((k) => displayName(k)).join(", ");
             hint = theme.fg(
                 "dim",
-                " primary agent dispatched work outside the workflow team",
+                ` ${offNames} ${offActive.length === 1 ? "is" : "are"} not in team "${st.activeTeamName || "—"}"`,
             );
         } else {
             // The "(N agents · mode)" descriptor tracks the active set: the full team
             // at bootup, then the selected agents once the orchestrator has chosen
             // them — so the count and workflow mode match the work being done.
             const countSet = selecting ? selectedKeys : roster;
+            // Count reflects the work: once the orchestrator has selected agents for
+            // the job, show how many of the team were chosen (selected/team); at
+            // bootup show the active team size out of all available agents (team/all).
+            const descNum = selecting ? selectedCount : roster.length;
+            const descDen = selecting ? roster.length : allRoster.length;
             header =
                 " " +
                 theme.fg("accent", theme.bold("agent-team")) +
@@ -435,7 +449,7 @@ export default function (pi: ExtensionAPI) {
                 theme.fg("accent", st.activeTeamName || "—") +
                 theme.fg(
                     "dim",
-                    ` (${roster.length}/${allRoster.length} agent${allRoster.length === 1 ? "" : "s"}` +
+                    ` (${descNum}/${descDen} agent${descDen === 1 ? "" : "s"}` +
                         `${teamIsSpec(countSet) ? " · spec mode" : " · full pipeline"})`,
                 ) +
                 badge;
