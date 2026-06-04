@@ -82,7 +82,6 @@ import {
     loadPromptTemplate,
     renderTemplate,
     makeSpawnWrapper,
-    resolveAgentModel,
 } from "../utils/workflow-core";
 import {
     newOrchestratorState,
@@ -205,14 +204,11 @@ export default function (pi: ExtensionAPI) {
         if (!m) return "";
         return m.provider && m.id ? `${m.provider}/${m.id}` : m.id || "";
     }
-    // Per-agent model: agent .md frontmatter → PI_WORKFLOW_MODEL → session model.
-    function modelFor(agentKey: string): string {
-        return resolveAgentModel(
-            agentKey,
-            st.agents,
-            WORKER_MODEL,
-            sessionModel || "default",
-        );
+    // agent-pipeline uses ONE model for every agent (PI_WORKFLOW_MODEL or the
+    // session model) — there are no per-agent models here, so the agent key is
+    // irrelevant. Display only.
+    function modelFor(_agentKey: string): string {
+        return WORKER_MODEL || sessionModel || "default";
     }
     // Members of the active team that actually resolve to a loaded agent .md.
     function activeMembers(): string[] {
@@ -443,15 +439,14 @@ export default function (pi: ExtensionAPI) {
         phase: PhaseState,
         cwd: string,
     ): Promise<{ output: string; exitCode: number }> {
-        const primaryModel = resolveAgentModel(
-            agentDef.name.toLowerCase(),
-            st.agents,
-            WORKER_MODEL,
-            sessionModel,
-        );
-        // Fallback: the model the current pi session is running on (the primary
-        // agent's model). If an agent's configured model fails to load, we retry
-        // with the session model since it's known to work — pi itself is using it.
+        // agent-pipeline runs EVERY agent on ONE model: the session model pi was
+        // launched with (or PI_WORKFLOW_MODEL when set). Per-agent frontmatter
+        // `model:` and PI_AGENT_*_MODEL are intentionally IGNORED here — per-agent
+        // models are the agent-team variant's job.
+        const primaryModel = WORKER_MODEL || sessionModel;
+        // Fallback: the model the current pi session is running on. If the chosen
+        // model fails to load, we retry with the session model since it's known to
+        // work — pi itself is using it.
         const fallbackModel =
             sessionModel && sessionModel !== primaryModel ? sessionModel : "";
         // Delegate to shared core (eliminates ~50 lines of near-identical
