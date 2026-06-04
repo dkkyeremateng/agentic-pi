@@ -464,6 +464,21 @@ export function renderWorkflowFooter(opts: {
         ? (activePhase.tokens.input || 0) + (activePhase.tokens.output || 0)
         : 0;
 
+    // Largest sub-agent usage seen this run (across ALL phases, not just the one
+    // running). With a shared session the latest phase carries the full
+    // accumulated context, and a finished phase keeps its tokens — so this rises
+    // through the run and does NOT drop back when a sub-agent completes.
+    let maxSubTokens = 0;
+    let maxSubWindow: number | undefined;
+    for (const p of phases) {
+        if (!p.tokens) continue;
+        const t = (p.tokens.input || 0) + (p.tokens.output || 0);
+        if (t > maxSubTokens) {
+            maxSubTokens = t;
+            maxSubWindow = p.tokens.contextWindow;
+        }
+    }
+
     // Primary (orchestrator) session usage — the base the footer reports.
     let usage: any;
     try {
@@ -486,15 +501,13 @@ export function renderWorkflowFooter(opts: {
               ? usage.context_window
               : undefined;
 
-    if (combineActive && activePhase) {
+    if (combineActive) {
         // agent-pipeline: sub-agents run on the primary's model/context, so the
-        // running sub-agent's tokens ADD to the primary's — one combined total.
-        const total = primaryTokens + activeTokens;
+        // sub-agent usage ADDS to the primary's — one combined total that persists
+        // across the run (uses maxSubTokens, not just the running phase).
+        const total = primaryTokens + maxSubTokens;
         contextWindow =
-            primaryWindow ||
-            activePhase.tokens?.contextWindow ||
-            activeContextWindow ||
-            undefined;
+            primaryWindow || maxSubWindow || activeContextWindow || undefined;
         tokenCount = total || undefined;
         // Let formatContextUsage recompute the % from total/window when both are
         // known; otherwise keep the primary's reported percent.
