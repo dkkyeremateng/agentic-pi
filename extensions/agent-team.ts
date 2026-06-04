@@ -209,6 +209,14 @@ export default function (pi: ExtensionAPI) {
             fallbackModel(),
         );
     }
+    // Frontmatter context_window of the single running sub-agent, for the footer's
+    // live context bar (fallback when the provider doesn't report a window).
+    function activeSubagentWindow(): number | undefined {
+        const r = st.phases.filter((p) => p.status === "running");
+        return r.length === 1
+            ? st.agents.get(r[0].agent.toLowerCase())?.contextWindow || undefined
+            : undefined;
+    }
     // Members of the active team that actually resolve to a loaded agent .md.
     function activeMembers(): string[] {
         const raw = st.teams[st.activeTeamName] || [];
@@ -1059,6 +1067,7 @@ export default function (pi: ExtensionAPI) {
                     dispatchElapsedMs: st.dispatchElapsedMs,
                     runElapsedMs: st.runElapsedMs,
                     contextUsage: () => ctx.getContextUsage?.(),
+                    activeContextWindow: activeSubagentWindow(),
                     visibleWidth,
                     truncateToWidth,
                 });

@@ -204,6 +204,14 @@ export default function (pi: ExtensionAPI) {
     function modelFor(_agentKey: string): string {
         return WORKER_MODEL || sessionModel || "default";
     }
+    // Frontmatter context_window of the single running sub-agent, for the footer's
+    // live context bar (fallback when the provider doesn't report a window).
+    function activeSubagentWindow(): number | undefined {
+        const r = st.phases.filter((p) => p.status === "running");
+        return r.length === 1
+            ? st.agents.get(r[0].agent.toLowerCase())?.contextWindow || undefined
+            : undefined;
+    }
     // Members of the active team that actually resolve to a loaded agent .md.
     function activeMembers(): string[] {
         const raw = st.teams[st.activeTeamName] || [];
@@ -242,7 +250,10 @@ export default function (pi: ExtensionAPI) {
             phases: st.phases,
             colWidth,
             theme,
-            model: modelFor(agentKey),
+            // Every sub-agent runs on the one session model; show a stable
+            // "default" label on the card (the actual model is in the footer).
+            model: "default",
+            useActiveModel: false,
             showContext: false,
         });
     }
@@ -948,6 +959,7 @@ export default function (pi: ExtensionAPI) {
                     dispatchElapsedMs: st.dispatchElapsedMs,
                     runElapsedMs: st.runElapsedMs,
                     contextUsage: () => ctx.getContextUsage?.(),
+                    activeContextWindow: activeSubagentWindow(),
                     visibleWidth,
                     truncateToWidth,
                 });

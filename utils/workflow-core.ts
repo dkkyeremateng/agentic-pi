@@ -422,6 +422,9 @@ export function renderWorkflowFooter(opts: {
     dispatchElapsedMs: number;
     runElapsedMs: number;
     contextUsage: () => any;
+    // Frontmatter context_window of the single running sub-agent (if any), used as
+    // a fallback for the percentage when the provider doesn't report a window.
+    activeContextWindow?: number;
     visibleWidth: (s: string) => number;
     truncateToWidth: (s: string, w: number) => string;
 }): string[] {
@@ -439,6 +442,7 @@ export function renderWorkflowFooter(opts: {
         dispatchElapsedMs,
         runElapsedMs,
         contextUsage,
+        activeContextWindow,
         visibleWidth,
         truncateToWidth,
     } = opts;
@@ -453,14 +457,18 @@ export function renderWorkflowFooter(opts: {
     let tokenCount: number | undefined;
     let contextWindow: number | undefined;
 
-    if (activePhase && activePhase.contextPct > 0) {
-        // Sub-agent is running - show its context usage
-        contextPct = activePhase.contextPct;
-        tokenCount = activePhase.tokens
-            ? (activePhase.tokens.input || 0) +
-                  (activePhase.tokens.output || 0) || undefined
-            : undefined;
-        contextWindow = activePhase.tokens?.contextWindow || undefined;
+    const activeTokens = activePhase?.tokens
+        ? (activePhase.tokens.input || 0) + (activePhase.tokens.output || 0)
+        : 0;
+    if (activePhase && (activePhase.contextPct > 0 || activeTokens > 0)) {
+        // A single sub-agent is running — show ITS live context usage + token
+        // count (for agent-pipeline this is the shared/primary context). Use the
+        // provider-reported window, else the agent's frontmatter window so the
+        // percentage still renders.
+        contextPct = activePhase.contextPct > 0 ? activePhase.contextPct : null;
+        tokenCount = activeTokens || undefined;
+        contextWindow =
+            activePhase.tokens?.contextWindow || activeContextWindow || undefined;
     } else {
         // No active sub-agent - show primary session's context
         let usage: any;

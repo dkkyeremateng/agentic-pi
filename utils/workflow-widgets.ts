@@ -45,6 +45,9 @@ export function renderRichCard(opts: {
     // usage). Idle dashboards pass false to drop it — `0.0%/<window>` on an agent
     // that hasn't consumed any context is noise. Default true (live/done cards).
     showContext?: boolean;
+    // When false, show the `model` string verbatim instead of the live
+    // activeModel (agent-pipeline pins this to "default"). Default true.
+    useActiveModel?: boolean;
 }): string[] {
     const { agentKey, def, phases, colWidth, theme, model } = opts;
     const showContext = opts.showContext ?? true;
@@ -108,8 +111,12 @@ export function renderRichCard(opts: {
     const ctxVisible = Math.min(ctxRaw.length, w);
 
     // The model the agent actually runs on; after a fallback the ◆ becomes ⚠.
-    const fellBack = !!livePhase?.modelFallback;
-    const effectiveModel = livePhase?.activeModel || model;
+    // When useActiveModel is false the card shows the passed `model` verbatim
+    // (agent-pipeline pins this to "default" — every sub-agent uses the session
+    // model, shown in full in the footer).
+    const useActiveModel = opts.useActiveModel ?? true;
+    const fellBack = useActiveModel && !!livePhase?.modelFallback;
+    const effectiveModel = (useActiveModel && livePhase?.activeModel) || model;
     const modelRaw = `${fellBack ? "⚠" : "◆"} ${effectiveModel}`;
     const modelStr = theme.fg(
         fellBack ? "accent" : "muted",
