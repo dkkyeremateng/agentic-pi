@@ -5,6 +5,10 @@
 // ABOUTME: (held by the extension, also read by its widget/footer) and a host of
 // ABOUTME: per-extension callbacks. The extension keeps the model-specific bits.
 
+// Type-only import (erased at runtime, so this module stays pi-free at runtime):
+// align our tool-result shape with pi's real AgentToolResult so the registered
+// tools' execute() returns typecheck against pi's ToolDefinition.
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import {
     type AgentDef,
     type PhaseState,
@@ -155,7 +159,7 @@ export interface OrchestratorHost {
 }
 
 type RunResult = { status: string; report: string };
-type ToolResult = { content: { type: string; text: string }[]; details?: any };
+type ToolResult = AgentToolResult<unknown>;
 
 // ── Shared command handlers ──────────────────────
 // runFullWorkflowCommand and runSpecWorkflowCommand are byte-identical between
@@ -725,6 +729,7 @@ function writeReport(h: OrchestratorHost, cwd: string, report: string): void {
 
 const textResult = (text: string): ToolResult => ({
     content: [{ type: "text", text }],
+    details: undefined,
 });
 
 // ── dispatch_agent: run one specialist on a focused task ──

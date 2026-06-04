@@ -878,6 +878,7 @@ export default function (pi: ExtensionAPI) {
                                 text: "A workflow is already running.",
                             },
                         ],
+                        details: undefined,
                     };
                 }
                 st.agents = loadAgents(ctx.cwd);
@@ -891,6 +892,7 @@ export default function (pi: ExtensionAPI) {
                                 text: `Running workflow: ${request}`,
                             },
                         ],
+                        details: undefined,
                     });
                 // If the turn is aborted, kill the running agent subprocess so the
                 // workflow doesn't keep running detached in the background.

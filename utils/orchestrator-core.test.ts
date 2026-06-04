@@ -136,7 +136,7 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("Cannot dispatch"));
+        assert.ok((result.content[0] as { text: string }).text.includes("Cannot dispatch"));
     });
 
     it("rejects dispatch when limit is reached", async () => {
@@ -150,7 +150,7 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("Dispatch limit"));
+        assert.ok((result.content[0] as { text: string }).text.includes("Dispatch limit"));
     });
 
     it("returns error for unknown agent", async () => {
@@ -172,8 +172,8 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("not found"));
-        assert.ok(result.content[0].text.includes("planner"));
+        assert.ok((result.content[0] as { text: string }).text.includes("not found"));
+        assert.ok((result.content[0] as { text: string }).text.includes("planner"));
     });
 
     it("dispatches a known agent successfully", async () => {
@@ -201,7 +201,7 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("done"));
+        assert.ok((result.content[0] as { text: string }).text.includes("done"));
         assert.equal(st.phases.length, 1);
         assert.equal(st.phases[0].agent, "planner");
         assert.equal(st.phases[0].status, "done");
@@ -232,7 +232,7 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("error"));
+        assert.ok((result.content[0] as { text: string }).text.includes("error"));
         assert.equal(st.phases[0].status, "error");
     });
 
@@ -258,7 +258,7 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("RE-DISPATCH"));
+        assert.ok((result.content[0] as { text: string }).text.includes("RE-DISPATCH"));
         assert.equal(st.phases[0].status, "error");
     });
 
@@ -291,7 +291,7 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("done"));
+        assert.ok((result.content[0] as { text: string }).text.includes("done"));
         assert.equal(st.phases[0].status, "done");
     });
 
@@ -394,7 +394,7 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("[truncated]"));
+        assert.ok((result.content[0] as { text: string }).text.includes("[truncated]"));
     });
 
     it("enters dispatch mode on first dispatch", async () => {
@@ -495,7 +495,7 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("RE-DISPATCH"));
+        assert.ok((result.content[0] as { text: string }).text.includes("RE-DISPATCH"));
     });
 
     it("signals DONE when all selected agents are complete", async () => {
@@ -524,7 +524,7 @@ describe("dispatchAgentCore", () => {
             mkCtx(),
         );
         // Only one agent dispatched, no pending phases remain
-        assert.ok(result.content[0].text.includes("DONE"));
+        assert.ok((result.content[0] as { text: string }).text.includes("DONE"));
     });
 
     it("does not reload agents when freshDispatchSession is false", async () => {
@@ -603,7 +603,7 @@ describe("selectAgentsCore", () => {
         const st = mkState({ running: true });
         const host = mkHost();
         const result = selectAgentsCore(st, host, ["planner"], mkCtx());
-        assert.ok(result.content[0].text.includes("Cannot change"));
+        assert.ok((result.content[0] as { text: string }).text.includes("Cannot change"));
     });
 
     it("returns error when no valid agents in selection", () => {
@@ -618,7 +618,7 @@ describe("selectAgentsCore", () => {
         });
         const st = mkStateWithAgents(agents);
         const result = selectAgentsCore(st, host, ["nonexistent"], mkCtx());
-        assert.ok(result.content[0].text.includes("No valid agents"));
+        assert.ok((result.content[0] as { text: string }).text.includes("No valid agents"));
     });
 
     it("selects valid agents and ignores unknown", () => {
@@ -642,8 +642,8 @@ describe("selectAgentsCore", () => {
         assert.equal(st.phases.length, 2);
         assert.equal(st.phases[0].agent, "planner");
         assert.equal(st.phases[1].agent, "tester");
-        assert.ok(result.content[0].text.includes("ignored unknown"));
-        assert.ok(result.content[0].text.includes("nonexistent"));
+        assert.ok((result.content[0] as { text: string }).text.includes("ignored unknown"));
+        assert.ok((result.content[0] as { text: string }).text.includes("nonexistent"));
     });
 
     it("sets dispatch mode", () => {
@@ -749,7 +749,7 @@ describe("selectAgentsCore", () => {
             ["planner", "tester"],
             mkCtx(),
         );
-        assert.ok(result.content[0].text.includes("Planner ∥ Tester"));
+        assert.ok((result.content[0] as { text: string }).text.includes("Planner ∥ Tester"));
     });
 
     it("does not reload agents when freshDispatchSession is false", () => {
