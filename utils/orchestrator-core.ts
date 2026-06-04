@@ -746,6 +746,27 @@ export async function dispatchAgentCore(
             "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
         );
 
+    // Recursion guard. Sub-agents are separate processes; their depth and the
+    // chain of agents that led here ride down through the env (set by
+    // spawnAgentWithModel/dispatchEnv). Depth bounds how deep dispatch can nest;
+    // ancestry catches cycles (A dispatches B dispatches A). Default max depth 1 =
+    // single level (only the top dispatches); raise PI_DISPATCH_MAX_DEPTH to allow
+    // sub-agents to dispatch further.
+    const dispatchDepth = parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
+    const maxDispatchDepth =
+        parseInt(process.env.PI_DISPATCH_MAX_DEPTH || "1", 10) || 1;
+    if (dispatchDepth >= maxDispatchDepth)
+        return textResult(
+            `Dispatch depth limit reached (max ${maxDispatchDepth}). This agent is ${dispatchDepth} dispatch level(s) deep — do the work yourself or report back instead of dispatching further. (Raise PI_DISPATCH_MAX_DEPTH to allow deeper nesting.)`,
+        );
+    const dispatchAncestry = (process.env.PI_DISPATCH_ANCESTRY || "")
+        .split(">")
+        .filter(Boolean);
+    if (dispatchAncestry.includes(agent.toLowerCase()))
+        return textResult(
+            `Cycle detected: "${agent}" is already an ancestor in this dispatch chain (${dispatchAncestry.join(" > ")}). Refusing to avoid an infinite loop — do the work yourself or report back.`,
+        );
+
     if (s.dispatchesThisTurn >= h.config.maxDispatchesPerTurn)
         return textResult(
             `Dispatch limit reached (${h.config.maxDispatchesPerTurn} per turn). Summarize what has been done and stop — do not dispatch more agents this turn.`,
@@ -954,6 +975,24 @@ export function selectAgentsCore(
             .join(", ");
         return textResult(
             `No valid agents in selection. Available agents: ${available}`,
+        );
+    }
+
+    // Loop-breaker: a repeat select_agents naming the SAME agents that are already
+    // selected and still all queued (none dispatched yet) is a no-op. Weak
+    // orchestrators get stuck re-declaring the plan here instead of executing it,
+    // so steer firmly to dispatch rather than silently re-selecting.
+    if (
+        s.dispatchMode &&
+        !s.freshDispatchSession &&
+        s.phases.length === resolved.length &&
+        s.phases.every(
+            (p) => p.status === "pending" && resolved.includes(p.agent),
+        )
+    ) {
+        const queued = resolved.map((k) => displayName(k)).join(" ∥ ");
+        return textResult(
+            `${queued} are already selected and queued — do NOT call select_agents again. Dispatch now: call dispatch_agent agent="${resolved[0]}" task="<their task>", then dispatch the next selected agent.`,
         );
     }
 

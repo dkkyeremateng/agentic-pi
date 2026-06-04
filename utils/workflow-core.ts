@@ -163,10 +163,14 @@ function isEnvAllowed(key: string): boolean {
 // keep PI_WORKFLOW_MODEL / PI_AGENT_*_MODEL in a file instead of exporting them
 // in every shell — handy when pi is launched from an IDE/GUI.
 export function loadDotEnv(cwd: string): void {
-    // First, load from pi config directory (global defaults)
-    // Try multiple possible locations for the config directory
+    // First, load from the config directory (global defaults). The primary
+    // location is THIS repo's own root, resolved relative to this source file
+    // (utils/workflow-core.ts -> repo root) so the bundled `.env` is found wherever
+    // the folder is copied — no hardcoded path. `~/.config/pi` and `~/.pi` remain as
+    // optional machine-level fallbacks.
+    const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
     const possibleConfigDirs = [
-        join(homedir(), "Documents", ".configs", "pi"),
+        repoRoot,
         join(homedir(), ".config", "pi"),
         join(homedir(), ".pi"),
     ];
@@ -538,7 +542,18 @@ export function renderWorkflowFooter(opts: {
     const dispatchRunning =
         dispatchMode && phases.some((p) => p.status === "running");
     const dispatchDone = dispatchMode && phases.length > 0 && !dispatchRunning;
-    const activeName = phases.find((p) => p.status === "running")?.label;
+    // Show ALL running sub-agents (parallel dispatch runs several at once), joined
+    // with the same ∥ the dashboard uses; a single running agent reads as just its
+    // name. Cap the list so the footer can't be overrun, with a "+N" overflow.
+    const runningLabels = phases
+        .filter((p) => p.status === "running")
+        .map((p) => p.label);
+    const MAX_FOOTER_AGENTS = 4;
+    const activeName = runningLabels.length
+        ? runningLabels.length > MAX_FOOTER_AGENTS
+            ? `${runningLabels.slice(0, MAX_FOOTER_AGENTS).join(" ∥ ")} +${runningLabels.length - MAX_FOOTER_AGENTS}`
+            : runningLabels.join(" ∥ ")
+        : undefined;
     const statusColor =
         running || dispatchRunning
             ? "accent"
@@ -2129,6 +2144,22 @@ export interface SpawnResult {
     tokens?: TokenUsage;
 }
 
+// Dispatch-context env passed to every spawned sub-agent. Sub-agents are separate
+// pi processes, so the recursion guard (depth + ancestry for cycle detection) rides
+// down through the environment. Each hop increments PI_DISPATCH_DEPTH and appends
+// the spawned agent to PI_DISPATCH_ANCESTRY; dispatchAgentCore reads these to bound
+// recursion. PI_SUBAGENT is kept for backward compatibility.
+export function dispatchEnv(agentName: string): Record<string, string> {
+    const depth = parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
+    const ancestry = process.env.PI_DISPATCH_ANCESTRY || "";
+    const name = agentName.toLowerCase();
+    return {
+        PI_SUBAGENT: "1",
+        PI_DISPATCH_DEPTH: String(depth + 1),
+        PI_DISPATCH_ANCESTRY: ancestry ? `${ancestry}>${name}` : name,
+    };
+}
+
 // Spawn a pi subprocess for an agent, stream its output, and return the result.
 // This is the single shared implementation used by agent-pipeline, agent-team,
 // and the WorkflowRuntime class. Each caller handles model resolution and
@@ -2405,7 +2436,7 @@ function spawnAgentWithModelFallback(
     return new Promise((resolve) => {
         const proc = spawn("pi", args, {
             stdio: ["ignore", "pipe", "pipe"],
-            env: { ...process.env, PI_SUBAGENT: "1" },
+            env: { ...process.env, ...dispatchEnv(agentDef.name) },
             cwd,
         });
 
@@ -2652,7 +2683,7 @@ export function spawnAgentWithModel(
     return new Promise((resolve) => {
         const proc = spawn("pi", args, {
             stdio: ["ignore", "pipe", "pipe"],
-            env: { ...process.env, PI_SUBAGENT: "1" },
+            env: { ...process.env, ...dispatchEnv(agentDef.name) },
             cwd,
         });
         config.setCurrentProc(proc);

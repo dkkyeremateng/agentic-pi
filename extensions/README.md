@@ -86,6 +86,23 @@ lifecycle, but the orchestrator's free-form `dispatch_agent`/`select_agents` too
 will be unavailable. To use dispatch from a non-workflow agent, add `dispatch_agent`
 to that agent's `tools:` frontmatter.
 
+#### Recursion (nested dispatch)
+
+A dispatched agent that has `dispatch_agent` in its frontmatter can itself dispatch,
+forming a tree. Sub-agents are separate `pi` processes, so a recursion guard rides
+down through the environment (`PI_DISPATCH_DEPTH`, `PI_DISPATCH_ANCESTRY`, set
+automatically on each spawn):
+
+- **Depth** — `PI_DISPATCH_MAX_DEPTH` (default **1** = single level: only the top
+  agent dispatches; deeper dispatch is refused). Raise it to allow nesting.
+- **Cycles** — always refused (an agent dispatching one already in its chain, e.g.
+  A → B → A), independent of the depth setting.
+- **Breadth** — `PI_MAX_DISPATCHES_PER_TURN` still caps dispatches per agent-turn.
+
+The default keeps behaviour single-level; opt into deeper trees with
+`PI_DISPATCH_MAX_DEPTH=2+`. The `coordinator` agent is a ready example of an agent
+that dispatches specialists.
+
 ## Use it
 
 ```bash
@@ -261,8 +278,40 @@ described below is an alternative for the per-agent model config specifically.)
 ## Team variant — `agent-team.ts`
 
 `agent-team.ts` runs the same pipeline but lets you **set the model per agent**
-and **pick a team from `.pi/agents/teams.yaml`**. Per-agent models come from
-either source (env wins over the file):
+and **pick a team from `.pi/agents/teams.yaml`**.
+
+### Using it
+
+```bash
+# launch (include dispatch.ts so dispatch_agent/select_agents are available)
+pi -e .pi/extensions/dispatch.ts -e .pi/extensions/agent-team.ts
+# ...or just `pi` from this directory — auto-discovery loads all three together.
+
+/agent-team Add CSV export to the reports page
+```
+
+- **`/agent-team [request]`** — opens a **Select Team** dialog (the team decides
+  which agents run and the mode: full pipeline vs spec), then runs it. Prompts for
+  the request if omitted. Force the mode with a `spec `/`full ` prefix
+  (`/agent-team spec add CSV export`); cap retries with a `loops=N` token
+  (`/agent-team loops=5 fix the bug`).
+- **`/agent-team-clear`** — clear the progress widget.
+- **Or let the primary agent orchestrate.** It receives an orchestrator system
+  prompt cataloguing every loaded agent, then either composes the work itself —
+  `select_agents` to declare the plan (the dashboard marks them queued), then
+  `dispatch_agent` to run specialists in the order the request needs — or calls
+  `run_agent_team` as a shortcut for the standard full pipeline. It picks **one**
+  approach per request, then stops and summarizes.
+- **Tools** (available to the primary agent): `select_agents { agents }`,
+  `dispatch_agent { agent, task }` (both from `dispatch.ts`), and
+  `run_agent_team { request, max_loops }`.
+
+What sets `agent-team` apart from `agent-pipeline` is **per-agent models** — set
+them as described next; everything else about the pipeline is identical.
+
+### Per-agent models
+
+Per-agent models come from either source (env wins over the file):
 
 - **Env vars** — `PI_AGENT_SCOUT_MODEL`, `PI_AGENT_PLANNER_MODEL`,
   `PI_AGENT_CRITIC_MODEL`, `PI_AGENT_IMPLEMENTER_MODEL`, `PI_AGENT_TESTER_MODEL`,
@@ -280,7 +329,6 @@ either source (env wins over the file):
   ```
 
 `PI_WORKFLOW_MODEL` is the global env fallback for any agent left unset.
-Everything else about the pipeline is identical.
 
 **Model fallback.** If an agent's configured model fails to load or run (bad model
 id, missing API key, provider error), the run does not just fail: it **falls back
@@ -364,18 +412,26 @@ ad-hoc dispatch reads `dispatching` while a dispatched agent is working, then
 model with `PI_AGENT_SCOUT_MODEL` or a `scout:` line in `models.yaml` — a
 fast/cheap model is a good fit for read-only recon.
 
-Commands:
-- `/agent-team [request]` — pick a team (Select Team dialog), then run the lifecycle in that team's mode (prompts if omitted). Add a `loops=N` token to override the retry limit for this run.
-- `/agent-team-clear` — clear the progress widget
+(Commands and orchestrator tools are listed under [Using it](#using-it) above.)
 
-Tools (available to the primary agent as the orchestrator):
-- `select_agents { agents }` — declare the agents the work will use, in order. Called first, once the workflow is determined, so the dashboard marks them **queued** before any agent runs.
-- `run_agent_team { request, max_loops }` — run the full automated lifecycle
-- `dispatch_agent { agent, task }` — dispatch a task to any loaded agent outside the pipeline
+## Development
 
-The primary agent receives an **orchestrator system prompt** that catalogs all
-available agents, describes the pipeline, and guides it to choose between the
-full workflow and targeted dispatches based on the request.
+Type-checking and unit tests run against the **real pi types**. pi isn't a node
+dependency of this repo, so a one-time step links the globally-installed pi (the
+exact version you run) into `node_modules` — no install of pi's native runtime,
+and `node_modules` is gitignored:
+
+```bash
+npm run setup:types     # link pi types into node_modules (needs `pi` on PATH)
+npm run typecheck       # tsc --noEmit  (0 errors expected)
+npm test                # unit tests (tsx) for utils/*.test.ts
+npm run test:linear     # Python tests for the linear skill
+```
+
+`setup:types` runs automatically before `typecheck`/`test` (pre-hooks), so those
+work after a fresh clone or `npm install` — just re-run it if the links go stale.
+Extensions can't be `tsc`'d against installed types without this link step, so run
+`npm run typecheck` after editing any `extensions/*.ts` or `utils/*.ts`.
 
 ## Code layout
 
@@ -386,8 +442,43 @@ Both extensions share their stateless guts via `.pi/utils/workflow-core.ts`
 Only the model-aware orchestration, rendering, and per-extension identity stay
 in `agent-pipeline.ts` / `agent-team.ts`.
 
-## Using it on another project
+## Portability — moving the folder
 
-These extensions only auto-load when pi runs from this directory. To use them elsewhere:
-- copy `.pi/extensions/agent-pipeline.ts` + `.pi/extensions/agent-team.ts`, **`.pi/utils/`** (workflow-core + workflow-utils), and `.pi/agents/` into that project's `.pi/`, or
-- symlink `agent-pipeline.ts` into `~/.pi/agent/extensions/` to make it global — but keep the `../utils/` modules reachable at the same relative path (agents still load from the active project's `.pi/agents/`).
+The whole folder is **relocatable**: copy it anywhere, on any machine, and it runs
+with no code edits — only `.env` config. Everything resolves relative to itself
+(extensions find `agents/`/`utils/` next to them; `loadDotEnv` finds this folder's
+`.env` from its own source path; `linear`/setup scripts self-resolve). The only
+external requirement is `pi` on PATH; `node_modules` is dev-only (typecheck/tests),
+not needed to run.
+
+New machine / new location — config only, no code changes:
+
+1. Copy the folder anywhere.
+2. Ensure `pi` is installed and on PATH.
+3. `cp example.env .env` and fill in your models/keys. The folder-root `.env` is
+   loaded as the global config (no whitelist), so **every** setting works there —
+   `PI_WORKFLOW_MODEL`, `PI_AGENT_*_MODEL`, `PI_DISPATCH_MAX_DEPTH`, `LINEAR_API_KEY`, …
+4. Launch with the bundled script, which loads the extensions resolved relative to
+   itself (no per-machine pi config needed):
+
+   ```bash
+   ./run.sh          # agent-pipeline owns the dashboard UI
+   ./run.sh team     # agent-team owns it instead (both commands work either way)
+   ```
+
+5. *Optional:* `bash skills/linear/install.sh` for the `linear` CLI;
+   `npm install && npm run setup:types` only if you want to typecheck/run tests.
+
+**Why a launcher?** Extension loading can't be driven by `.env` — pi must know which
+extensions to load *before* it reads `.env`. `run.sh` resolves and `-e`-loads
+`dispatch.ts` + both workflows from its own path, so you never edit
+`~/.pi/agent/settings.json` per machine.
+
+### Using it inside another project's `.pi/`
+
+To make the workflows available from a *different* project's directory (so plain
+`pi` there picks them up), copy `extensions/` (incl. `dispatch.ts`), `utils/`
+(workflow-core + workflow-utils), and `agents/` into that project's `.pi/` — keep
+the `extensions/ ↔ ../utils/ ↔ ../agents/` relative layout intact. Or symlink the
+extensions into `~/.pi/agent/extensions/` to make them global, keeping the
+`../utils/` and `../agents/` modules reachable at the same relative path.

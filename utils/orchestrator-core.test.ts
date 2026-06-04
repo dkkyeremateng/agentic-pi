@@ -153,6 +153,93 @@ describe("dispatchAgentCore", () => {
         assert.ok((result.content[0] as { text: string }).text.includes("Dispatch limit"));
     });
 
+    // Recursion guard (env-propagated across sub-agent processes).
+    const DISPATCH_ENV_KEYS = [
+        "PI_DISPATCH_DEPTH",
+        "PI_DISPATCH_MAX_DEPTH",
+        "PI_DISPATCH_ANCESTRY",
+    ];
+    function saveDispatchEnv(): Record<string, string | undefined> {
+        const s: Record<string, string | undefined> = {};
+        for (const k of DISPATCH_ENV_KEYS) s[k] = process.env[k];
+        return s;
+    }
+    function restoreDispatchEnv(s: Record<string, string | undefined>) {
+        for (const k of DISPATCH_ENV_KEYS) {
+            if (s[k] === undefined) delete process.env[k];
+            else process.env[k] = s[k];
+        }
+    }
+
+    it("refuses to dispatch beyond the max depth", async () => {
+        const saved = saveDispatchEnv();
+        try {
+            process.env.PI_DISPATCH_DEPTH = "1"; // already one level deep
+            delete process.env.PI_DISPATCH_MAX_DEPTH; // default max depth = 1
+            const result = await dispatchAgentCore(
+                mkState(),
+                mkHost(),
+                "scout",
+                "task",
+                undefined,
+                mkCtx(),
+            );
+            assert.ok(
+                (result.content[0] as { text: string }).text.includes(
+                    "depth limit",
+                ),
+            );
+        } finally {
+            restoreDispatchEnv(saved);
+        }
+    });
+
+    it("allows deeper dispatch when PI_DISPATCH_MAX_DEPTH is raised", async () => {
+        const saved = saveDispatchEnv();
+        try {
+            process.env.PI_DISPATCH_DEPTH = "1";
+            process.env.PI_DISPATCH_MAX_DEPTH = "2";
+            const result = await dispatchAgentCore(
+                mkState(),
+                mkHost(),
+                "scout",
+                "task",
+                undefined,
+                mkCtx(),
+            );
+            // Depth gate passed (falls through to agent lookup, which is empty here).
+            assert.ok(
+                !(result.content[0] as { text: string }).text.includes(
+                    "depth limit",
+                ),
+            );
+        } finally {
+            restoreDispatchEnv(saved);
+        }
+    });
+
+    it("refuses a cycle when the agent is already an ancestor", async () => {
+        const saved = saveDispatchEnv();
+        try {
+            process.env.PI_DISPATCH_ANCESTRY = "coordinator>scout";
+            const result = await dispatchAgentCore(
+                mkState(),
+                mkHost(),
+                "scout",
+                "task",
+                undefined,
+                mkCtx(),
+            );
+            assert.ok(
+                (result.content[0] as { text: string }).text.includes(
+                    "Cycle detected",
+                ),
+            );
+        } finally {
+            restoreDispatchEnv(saved);
+        }
+    });
+
     it("returns error for unknown agent", async () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
@@ -619,6 +706,27 @@ describe("selectAgentsCore", () => {
         const st = mkStateWithAgents(agents);
         const result = selectAgentsCore(st, host, ["nonexistent"], mkCtx());
         assert.ok((result.content[0] as { text: string }).text.includes("No valid agents"));
+    });
+
+    it("steers to dispatch on a redundant repeat selection", () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        agents.set("seeker", mkAgent("seeker"));
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        // First call declares the plan (agents queued, none dispatched yet).
+        selectAgentsCore(st, host, ["scout", "seeker"], mkCtx());
+        // Repeat with the same still-queued agents → hard steer to dispatch.
+        const result = selectAgentsCore(st, host, ["scout", "seeker"], mkCtx());
+        const text = (result.content[0] as { text: string }).text;
+        assert.ok(text.includes("do NOT call select_agents again"));
+        assert.ok(text.includes("dispatch_agent"));
     });
 
     it("selects valid agents and ignores unknown", () => {

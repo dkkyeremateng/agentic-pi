@@ -10,6 +10,8 @@ import {
     tokenNote,
     mkPhase,
     freshPhases,
+    dispatchEnv,
+    renderWorkflowFooter,
     type RunArtifacts,
     type PhaseState,
 } from "./workflow-core";
@@ -524,5 +526,91 @@ describe("contextBundleForPhase", () => {
     it("is case-insensitive for agent names", () => {
         const bundle = contextBundleForPhase("PLANNER", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
+    });
+});
+
+describe("dispatchEnv", () => {
+    const KEYS = ["PI_DISPATCH_DEPTH", "PI_DISPATCH_ANCESTRY"];
+    function withEnv(
+        vars: Record<string, string | undefined>,
+        fn: () => void,
+    ) {
+        const saved: Record<string, string | undefined> = {};
+        for (const k of KEYS) saved[k] = process.env[k];
+        try {
+            for (const k of KEYS) {
+                if (vars[k] === undefined) delete process.env[k];
+                else process.env[k] = vars[k];
+            }
+            fn();
+        } finally {
+            for (const k of KEYS) {
+                if (saved[k] === undefined) delete process.env[k];
+                else process.env[k] = saved[k];
+            }
+        }
+    }
+
+    it("starts depth at 1 and seeds ancestry from a top-level spawn", () => {
+        withEnv({ PI_DISPATCH_DEPTH: undefined, PI_DISPATCH_ANCESTRY: undefined }, () => {
+            const env = dispatchEnv("Scout");
+            assert.equal(env.PI_DISPATCH_DEPTH, "1");
+            assert.equal(env.PI_DISPATCH_ANCESTRY, "scout");
+            assert.equal(env.PI_SUBAGENT, "1");
+        });
+    });
+
+    it("increments depth and appends (lowercased) to the ancestry chain", () => {
+        withEnv({ PI_DISPATCH_DEPTH: "1", PI_DISPATCH_ANCESTRY: "coordinator" }, () => {
+            const env = dispatchEnv("Scout");
+            assert.equal(env.PI_DISPATCH_DEPTH, "2");
+            assert.equal(env.PI_DISPATCH_ANCESTRY, "coordinator>scout");
+        });
+    });
+});
+
+describe("renderWorkflowFooter", () => {
+    // Stub theme: return the raw text so we can assert on content, not colors.
+    const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+    function footer(phases: PhaseState[]): string {
+        return renderWorkflowFooter({
+            width: 200,
+            theme,
+            selfName: "agent-team",
+            model: "m",
+            running: false,
+            lastStatus: "idle",
+            iteration: 1,
+            maxLoopsRef: 3,
+            dispatchMode: true,
+            phases,
+            dispatchElapsedMs: 0,
+            runElapsedMs: 0,
+            contextUsage: () => undefined,
+            visibleWidth: (s) => s.length,
+            truncateToWidth: (s, w) => s.slice(0, w),
+        })[0];
+    }
+    function running(label: string): PhaseState {
+        const p = mkPhase(label, label.toLowerCase());
+        p.status = "running";
+        return p;
+    }
+
+    it("shows a single running sub-agent by name", () => {
+        assert.ok(footer([running("Scout")]).includes("running Scout"));
+    });
+
+    it("lists all running sub-agents when several run in parallel", () => {
+        const line = footer([running("Scout"), running("Seeker")]);
+        assert.ok(line.includes("Scout ∥ Seeker"));
+    });
+
+    it("caps the list with a +N overflow", () => {
+        const line = footer(
+            ["A", "B", "C", "D", "E", "F"].map(running),
+        );
+        assert.ok(line.includes("+2"));
+        assert.ok(!line.includes("∥ E"));
     });
 });
