@@ -17,6 +17,7 @@ import {
     displayName,
     mkPhase,
     freshPhases,
+    PIPELINE_ORDER,
     buildPhaseMap,
     failPhase,
     validatePlan,
@@ -251,10 +252,21 @@ export async function runWorkflowCore(
     let members = activeMembers(s);
     if (members.length === 0) members = Array.from(s.agents.keys());
 
-    s.includeScout = members.some((m) => m.toLowerCase() === "scout");
+    // A team may include "lead" agents that are not linear pipeline phases (e.g.
+    // researcher, coordinator) — they orchestrate their own sub-work. When present,
+    // run them directly with the request instead of the canonical pipeline (which
+    // only knows scout→…→ship and would silently drop them).
+    const pipelineSet = new Set<string>(PIPELINE_ORDER as readonly string[]);
+    const leadAgents = members.filter((m) => !pipelineSet.has(m.toLowerCase()));
+    const isLeadWorkflow = leadAgents.length > 0;
+
+    s.includeScout =
+        !isLeadWorkflow && members.some((m) => m.toLowerCase() === "scout");
     s.dispatchMode = false;
     h.setup.setupSessions(cwd, true);
-    s.phases = freshPhases(members);
+    s.phases = isLeadWorkflow
+        ? leadAgents.map((a) => mkPhase(displayName(a), a.toLowerCase()))
+        : freshPhases(members);
     s.phaseLogs = [];
     s.totalDroppedLines = 0;
     s.totalToolCalls = 0;
@@ -286,6 +298,45 @@ export async function runWorkflowCore(
         const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
         return bundle ? `${bundle}\n\n---\n\n${task}` : task;
     };
+
+    // ── Lead-agent workflow (delegating agents like researcher / coordinator) ──
+    // Run each lead agent with the user's request as its task; the agent does its
+    // own dispatching (e.g. the researcher calls atlassian/linear and the critic).
+    if (isLeadWorkflow) {
+        const sections: string[] = [];
+        for (const key of leadAgents.map((a) => a.toLowerCase())) {
+            const phase = s.phases.find((p) => p.agent === key);
+            if (!phase) continue;
+            const abort = checkAbort(s, h);
+            if (abort) return abort;
+            phase.status = "pending";
+            h.ui.updateWidget();
+            const res = await h.execution.runPhase(phase, request, cwd);
+            if (!res.ok) return fail(s, displayName(key), res.output);
+            sections.push(
+                `## ${displayName(key)}`,
+                ``,
+                res.output.trim() || "_(no output)_",
+                ``,
+            );
+        }
+        s.runElapsedMs = Date.now() - s.runStartedAt;
+        s.running = false;
+        s.lastStatus = "done";
+        h.ui.updateWidget();
+        const report = [
+            `# Workflow Report`,
+            ``,
+            `**Request:** ${request}`,
+            `**Team:** ${s.activeTeamName || "—"}`,
+            `**Outcome:** done`,
+            ``,
+            ...sections,
+        ].join("\n");
+        writeReport(h, cwd, report);
+        h.ui.publishLogs();
+        return { status: "done", report };
+    }
 
     const pm = buildPhaseMap(s.phases);
     const scoutP = pm.scout;

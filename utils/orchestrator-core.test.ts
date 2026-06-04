@@ -1632,6 +1632,51 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
     });
 });
 
+// ── runWorkflowCore — lead-agent (delegating) teams ──
+
+describe("runWorkflowCore (lead-agent teams)", () => {
+    it("dispatches a non-pipeline lead agent with the request, not the pipeline", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("researcher", mkAgent("researcher"));
+        agents.set("critic", mkAgent("critic"));
+        const calls: { agent: string; task: string }[] = [];
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase: any, task: string) => {
+                    calls.push({ agent: phase.agent, task });
+                    return { output: `${phase.agent} output`, ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { research: ["researcher", "critic"] },
+            activeTeamName: "research",
+        });
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "investigate WAL-2977",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "done");
+        // Only the researcher runs (as a lead), with the raw request as its task;
+        // the critic is NOT run as a separate pipeline phase (the researcher
+        // dispatches it itself).
+        assert.deepEqual(
+            calls.map((c) => c.agent),
+            ["researcher"],
+        );
+        assert.equal(calls[0].task, "investigate WAL-2977");
+        assert.ok(st.phases.every((p) => p.agent === "researcher"));
+    });
+});
+
 // ── spawnAgentWithModel ──────────────────────────
 // NOTE: Testing spawnAgentWithModel directly requires mocking child_process.spawn,
 // which is not reliably supported by Node's built-in test runner. However, the

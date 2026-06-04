@@ -29,6 +29,23 @@ The approved plan is saved at `.pi/plan.md` — read it for the full phased plan
 - Make changes only in the target codebase you were asked to modify
 - **Do NOT include any emojis. Emojis are banned.**
 
+## Writing SQL — keep queries sargable
+
+When the change includes SQL (queries, migrations, ORM-generated statements),
+write predicates the database can satisfy with an index — non-sargable filters
+force full table scans that fail at scale:
+
+- **No leading-wildcard `LIKE`** on a filtered/joined/sorted column: `col LIKE '%foo'`
+  / `'%foo%'` ignores any B-tree index on `col`. Filter on a structured indexed
+  column with `=`/`IN` (e.g. `transaction_type = 'REBALANCE'`) instead of
+  substring-matching free text (`reference LIKE '%_REBALANCE'`); use a left-anchored
+  prefix (`col LIKE 'X\_%'`) when the value is a prefix. If a suffix/contains match is
+  truly required, raise it rather than silently shipping a scan.
+- **Never wrap an indexed column in a function** in WHERE/JOIN (`DATE(created)=…`,
+  `LOWER(email)=…`) — compare the raw column to a computed bound (range) instead.
+- Lead with the most selective indexed columns; ensure the supporting index exists
+  for the WHERE/JOIN/ORDER BY columns (add a migration if the plan calls for it).
+
 ## Workflow
 
 1. Read the plan fully and confirm which files it touches
