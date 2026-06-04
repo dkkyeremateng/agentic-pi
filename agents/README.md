@@ -19,7 +19,7 @@ available there.
 | `tester.md` | Writes and runs tests, reports pass/fail |
 | `documenter.md` | Updates READMEs/docs, adds comments where needed, writes usage examples in the existing style |
 | `validator.md` | Runs the full suite, confirms criteria; in ship mode opens a draft PR on PASS |
-| `teams.yaml` | Selectable teams for the workflow extensions: `full` (scout + full pipeline) and `info` (plan→critique→document spec) |
+| `teams.yaml` | Selectable teams for the workflow extensions. A team's roster IS the pipeline — the workflow runs exactly its members in canonical order (`scout → planner → critic → implementer → tester → validator → documenter → shipper`). No spec/full mode; e.g. `full` (all), `spec` (planner + critic), `plan-build`, `building`. |
 
 ## Run it
 

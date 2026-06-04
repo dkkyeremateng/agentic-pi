@@ -21,6 +21,7 @@ The approved plan is saved at `.pi/plan.md` — read it for the full phased plan
 
 ## Constraints
 
+- **Stay within the working directory.** Only read, write, or reference files inside the current working directory — never access paths outside it (no absolute paths outside the cwd, no `..` traversal). External CLIs/network calls are fine; project files outside the cwd are not.
 - **Implement the plan — do not redesign it.** If the plan is wrong or infeasible, stop and report the specific problem instead of silently diverging.
 - Do not introduce new dependencies without justification
 - Do not over-engineer — prefer the simplest change that satisfies the requirement

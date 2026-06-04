@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -12,8 +12,8 @@ import {
     selectAgentsCore,
     resolveAgent,
     capturePlan,
+    resetPlanFile,
     runWorkflowCore,
-    runSpecWorkflowCore,
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
 import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
@@ -1089,9 +1089,9 @@ describe("runWorkflowCore re-entry guard", () => {
     });
 });
 
-// ── runSpecWorkflowCore — re-entry guard ──────────
+// ── runWorkflowCore — re-entry guard (spec-shaped team) ──
 
-describe("runSpecWorkflowCore re-entry guard", () => {
+describe("runWorkflowCore re-entry guard", () => {
     it("rejects when a workflow is already running", async () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
@@ -1105,10 +1105,11 @@ describe("runSpecWorkflowCore re-entry guard", () => {
             },
         });
         const st = mkStateWithAgents(agents, { running: true });
-        const result = await runSpecWorkflowCore(
+        const result = await runWorkflowCore(
             st,
             host,
             "test spec",
+            3,
             mkCtx(),
         );
         assert.equal(result.status, "error");
@@ -1475,9 +1476,9 @@ Build feature X according to the requirements.
     });
 });
 
-// ── runSpecWorkflowCore — lifecycle tests ──────────
+// ── runWorkflowCore — spec-shaped teams (planner/critic[/documenter]) ──
 
-describe("runSpecWorkflowCore", () => {
+describe("runWorkflowCore (spec-shaped teams)", () => {
     function mkSpecAgentSet(): Map<string, AgentDef> {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
@@ -1485,6 +1486,13 @@ describe("runSpecWorkflowCore", () => {
         agents.set("documenter", mkAgent("documenter"));
         return agents;
     }
+
+    // A spec team that includes the documenter, so the optional Document phase
+    // runs (includeDoc resolves from the active team membership).
+    const specTeamWithDoc: Partial<OrchestratorState> = {
+        teams: { spec: ["planner", "critic", "documenter"] },
+        activeTeamName: "spec",
+    };
 
     it("runs happy path: plan → document", async () => {
         const agents = mkSpecAgentSet();
@@ -1505,17 +1513,57 @@ describe("runSpecWorkflowCore", () => {
                 },
             },
         });
-        const st = mkStateWithAgents(agents);
-        const result = await runSpecWorkflowCore(
+        const st = mkStateWithAgents(agents, specTeamWithDoc);
+        const result = await runWorkflowCore(
             st,
             host,
             "Design feature Y",
+            3,
             mkCtx(),
         );
         assert.equal(result.status, "done");
         assert.ok(st.running === false);
         assert.ok(runPhaseCalls.includes("planner"));
         assert.ok(runPhaseCalls.includes("documenter"));
+    });
+
+    it("omits the Document phase when documenter is not on the active team", async () => {
+        const agents = mkSpecAgentSet();
+        const runPhaseCalls: string[] = [];
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    runPhaseCalls.push(phase.agent);
+                    if (phase.agent === "critic") {
+                        return { output: "APPROVED\nLooks good", ok: true };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
+            },
+        });
+        // Active team is planner + critic only — no documenter.
+        const st = mkStateWithAgents(agents, {
+            teams: { spec: ["planner", "critic"] },
+            activeTeamName: "spec",
+        });
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Design feature Y",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "done");
+        assert.ok(runPhaseCalls.includes("planner"));
+        assert.ok(runPhaseCalls.includes("critic"));
+        assert.ok(!runPhaseCalls.includes("documenter"));
+        // No documenter ran, so the report has no Documentation section.
+        assert.ok(!result.report.includes("### Documentation"));
     });
 
     it("returns needs-review when critic rejects", async () => {
@@ -1538,11 +1586,12 @@ describe("runSpecWorkflowCore", () => {
                 },
             },
         });
-        const st = mkStateWithAgents(agents);
-        const result = await runSpecWorkflowCore(
+        const st = mkStateWithAgents(agents, specTeamWithDoc);
+        const result = await runWorkflowCore(
             st,
             host,
             "Design feature Y",
+            3,
             mkCtx(),
         );
         assert.equal(result.status, "needs-review");
@@ -1568,11 +1617,12 @@ describe("runSpecWorkflowCore", () => {
                 },
             },
         });
-        const st = mkStateWithAgents(agents);
-        const result = await runSpecWorkflowCore(
+        const st = mkStateWithAgents(agents, specTeamWithDoc);
+        const result = await runWorkflowCore(
             st,
             host,
             "Design feature Y",
+            3,
             mkCtx(),
         );
         assert.equal(result.status, "error");
@@ -1962,7 +2012,7 @@ describe("spawnAgentWithModel (placeholder)", () => {
 });
 
 describe("capturePlan", () => {
-    it("records the artifact and writes .pi/plan.md", () => {
+    it("records the artifact and writes .pi/plan.md as a fallback when absent", () => {
         const cwd = mkdtempSync(join(tmpdir(), "plan-"));
         const artifacts: any = {};
         capturePlan(artifacts, cwd, "# Plan\n## Phase 1");
@@ -1971,5 +2021,29 @@ describe("capturePlan", () => {
             readFileSync(join(cwd, ".pi", "plan.md"), "utf-8"),
             "# Plan\n## Phase 1",
         );
+    });
+
+    it("does NOT clobber an existing plan file (the documenter's version)", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "plan-"));
+        mkdirSync(join(cwd, ".pi"), { recursive: true });
+        writeFileSync(join(cwd, ".pi", "plan.md"), "DOCUMENTER VERSION", "utf-8");
+        const artifacts: any = {};
+        capturePlan(artifacts, cwd, "RAW PLANNER OUTPUT");
+        assert.equal(artifacts.plan, "RAW PLANNER OUTPUT"); // artifact still recorded
+        assert.equal(
+            readFileSync(join(cwd, ".pi", "plan.md"), "utf-8"),
+            "DOCUMENTER VERSION", // file untouched
+        );
+    });
+});
+
+describe("resetPlanFile", () => {
+    it("removes a stale plan file (and is a no-op when absent)", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "plan-"));
+        mkdirSync(join(cwd, ".pi"), { recursive: true });
+        writeFileSync(join(cwd, ".pi", "plan.md"), "old", "utf-8");
+        resetPlanFile(cwd);
+        assert.equal(existsSync(join(cwd, ".pi", "plan.md")), false);
+        resetPlanFile(cwd); // no throw when already gone
     });
 });

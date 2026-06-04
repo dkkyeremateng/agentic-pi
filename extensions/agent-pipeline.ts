@@ -77,7 +77,6 @@ import {
     isActiveWorkflow as isActiveWorkflowCore,
     loadAgents as loadAgentsCore,
     loadTeams as loadTeamsCore,
-    teamIsSpec,
     allTeamAgents,
     loadPromptTemplate,
     renderTemplate,
@@ -87,9 +86,7 @@ import {
     newOrchestratorState,
     type OrchestratorHost,
     runWorkflowCore,
-    runSpecWorkflowCore,
     runFullWorkflowCommand,
-    runSpecWorkflowCommand,
 } from "../utils/orchestrator-core";
 import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/dispatch-events";
 
@@ -307,8 +304,7 @@ export default function (pi: ExtensionAPI) {
             theme.fg("accent", st.activeTeamName || "—") +
             theme.fg(
                 "dim",
-                ` (${activeMembers.length}/${allMembers.length} agent${allMembers.length === 1 ? "" : "s"}` +
-                    `${teamIsSpec(activeMembers) ? " · spec mode" : " · full pipeline"})`,
+                ` (${activeMembers.length}/${allMembers.length} agent${allMembers.length === 1 ? "" : "s"})`,
             ) +
             theme.fg("dim", "  ·  model ") +
             theme.fg("muted", modelFor(""));
@@ -553,14 +549,12 @@ export default function (pi: ExtensionAPI) {
                 st.teams = loadTeams(ctx.cwd);
                 if (Object.keys(st.teams).length === 0)
                     st.teams = { all: Array.from(st.agents.keys()) };
-                // Gate on the agents BOTH modes need; the full pipeline checks the
-                // implement/test/validate agents itself inside runWorkflow.
-                const missing = ["planner", "critic", "documenter"].filter(
-                    (a) => !st.agents.has(a),
-                );
-                if (missing.length) {
+                // Per-team membership is checked inside runWorkflowCore (every
+                // roster member must resolve to a loaded agent). Here we only need
+                // at least one agent to exist at all.
+                if (st.agents.size === 0) {
                     ctx.ui.notify(
-                        `Missing agents in .pi/agents/: ${missing.join(", ")}`,
+                        "No agents found in .pi/agents/.",
                         "error",
                     );
                     return;
@@ -581,65 +575,50 @@ export default function (pi: ExtensionAPI) {
                         rawArgs.slice(loopsMatch.index! + loopsMatch[0].length)
                     ).trim();
                 }
-                const lower = rawArgs.toLowerCase();
+                // The first token may name a team (e.g. `/agent-pipeline building
+                // <request>`); otherwise show the Select Team picker. The chosen
+                // team's roster IS the pipeline — there is no spec/full mode.
+                const firstTok = rawArgs.split(/\s+/)[0] || "";
+                const namedTeam = st.teams[firstTok] ? firstTok : "";
 
-                // An explicit `spec ` / `full ` prefix forces the mode and skips the
-                // team picker; otherwise we show the Select Team dialog and the
-                // chosen team decides the mode (a spec-only team like `info` runs
-                // the plan→document workflow).
-                const explicitSpec =
-                    lower === "spec" || lower.startsWith("spec ");
-                const explicitFull =
-                    lower === "full" || lower.startsWith("full ");
-                const request =
-                    explicitSpec || explicitFull
-                        ? rawArgs.slice(4).trim()
-                        : rawArgs;
-
-                if (explicitSpec || explicitFull) {
-                    st.isSpecMode = explicitSpec;
+                let request: string;
+                if (namedTeam) {
+                    activateTeam(namedTeam);
+                    request = rawArgs.slice(firstTok.length).trim();
                 } else {
                     const picked = await chooseTeam(ctx);
                     if (picked === null) return; // user cancelled the picker
                     activateTeam(picked);
-                    updateWidget();
-                    st.isSpecMode = teamIsSpec(activeMembers());
-                    // Move the active marker to the selected team and surface it.
-                    ctx.ui.notify(
-                        `Active team → ${st.activeTeamName}\nTeams:\n${teamsBlock()}`,
-                        "info",
-                    );
+                    request = rawArgs;
                 }
+                updateWidget();
+                // Move the active marker to the selected team and surface it.
+                ctx.ui.notify(
+                    `Active team → ${st.activeTeamName}\nTeams:\n${teamsBlock()}`,
+                    "info",
+                );
 
                 // Prompt for the request if it wasn't typed inline, so we never
                 // dispatch a workflow on an empty string.
                 let finalRequest = request;
                 if (!finalRequest) {
-                    const prompt = st.isSpecMode
-                        ? "What should be specified?"
-                        : "What should the workflow build or fix?";
-                    const typed = await ctx.ui.input(prompt, "");
+                    const typed = await ctx.ui.input(
+                        "What should the workflow build, fix, or produce?",
+                        "",
+                    );
                     if (!typed) return;
                     finalRequest = typed.trim();
                     if (!finalRequest) return;
                 }
 
-                return st.isSpecMode
-                    ? runSpecWorkflowCommand(
-                          st,
-                          host,
-                          finalRequest,
-                          ctx,
-                          publishReport,
-                      )
-                    : runFullWorkflowCommand(
-                          st,
-                          host,
-                          finalRequest,
-                          ctx,
-                          publishReport,
-                          maxLoops,
-                      );
+                return runFullWorkflowCommand(
+                    st,
+                    host,
+                    finalRequest,
+                    ctx,
+                    publishReport,
+                    maxLoops,
+                );
             },
         });
 
@@ -870,7 +849,6 @@ export default function (pi: ExtensionAPI) {
         activateTeam(Object.keys(st.teams)[0] ?? "");
         st.phases = [];
         st.dispatchMode = false;
-        st.isSpecMode = false;
 
         // Only the active workflow extension owns the chrome. When both are
         // auto-discovered, the inactive one clears its widget and bows out so it

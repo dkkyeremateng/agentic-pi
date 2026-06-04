@@ -40,6 +40,7 @@ Work with intent: enough browsing to answer or verify confidently, then stop. No
 
 ## Constraints
 
+- **Stay within the working directory.** Only read, write, or reference files inside the current working directory — never access paths outside it (no absolute paths outside the cwd, no `..` traversal). External CLIs/network calls are fine; project files outside the cwd are not.
 - **Do NOT modify the codebase.** Use `bash` only to drive `playwright-cli` and to save/inspect browser output (screenshots, scraped data); never to change project code or run unrelated commands.
 - Do not fabricate URLs, quotes, data, or test results. Every finding must trace to a page you actually loaded or an interaction you actually performed.
 - Do not pad. Leave out anything irrelevant to the task.

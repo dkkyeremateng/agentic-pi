@@ -13,7 +13,7 @@ import {
     dispatchEnv,
     renderWorkflowFooter,
     parseAgentFile,
-    dispatchExtArgs,
+    subagentExtArgs,
     type RunArtifacts,
     type PhaseState,
 } from "./workflow-core";
@@ -224,27 +224,25 @@ describe("buildPhaseMap", () => {
         ];
         const pm = buildPhaseMap(phases);
         assert.equal(pm.scout?.agent, "scout");
-        assert.equal(pm.planner.agent, "planner");
-        assert.equal(pm.critic.agent, "critic");
-        assert.equal(pm.implementer.agent, "implementer");
-        assert.equal(pm.tester.agent, "tester");
-        assert.equal(pm.validator.agent, "validator");
-        assert.equal(pm.documenter.agent, "documenter");
-        assert.equal(pm.shipper.agent, "shipper");
+        assert.equal(pm.planner?.agent, "planner");
+        assert.equal(pm.critic?.agent, "critic");
+        assert.equal(pm.implementer?.agent, "implementer");
+        assert.equal(pm.tester?.agent, "tester");
+        assert.equal(pm.validator?.agent, "validator");
+        assert.equal(pm.documenter?.agent, "documenter");
+        assert.equal(pm.shipper?.agent, "shipper");
     });
 
-    it("returns undefined for scout when not present", () => {
+    it("returns null for any phase the team omits", () => {
         const phases: PhaseState[] = [
             testPhase("planner"),
             testPhase("critic"),
-            testPhase("implementer"),
-            testPhase("tester"),
-            testPhase("validator"),
-            testPhase("documenter"),
-            testPhase("shipper"),
         ];
         const pm = buildPhaseMap(phases);
-        assert.equal(pm.scout, undefined);
+        assert.equal(pm.scout, null);
+        assert.equal(pm.implementer, null);
+        assert.equal(pm.shipper, null);
+        assert.equal(pm.planner?.agent, "planner");
     });
 });
 
@@ -367,48 +365,59 @@ describe("mkPhase", () => {
 // ── freshPhases ──────────────────────────────────
 
 describe("freshPhases", () => {
-    it("returns full pipeline without scout by default", () => {
-        const phases = freshPhases(false, false);
-        const agents = phases.map((p) => p.agent);
-        assert.deepEqual(agents, [
-            "planner",
-            "critic",
+    const FULL = [
+        "scout",
+        "planner",
+        "critic",
+        "implementer",
+        "tester",
+        "validator",
+        "documenter",
+        "shipper",
+    ];
+
+    it("builds the full pipeline from a full roster", () => {
+        const phases = freshPhases(FULL);
+        assert.deepEqual(phases.map((p) => p.agent), FULL);
+    });
+
+    it("runs only the roster's members, in canonical order", () => {
+        // Roster given out of order — output is still canonical order.
+        const phases = freshPhases(["validator", "implementer", "tester"]);
+        assert.deepEqual(phases.map((p) => p.agent), [
             "implementer",
             "tester",
             "validator",
-            "documenter",
-            "shipper",
         ]);
     });
 
-    it("prepends scout when includeScout is true", () => {
-        const phases = freshPhases(true, false);
-        assert.equal(phases[0].agent, "scout");
-        assert.equal(phases[0].label, "Scout");
-        assert.equal(phases.length, 8); // scout + 7 standard phases
+    it("supports a planner+critic team", () => {
+        const phases = freshPhases(["planner", "critic"]);
+        assert.deepEqual(phases.map((p) => p.agent), ["planner", "critic"]);
     });
 
-    it("returns spec mode phases without scout", () => {
-        const phases = freshPhases(false, true);
-        const agents = phases.map((p) => p.agent);
-        assert.deepEqual(agents, ["planner", "critic", "documenter"]);
+    it("ignores non-pipeline members (e.g. seeker)", () => {
+        const phases = freshPhases(["seeker", "documenter"]);
+        assert.deepEqual(phases.map((p) => p.agent), ["documenter"]);
     });
 
-    it("returns spec mode phases with scout", () => {
-        const phases = freshPhases(true, true);
-        const agents = phases.map((p) => p.agent);
-        assert.deepEqual(agents, ["scout", "planner", "critic", "documenter"]);
+    it("is case-insensitive on member names", () => {
+        const phases = freshPhases(["Planner", "IMPLEMENTER"]);
+        assert.deepEqual(phases.map((p) => p.agent), [
+            "planner",
+            "implementer",
+        ]);
     });
 
     it("all phases start as pending", () => {
-        const phases = freshPhases(false, false);
+        const phases = freshPhases(FULL);
         for (const p of phases) {
             assert.equal(p.status, "pending", `${p.agent} should be pending`);
         }
     });
 
     it("labels match the phase purpose", () => {
-        const phases = freshPhases(true, false);
+        const phases = freshPhases(FULL);
         assert.equal(phases[0].label, "Scout");
         assert.equal(phases[1].label, "Plan");
         assert.equal(phases[2].label, "Critique");
@@ -640,13 +649,29 @@ describe("parseAgentFile aliases", () => {
     });
 });
 
-describe("dispatchExtArgs", () => {
+describe("subagentExtArgs", () => {
     it("returns [] for an agent without a dispatch tool", () => {
-        assert.deepEqual(dispatchExtArgs("read,write,grep,find,ls"), []);
+        assert.deepEqual(subagentExtArgs("read,write,grep,find,ls"), []);
     });
     it("passes -e dispatch.ts when tools include a dispatch tool", () => {
-        const a = dispatchExtArgs("read,dispatch_agent,ls");
+        const a = subagentExtArgs("read,dispatch_agent,ls");
         assert.equal(a[0], "-e");
         assert.ok(a[1].endsWith("extensions/dispatch.ts"), a[1]);
+    });
+    it("adds cwd-guard.ts only when PI_CONFINE_CWD=1", () => {
+        const saved = process.env.PI_CONFINE_CWD;
+        try {
+            delete process.env.PI_CONFINE_CWD;
+            assert.ok(
+                !subagentExtArgs("read").some((a) => a.endsWith("cwd-guard.ts")),
+            );
+            process.env.PI_CONFINE_CWD = "1";
+            assert.ok(
+                subagentExtArgs("read").some((a) => a.endsWith("cwd-guard.ts")),
+            );
+        } finally {
+            if (saved === undefined) delete process.env.PI_CONFINE_CWD;
+            else process.env.PI_CONFINE_CWD = saved;
+        }
     });
 });

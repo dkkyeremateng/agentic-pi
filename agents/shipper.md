@@ -23,6 +23,7 @@ Every git operation you report MUST be executed with the `bash` tool. Stating th
 
 ## Constraints
 
+- **Stay within the working directory.** Only read, write, or reference files inside the current working directory — never access paths outside it (no absolute paths outside the cwd, no `..` traversal). External CLIs/network calls are fine; project files outside the cwd are not.
 - **Do NOT modify any production code, tests, or documentation.** You only perform git operations.
 - **Never commit or push to the default branch** (`main`/`master`). Always work on a dedicated `fix/...` or `feat/...` branch.
 - **Never force-push. Never touch existing remote branches** other than the one you create.

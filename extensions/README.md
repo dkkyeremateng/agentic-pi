@@ -23,7 +23,11 @@ fed back to the planner for revision. This loop runs up to `loops=N` times
 (default 3). Once the critic approves (or the limit is reached), the approved
 plan proceeds to the implementer.
 
-### Spec workflow
+### Partial teams (roster = pipeline)
+
+There is no separate "spec" mode. A team simply runs the subsequence of the
+pipeline its roster contains. For example a `planner, critic` (optionally with a
+`documenter`) team runs:
 
 ```
 scout ──▶ planner ◀──┐
@@ -32,16 +36,15 @@ scout ──▶ planner ◀──┐
             critic ───┘   (loops back with findings)
                │ APPROVED
                ▼
-           document ──▶ spec saved
+           document (only if the team has a documenter)
 ```
 
-In spec mode, the **critic** evaluates the planner's output and sends findings
-back to the planner for revision if it rejects the plan (`REVISE BEFORE
-DOCUMENTING`). The planner addresses the issues and produces a revised plan,
-which the critic re-evaluates. This loop runs up to `loops=N` times (default 3).
-Once the critic approves (or the limit is reached), the documenter turns the
-final plan into a standalone spec. If the critic never approves, the report
-status is `NEEDS REVIEW` and the spec includes the last revision with a warning.
+The **critic** evaluates the planner's output and sends findings back to the
+planner for revision if it rejects the plan. This loop runs up to `loops=N` times
+(default 3). If the critic never approves, the report status is `NEEDS REVIEW`.
+The plan↔critic loop only runs when the team has both a planner and a critic;
+likewise the test↔validate loop only runs when it has both a tester and a
+validator.
 
 Documentation runs **only after** the change passes validation — no docs are
 written for an implementation that might be reworked. The ship step then commits
@@ -164,9 +167,13 @@ like any tool result to read the full markdown). It is also written to
 When idle (no run in progress), the widget shows a **team dashboard** instead —
 a grid of cards, one per agent in the active team, each with its status, the
 **model it will run** (`◆ <model>`), and a short description. Teams come from
-`.pi/agents/teams.yaml`; a team that has the implementer, tester, and validator
-runs the **full pipeline**, while any other team (e.g. `info` = planner +
-documenter) runs the **plan→document (spec)** workflow.
+`.pi/agents/teams.yaml`. There is **no spec/full mode**: a team's roster *is* the
+pipeline — the workflow runs exactly the agents the team lists, in the canonical
+order `scout → planner → critic → implementer → tester → validator → documenter →
+shipper`. A `planner, critic` team produces a plan + critique; a `implementer,
+tester, validator, documenter, shipper` team builds, tests, documents, and ships;
+each loop (plan↔critic, test↔validate) runs only when both of its agents are on
+the team.
 
 When the primary agent drives **ad-hoc work** (rather than the full
 `run_agent_team` pipeline), the dashboard grid **stays on screen** and narrows
@@ -175,15 +182,15 @@ once the orchestrator has determined the agents the work needs, it calls
 **`select_agents`** to declare them and the grid **drops the unselected cards**,
 keeping only the chosen ones — a status-colored border and a `▸` marker, each
 showing `◌ queued` before it runs. The header also updates to the chosen set — it
-retitles to `selected from <team>` and its agent count and workflow mode reflect
-the selection (e.g. `7 agents · full pipeline` → `3 agents · spec mode`). As the
+retitles to `selected from <team>` and its agent count reflects the selection
+(e.g. `8/8 agents` → `3/8 agents`). As the
 orchestrator then dispatches each agent, the cards update in place (`◌ queued` →
 `● running` → `✓ done`/`✗ error`) with elapsed time, and the badge counts
 completions over the selected set (`◌ queued: 0/3` → `● working: 1/3` →
 `✓ done: 3/3`). The running agent's live activity panel streams below the grid. So
 the whole team is visible at bootup, and the view narrows to exactly the agents
-doing the work as soon as the plan is decided. A full pipeline run still switches
-to the connected-cards view.
+doing the work as soon as the plan is decided. A workflow run still switches to
+the connected-cards view.
 
 **Each new request resets the grid.** When the orchestrator starts a new workflow
 (a new user request), the first `select_agents`/`dispatch_agent` rebuilds the cards
@@ -203,8 +210,8 @@ work outside the workflow team."* This way the dashboard reflects the actual wor
 rather than an irrelevant team grid.
 
 Running `/agent-pipeline` opens a **Select Team** dialog first — the team you pick
-decides which agents run and the mode (full vs spec). Skip the dialog by forcing
-a mode with a `spec ` or `full ` prefix (e.g. `/agent-pipeline spec add CSV export`).
+decides exactly which agents run. Skip the dialog by naming a team as the first
+token (e.g. `/agent-pipeline building add CSV export` runs the `building` team).
 
 If the chosen team includes the **`scout`** agent (the default `full` team does),
 a read-only **Scout** recon phase runs first and its concise findings (structure,
@@ -291,10 +298,10 @@ pi -e .pi/extensions/dispatch.ts -e .pi/extensions/agent-team.ts
 ```
 
 - **`/agent-team [request]`** — opens a **Select Team** dialog (the team decides
-  which agents run and the mode: full pipeline vs spec), then runs it. Prompts for
-  the request if omitted. Force the mode with a `spec `/`full ` prefix
-  (`/agent-team spec add CSV export`); cap retries with a `loops=N` token
-  (`/agent-team loops=5 fix the bug`).
+  exactly which agents run), then runs it. Prompts for the request if omitted.
+  Skip the dialog by naming a team as the first token (`/agent-team building add
+  CSV export`); cap retries with a `loops=N` token (`/agent-team loops=5 fix the
+  bug`).
 - **`/agent-team-clear`** — clear the progress widget.
 - **Or let the primary agent orchestrate.** It receives an orchestrator system
   prompt cataloguing every loaded agent, then either composes the work itself —
@@ -348,7 +355,7 @@ until the agent runs), the **model it will run** (`◆ <model>`), and its
 description:
 
 ```
- agent-team  ·  team full (7 agents · full pipeline)
+ agent-team  ·  team full (8/8 agents)
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
 │ Scout        │ │ Planner      │ │ Critic       │ │ Implementer  │
 │ ○ idle       │ │ ○ idle       │ │ ○ idle       │ │ ○ idle       │
@@ -361,13 +368,13 @@ description:
 Once the primary agent has **determined which agents the work needs**, it calls
 `select_agents` and the grid **drops the unselected agents** and shows only the
 chosen ones, marked (`▸` + status-colored border). The header retitles to
-`selected from <team>` and its **agent count and workflow mode update to the chosen
-set** — here 3 spec agents, so it flips from `7 agents · full pipeline` to
-`3 agents · spec mode`. The plan is visible up front; selected agents show
-`◌ queued` before any of them runs, and the badge counts completions (`0/3`):
+`selected from <team>` and its **agent count updates to the chosen set** — here 3
+of 8, so it flips from `8/8 agents` to `3/8 agents`. The plan is visible up front;
+selected agents show `◌ queued` before any of them runs, and the badge counts
+completions (`0/3`):
 
 ```
- agent-team  ·  selected from full (3 agents · spec mode)  ·  ◌ queued: 0/3
+ agent-team  ·  selected from full (3/8 agents)  ·  ◌ queued: 0/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
 │ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Critic           │
 │ ◌ queued           │ │ ◌ queued           │ │ ◌ queued           │
@@ -382,7 +389,7 @@ As it then dispatches each agent (`dispatch_agent`), the cards update in place �
 (`◌ queued: 0/3` → `● working: 1/3` → `✓ done: 3/3`):
 
 ```
- agent-team  ·  selected from full (3 agents · spec mode)  ·  ● working: 1/3
+ agent-team  ·  selected from full (3/8 agents)  ·  ● working: 1/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
 │ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Critic           │
 │ ✓ done 4s          │ │ ● running 9s       │ │ ◌ queued           │
@@ -393,20 +400,20 @@ As it then dispatches each agent (`dispatch_agent`), the cards update in place �
 ```
 
 Teams are defined in `.pi/agents/teams.yaml` (a flat `team:` → `- member` list).
-a team that has the implementer, tester, and validator runs the **full pipeline**
-(plan → critique → implement → test → validate → document → ship);
-any other team (e.g. `spec` = planner + critic + documenter) runs the
-**plan→critique→document (spec)** workflow. Running `/agent-team` opens a
-**Select Team** dialog first
-and the chosen team decides the mode; an explicit `spec ` or `full ` prefix skips
-the dialog and forces the mode.
+A team's roster **is** the pipeline: the workflow runs exactly its members in the
+canonical order `scout → planner → critic → implementer → tester → validator →
+documenter → ship`. There is no spec/full mode — `full` (all eight) runs the
+whole pipeline, `building` (implementer + tester + validator + documenter +
+shipper) builds and ships, `plan-build` (planner + implementer + validator)
+plans and builds, and so on. Running `/agent-team` opens a **Select Team** dialog
+first; name a team as the first token to skip it (`/agent-team building …`).
 
 The footer shows the **workflow status**, the **primary (orchestrator) agent's
 model** (`◆ <model>` — the model pi was loaded with), and that primary agent's own
 **context-usage bar** (`[##########] %`). The *per-agent* models and context bars
 live on the dashboard cards; the footer carries only the primary session's, so you
 can see what model is driving the orchestrator and how full its context is. The
-status tracks both modes: the full pipeline reads `running`/`shipped`/`failed`, and
+status tracks both paths: a workflow run reads `running`/`shipped`/`failed`, and
 ad-hoc dispatch reads `dispatching` while a dispatched agent is working, then
 `dispatch done` — so it never reads `idle` while the team is busy. Set scout's
 model with `PI_AGENT_SCOUT_MODEL` or a `scout:` line in `models.yaml` — a

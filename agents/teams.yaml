@@ -11,21 +11,11 @@ full:
 spec:
     - planner
     - critic
-    - documenter
 
 plan-build:
     - planner
     - implementer
     - validator
-
-research-doc:
-    - seeker
-    - documenter
-
-planing:
-    - planner
-    - critic
-    - documenter
 
 building:
     - implementer

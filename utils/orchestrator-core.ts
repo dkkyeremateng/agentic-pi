@@ -1,5 +1,5 @@
 // ABOUTME: Shared orchestration for the agent-pipeline / agent-team extensions.
-// ABOUTME: runWorkflow / runSpecWorkflow / dispatchAgent / selectAgents are byte-
+// ABOUTME: runWorkflow / dispatchAgent / selectAgents are byte-
 // ABOUTME: identical between the two except the per-agent vs single model strategy
 // ABOUTME: and the SHARED_CONTEXT flag, so they live here over a shared state object
 // ABOUTME: (held by the extension, also read by its widget/footer) and a host of
@@ -13,7 +13,6 @@ import {
     type AgentDef,
     type PhaseState,
     type RunArtifacts,
-    REQUIRED_AGENTS,
     DEFAULT_MAX_LOOPS,
     displayName,
     mkPhase,
@@ -23,7 +22,6 @@ import {
     validatePlan,
     contextBundleForPhase,
     buildWorkflowReport,
-    buildSpecReport,
     scoutTask,
     planTask,
     criticTask,
@@ -34,10 +32,6 @@ import {
     validateTask,
     documentTask,
     shipTask,
-    specPlanTask,
-    specCriticTask,
-    specReviseTask,
-    specDocumentTask,
 } from "./workflow-core";
 import {
     type Verdict,
@@ -48,7 +42,7 @@ import {
     secs,
     isModelFailure,
 } from "./workflow-utils";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, rmSync } from "fs";
 import { join, dirname } from "path";
 
 // The mutable run/session state shared between the orchestration here and the
@@ -69,7 +63,6 @@ export interface OrchestratorState {
     runStartedAt: number;
     runElapsedMs: number;
     includeScout: boolean;
-    isSpecMode: boolean;
     dispatchMode: boolean;
     freshDispatchSession: boolean;
     dispatchStartedAt: number;
@@ -97,7 +90,6 @@ export function newOrchestratorState(): OrchestratorState {
         runStartedAt: 0,
         runElapsedMs: 0,
         includeScout: false,
-        isSpecMode: false,
         dispatchMode: false,
         freshDispatchSession: false,
         dispatchStartedAt: 0,
@@ -161,10 +153,10 @@ export interface OrchestratorHost {
 type RunResult = { status: string; report: string };
 type ToolResult = AgentToolResult<unknown>;
 
-// ── Shared command handlers ──────────────────────
-// runFullWorkflowCommand and runSpecWorkflowCommand are byte-identical between
-// agent-pipeline and agent-team (same notifications, same dropped-lines warning,
-// same publishReport call). Extracted here so both extensions share one copy.
+// ── Shared command handler ───────────────────────
+// runWorkflowCommand is byte-identical between agent-pipeline and agent-team
+// (same notifications, same dropped-lines warning, same publishReport call).
+// Extracted here so both extensions share one copy.
 
 export async function runFullWorkflowCommand(
     s: OrchestratorState,
@@ -189,38 +181,6 @@ export async function runFullWorkflowCommand(
               : "warning";
     ctx.ui.notify(
         `Workflow ${result.status} in ${secs(s.runElapsedMs)}. Report is shown below.`,
-        level as any,
-    );
-    if (s.totalDroppedLines > 0) {
-        ctx.ui.notify(
-            `Heads up: ${s.totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
-            "warning",
-        );
-    }
-
-    if (result.report && result.report.trim().length > 0) {
-        publishReport(result.report);
-    }
-}
-
-export async function runSpecWorkflowCommand(
-    s: OrchestratorState,
-    h: OrchestratorHost,
-    request: string,
-    ctx: any,
-    publishReport: (report: string) => void,
-): Promise<void> {
-    ctx.ui.notify(`Generating implementation spec: ${request}`, "info");
-    const result = await runSpecWorkflowCore(s, h, request, ctx);
-
-    const level =
-        result.status === "done"
-            ? "success"
-            : result.status.startsWith("error")
-              ? "error"
-              : "warning";
-    ctx.ui.notify(
-        `Spec generation ${result.status} in ${secs(s.runElapsedMs)}. Report is shown below.`,
         level as any,
     );
     if (s.totalDroppedLines > 0) {
@@ -282,13 +242,19 @@ export async function runWorkflowCore(
             report: "A workflow is already running.",
         };
     }
-    s.isSpecMode = false;
     h.setup.prepareRun(ctx);
     const cwd = ctx.cwd;
-    s.includeScout = activeMembers(s).some((m) => m.toLowerCase() === "scout");
+
+    // The active team's roster IS the pipeline: run exactly the agents it lists,
+    // in canonical order. With no team selected (e.g. the run_agent_team tool),
+    // fall back to every loaded agent so the whole pipeline runs.
+    let members = activeMembers(s);
+    if (members.length === 0) members = Array.from(s.agents.keys());
+
+    s.includeScout = members.some((m) => m.toLowerCase() === "scout");
     s.dispatchMode = false;
     h.setup.setupSessions(cwd, true);
-    s.phases = freshPhases(s.includeScout, s.isSpecMode);
+    s.phases = freshPhases(members);
     s.phaseLogs = [];
     s.totalDroppedLines = 0;
     s.totalToolCalls = 0;
@@ -301,7 +267,9 @@ export async function runWorkflowCore(
     s.running = true;
     h.ui.updateWidget();
 
-    const missing = REQUIRED_AGENTS.filter((a) => !s.agents.has(a));
+    // Every roster member must resolve to a loaded agent definition.
+    const roster = s.teams[s.activeTeamName] || [];
+    const missing = roster.filter((m) => !s.agents.has(m.toLowerCase()));
     if (missing.length) {
         s.running = false;
         s.lastStatus = "error";
@@ -312,6 +280,7 @@ export async function runWorkflowCore(
     }
 
     const runArtifacts: RunArtifacts = {};
+    resetPlanFile(cwd);
     const shared = (task: string, phaseAgent: string) => {
         if (!h.config.sharedContext) return task;
         const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
@@ -319,7 +288,7 @@ export async function runWorkflowCore(
     };
 
     const pm = buildPhaseMap(s.phases);
-    const scoutP = pm.scout ?? null;
+    const scoutP = pm.scout;
     const planP = pm.planner;
     const critiqueP = pm.critic;
     const implP = pm.implementer;
@@ -327,11 +296,15 @@ export async function runWorkflowCore(
     const valP = pm.validator;
     const docP = pm.documenter;
     const shipP = pm.shipper;
+    const includeDoc = !!docP;
 
+    let aborted: RunResult | null;
+
+    // ── Scout (read-only recon) ──
     let scoutFindings = "";
     if (scoutP) {
-        const abort = checkAbort(s, h);
-        if (abort) return abort;
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
         const scoutRes = await h.execution.runPhase(
             scoutP,
             scoutTask(request),
@@ -342,71 +315,82 @@ export async function runWorkflowCore(
         runArtifacts.recon = scoutFindings;
     }
 
-    let aborted = checkAbort(s, h);
-    if (aborted) return aborted;
-    let plan = await h.execution.runPhase(
-        planP,
-        planTask(request, scoutFindings),
-        cwd,
-    );
-    if (!plan.ok) return fail(s, "Planning", plan.output);
-    capturePlan(runArtifacts, cwd, plan.output);
-
-    const planCheck = validatePlan(plan.output);
-    if (!planCheck.ok) {
-        s.running = false;
-        s.lastStatus = "error";
-        return {
-            status: "error",
-            report: `Plan is missing required structure. The planner's output lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe implementer cannot act reliably on this plan. Re-run with a more specific request, or check that the planner agent definition is complete.`,
-        };
-    }
-
-    // Phase 2 — Critique (plan ⇄ critic loop)
-    let critique = { output: "", ok: true };
-
-    for (let loop = 1; loop <= maxLoops; loop++) {
+    // ── Plan ──
+    let plan = { output: "", ok: true };
+    if (planP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
-        critiqueP.status = "pending";
-        h.ui.updateWidget();
-        critique = await h.execution.runPhase(
-            critiqueP,
-            shared(criticTask(request, plan.output), "critic"),
-            cwd,
-        );
-        if (!critique.ok) return fail(s, "Critique", critique.output);
-
-        const critiqueVerdict = detectCritique(critique.output);
-        if (critiqueVerdict !== "revise") break;
-
-        if (loop === maxLoops) break;
-        aborted = checkAbort(s, h);
-        if (aborted) return aborted;
-        planP.status = "pending";
-        planP.note = "";
-        h.ui.updateWidget();
         plan = await h.execution.runPhase(
             planP,
-            revisePlanTask(request, plan.output, critique.output),
+            planTask(request, scoutFindings, includeDoc),
             cwd,
         );
         if (!plan.ok) return fail(s, "Planning", plan.output);
         capturePlan(runArtifacts, cwd, plan.output);
+
+        // Enforce plan structure only when an implementer will consume it.
+        if (implP) {
+            const planCheck = validatePlan(plan.output);
+            if (!planCheck.ok) {
+                s.running = false;
+                s.lastStatus = "error";
+                return {
+                    status: "error",
+                    report: `Plan is missing required structure. The planner's output lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe implementer cannot act reliably on this plan. Re-run with a more specific request, or check that the planner agent definition is complete.`,
+                };
+            }
+        }
     }
 
-    runArtifacts.critique = critique.output;
+    // ── Critique (plan ⇄ critic loop; revision needs a planner) ──
+    let critique = { output: "", ok: true };
+    let critiqueVerdict: CritiqueVerdict = "unknown";
+    if (critiqueP) {
+        for (let loop = 1; loop <= maxLoops; loop++) {
+            aborted = checkAbort(s, h);
+            if (aborted) return aborted;
+            critiqueP.status = "pending";
+            h.ui.updateWidget();
+            critique = await h.execution.runPhase(
+                critiqueP,
+                shared(criticTask(request, plan.output), "critic"),
+                cwd,
+            );
+            if (!critique.ok) return fail(s, "Critique", critique.output);
 
-    // Phase 3 — Implement (first pass)
-    aborted = checkAbort(s, h);
-    if (aborted) return aborted;
-    let impl = await h.execution.runPhase(
-        implP,
-        shared(implementTask(request, plan.output), "implementer"),
-        cwd,
-    );
-    if (!impl.ok) return fail(s, "Implementing", impl.output);
-    runArtifacts.implSummary = impl.output;
+            critiqueVerdict = detectCritique(critique.output);
+            if (critiqueVerdict !== "revise") break;
+
+            if (loop === maxLoops || !planP) break;
+            aborted = checkAbort(s, h);
+            if (aborted) return aborted;
+            planP.status = "pending";
+            planP.note = "";
+            h.ui.updateWidget();
+            plan = await h.execution.runPhase(
+                planP,
+                revisePlanTask(request, plan.output, critique.output),
+                cwd,
+            );
+            if (!plan.ok) return fail(s, "Planning", plan.output);
+            capturePlan(runArtifacts, cwd, plan.output);
+        }
+        runArtifacts.critique = critique.output;
+    }
+
+    // ── Implement (first pass) ──
+    let impl = { output: "", ok: false };
+    if (implP) {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
+        impl = await h.execution.runPhase(
+            implP,
+            shared(implementTask(request, plan.output), "implementer"),
+            cwd,
+        );
+        if (!impl.ok) return fail(s, "Implementing", impl.output);
+        runArtifacts.implSummary = impl.output;
+    }
 
     let test = { output: "", ok: false };
     let val = { output: "", ok: false };
@@ -414,14 +398,61 @@ export async function runWorkflowCore(
     let ship = { output: "", ok: false };
     let verdict: Verdict = "unknown";
 
-    // Correctness loop — test ⇄ validate, gated by the validator.
-    for (let loop = 1; loop <= maxLoops; loop++) {
+    // ── Test ⇄ validate ──
+    if (testP && valP) {
+        // Full correctness loop, gated by the validator; fixes go to the
+        // implementer when the team has one.
+        for (let loop = 1; loop <= maxLoops; loop++) {
+            aborted = checkAbort(s, h);
+            if (aborted) return aborted;
+            s.iteration = loop;
+
+            testP.status = "pending";
+            valP.status = "pending";
+            h.ui.updateWidget();
+            test = await h.execution.runPhase(
+                testP,
+                shared(testTask(request, plan.output, impl.output), "tester"),
+                cwd,
+            );
+            if (!test.ok) return fail(s, "Testing", test.output);
+            runArtifacts.testReport = test.output;
+
+            val = await h.execution.runPhase(
+                valP,
+                shared(
+                    validateTask(request, plan.output, test.output),
+                    "validator",
+                ),
+                cwd,
+            );
+            if (!val.ok) return fail(s, "Validation", val.output);
+
+            verdict = detectVerdict(val.output);
+            if (verdict !== "fail") break;
+
+            if (loop === maxLoops || !implP) break;
+            aborted = checkAbort(s, h);
+            if (aborted) return aborted;
+            implP.status = "pending";
+            implP.note = "";
+            h.ui.updateWidget();
+            impl = await h.execution.runPhase(
+                implP,
+                shared(
+                    fixTask(request, plan.output, impl.output, val.output),
+                    "implementer",
+                ),
+                cwd,
+            );
+            if (!impl.ok) return fail(s, "Implementing", impl.output);
+            runArtifacts.implSummary = `[attempt ${implP.attempt}] ${impl.output}`;
+        }
+    } else if (testP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
-        s.iteration = loop;
-
+        s.iteration = 1;
         testP.status = "pending";
-        valP.status = "pending";
         h.ui.updateWidget();
         test = await h.execution.runPhase(
             testP,
@@ -430,41 +461,26 @@ export async function runWorkflowCore(
         );
         if (!test.ok) return fail(s, "Testing", test.output);
         runArtifacts.testReport = test.output;
-
+    } else if (valP) {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
+        s.iteration = 1;
+        valP.status = "pending";
+        h.ui.updateWidget();
         val = await h.execution.runPhase(
             valP,
-            shared(
-                validateTask(request, plan.output, test.output),
-                "validator",
-            ),
+            shared(validateTask(request, plan.output, test.output), "validator"),
             cwd,
         );
         if (!val.ok) return fail(s, "Validation", val.output);
-
         verdict = detectVerdict(val.output);
-        if (verdict !== "fail") break;
-
-        if (loop === maxLoops) break;
-        aborted = checkAbort(s, h);
-        if (aborted) return aborted;
-        implP.status = "pending";
-        implP.note = "";
-        h.ui.updateWidget();
-        impl = await h.execution.runPhase(
-            implP,
-            shared(
-                fixTask(request, plan.output, impl.output, val.output),
-                "implementer",
-            ),
-            cwd,
-        );
-        if (!impl.ok) return fail(s, "Implementing", impl.output);
-        runArtifacts.implSummary = `[attempt ${implP.attempt}] ${impl.output}`;
     }
 
-    // Document + ship only once the change has passed validation.
-    let status: string;
-    if (verdict === "pass") {
+    // ── Document + ship ──
+    // When a validator ran, document/ship only on PASS; otherwise (no validator
+    // to gate on) run them straight after whatever build work happened.
+    const passed = valP ? verdict === "pass" : true;
+    if (passed && docP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
         doc = await h.execution.runPhase(
@@ -477,7 +493,7 @@ export async function runWorkflowCore(
         );
         if (!doc.ok) {
             h.ui.notify(
-                "Documenter failed — code changes are valid but docs were not updated. Proceeding to ship.",
+                "Documenter failed — proceeding without updated docs.",
                 "warning",
             );
             doc = {
@@ -487,7 +503,8 @@ export async function runWorkflowCore(
         } else {
             runArtifacts.docReport = doc.output;
         }
-
+    }
+    if (passed && shipP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
         ship = await h.execution.runPhase(
@@ -496,13 +513,21 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!ship.ok) return fail(s, "Shipping", ship.output);
+    }
 
+    // ── Terminal status, from whichever phases ran ──
+    let status: string;
+    if (!passed) {
+        status = verdict === "fail" ? "failed-after-retries" : "needs-review";
+    } else if (shipP) {
         status =
             detectShip(ship.output) === "paused"
                 ? "paused-no-remote"
                 : "shipped";
+    } else if (critiqueP && critiqueVerdict === "revise") {
+        status = "needs-review";
     } else {
-        status = verdict === "fail" ? "failed-after-retries" : "needs-review";
+        status = "done";
     }
 
     s.runElapsedMs = Date.now() - s.runStartedAt;
@@ -511,7 +536,6 @@ export async function runWorkflowCore(
     h.ui.updateWidget();
 
     const passes = s.iteration;
-    const passed = verdict === "pass";
     const prUrl =
         (ship.output.match(/https?:\/\/\S*\/pull\/\d+/) || [])[0] || "";
 
@@ -552,169 +576,6 @@ export async function runWorkflowCore(
     return { status, report };
 }
 
-// ── Spec-only pipeline: plan → critique → document ──
-export async function runSpecWorkflowCore(
-    s: OrchestratorState,
-    h: OrchestratorHost,
-    request: string,
-    ctx: any,
-): Promise<RunResult> {
-    // Re-entry guard.
-    if (s.running) {
-        return {
-            status: "error",
-            report: "A workflow is already running.",
-        };
-    }
-    s.isSpecMode = true;
-    h.setup.prepareRun(ctx);
-    const cwd = ctx.cwd;
-    s.includeScout = activeMembers(s).some((m) => m.toLowerCase() === "scout");
-    s.dispatchMode = false;
-    h.setup.setupSessions(cwd, true);
-    s.phases = freshPhases(s.includeScout, s.isSpecMode);
-    s.phaseLogs = [];
-    s.totalDroppedLines = 0;
-    s.totalToolCalls = 0;
-    s.totalTokens = { input: 0, output: 0 };
-    s.runStartedAt = Date.now();
-    s.runElapsedMs = 0;
-    s.iteration = 1;
-    s.maxLoopsRef = 1;
-    const maxCritiqueLoops = 1;
-    s.lastStatus = "running";
-    s.running = true;
-    h.ui.updateWidget();
-
-    // Spec mode only runs planner -> critic -> documenter (+ optional scout).
-    const missing = ["planner", "critic", "documenter"].filter(
-        (a) => !s.agents.has(a),
-    );
-    if (missing.length) {
-        s.running = false;
-        s.lastStatus = "error";
-        return {
-            status: "error",
-            report: `Missing agent definitions: ${missing.join(", ")}. Expected them in .pi/agents/.`,
-        };
-    }
-
-    const pm = buildPhaseMap(s.phases);
-    const scoutP = pm.scout ?? null;
-    const planP = pm.planner;
-    const critiqueP = pm.critic;
-    const docP = pm.documenter;
-
-    const runArtifacts: RunArtifacts = {};
-    const shared = (task: string, phaseAgent: string) => {
-        if (!h.config.sharedContext) return task;
-        const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
-        return bundle ? `${bundle}\n\n---\n\n${task}` : task;
-    };
-
-    let scoutFindings = "";
-    if (scoutP) {
-        const abort = checkAbort(s, h);
-        if (abort) return abort;
-        const scoutRes = await h.execution.runPhase(
-            scoutP,
-            scoutTask(request),
-            cwd,
-        );
-        if (!scoutRes.ok) return fail(s, "Scouting", scoutRes.output);
-        scoutFindings = scoutRes.output;
-        runArtifacts.recon = scoutFindings;
-    }
-
-    let aborted = checkAbort(s, h);
-    if (aborted) return aborted;
-    let plan = await h.execution.runPhase(
-        planP,
-        specPlanTask(request, scoutFindings),
-        cwd,
-    );
-    if (!plan.ok) return fail(s, "Planning", plan.output);
-    capturePlan(runArtifacts, cwd, plan.output);
-
-    let critique = { output: "", ok: true };
-    let critiqueVerdict: CritiqueVerdict = "unknown";
-
-    for (let loop = 1; loop <= maxCritiqueLoops; loop++) {
-        aborted = checkAbort(s, h);
-        if (aborted) return aborted;
-        critiqueP.status = "pending";
-        h.ui.updateWidget();
-        critique = await h.execution.runPhase(
-            critiqueP,
-            shared(specCriticTask(request, plan.output), "critic"),
-            cwd,
-        );
-        if (!critique.ok) return fail(s, "Critique", critique.output);
-
-        critiqueVerdict = detectCritique(critique.output);
-        if (critiqueVerdict !== "revise") break;
-
-        if (loop === maxCritiqueLoops) break;
-        aborted = checkAbort(s, h);
-        if (aborted) return aborted;
-        planP.status = "pending";
-        planP.note = "";
-        h.ui.updateWidget();
-        plan = await h.execution.runPhase(
-            planP,
-            specReviseTask(request, plan.output, critique.output),
-            cwd,
-        );
-        if (!plan.ok) return fail(s, "Plan revision", plan.output);
-        capturePlan(runArtifacts, cwd, plan.output);
-    }
-
-    runArtifacts.critique = critique.output;
-
-    aborted = checkAbort(s, h);
-    if (aborted) return aborted;
-    const doc = await h.execution.runPhase(
-        docP,
-        shared(specDocumentTask(request, plan.output), "documenter"),
-        cwd,
-    );
-    if (!doc.ok) return fail(s, "Documentation", doc.output);
-    runArtifacts.docReport = doc.output;
-
-    const critiqueApproved = critiqueVerdict !== "revise";
-    const status = critiqueApproved ? "done" : "needs-review";
-    s.runElapsedMs = Date.now() - s.runStartedAt;
-    s.running = false;
-    s.lastStatus = status;
-    h.ui.updateWidget();
-
-    const outcome = critiqueApproved
-        ? "SPEC COMPLETE — implementation spec saved to specs/"
-        : `NEEDS REVIEW — the critic did not approve the plan after ${maxCritiqueLoops} attempt(s). The spec was generated from the last plan revision; review the critique before using it.`;
-
-    const report = buildSpecReport({
-        request,
-        outcome,
-        totals: {
-            runElapsedMs: s.runElapsedMs,
-            totalToolCalls: s.totalToolCalls,
-            totalTokens: s.totalTokens,
-            totalDroppedLines: s.totalDroppedLines,
-        },
-        scoutP,
-        planP,
-        critiqueP,
-        docP,
-        scoutFindings,
-        plan: plan.output,
-        critique: critique.output,
-        doc: doc.output,
-    });
-
-    writeReport(h, cwd, report);
-    h.ui.publishLogs();
-    return { status, report };
-}
 
 function writeReport(h: OrchestratorHost, cwd: string, report: string): void {
     try {
@@ -736,6 +597,14 @@ const textResult = (text: string): ToolResult => ({
 // it to `.pi/plan.md` so every downstream agent can read it from disk. The planner
 // agent also writes this file; doing it here too guarantees it regardless of
 // whether the agent followed the instruction. Best-effort — never fails the run.
+// Remove a stale plan file from a previous run, so capturePlan's "the documenter
+// already wrote it" check (existsSync) is reliable for THIS run.
+export function resetPlanFile(cwd: string): void {
+    try {
+        rmSync(join(cwd, ".pi", "plan.md"), { force: true });
+    } catch {}
+}
+
 export function capturePlan(
     runArtifacts: RunArtifacts,
     cwd: string,
@@ -744,8 +613,14 @@ export function capturePlan(
     runArtifacts.plan = plan;
     try {
         const file = join(cwd, ".pi", "plan.md");
-        mkdirSync(dirname(file), { recursive: true });
-        writeFileSync(file, plan, "utf-8");
+        // The planner delegates writing the plan to the documenter, which produces
+        // .pi/plan.md. Only write here as a FALLBACK — when no plan file was written
+        // this run (documenter not dispatched, or dispatch unavailable) — so the
+        // documenter's version is never clobbered.
+        if (!existsSync(file)) {
+            mkdirSync(dirname(file), { recursive: true });
+            writeFileSync(file, plan, "utf-8");
+        }
     } catch {}
 }
 

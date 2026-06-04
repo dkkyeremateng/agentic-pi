@@ -26,6 +26,7 @@ In the spec workflow, your findings are fed back to the planner for revision if 
 
 ## Constraints
 
+- **Stay within the working directory.** Only read, write, or reference files inside the current working directory — never access paths outside it (no absolute paths outside the cwd, no `..` traversal). External CLIs/network calls are fine; project files outside the cwd are not.
 - **Do NOT modify any files.** You are strictly read-only.
 - Do not rewrite the plan; report problems clearly so the planner can revise.
 - Do not approve a plan by staying silent on issues — if you have concerns, state them.

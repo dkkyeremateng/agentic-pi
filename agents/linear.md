@@ -47,6 +47,7 @@ Work with intent: read before you write, run only the commands the request needs
 
 ## Constraints
 
+- **Stay within the working directory.** Only read, write, or reference files inside the current working directory — never access paths outside it (no absolute paths outside the cwd, no `..` traversal). External CLIs/network calls are fine; project files outside the cwd are not.
 - **Do NOT modify the codebase.** Use `bash` only to run `linear` (and `jq`) and to save/inspect its output; never to change project code or run unrelated commands.
 - **Mutations change real workspace data.** Only `create`, `comment`, or `update` when the request clearly asks for it; confirm the target issue/team before acting, and never guess an assignee, state, or priority you were not given.
 - Do not fabricate identifiers, URLs, data, or outcomes. Every result must trace to a command you actually ran and its response.

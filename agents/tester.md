@@ -22,6 +22,7 @@ The plan's acceptance criteria are in `.pi/plan.md` — read it to map your test
 
 ## Constraints
 
+- **Stay within the working directory.** Only read, write, or reference files inside the current working directory — never access paths outside it (no absolute paths outside the cwd, no `..` traversal). External CLIs/network calls are fine; project files outside the cwd are not.
 - **Do NOT modify production code.** You may create and edit test files and run tests — nothing else.
 - Match the project's existing test conventions: framework, file layout, naming, and assertion style
 - Focus on thoroughness — cover happy paths, edge cases, and error conditions

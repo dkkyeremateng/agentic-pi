@@ -969,16 +969,6 @@ export function loadTeams(
     return {};
 }
 
-// A team can run the full pipeline only if it has the implementer, tester,
-// and validator. Otherwise it runs the plan→document (spec) workflow.
-export function teamIsSpec(members: string[]): boolean {
-    const set = new Set(members.map((m) => m.toLowerCase()));
-    return !(
-        set.has("implementer") &&
-        set.has("tester") &&
-        set.has("validator")
-    );
-}
 
 // Collect all unique agent keys across every team, preserving first-seen order.
 // Used by the idle widget grid so the dashboard shows every agent defined in
@@ -998,7 +988,7 @@ export function allTeamAgents(teams: Record<string, string[]>): string[] {
     return result;
 }
 
-// Render the list of all defined teams (members + mode), marking the active one.
+// Render the list of all defined teams (members), marking the active one.
 // Used in the startup banner and re-emitted on team switch so the `← active`
 // marker follows the currently selected team.
 export function teamsBlock(
@@ -1013,9 +1003,8 @@ export function teamsBlock(
                     .filter((m) => agents.has(m.toLowerCase()))
                     .map((m) => displayName(m))
                     .join(" → ");
-                const mode = teamIsSpec(members) ? "spec" : "full";
                 const active = name === activeTeamName ? "  ← active" : "";
-                return `  ${name} [${mode}]: ${ms}${active}`;
+                return `  ${name}: ${ms}${active}`;
             })
             .join("\n") || "  (no teams defined)"
     );
@@ -1032,8 +1021,7 @@ export async function chooseTeam(
     if (teamNames.length === 1) return teamNames[0];
     const options = teamNames.map((name) => {
         const members = (teams[name] || []).map((m) => displayName(m));
-        const mode = teamIsSpec(teams[name] || []) ? "spec" : "full";
-        return `${name} — ${members.join(", ")}  [${mode}]`;
+        return `${name} — ${members.join(", ")}`;
     });
     const choice = await ctx.ui.select("Select Team", options);
     if (choice === undefined) return null;
@@ -1314,13 +1302,13 @@ export function buildWorkflowReport(o: {
     prUrl: string;
     totals: ReportTotals;
     scoutP: PhaseState | null;
-    planP: PhaseState;
-    critiqueP: PhaseState;
-    implP: PhaseState;
-    testP: PhaseState;
-    valP: PhaseState;
-    docP: PhaseState;
-    shipP: PhaseState;
+    planP: PhaseState | null;
+    critiqueP: PhaseState | null;
+    implP: PhaseState | null;
+    testP: PhaseState | null;
+    valP: PhaseState | null;
+    docP: PhaseState | null;
+    shipP: PhaseState | null;
     scoutFindings: string;
     plan: string;
     critique: string;
@@ -1330,6 +1318,8 @@ export function buildWorkflowReport(o: {
     doc: string;
     ship: string;
 }): string {
+    // Each section appears only when its phase actually ran — the active team
+    // determines which phases exist.
     return [
         `# Workflow Report`,
         ``,
@@ -1350,129 +1340,56 @@ export function buildWorkflowReport(o: {
         ...(o.scoutP
             ? [summaryLine("Scout", o.scoutP, digest(o.scoutFindings))]
             : []),
-        summaryLine("Planner", o.planP, digest(o.plan)),
-        summaryLine("Critic", o.critiqueP, digest(o.critique)),
-        summaryLine("Implementer", o.implP, digest(o.impl)),
-        summaryLine(
-            "Tester",
-            o.testP,
-            `${digest(o.test)}${testSignal(o.test)}`,
-        ),
-        summaryLine(
-            "Validator",
-            o.valP,
-            `verdict ${o.verdict.toUpperCase()}. ${digest(o.val)}`,
-        ),
-        ...(o.passed
+        ...(o.planP ? [summaryLine("Planner", o.planP, digest(o.plan))] : []),
+        ...(o.critiqueP
+            ? [summaryLine("Critic", o.critiqueP, digest(o.critique))]
+            : []),
+        ...(o.implP
+            ? [summaryLine("Implementer", o.implP, digest(o.impl))]
+            : []),
+        ...(o.testP
             ? [
-                  summaryLine("Documenter", o.docP, digest(o.doc)),
-                  summaryLine("Ship", o.shipP, digest(o.ship)),
+                  summaryLine(
+                      "Tester",
+                      o.testP,
+                      `${digest(o.test)}${testSignal(o.test)}`,
+                  ),
               ]
-            : [
-                  `- **Documenter / Ship** — skipped (change did not pass validation)`,
-              ]),
+            : []),
+        ...(o.valP
+            ? [
+                  summaryLine(
+                      "Validator",
+                      o.valP,
+                      `verdict ${o.verdict.toUpperCase()}. ${digest(o.val)}`,
+                  ),
+              ]
+            : []),
+        ...(o.docP ? [summaryLine("Documenter", o.docP, digest(o.doc))] : []),
+        ...(o.shipP ? [summaryLine("Ship", o.shipP, digest(o.ship))] : []),
         ``,
         `## Details`,
         ``,
         ...(o.scoutP
-            ? [
-                  `### Reconnaissance`,
-                  ``,
-                  truncatePhaseOutput(o.scoutFindings),
-                  ``,
-              ]
+            ? [`### Reconnaissance`, ``, truncatePhaseOutput(o.scoutFindings), ``]
             : []),
-        `### Plan`,
-        ``,
-        truncatePhaseOutput(o.plan),
-        ``,
-        `### Critique`,
-        ``,
-        truncatePhaseOutput(o.critique),
-        ``,
-        `### Implementation`,
-        ``,
-        truncatePhaseOutput(o.impl),
-        ``,
-        `### Test Report`,
-        ``,
-        truncatePhaseOutput(o.test),
-        ``,
-        `### Validation`,
-        ``,
-        truncatePhaseOutput(o.val),
-        ``,
-        ...(o.passed
-            ? [
-                  `### Documentation`,
-                  ``,
-                  truncatePhaseOutput(o.doc),
-                  ``,
-                  `### Ship`,
-                  ``,
-                  truncatePhaseOutput(o.ship),
-                  ``,
-              ]
+        ...(o.planP ? [`### Plan`, ``, truncatePhaseOutput(o.plan), ``] : []),
+        ...(o.critiqueP
+            ? [`### Critique`, ``, truncatePhaseOutput(o.critique), ``]
             : []),
-    ].join("\n");
-}
-
-export function buildSpecReport(o: {
-    request: string;
-    outcome: string;
-    totals: ReportTotals;
-    scoutP: PhaseState | null;
-    planP: PhaseState;
-    critiqueP: PhaseState;
-    docP: PhaseState;
-    scoutFindings: string;
-    plan: string;
-    critique: string;
-    doc: string;
-}): string {
-    return [
-        `# Spec Workflow Report`,
-        ``,
-        `**Request:** ${o.request}`,
-        `**Outcome:** ${o.outcome}`,
-        `**Totals:** ${totalsLine(o.totals)}`,
-        ...(o.totals.totalDroppedLines > 0
-            ? [
-                  ``,
-                  `> **Diagnostic:** ${o.totals.totalDroppedLines} malformed JSON line(s) were dropped from agent output streams during this run.`,
-              ]
+        ...(o.implP
+            ? [`### Implementation`, ``, truncatePhaseOutput(o.impl), ``]
             : []),
-        ``,
-        `## Summary`,
-        ``,
-        ...(o.scoutP
-            ? [summaryLine("Scout", o.scoutP, digest(o.scoutFindings))]
+        ...(o.testP
+            ? [`### Test Report`, ``, truncatePhaseOutput(o.test), ``]
             : []),
-        summaryLine("Planner", o.planP, digest(o.plan)),
-        summaryLine("Critic", o.critiqueP, digest(o.critique)),
-        summaryLine("Documenter", o.docP, digest(o.doc)),
-        ``,
-        `## Details`,
-        ``,
-        ...(o.scoutP
-            ? [
-                  `### Reconnaissance`,
-                  ``,
-                  truncatePhaseOutput(o.scoutFindings),
-                  ``,
-              ]
+        ...(o.valP
+            ? [`### Validation`, ``, truncatePhaseOutput(o.val), ``]
             : []),
-        `### Plan`,
-        ``,
-        truncatePhaseOutput(o.plan),
-        ``,
-        `### Critique`,
-        ``,
-        truncatePhaseOutput(o.critique),
-        ``,
-        `### Implementation Spec`,
-        ``,
-        truncatePhaseOutput(o.doc),
+        ...(o.docP
+            ? [`### Documentation`, ``, truncatePhaseOutput(o.doc), ``]
+            : []),
+        ...(o.shipP ? [`### Ship`, ``, truncatePhaseOutput(o.ship), ``] : []),
     ].join("\n");
 }
 
@@ -1610,10 +1527,31 @@ export function scoutTask(original: string): string {
     ].join("\n");
 }
 
-export function planTask(original: string, recon = ""): string {
+// Tell the planner how its plan gets persisted to .pi/plan.md. When a documenter
+// is part of the run we let the planner delegate the write to it (its standing
+// instructions describe how); when there is no documenter on the roster, the
+// planner must NOT dispatch one — the workflow persists the plan automatically.
+export function planPersistDirective(includeDoc: boolean): string[] {
+    return includeDoc
+        ? [
+              "A `documenter` is part of this run. After emitting your plan, delegate persisting it to `.pi/plan.md` to the documenter as described in your instructions.",
+              "",
+          ]
+        : [
+              "No documenter is part of this run — do NOT dispatch one. Just emit your plan as your final message; the workflow persists it to `.pi/plan.md` automatically.",
+              "",
+          ];
+}
+
+export function planTask(
+    original: string,
+    recon = "",
+    includeDoc = true,
+): string {
     return [
         "Produce a structured, phased implementation plan.",
         "",
+        ...planPersistDirective(includeDoc),
         "Request:",
         original,
         "",
@@ -1767,122 +1705,44 @@ export function shipTask(
     ].join("\n");
 }
 
-export function specPlanTask(original: string, recon = ""): string {
-    return [
-        "Produce a standalone implementation specification. The reader will have ONLY this document plus the codebase — no conversation history or prior context. Be unusually detailed: spell out file paths, function signatures, integration points, edge cases, and naming conventions for every phase.",
-        "",
-        "Request:",
-        original,
-        "",
-        ...reconBlock(recon),
-    ].join("\n");
-}
-
-export function specCriticTask(original: string, plan: string): string {
-    return [
-        "Evaluate this implementation plan before it is turned into a spec. Find every problem that would cause the spec to mislead or the implementation to fail.",
-        "",
-        "Request:",
-        original,
-        "",
-        "Plan to evaluate:",
-        plan,
-    ].join("\n");
-}
-
-export function specReviseTask(
-    original: string,
-    plan: string,
-    critique: string,
-): string {
-    return revisePlanTask(original, plan, critique);
-}
-
-export function specDocumentTask(original: string, plan: string): string {
-    return [
-        "Transform this raw implementation plan into a standalone specification (spec workflow).",
-        "",
-        "Original request:",
-        original,
-        "",
-        "Raw plan:",
-        plan,
-    ].join("\n");
-}
-
 // ── Phase helpers ───────────────────────────────
 
 // Type-safe access to phases by agent name. Built from the phases array so
 // callers never rely on positional indexing (which breaks silently if
 // freshPhases() changes order).
 export interface PhaseMap {
-    scout?: PhaseState;
-    planner: PhaseState;
-    critic: PhaseState;
-    implementer: PhaseState;
-    tester: PhaseState;
-    validator: PhaseState;
-    documenter: PhaseState;
-    shipper: PhaseState;
+    scout: PhaseState | null;
+    planner: PhaseState | null;
+    critic: PhaseState | null;
+    implementer: PhaseState | null;
+    tester: PhaseState | null;
+    validator: PhaseState | null;
+    documenter: PhaseState | null;
+    shipper: PhaseState | null;
 }
 
-// Build a PhaseMap from the phases array. Phases are matched by agent name.
-// Only phases present in the array are required — spec workflows (planner, critic,
-// documenter) don't need implementer/tester/validator/shipper. Throws if a phase
-// expected for the detected workflow mode is missing.
+// Build a PhaseMap from the phases array. Every phase is optional: the runner
+// runs only the phases the active team actually contains (gating each block on
+// presence), so a phase the team omitted is simply null.
 export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
-    const byAgent = (name: string) =>
-        phases.find((p) => p.agent === name.toLowerCase());
+    const byAgent = (name: string): PhaseState | null =>
+        phases.find((p) => p.agent === name.toLowerCase()) ?? null;
 
-    const agents = new Set(phases.map((p) => p.agent));
-    const isSpecMode =
-        agents.has("planner") &&
-        agents.has("documenter") &&
-        !agents.has("implementer");
-
-    // Find a phase, throwing a clear error if a required one is missing
-    const requirePhase = (name: string): PhaseState => {
-        const p = byAgent(name);
-        if (!p) {
-            throw new Error(
-                `[buildPhaseMap] Required phase "${name}" not found in phases array. ` +
-                    `Available agents: ${phases.map((p) => p.agent).join(", ")}`,
-            );
-        }
-        return p;
-    };
-
-    if (isSpecMode) {
-        // Spec workflow: planner, critic, documenter are required
-        return {
-            scout: byAgent("scout"),
-            planner: requirePhase("planner"),
-            critic: requirePhase("critic"),
-            implementer: byAgent("implementer")!,
-            tester: byAgent("tester")!,
-            validator: byAgent("validator")!,
-            documenter: requirePhase("documenter"),
-            shipper: byAgent("shipper")!,
-        };
-    }
-
-    // Full pipeline: all phases required
     return {
         scout: byAgent("scout"),
-        planner: requirePhase("planner"),
-        critic: requirePhase("critic"),
-        implementer: requirePhase("implementer"),
-        tester: requirePhase("tester"),
-        validator: requirePhase("validator"),
-        documenter: requirePhase("documenter"),
-        shipper: requirePhase("shipper"),
+        planner: byAgent("planner"),
+        critic: byAgent("critic"),
+        implementer: byAgent("implementer"),
+        tester: byAgent("tester"),
+        validator: byAgent("validator"),
+        documenter: byAgent("documenter"),
+        shipper: byAgent("shipper"),
     };
 }
 
 // Standardised error return for a failed phase. Sets the running state to
-// stopped/error and returns the shape both runWorkflow and runSpecWorkflow
-// use. Eliminates the 7-line `if (!x.ok) { running = false; ... }` block
-// repeated for every phase.
+// stopped/error and returns the shape runWorkflow uses. Eliminates the 7-line
+// `if (!x.ok) { running = false; ... }` block repeated for every phase.
 export function failPhase(
     phaseName: string,
     output: string,
@@ -1920,33 +1780,39 @@ export function mkPhase(
     };
 }
 
-// Build the initial phase array for a workflow run. `includeScout` prepends
-// a read-only recon pass; `isSpecMode` hides impl/test/validate/ship phases.
-// Shared across both extensions and the runtime — character-for-character
-// identical in all three callers before extraction.
-export function freshPhases(
-    includeScout: boolean,
-    isSpecMode: boolean,
-): PhaseState[] {
-    const lead = includeScout ? [mkPhase("Scout", "scout")] : [];
-    if (isSpecMode) {
-        return [
-            ...lead,
-            mkPhase("Plan", "planner"),
-            mkPhase("Critique", "critic"),
-            mkPhase("Document", "documenter"),
-        ];
-    }
-    return [
-        ...lead,
-        mkPhase("Plan", "planner"),
-        mkPhase("Critique", "critic"),
-        mkPhase("Implement", "implementer"),
-        mkPhase("Test", "tester"),
-        mkPhase("Validate", "validator"),
-        mkPhase("Document", "documenter"),
-        mkPhase("Ship", "shipper"),
-    ];
+// The canonical pipeline order. A team runs exactly the subsequence of these
+// phases that its roster contains, in this order — there is no spec/full mode,
+// the team's membership IS the pipeline.
+export const PIPELINE_ORDER = [
+    "scout",
+    "planner",
+    "critic",
+    "implementer",
+    "tester",
+    "validator",
+    "documenter",
+    "shipper",
+] as const;
+
+const PHASE_LABELS: Record<string, string> = {
+    scout: "Scout",
+    planner: "Plan",
+    critic: "Critique",
+    implementer: "Implement",
+    tester: "Test",
+    validator: "Validate",
+    documenter: "Document",
+    shipper: "Ship",
+};
+
+// Build the initial phase array from the active team's roster: the subsequence
+// of PIPELINE_ORDER that the team includes, in canonical order. Members that are
+// not pipeline phases (e.g. a web `seeker`) are ignored by the linear workflow.
+export function freshPhases(members: string[]): PhaseState[] {
+    const set = new Set(members.map((m) => m.toLowerCase()));
+    return PIPELINE_ORDER.filter((a) => set.has(a)).map((a) =>
+        mkPhase(PHASE_LABELS[a], a),
+    );
 }
 
 // ── Shared agent execution with model fallback ──
@@ -2167,22 +2033,28 @@ export function dispatchEnv(agentName: string): Record<string, string> {
     };
 }
 
-// Sub-agents are spawned without -e, so they only auto-discover extensions. An
-// agent whose tools include a dispatch tool (dispatch_agent / dispatch_parallel /
-// select_agents) needs dispatch.ts loaded in its OWN process to register that
-// tool — pass it explicitly. Resolved relative to this file
-// (<repo>/utils → <repo>/extensions/dispatch.ts). Returns [] for agents that don't
-// dispatch, so leaf agents launch unchanged.
-export function dispatchExtArgs(tools: string): string[] {
-    if (!/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))
-        return [];
-    const ext = join(
+// Extensions to load (-e) into a spawned sub-agent's process. Sub-agents are
+// spawned without -e, so they only auto-discover extensions; these must be passed
+// explicitly. Resolved relative to this file (<repo>/utils → <repo>/extensions/).
+// - cwd-guard.ts confines the agent's file tools to the cwd — opt-in via
+//   PI_CONFINE_CWD=1 (it loads into every sub-agent, so it is gated to stay safe).
+// - dispatch.ts registers dispatch_agent/dispatch_parallel/select_agents, needed
+//   only by agents whose tools include one of them.
+export function subagentExtArgs(tools: string): string[] {
+    const extDir = join(
         dirname(fileURLToPath(import.meta.url)),
         "..",
         "extensions",
-        "dispatch.ts",
     );
-    return existsSync(ext) ? ["-e", ext] : [];
+    const args: string[] = [];
+    const add = (name: string) => {
+        const p = join(extDir, name);
+        if (existsSync(p)) args.push("-e", p);
+    };
+    if (process.env.PI_CONFINE_CWD === "1") add("cwd-guard.ts");
+    if (/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))
+        add("dispatch.ts");
+    return args;
 }
 
 // Spawn a pi subprocess for an agent, stream its output, and return the result.
@@ -2428,7 +2300,7 @@ function spawnAgentWithModelFallback(
         agentDef.systemPrompt,
         "--session",
         sessionFile,
-        ...dispatchExtArgs(agentDef.tools),
+        ...subagentExtArgs(agentDef.tools),
     ];
 
     const cleanModel = model?.trim();
@@ -2659,7 +2531,7 @@ export function spawnAgentWithModel(
         agentDef.systemPrompt,
         "--session",
         sessionFile,
-        ...dispatchExtArgs(agentDef.tools),
+        ...subagentExtArgs(agentDef.tools),
     ];
     // Only pass --model if the string looks valid (non-empty, no whitespace).
     // If the string contains a slash, it's in provider/model format.
