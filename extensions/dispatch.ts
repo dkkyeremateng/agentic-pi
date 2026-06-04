@@ -85,10 +85,12 @@ export default function (pi: ExtensionAPI) {
         );
     }
 
-    // Broadcast the current dispatch phase snapshot to any dashboard listening.
+    // Broadcast a per-frame snapshot of the dispatch phases to any dashboard
+    // listening. Phases are shallow-copied so a subscriber renders a stable frame
+    // and can never mutate this extension's live state.
     function emitUpdate() {
         const payload: DispatchUpdate = {
-            phases: st.phases,
+            phases: st.phases.map((p) => ({ ...p })),
             dispatchMode: st.dispatchMode,
             dispatchElapsedMs: st.dispatchElapsedMs,
         };
@@ -180,10 +182,25 @@ export default function (pi: ExtensionAPI) {
                 description: "Task description for the agent to execute.",
             }),
         }),
-        async execute(_id, params, _signal, onUpdate, ctx) {
+        async execute(_id, params, signal, onUpdate, ctx) {
             const { agent, task } = params as { agent: string; task: string };
             widgetCtx = ctx;
-            return dispatchAgentCore(st, host, agent, task, onUpdate, ctx);
+            // Cancellation: if the turn is aborted, kill the running sub-agent
+            // subprocess so it doesn't keep running detached in the background.
+            const onAbort = () => {
+                if (currentProc) {
+                    try {
+                        currentProc.kill("SIGTERM");
+                    } catch {}
+                    currentProc = null;
+                }
+            };
+            signal?.addEventListener?.("abort", onAbort);
+            try {
+                return await dispatchAgentCore(st, host, agent, task, onUpdate, ctx);
+            } finally {
+                signal?.removeEventListener?.("abort", onAbort);
+            }
         },
         renderCall(args, theme) {
             return renderDispatchAgentCall(args, theme, Text);
