@@ -36,7 +36,7 @@ export function detectVerdict(output: string): Verdict {
  */
 export function detectCritique(output: string): CritiqueVerdict {
     const marker = output.match(
-        /REVISE\s+BEFORE\s+(?:IMPLEMENTING|DOCUMENTING)|APPROVED\s+WITH\s+RESERVATIONS|APPROVED/i,
+        /REVISE\s+BEFORE\s+(?:IMPLEMENTING|DOCUMENTING|PUBLISHING)|APPROVED\s+WITH\s+RESERVATIONS|APPROVED/i,
     );
     if (marker) {
         const v = marker[0].toUpperCase();
@@ -49,7 +49,11 @@ export function detectCritique(output: string): CritiqueVerdict {
     // on its own line (optionally under a ## heading) to avoid matching the word
     // "approved" buried in the critic's reasoning text.
     const head = output.split("\n").slice(0, 20).join("\n");
-    if (/^.*\brevise\s+before\s+(?:implementing|documenting)\b.*$/im.test(head))
+    if (
+        /^.*\brevise\s+before\s+(?:implementing|documenting|publishing)\b.*$/im.test(
+            head,
+        )
+    )
         return "revise";
     if (/^.*\bapproved\s+with\s+reservations\b.*$/im.test(head))
         return "approved-with-reservations";

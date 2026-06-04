@@ -255,17 +255,30 @@ export async function runWorkflowCore(
     // A team may include "lead" agents that are not linear pipeline phases (e.g.
     // researcher, coordinator) — they orchestrate their own sub-work. When present,
     // run them directly with the request instead of the canonical pipeline (which
-    // only knows scout→…→ship and would silently drop them).
+    // only knows scout→…→ship and would silently drop them). If the team also
+    // includes the critic, it runs as a visible reviewer of the lead's output.
     const pipelineSet = new Set<string>(PIPELINE_ORDER as readonly string[]);
     const leadAgents = members.filter((m) => !pipelineSet.has(m.toLowerCase()));
     const isLeadWorkflow = leadAgents.length > 0;
+    const leadKeySet = new Set(leadAgents.map((a) => a.toLowerCase()));
+    const reviewerKey =
+        isLeadWorkflow &&
+        members.some((m) => m.toLowerCase() === "critic") &&
+        !leadKeySet.has("critic")
+            ? "critic"
+            : null;
 
     s.includeScout =
         !isLeadWorkflow && members.some((m) => m.toLowerCase() === "scout");
     s.dispatchMode = false;
     h.setup.setupSessions(cwd, true);
     s.phases = isLeadWorkflow
-        ? leadAgents.map((a) => mkPhase(displayName(a), a.toLowerCase()))
+        ? [
+              ...leadAgents.map((a) => mkPhase(displayName(a), a.toLowerCase())),
+              ...(reviewerKey
+                  ? [mkPhase(displayName(reviewerKey), reviewerKey)]
+                  : []),
+          ]
         : freshPhases(members);
     s.phaseLogs = [];
     s.totalDroppedLines = 0;
@@ -300,11 +313,18 @@ export async function runWorkflowCore(
     };
 
     // ── Lead-agent workflow (delegating agents like researcher / coordinator) ──
-    // Run each lead agent with the user's request as its task; the agent does its
-    // own dispatching (e.g. the researcher calls atlassian/linear and the critic).
+    // Run each lead agent with the user's request as its task (it does its own
+    // sub-dispatching — e.g. the researcher calls atlassian/linear). When the team
+    // includes the critic, it then reviews the lead's output, looping back to the
+    // lead on REVISE — so both the researcher and the critic run as visible phases.
     if (isLeadWorkflow) {
+        const leadKeys = leadAgents.map((a) => a.toLowerCase());
+        const lastLeadKey = leadKeys[leadKeys.length - 1];
+        const lastLeadName = displayName(lastLeadKey);
         const sections: string[] = [];
-        for (const key of leadAgents.map((a) => a.toLowerCase())) {
+        let leadOutput = "";
+
+        for (const key of leadKeys) {
             const phase = s.phases.find((p) => p.agent === key);
             if (!phase) continue;
             const abort = checkAbort(s, h);
@@ -313,6 +333,7 @@ export async function runWorkflowCore(
             h.ui.updateWidget();
             const res = await h.execution.runPhase(phase, request, cwd);
             if (!res.ok) return fail(s, displayName(key), res.output);
+            leadOutput = res.output;
             sections.push(
                 `## ${displayName(key)}`,
                 ``,
@@ -320,22 +341,67 @@ export async function runWorkflowCore(
                 ``,
             );
         }
+
+        // Critic review loop (when the team lists the critic as a reviewer).
+        const reviewerPhase = reviewerKey
+            ? (s.phases.find((p) => p.agent === reviewerKey) ?? null)
+            : null;
+        const leadPhase = s.phases.find((p) => p.agent === lastLeadKey) ?? null;
+        let critique = { output: "", ok: true };
+        if (reviewerPhase && leadPhase) {
+            for (let loop = 1; loop <= maxLoops; loop++) {
+                let abort = checkAbort(s, h);
+                if (abort) return abort;
+                reviewerPhase.status = "pending";
+                h.ui.updateWidget();
+                critique = await h.execution.runPhase(
+                    reviewerPhase,
+                    `Evaluate the research findings the ${lastLeadName} just produced for this request — the document is in the findings/ folder, so read it there. Return APPROVED or REVISE BEFORE PUBLISHING with specific required fixes.\n\nRequest:\n${request}\n\n${lastLeadName}'s summary:\n${leadOutput}`,
+                    cwd,
+                );
+                if (!critique.ok) return fail(s, "Critique", critique.output);
+                if (detectCritique(critique.output) !== "revise") break;
+                if (loop === maxLoops) break;
+
+                abort = checkAbort(s, h);
+                if (abort) return abort;
+                leadPhase.status = "pending";
+                leadPhase.note = "";
+                h.ui.updateWidget();
+                const revised = await h.execution.runPhase(
+                    leadPhase,
+                    `The critic asked for revisions. Update your findings document in the findings/ folder to address EVERY required fix, then summarize what changed.\n\nRequest:\n${request}\n\nYour previous result:\n${leadOutput}\n\nCritic feedback:\n${critique.output}`,
+                    cwd,
+                );
+                if (!revised.ok) return fail(s, lastLeadName, revised.output);
+                leadOutput = revised.output;
+            }
+            sections.push(
+                `## ${displayName(reviewerKey!)} review`,
+                ``,
+                critique.output.trim() || "_(no output)_",
+                ``,
+            );
+        }
+
+        const reviewed =
+            !reviewerPhase || detectCritique(critique.output) !== "revise";
         s.runElapsedMs = Date.now() - s.runStartedAt;
         s.running = false;
-        s.lastStatus = "done";
+        s.lastStatus = reviewed ? "done" : "needs-review";
         h.ui.updateWidget();
         const report = [
             `# Workflow Report`,
             ``,
             `**Request:** ${request}`,
             `**Team:** ${s.activeTeamName || "—"}`,
-            `**Outcome:** done`,
+            `**Outcome:** ${reviewed ? "done" : "needs-review — the critic did not approve after " + maxLoops + " attempt(s)"}`,
             ``,
             ...sections,
         ].join("\n");
         writeReport(h, cwd, report);
         h.ui.publishLogs();
-        return { status: "done", report };
+        return { status: reviewed ? "done" : "needs-review", report };
     }
 
     const pm = buildPhaseMap(s.phases);

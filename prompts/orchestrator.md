@@ -97,20 +97,27 @@ that genuinely fit the request; you do not have to use all of them. Choose the
 right specialist for each sub-task (e.g. a researcher to investigate and write up
 findings, the planner→implementer→… chain for a code change).
 
-### Agents that delegate — do NOT duplicate their work
-Some agents run their OWN sub-dispatches and return a finished result. When one of
-them fits the request, select **only that agent** and let it do the gathering or
-coordinating itself — do NOT also select or pre-dispatch the specialists it would
-call (that duplicates the work):
-- **researcher** — investigates a question by dispatching `seeker` / `linear` /
-  `atlassian` / `scout` ITSELF, then reasons and writes a findings/solution doc.
-  For an "investigate X and write it up" request (e.g. "review jira WAL-2977 and
-  the linked Linear issues and generate queries"), select **just the researcher** —
-  do NOT add atlassian/linear/seeker to the plan; the researcher calls them.
-- **coordinator** — splits a multi-part request across specialists on its own.
+### Agents that delegate — don't duplicate their gathering, but DO add a reviewer
+Some agents run their OWN sub-dispatches to GATHER and return a finished result.
+Do NOT pre-dispatch the specialists they call — that duplicates the work. A
+**reviewer** (the `critic`) is different: when one is available, dispatch it AFTER
+the delegating agent to check the output.
+- **researcher** — investigates by dispatching `seeker` / `linear` / `atlassian` /
+  `scout` ITSELF, then writes a findings doc to `findings/`. Do NOT add those
+  gathering specialists to the plan; the researcher calls them. **When a `critic`
+  is available (e.g. the `research` team), select `researcher → critic`:** dispatch
+  the researcher to investigate and write, then dispatch the **critic** to review
+  its findings in `findings/`. If the critic returns **REVISE BEFORE PUBLISHING**,
+  re-dispatch the researcher with the feedback and re-review (up to the loop limit);
+  on **APPROVED**, stop. For "investigate X and write it up" requests (e.g. "review
+  jira WAL-2977 and the linked Linear issues and generate queries") this is the
+  expected plan: `researcher → critic`.
+- **coordinator** — splits a multi-part request across specialists on its own;
+  select just the coordinator.
 
 If the user **names an agent** ("researcher, …", "have the planner …"), dispatch
-that agent — do not second-guess it or wrap extra agents around it.
+that agent — plus its reviewer (`critic`) when one is on the team — but do not
+pre-dispatch the gathering specialists it calls itself.
 
 ## How to Work
 1. **Analyze the request** — understand what the user needs

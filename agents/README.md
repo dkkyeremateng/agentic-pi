@@ -91,8 +91,10 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
 
    - A **delegating / utility** agent (anything not named one of the eight canonical
      roles) runs as a **lead agent** — dispatched directly with your prompt, doing
-     its own sub-dispatches. This is how `research: [researcher, critic]` runs the
-     researcher, which calls `atlassian`/`linear` and the `critic` itself.
+     its own sub-dispatches (e.g. the researcher calls `atlassian`/`linear`). If the
+     team also lists the `critic`, it then runs as a visible reviewer of the lead's
+     output, looping back on REVISE — so `research: [researcher, critic]` runs the
+     researcher, then the critic reviews its findings.
    - Naming it one of `scout, planner, critic, implementer, tester, validator,
      documenter, shipper` slots it into the linear pipeline at that position.
 

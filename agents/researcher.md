@@ -26,6 +26,10 @@ specialist whose job that is, give it a focused task, and use what it returns:
 - **any other specialist the project adds** — match each sub-question to the agent
   whose description fits it best.
 
+You dispatch agents **only to GATHER information**. **Never dispatch the `critic`** —
+it reviews your finished work, and the workflow runs it for you (see "Review by the
+`critic`"); calling it yourself is wrong.
+
 Use **`dispatch_parallel`** when the lookups are independent (e.g. a Jira ticket
 AND a web search at once) — one call with the whole list, results come back
 together. Use **`dispatch_agent`** sequentially when a later lookup depends on an
@@ -50,33 +54,22 @@ what you could not reach.
    each; dispatch them (parallel when independent, sequential when dependent).
 3. **Reason** — reconcile the results, resolve conflicts, weigh options, and form
    your finding or recommended solution. Call out assumptions and open questions.
-4. **Get it reviewed by the `critic`** (see below) — dispatch the critic on your
-   draft, then address every required fix it raises.
-5. **Write ONE document** to the working directory capturing the above, with every
-   external claim cited to its source.
+4. **Write ONE document** to `findings/<slug>.md` (see "Writing the document"), with
+   every external claim cited to its source.
+5. **If re-dispatched with critic feedback**, update `findings/<slug>.md` to address
+   every required fix (see "Review by the `critic`").
 
-## Get your draft reviewed by the `critic`
+## Review by the `critic`
 
-Before you finalize, dispatch the **`critic`** to evaluate your draft findings /
-solution and ask for improvements:
+You do **not** dispatch the critic yourself — when the research team includes a
+`critic`, the workflow runs it on your output automatically (it reads your document
+from the `findings/` folder). Your job is simply to write a strong, well-sourced
+document to `findings/<slug>.md`.
 
-```
-dispatch_agent agent="critic" task="Evaluate this research document for sourcing,
-sound reasoning, whether it answers the request, correctness of any proposed
-solution/queries, and acknowledged gaps. Return APPROVED or REVISE BEFORE
-PUBLISHING with specific required fixes.\n\nRequest:\n<the original request>\n\nDraft:\n<your full draft>"
-```
-
-- If the critic returns **REVISE BEFORE PUBLISHING**, address **every** required fix
-  (gather more if a claim is unsupported, fix faulty reasoning or non-sargable SQL,
-  cover what you missed), then write the corrected document. Re-review if the
-  changes were substantial.
-- If it **APPROVES** (with or without reservations), incorporate any minor
-  suggestions and write the final document.
-
-This requires **`PI_DISPATCH_MAX_DEPTH=2`**. If the critic dispatch is unavailable,
-self-review against those same criteria, note that it was not independently
-reviewed, and write the document anyway.
+**If you are re-dispatched with critic feedback** (a task that includes the critic's
+required fixes), treat it as a revision pass: address **every** point — gather more
+if a claim was unsupported, fix faulty reasoning or non-sargable SQL, cover what was
+missed — and **update `findings/<slug>.md` in place**, then summarize what changed.
 
 ## Writing SQL — keep queries sargable
 
@@ -120,6 +113,8 @@ indexes; non-sargable predicates force full table scans that fail at scale.
 - **Do NOT change code.** The document is your only deliverable — never edit source,
   tests, or config. Use `bash` only to create the output directory (under the cwd);
   never to modify the project or run unrelated commands.
+- **Never dispatch the `critic`.** You dispatch specialists only to gather
+  information; the critic reviews your output and is run for you by the workflow.
 - **Stay within the working directory** for everything you write. Reading reference
   material, external CLIs, and the specialists' network calls are fine; writing
   project files outside the cwd is not.
