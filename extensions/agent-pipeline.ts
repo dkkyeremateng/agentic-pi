@@ -227,12 +227,14 @@ export default function (pi: ExtensionAPI) {
     // a glance before a workflow starts.
     // Rich agent card — delegates to the shared renderer so agent-pipeline and
     // agent-team stay identical. agent-pipeline shows the ONE session model on
-    // every card (modelFor ignores the key here).
+    // every card (modelFor ignores the key here) and NEVER a context bar: its
+    // sub-agents run on one shared session (sharedSession: true), so their context
+    // is shared/accumulated — a per-card usage bar would be misleading. The shared
+    // context lives in the footer instead.
     function renderAgentCard(
         agentKey: string,
         colWidth: number,
         theme: any,
-        showContext = true,
     ): string[] {
         return renderRichCard({
             agentKey,
@@ -241,7 +243,7 @@ export default function (pi: ExtensionAPI) {
             colWidth,
             theme,
             model: modelFor(agentKey),
-            showContext,
+            showContext: false,
         });
     }
 
@@ -291,9 +293,7 @@ export default function (pi: ExtensionAPI) {
         for (let i = 0; i < allMembers.length; i += cols) {
             const rowMembers = allMembers.slice(i, i + cols);
             const cards = rowMembers.map((m) =>
-                // Context bar only while dispatching (agents have real usage); a
-                // truly idle roster shows no meaningless 0%/window bar.
-                renderAgentCard(m, colWidth, theme, st.dispatchMode),
+                renderAgentCard(m, colWidth, theme),
             );
             lines.push(...renderCardGrid(cards, cols, gap, colWidth));
         }
