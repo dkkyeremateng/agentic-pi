@@ -2167,6 +2167,24 @@ export function dispatchEnv(agentName: string): Record<string, string> {
     };
 }
 
+// Sub-agents are spawned without -e, so they only auto-discover extensions. An
+// agent whose tools include a dispatch tool (dispatch_agent / dispatch_parallel /
+// select_agents) needs dispatch.ts loaded in its OWN process to register that
+// tool — pass it explicitly. Resolved relative to this file
+// (<repo>/utils → <repo>/extensions/dispatch.ts). Returns [] for agents that don't
+// dispatch, so leaf agents launch unchanged.
+export function dispatchExtArgs(tools: string): string[] {
+    if (!/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))
+        return [];
+    const ext = join(
+        dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "extensions",
+        "dispatch.ts",
+    );
+    return existsSync(ext) ? ["-e", ext] : [];
+}
+
 // Spawn a pi subprocess for an agent, stream its output, and return the result.
 // This is the single shared implementation used by agent-pipeline, agent-team,
 // and the WorkflowRuntime class. Each caller handles model resolution and
@@ -2410,6 +2428,7 @@ function spawnAgentWithModelFallback(
         agentDef.systemPrompt,
         "--session",
         sessionFile,
+        ...dispatchExtArgs(agentDef.tools),
     ];
 
     const cleanModel = model?.trim();
@@ -2640,6 +2659,7 @@ export function spawnAgentWithModel(
         agentDef.systemPrompt,
         "--session",
         sessionFile,
+        ...dispatchExtArgs(agentDef.tools),
     ];
     // Only pass --model if the string looks valid (non-empty, no whitespace).
     // If the string contains a slash, it's in provider/model format.

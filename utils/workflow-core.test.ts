@@ -13,6 +13,7 @@ import {
     dispatchEnv,
     renderWorkflowFooter,
     parseAgentFile,
+    dispatchExtArgs,
     type RunArtifacts,
     type PhaseState,
 } from "./workflow-core";
@@ -636,5 +637,16 @@ describe("parseAgentFile aliases", () => {
         assert.deepEqual(a?.aliases, ["foo", "bar"]);
         const b = parseAgentFile(write("---\nname: y\n---\nb"));
         assert.equal(b?.aliases, undefined);
+    });
+});
+
+describe("dispatchExtArgs", () => {
+    it("returns [] for an agent without a dispatch tool", () => {
+        assert.deepEqual(dispatchExtArgs("read,write,grep,find,ls"), []);
+    });
+    it("passes -e dispatch.ts when tools include a dispatch tool", () => {
+        const a = dispatchExtArgs("read,dispatch_agent,ls");
+        assert.equal(a[0], "-e");
+        assert.ok(a[1].endsWith("extensions/dispatch.ts"), a[1]);
     });
 });
