@@ -67,6 +67,25 @@ with `pi -e .pi/extensions/agent-pipeline.ts` to get the base UI, or
 `-e` (plain auto-discovery) the base `agent-pipeline` owns the chrome by default. The
 other extension's commands stay registered either way.
 
+### `dispatch.ts` — required by both workflows
+
+`dispatch.ts` is a **standalone extension that owns the `dispatch_agent` and
+`select_agents` tools**, so any agent can dispatch a specialist in a plain pi
+session — not only inside a workflow. The two workflow extensions **depend on it**:
+they no longer register those tools and instead subscribe to its `dispatch:update`
+event (`pi.events`) to mirror dispatch activity into their dashboard. Keep
+`dispatch.ts` loaded alongside them — under auto-discovery (`.pi/extensions/*.ts`)
+it loads automatically; with explicit `-e`, add it too:
+
+```bash
+pi -e .pi/extensions/dispatch.ts -e .pi/extensions/agent-pipeline.ts
+```
+
+Without `dispatch.ts`, `/agent-pipeline` and `/agent-team` still run their automated
+lifecycle, but the orchestrator's free-form `dispatch_agent`/`select_agents` tools
+will be unavailable. To use dispatch from a non-workflow agent, add `dispatch_agent`
+to that agent's `tools:` frontmatter.
+
 ## Use it
 
 ```bash

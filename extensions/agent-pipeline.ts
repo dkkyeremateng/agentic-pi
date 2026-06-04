@@ -71,12 +71,8 @@ import {
     chooseTeam as chooseTeamCore,
     runPhaseCore,
     runAgentWithFallback,
-    renderDispatchAgentCall,
-    renderDispatchAgentResult,
     renderRunWorkflowCall,
     renderRunWorkflowResult,
-    renderSelectAgentsCall,
-    renderSelectAgentsResult,
     loadedExplicitly as loadedExplicitlyCore,
     isActiveWorkflow as isActiveWorkflowCore,
     loadAgents as loadAgentsCore,
@@ -93,11 +89,10 @@ import {
     type OrchestratorHost,
     runWorkflowCore,
     runSpecWorkflowCore,
-    dispatchAgentCore,
-    selectAgentsCore,
     runFullWorkflowCommand,
     runSpecWorkflowCommand,
 } from "../utils/orchestrator-core";
+import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/dispatch-events";
 
 // Run before any process.env reads below (WORKER_MODEL, …).
 loadDotEnv(process.cwd());
@@ -764,85 +759,21 @@ export default function (pi: ExtensionAPI) {
             },
         });
 
-    // ── dispatch_agent tool — primary agent dispatches one specialist ──
-    //
-    // Lets the orchestrator run a single agent on a focused task (on the primary
-    // session model). Used to compose ad-hoc workflows when no team pipeline fits.
+    // ── dispatch_agent / select_agents — now owned by the standalone `dispatch`
+    // extension (extensions/dispatch.ts), so ANY agent can dispatch, not just this
+    // workflow's orchestrator. We no longer register those tools here. Instead,
+    // when this is the active workflow, we mirror the dispatch phase snapshot the
+    // dispatch extension broadcasts on pi.events into our dashboard and re-render.
+    // (Dispatch and the automated pipeline are mutually exclusive in time —
+    // dispatchAgentCore refuses while s.running — so replacing st.phases is safe.)
 
     if (active)
-        pi.registerTool({
-            name: "dispatch_agent",
-            label: "Dispatch Agent",
-            description:
-                "Dispatch a task to a specialist agent outside the workflow pipeline. The agent runs on the primary session model with its configured tools, and returns the result. Use this for ad-hoc work that doesn't fit the plan→implement→test→validate lifecycle (e.g. quick lookups, one-off analyses, or re-running a specific agent with a custom task).",
-            parameters: Type.Object({
-                agent: Type.String({
-                    description:
-                        "Agent name (case-insensitive). Must be a loaded agent from .pi/agents/.",
-                }),
-                task: Type.String({
-                    description: "Task description for the agent to execute.",
-                }),
-            }),
-
-            async execute(_id, params, _signal, onUpdate, ctx) {
-                const { agent, task } = params as {
-                    agent: string;
-                    task: string;
-                };
-                widgetCtx = ctx;
-                return dispatchAgentCore(st, host, agent, task, onUpdate, ctx);
-            },
-
-            renderCall(args, theme) {
-                return renderDispatchAgentCall(args, theme, Text);
-            },
-
-            renderResult(result, options, theme) {
-                return renderDispatchAgentResult(
-                    result,
-                    options,
-                    theme,
-                    Text,
-                    Markdown,
-                    getMarkdownTheme(),
-                );
-            },
-        });
-
-    // ── select_agents tool — declare the agents the orchestrator will use ──
-    //
-    // Called once the primary agent has determined which specialists the work
-    // needs, BEFORE dispatching. It marks the chosen agents on the dashboard so
-    // the plan is visible up front; subsequent dispatch_agent calls flip each
-    // card to running/done. Agents already worked keep their status.
-
-    if (active)
-        pi.registerTool({
-            name: "select_agents",
-            label: "Select Agents",
-            description:
-                "Declare which specialist agents the work will use, in the order you intend to dispatch them. Call this once after you have determined the workflow and before dispatching — it marks the chosen agents on the dashboard so the plan is visible. You can still dispatch agents not pre-declared; this just sets the up-front plan.",
-            parameters: Type.Object({
-                agents: Type.Array(Type.String(), {
-                    description:
-                        "Agent names (case-insensitive), in dispatch order. Must be loaded agents from .pi/agents/.",
-                }),
-            }),
-
-            async execute(_id, params, _signal, _onUpdate, ctx) {
-                const names = (params as { agents: string[] }).agents || [];
-                widgetCtx = ctx;
-                return selectAgentsCore(st, host, names, ctx);
-            },
-
-            renderCall(args, theme) {
-                return renderSelectAgentsCall(args, theme, Text, displayName);
-            },
-
-            renderResult(result, _options, theme) {
-                return renderSelectAgentsResult(result, _options, theme, Text);
-            },
+        pi.events.on(DISPATCH_UPDATE, (data) => {
+            const u = data as DispatchUpdate;
+            st.phases = u.phases;
+            st.dispatchMode = u.dispatchMode;
+            st.dispatchElapsedMs = u.dispatchElapsedMs;
+            updateWidget();
         });
 
     // ── Primary-turn timing ──
