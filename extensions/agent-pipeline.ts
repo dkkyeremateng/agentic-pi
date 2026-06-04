@@ -244,7 +244,8 @@ export default function (pi: ExtensionAPI) {
     }
 
     // The idle dashboard: a grid of ALL agents across all teams in teams.yaml.
-    // All agents run on one model, shown once in the header.
+    // Every card shows the model it runs (the primary/session model — agent-pipeline
+    // runs all sub-agents on it), its context-usage bar, and its description.
     function renderAgentGrid(width: number, theme: any): string[] {
         // Show every unique agent from all teams, filtered to those with loaded .md defs
         const allMembers = allTeamAgents(st.teams).filter((m) =>
