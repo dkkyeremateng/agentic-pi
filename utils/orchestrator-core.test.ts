@@ -940,7 +940,7 @@ describe("selectAgentsCore", () => {
         assert.equal(st.freshDispatchSession, false);
     });
 
-    it("returns order in the result text", () => {
+    it("returns a sequential (→) order for distinct agents", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         agents.set("tester", mkAgent("tester"));
@@ -958,7 +958,30 @@ describe("selectAgentsCore", () => {
             ["planner", "tester"],
             mkCtx(),
         );
-        assert.ok((result.content[0] as { text: string }).text.includes("Planner ∥ Tester"));
+        assert.ok((result.content[0] as { text: string }).text.includes("Planner → Tester"));
+    });
+
+    it("uses ∥ only for duplicate (parallel-instance) selections", () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("seeker", mkAgent("seeker"));
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+        });
+        const result = selectAgentsCore(
+            mkStateWithAgents(agents),
+            host,
+            ["seeker", "seeker"],
+            mkCtx(),
+        );
+        assert.ok(
+            (result.content[0] as { text: string }).text.includes(
+                "Seeker ∥ Seeker",
+            ),
+        );
     });
 
     it("does not reload agents when freshDispatchSession is false", () => {

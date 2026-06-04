@@ -1143,7 +1143,7 @@ export function selectAgentsCore(
             (p) => p.status === "pending" && resolved.includes(p.agent),
         )
     ) {
-        const queued = resolved.map((k) => displayName(k)).join(" ∥ ");
+        const queued = resolved.map((k) => displayName(k)).join(", ");
         return textResult(
             `${queued} are already selected and queued — do NOT call select_agents again. Dispatch now: call dispatch_agent agent="${resolved[0]}" task="<their task>", then dispatch the next selected agent.`,
         );
@@ -1185,12 +1185,12 @@ export function selectAgentsCore(
     h.setup.setupSessions(ctx.cwd, false);
     h.ui.updateWidget();
 
-    // Display the original list (with duplicates) to show parallel intent
-    // Use ∥ separator for parallel execution:
-    // - Duplicate agent names (e.g., ['seeker', 'seeker'])
-    // - Multiple different agents selected (ad-hoc dispatches are typically parallel)
-    // Use → only for single-agent selections
-    const isParallel = hasDuplicates || resolved.length > 1;
+    // Separator reflects how the agents actually run: ∥ ONLY for genuine parallel
+    // instances (the same agent listed more than once, e.g. ['seeker','seeker']);
+    // distinct agents are dispatched in order, so they read as a sequence with →.
+    // (True concurrent execution of distinct agents goes through dispatch_parallel,
+    // and the dashboard/footer show ∥ live while several actually run at once.)
+    const isParallel = hasDuplicates;
     const separator = isParallel ? " ∥ " : " → ";
     const displayNames = names.map((n) => displayName(n.toLowerCase()));
     const order = displayNames.join(separator);
