@@ -377,9 +377,10 @@ export default function (pi: ExtensionAPI) {
         for (let i = 0; i < members.length; i += cols) {
             const rowMembers = members.slice(i, i + cols);
             const cards = rowMembers.map((m) =>
-                // Context bar only while dispatching (agents have real usage); a
-                // truly idle roster shows no meaningless 0%/window bar.
-                renderAgentCard(m, colWidth, theme, st.dispatchMode),
+                // agent-team agents each have their own per-agent model/session, so
+                // show the context bar in both idle and working states (idle shows
+                // 0%/<the agent's window> until it runs).
+                renderAgentCard(m, colWidth, theme, true),
             );
             lines.push(...renderCardGrid(cards, cols, gap, colWidth));
         }
