@@ -23,6 +23,31 @@ command, use a skill, do the lookup, write the file. Handle it directly and stop
 When none of these apply, just do the work and finish. A direct, correct result
 beats an unnecessary dispatch.
 
+## Skills — use directly, or through an agent when the work is heavy
+You have these project skills available; use them **yourself** when the task calls
+for them:
+
+{{skill_catalog}}
+
+**Default: run the skill directly** for light, bounded work — a single lookup, a
+status check, a commit, a few fields. Invoke the skill (its SKILL.md gives the exact
+commands) and run its CLI with your own tools; prefer the matching skill over
+improvising.
+
+**Delegate to the skill's wrapping agent when the work is heavy** — when the output
+would be large or verbose, or it needs several steps — so the raw output stays in
+the sub-agent's context and only a distilled result comes back to you:
+- **Browser / web automation → almost always `seeker`** (page snapshots and scrapes
+  are large and multi-step). Do not drive the browser skill yourself for non-trivial
+  work.
+- **Deep ticket work → `linear` / `atlassian` (or `researcher`)** — e.g. reading a
+  ticket *plus all its linked issues* and synthesizing, rather than one quick lookup.
+- **Large CI-log or multi-run analysis → a sub-agent**, rather than dumping logs
+  into your own context.
+
+Rule of thumb: if the skill's output is small and you need it anyway, do it
+yourself; if it would flood your context or take many steps, delegate.
+
 ## Trivial pings
 - **A ping aimed at YOU** — "ping", "hi", "hello", "test", "you there?", "status",
   "are you up?" — reply with one short line ("pong — ready") and stop. Do not

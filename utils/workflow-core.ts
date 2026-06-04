@@ -981,6 +981,70 @@ export function loadTeams(
     return {};
 }
 
+// ── Skills (skills/<name>/SKILL.md) ──────────────
+
+export interface SkillDef {
+    name: string;
+    description: string;
+}
+
+function parseSkillFile(filePath: string, fallbackName: string): SkillDef | null {
+    try {
+        const raw = readFileSync(filePath, "utf-8");
+        const match = raw.match(/^---\n([\s\S]*?)\n---\n/);
+        const fm: Record<string, string> = {};
+        if (match) {
+            for (const line of match[1].split("\n")) {
+                const idx = line.indexOf(":");
+                if (idx <= 0) continue;
+                const key = line.slice(0, idx).trim();
+                let val = line.slice(idx + 1).trim();
+                if (
+                    (val.startsWith('"') && val.endsWith('"')) ||
+                    (val.startsWith("'") && val.endsWith("'"))
+                ) {
+                    val = val.slice(1, -1);
+                }
+                fm[key] = val;
+            }
+        }
+        return {
+            name: fm.name || fallbackName,
+            description: fm.description || "",
+        };
+    } catch {
+        return null;
+    }
+}
+
+// Load skill metadata (name + one-line description) from every `<dir>/<name>/SKILL.md`.
+// Project skills (cwd/.claude/skills, cwd/.pi/skills, cwd/skills) take precedence;
+// the bundled `skills/` dir (sibling of this folder) is the fallback. Used to tell
+// the orchestrator which skills it can use — adding a SKILL.md needs no code change.
+export function loadSkills(cwd: string): SkillDef[] {
+    const byName = new Map<string, SkillDef>();
+    const extensionDir = dirname(fileURLToPath(import.meta.url));
+    const dirs = [
+        join(cwd, ".claude", "skills"),
+        join(cwd, ".pi", "skills"),
+        join(cwd, "skills"),
+        join(extensionDir, "..", "skills"),
+    ];
+    for (const dir of dirs) {
+        if (!existsSync(dir)) continue;
+        try {
+            for (const entry of readdirSync(dir)) {
+                const skillFile = join(dir, entry, "SKILL.md");
+                if (!existsSync(skillFile)) continue;
+                const def = parseSkillFile(skillFile, entry);
+                if (def && !byName.has(def.name.toLowerCase())) {
+                    byName.set(def.name.toLowerCase(), def);
+                }
+            }
+        } catch {}
+    }
+    return Array.from(byName.values());
+}
 
 // Collect all unique agent keys across every team, preserving first-seen order.
 // Used by the idle widget grid so the dashboard shows every agent defined in

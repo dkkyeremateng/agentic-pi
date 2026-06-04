@@ -77,6 +77,7 @@ import {
     isActiveWorkflow as isActiveWorkflowCore,
     loadAgents as loadAgentsCore,
     loadTeams as loadTeamsCore,
+    loadSkills,
     allTeamAgents,
     loadPromptTemplate,
     renderTemplate,
@@ -841,6 +842,12 @@ export default function (pi: ExtensionAPI) {
                 .map((d) => displayName(d.name))
                 .join(", ");
 
+            // Skills the orchestrator can use directly (files-only: any SKILL.md).
+            const skills = loadSkills(_ctx.cwd);
+            const skillCatalog = skills.length
+                ? skills.map((s) => `- **${s.name}** — ${s.description}`).join("\n")
+                : "(none)";
+
             // APPEND the orchestration layer to Pi's base system prompt instead of
             // replacing it. The base prompt carries the tool-calling scaffolding the
             // model needs to actually emit tool calls; replacing it wholesale made
@@ -852,6 +859,7 @@ export default function (pi: ExtensionAPI) {
                 team_name: st.activeTeamName || "none",
                 team_members: teamMembers,
                 agent_catalog: agentCatalog,
+                skill_catalog: skillCatalog,
             });
 
             // Append our orchestration layer onto Pi's assembled base prompt so the

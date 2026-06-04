@@ -14,6 +14,7 @@ import {
     renderWorkflowFooter,
     parseAgentFile,
     subagentExtArgs,
+    loadSkills,
     type RunArtifacts,
     type PhaseState,
 } from "./workflow-core";
@@ -673,5 +674,22 @@ describe("subagentExtArgs", () => {
             if (saved === undefined) delete process.env.PI_CONFINE_CWD;
             else process.env.PI_CONFINE_CWD = saved;
         }
+    });
+});
+
+// ── loadSkills ───────────────────────────────────
+
+describe("loadSkills", () => {
+    it("discovers the bundled SKILL.md skills with name + description", () => {
+        const skills = loadSkills(process.cwd());
+        const names = skills.map((s) => s.name).sort();
+        for (const n of ["atlassian", "bowser", "commit", "github", "linear"]) {
+            assert.ok(names.includes(n), `expected skill "${n}"`);
+        }
+        const github = skills.find((s) => s.name === "github");
+        assert.ok(
+            github && github.description.length > 0,
+            "github skill should have a description",
+        );
     });
 });
