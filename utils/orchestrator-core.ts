@@ -937,6 +937,159 @@ export async function dispatchAgentCore(
     };
 }
 
+// ── dispatch_parallel: run several specialists CONCURRENTLY ──
+// Unlike repeated dispatch_agent (each awaited in turn), this runs the whole batch
+// together via Promise.all and returns all results at once. Each item gets its own
+// phase up front (unique dispatchId), so the concurrent runs never touch the same
+// phase — and since JS is single-threaded, the shared-state updates between awaits
+// are safe.
+export async function dispatchParallelCore(
+    s: OrchestratorState,
+    h: OrchestratorHost,
+    items: { agent: string; task: string }[],
+    onUpdate: ((u: ToolResult) => void) | undefined,
+    ctx: any,
+): Promise<ToolResult> {
+    if (s.running)
+        return textResult(
+            "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
+        );
+
+    const dispatchDepth = parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
+    const maxDispatchDepth =
+        parseInt(process.env.PI_DISPATCH_MAX_DEPTH || "1", 10) || 1;
+    if (dispatchDepth >= maxDispatchDepth)
+        return textResult(
+            `Dispatch depth limit reached (max ${maxDispatchDepth}). This agent is ${dispatchDepth} level(s) deep — do the work yourself or report back. (Raise PI_DISPATCH_MAX_DEPTH to allow deeper nesting.)`,
+        );
+
+    if (!items || items.length === 0)
+        return textResult(
+            "dispatch_parallel needs a non-empty list of { agent, task } items.",
+        );
+
+    if (s.freshDispatchSession) s.agents = h.setup.loadAgents(ctx.cwd);
+
+    // Resolve each item; skip unknown agents and any that would form a cycle.
+    const ancestry = (process.env.PI_DISPATCH_ANCESTRY || "")
+        .split(">")
+        .filter(Boolean);
+    const runnable: { def: AgentDef; task: string }[] = [];
+    const skipped: string[] = [];
+    for (const it of items) {
+        const def = s.agents.get((it.agent || "").toLowerCase());
+        if (!def) {
+            skipped.push(`${it.agent} (unknown)`);
+            continue;
+        }
+        if (ancestry.includes(def.name.toLowerCase())) {
+            skipped.push(`${def.name} (cycle)`);
+            continue;
+        }
+        runnable.push({ def, task: it.task });
+    }
+
+    if (runnable.length === 0) {
+        const available = Array.from(s.agents.values())
+            .map((d) => d.name)
+            .join(", ");
+        return textResult(
+            `No runnable agents${skipped.length ? ` (skipped: ${skipped.join(", ")})` : ""}. Available agents: ${available}`,
+        );
+    }
+
+    if (s.dispatchesThisTurn + runnable.length > h.config.maxDispatchesPerTurn)
+        return textResult(
+            `Dispatch limit reached (${h.config.maxDispatchesPerTurn} per turn). This batch of ${runnable.length} would exceed it — dispatch fewer at once or summarize and stop.`,
+        );
+
+    h.setup.prepareRun(ctx);
+    h.setup.setupSessions(ctx.cwd, false);
+
+    if (!s.dispatchMode || s.freshDispatchSession) {
+        s.dispatchMode = true;
+        s.phases = [];
+        s.dispatchStartedAt = s.primaryTurnStartedAt || Date.now();
+        s.dispatchElapsedMs = 0;
+    }
+    s.freshDispatchSession = false;
+    s.dispatchedThisTurn = true;
+    s.dispatchesThisTurn += runnable.length;
+
+    if (onUpdate)
+        onUpdate(
+            textResult(
+                `Dispatching ${runnable.length} agents in parallel: ${runnable.map((r) => r.def.name).join(" ∥ ")}...`,
+            ),
+        );
+
+    // One distinct phase per item, all marked running up front.
+    const start = Date.now();
+    const entries = runnable.map(({ def, task }, i) => {
+        const dispatchId = `${def.name.toLowerCase()}-${start}-${i}`;
+        const phase = mkPhase(
+            displayName(def.name),
+            def.name.toLowerCase(),
+            dispatchId,
+        );
+        phase.attempt = 1;
+        phase.status = "running";
+        s.phases.push(phase);
+        return { def, task, phase };
+    });
+    h.ui.updateWidget();
+
+    const results = await Promise.all(
+        entries.map(async ({ def, task, phase }) => {
+            const t0 = Date.now();
+            const res = await h.execution.runAgent(def, task, phase, ctx.cwd);
+            const emptyOutput =
+                res.output.trim().length < h.config.minDispatchOutputChars &&
+                phase.toolCount === 0;
+            const ok = res.exitCode === 0 && !emptyOutput;
+            phase.status = ok ? "done" : "error";
+            phase.elapsed = Date.now() - t0;
+            h.ui.updateWidget();
+            const truncated =
+                res.output.length > 4000
+                    ? res.output.slice(0, 4000) + "\n... [truncated]"
+                    : res.output;
+            return { name: def.name, ok, elapsed: phase.elapsed, truncated };
+        }),
+    );
+
+    s.dispatchElapsedMs = Date.now() - s.dispatchStartedAt;
+    h.ui.updateWidget();
+    for (const r of results)
+        h.ui.notify(
+            `${r.name} ${r.ok ? "done" : "failed"} in ${secs(r.elapsed)}`,
+            r.ok ? "success" : "error",
+        );
+
+    const okCount = results.filter((r) => r.ok).length;
+    const skipNote = skipped.length ? ` Skipped: ${skipped.join(", ")}.` : "";
+    const blocks = results
+        .map(
+            (r) =>
+                `[${r.name}] ${r.ok ? "done" : "FAILED"} in ${secs(r.elapsed)}\n${r.truncated}`,
+        )
+        .join("\n\n---\n\n");
+    const summary = `Parallel dispatch complete: ${okCount}/${results.length} succeeded.${skipNote}`;
+
+    return {
+        content: [{ type: "text", text: `${summary}\n\n${blocks}` }],
+        details: {
+            parallel: true,
+            results: results.map((r) => ({
+                agent: r.name,
+                status: r.ok ? "done" : "error",
+                elapsed: r.elapsed,
+            })),
+            skipped,
+        },
+    };
+}
+
 // ── select_agents: declare the agents the orchestrator will use ──
 export function selectAgentsCore(
     s: OrchestratorState,

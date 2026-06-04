@@ -138,8 +138,28 @@ def cmd_teams(_a):
 def cmd_states(a):
     tid = team_id_from_key(a.team)
     out(gql(
-        "query($t:String!){workflowStates(filter:{team:{id:{eq:$t}}})"
+        "query($t:ID!){workflowStates(filter:{team:{id:{eq:$t}}})"
         "{nodes{id name type position}}}",
+        {"t": tid},
+    ))
+
+
+def cmd_projects(a):
+    nodes = paginate(
+        "query($n:Int,$after:String){projects(first:$n,after:$after)"
+        "{nodes{id name state url} pageInfo{hasNextPage endCursor}}}",
+        {},
+        "projects",
+        a.limit,
+    )
+    out({"projects": {"nodes": nodes}})
+
+
+def cmd_cycles(a):
+    tid = team_id_from_key(a.team)
+    out(gql(
+        "query($t:ID!){cycles(filter:{team:{id:{eq:$t}}})"
+        "{nodes{id number name startsAt endsAt}}}",
         {"t": tid},
     ))
 
@@ -263,6 +283,14 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("states", help="Workflow states for a team")
     s.add_argument("--team", required=True, metavar="KEY")
     s.set_defaults(fn=cmd_states)
+
+    s = sub.add_parser("projects", help="List projects")
+    s.add_argument("--limit", type=int, default=25)
+    s.set_defaults(fn=cmd_projects)
+
+    s = sub.add_parser("cycles", help="List a team's cycles")
+    s.add_argument("--team", required=True, metavar="KEY")
+    s.set_defaults(fn=cmd_cycles)
 
     s = sub.add_parser("issues", help="List issues")
     s.add_argument("--team", default="", metavar="KEY")

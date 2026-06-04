@@ -188,6 +188,7 @@ export default function (pi: ExtensionAPI) {
     const ORCHESTRATOR_TOOLS = [
         "select_agents",
         "dispatch_agent",
+        "dispatch_parallel",
         "run_agent_pipeline",
     ];
 

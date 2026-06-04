@@ -492,8 +492,12 @@ export function renderWorkflowFooter(opts: {
         truncateToWidth,
     } = opts;
 
-    // Context usage: show active sub-agent's context if running, otherwise primary session
-    const activePhase = phases.find((p) => p.status === "running");
+    // Context usage: show a sub-agent's context only when exactly ONE is running —
+    // a single bar can't represent several parallel agents, so fall back to the
+    // primary session's context when more than one runs at once.
+    const runningPhases = phases.filter((p) => p.status === "running");
+    const activePhase =
+        runningPhases.length === 1 ? runningPhases[0] : undefined;
     let contextPct: number | null;
     let tokenCount: number | undefined;
     let contextWindow: number | undefined;
@@ -539,15 +543,12 @@ export function renderWorkflowFooter(opts: {
 
     // Ad-hoc dispatch doesn't set `running`, so derive its state from the phases
     // (otherwise the footer reads "idle" while a dispatched agent is working).
-    const dispatchRunning =
-        dispatchMode && phases.some((p) => p.status === "running");
+    const dispatchRunning = dispatchMode && runningPhases.length > 0;
     const dispatchDone = dispatchMode && phases.length > 0 && !dispatchRunning;
     // Show ALL running sub-agents (parallel dispatch runs several at once), joined
     // with the same ∥ the dashboard uses; a single running agent reads as just its
     // name. Cap the list so the footer can't be overrun, with a "+N" overflow.
-    const runningLabels = phases
-        .filter((p) => p.status === "running")
-        .map((p) => p.label);
+    const runningLabels = runningPhases.map((p) => p.label);
     const MAX_FOOTER_AGENTS = 4;
     const activeName = runningLabels.length
         ? runningLabels.length > MAX_FOOTER_AGENTS

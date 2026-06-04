@@ -123,6 +123,15 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(a.query, "query{x}")
         self.assertEqual(a.variables, "")
 
+    def test_projects_and_cycles_parse(self):
+        p = linear.build_parser()
+        a = p.parse_args(["projects", "--limit", "5"])
+        self.assertEqual(a.fn, linear.cmd_projects)
+        self.assertEqual(a.limit, 5)
+        b = p.parse_args(["cycles", "--team", "ENG"])
+        self.assertEqual(b.fn, linear.cmd_cycles)
+        self.assertEqual(b.team, "ENG")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ import {
     type OrchestratorState,
     type OrchestratorHost,
     dispatchAgentCore,
+    dispatchParallelCore,
     selectAgentsCore,
     runWorkflowCore,
     runSpecWorkflowCore,
@@ -680,6 +681,106 @@ describe("dispatchAgentCore", () => {
             mkCtx(),
         );
         assert.equal(loadCount, 1, "loadAgents should be called once");
+    });
+});
+
+// ── dispatchParallelCore ─────────────────────────
+
+describe("dispatchParallelCore", () => {
+    function parallelHost(
+        runAgent: (def: AgentDef) => Promise<{ output: string; exitCode: number }>,
+        agents: Map<string, AgentDef>,
+    ) {
+        return mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: ((def: AgentDef) => runAgent(def)) as any,
+                runPhase: (async () => ({ output: "", ok: true })) as any,
+            },
+        });
+    }
+    const longOutput = (name: string) => `result from ${name} ` + "x".repeat(50);
+
+    it("runs all agents concurrently and combines their results", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        agents.set("seeker", mkAgent("seeker"));
+        const started: string[] = [];
+        const host = parallelHost(async (def) => {
+            started.push(def.name);
+            return { output: longOutput(def.name), exitCode: 0 };
+        }, agents);
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchParallelCore(
+            st,
+            host,
+            [
+                { agent: "scout", task: "t1" },
+                { agent: "seeker", task: "t2" },
+            ],
+            undefined,
+            mkCtx(),
+        );
+        const text = (result.content[0] as { text: string }).text;
+        assert.ok(text.includes("2/2 succeeded"));
+        assert.ok(text.includes("scout") && text.includes("seeker"));
+        assert.equal(st.phases.length, 2); // one distinct phase per agent
+        assert.equal(started.length, 2);
+    });
+
+    it("skips unknown agents and runs the rest", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        const host = parallelHost(
+            async (def) => ({ output: longOutput(def.name), exitCode: 0 }),
+            agents,
+        );
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchParallelCore(
+            st,
+            host,
+            [
+                { agent: "scout", task: "t" },
+                { agent: "nope", task: "t" },
+            ],
+            undefined,
+            mkCtx(),
+        );
+        const text = (result.content[0] as { text: string }).text;
+        assert.ok(text.includes("1/1 succeeded"));
+        assert.ok(text.includes("nope (unknown)"));
+    });
+
+    it("refuses the batch when the depth limit is reached", async () => {
+        const saved = process.env.PI_DISPATCH_DEPTH;
+        try {
+            process.env.PI_DISPATCH_DEPTH = "1"; // default max depth = 1
+            const agents = new Map<string, AgentDef>();
+            agents.set("scout", mkAgent("scout"));
+            const host = parallelHost(
+                async (def) => ({ output: longOutput(def.name), exitCode: 0 }),
+                agents,
+            );
+            const result = await dispatchParallelCore(
+                mkStateWithAgents(agents),
+                host,
+                [{ agent: "scout", task: "t" }],
+                undefined,
+                mkCtx(),
+            );
+            assert.ok(
+                (result.content[0] as { text: string }).text.includes(
+                    "depth limit",
+                ),
+            );
+        } finally {
+            if (saved === undefined) delete process.env.PI_DISPATCH_DEPTH;
+            else process.env.PI_DISPATCH_DEPTH = saved;
+        }
     });
 });
 

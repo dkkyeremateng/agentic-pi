@@ -37,6 +37,8 @@ The script auto-loads `LINEAR_API_KEY` from `./.env`, or from the repo `.env` ne
 linear me                                   # current user (viewer)
 linear teams                                # id, key, name for each team
 linear states --team ENG                    # workflow states for a team
+linear projects --limit 20                  # list projects
+linear cycles --team ENG                    # a team's cycles
 linear issues --assignee me --active            # your OPEN issues (the common one)
 linear issues --team ENG --assignee me --limit 10
 linear issues --state "In Progress" --query "login bug"

@@ -17,6 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text, Markdown } from "@mariozechner/pi-tui";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import { appendFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -38,6 +39,7 @@ import {
     newOrchestratorState,
     type OrchestratorHost,
     dispatchAgentCore,
+    dispatchParallelCore,
     selectAgentsCore,
 } from "../utils/orchestrator-core";
 import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/dispatch-events";
@@ -71,10 +73,49 @@ export default function (pi: ExtensionAPI) {
     const st = newOrchestratorState();
     let widgetCtx: any;
     let sessionDir = "";
-    let currentProc: any = null;
+    // All live sub-agent subprocesses. A Set (not a single ref) so cancellation
+    // kills EVERY running agent — parallel dispatch can have several at once.
+    const liveProcs = new Set<any>();
+    const killAllProcs = () => {
+        for (const p of liveProcs) {
+            try {
+                p.kill("SIGTERM");
+            } catch {}
+        }
+        liveProcs.clear();
+    };
 
     const setupSessions = (cwd: string, wipe: boolean) => {
         sessionDir = setupSessionsCore(cwd, wipe);
+    };
+
+    // Observability: append one JSONL record per dispatched agent to
+    // <sessionDir>/dispatch-history.jsonl — what ran, its result, and how deep in
+    // the dispatch tree (for debugging recursion/parallel runs). Best-effort.
+    const logDispatch = (tool: string, details: any) => {
+        if (!sessionDir || !details) return;
+        const base = {
+            ts: new Date().toISOString(),
+            tool,
+            depth: parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0,
+            ancestry: process.env.PI_DISPATCH_ANCESTRY || "",
+        };
+        const recs = details.parallel
+            ? (details.results || []).map((r: any) => ({ ...base, ...r }))
+            : [
+                  {
+                      ...base,
+                      agent: details.agent,
+                      status: details.status,
+                      elapsed: details.elapsed,
+                  },
+              ];
+        try {
+            appendFileSync(
+                join(sessionDir, "dispatch-history.jsonl"),
+                recs.map((r: any) => JSON.stringify(r)).join("\n") + "\n",
+            );
+        } catch {}
     };
 
     function fallbackModel(): string {
@@ -105,7 +146,13 @@ export default function (pi: ExtensionAPI) {
         agentTimeoutMs: AGENT_TIMEOUT_MS,
         updateWidget: () => emitUpdate(),
         setCurrentProc: (p: any) => {
-            currentProc = p;
+            // Track every spawned proc; it removes itself when it exits, so the
+            // spawn's own setCurrentProc(null) calls are harmless no-ops here.
+            if (p) {
+                liveProcs.add(p);
+                p.once?.("close", () => liveProcs.delete(p));
+                p.once?.("exit", () => liveProcs.delete(p));
+            }
         },
     });
 
@@ -185,21 +232,22 @@ export default function (pi: ExtensionAPI) {
         async execute(_id, params, signal, onUpdate, ctx) {
             const { agent, task } = params as { agent: string; task: string };
             widgetCtx = ctx;
-            // Cancellation: if the turn is aborted, kill the running sub-agent
-            // subprocess so it doesn't keep running detached in the background.
-            const onAbort = () => {
-                if (currentProc) {
-                    try {
-                        currentProc.kill("SIGTERM");
-                    } catch {}
-                    currentProc = null;
-                }
-            };
-            signal?.addEventListener?.("abort", onAbort);
+            // Cancellation: if the turn is aborted, kill every running sub-agent
+            // subprocess so none keep running detached in the background.
+            signal?.addEventListener?.("abort", killAllProcs);
             try {
-                return await dispatchAgentCore(st, host, agent, task, onUpdate, ctx);
+                const result = await dispatchAgentCore(
+                    st,
+                    host,
+                    agent,
+                    task,
+                    onUpdate,
+                    ctx,
+                );
+                logDispatch("dispatch_agent", (result as any).details);
+                return result;
             } finally {
-                signal?.removeEventListener?.("abort", onAbort);
+                signal?.removeEventListener?.("abort", killAllProcs);
             }
         },
         renderCall(args, theme) {
@@ -213,6 +261,61 @@ export default function (pi: ExtensionAPI) {
                 Text,
                 Markdown,
                 getMarkdownTheme(),
+            );
+        },
+    });
+
+    // ── dispatch_parallel — run several specialists concurrently ─────────────
+    pi.registerTool({
+        name: "dispatch_parallel",
+        label: "Dispatch Parallel",
+        description:
+            "Dispatch several specialist agents to run CONCURRENTLY, each with its own task, and get all their results back together. Use this instead of multiple dispatch_agent calls when the sub-tasks are independent and can run at the same time. For dependent/sequential work, use dispatch_agent one at a time.",
+        parameters: Type.Object({
+            agents: Type.Array(
+                Type.Object({
+                    agent: Type.String({
+                        description:
+                            "Agent name (case-insensitive). Must be a loaded agent from .pi/agents/.",
+                    }),
+                    task: Type.String({
+                        description: "Task for this agent to execute.",
+                    }),
+                }),
+                {
+                    description:
+                        "The agents to run in parallel, each with its own task.",
+                },
+            ),
+        }),
+        async execute(_id, params, signal, onUpdate, ctx) {
+            const items =
+                (params as { agents: { agent: string; task: string }[] })
+                    .agents || [];
+            widgetCtx = ctx;
+            signal?.addEventListener?.("abort", killAllProcs);
+            try {
+                const result = await dispatchParallelCore(
+                    st,
+                    host,
+                    items,
+                    onUpdate,
+                    ctx,
+                );
+                logDispatch("dispatch_parallel", (result as any).details);
+                return result;
+            } finally {
+                signal?.removeEventListener?.("abort", killAllProcs);
+            }
+        },
+        renderCall(args, theme) {
+            const items = (args?.agents || []) as { agent: string }[];
+            const names = items.map((i) => i.agent).join(" ∥ ");
+            return new Text(
+                theme.fg("toolTitle", theme.bold("dispatch_parallel ")) +
+                    theme.fg("accent", names || "?"),
+                0,
+                0,
             );
         },
     });
