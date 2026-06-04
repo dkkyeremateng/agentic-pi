@@ -366,10 +366,20 @@ export default function (pi: ExtensionAPI) {
                     );
                     const arrowRow = 2; // status row of the card
 
-                    // showContext=false: every phase shares the primary model
-                    // and context, so the per-card context bar is omitted here.
+                    // Show the context-usage bar on the RUNNING card only — it
+                    // updates live as the sub-agent works (the widget re-renders
+                    // via setWidget on every spawn event + the 1s timer, unlike the
+                    // footer). Pass the agent's frontmatter context_window as a
+                    // fallback so the percentage still shows when the provider does
+                    // not report a window. Idle/done cards stay compact.
                     const cards = phases.map((p) =>
-                        renderCard(p, colWidth, theme, false),
+                        renderCard(
+                            p,
+                            colWidth,
+                            theme,
+                            p.status === "running",
+                            st.agents.get(p.agent.toLowerCase())?.contextWindow,
+                        ),
                     );
                     const lines: string[] = [];
 
