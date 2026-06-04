@@ -63,6 +63,7 @@ export interface AgentDef {
     model: string;
     contextWindow: number; // 0 when not declared in frontmatter
     systemPrompt: string;
+    aliases?: string[]; // alternate names the agent can be dispatched as
 }
 
 export interface PhaseState {
@@ -829,6 +830,13 @@ export function parseAgentFile(filePath: string): AgentDef | null {
                     10,
                 ) || 0,
             systemPrompt: match[2].trim(),
+            aliases: fm.aliases
+                ? fm.aliases
+                      .replace(/^\[|\]$/g, "") // tolerate YAML [a, b] list syntax
+                      .split(/[,\s]+/)
+                      .map((a) => a.trim())
+                      .filter(Boolean)
+                : undefined,
         };
     } catch {
         return null;

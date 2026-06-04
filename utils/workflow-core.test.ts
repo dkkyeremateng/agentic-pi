@@ -12,9 +12,13 @@ import {
     freshPhases,
     dispatchEnv,
     renderWorkflowFooter,
+    parseAgentFile,
     type RunArtifacts,
     type PhaseState,
 } from "./workflow-core";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 // Run with: npx tsx --test workflow-core.test.ts
 
@@ -612,5 +616,25 @@ describe("renderWorkflowFooter", () => {
         );
         assert.ok(line.includes("+2"));
         assert.ok(!line.includes("∥ E"));
+    });
+});
+
+describe("parseAgentFile aliases", () => {
+    function write(content: string): string {
+        const f = join(mkdtempSync(join(tmpdir(), "agent-")), "a.md");
+        writeFileSync(f, content);
+        return f;
+    }
+    it("parses YAML [a, b] list form", () => {
+        const def = parseAgentFile(
+            write("---\nname: atlassian\naliases: [jira, atl]\ntools: bash\n---\nbody"),
+        );
+        assert.deepEqual(def?.aliases, ["jira", "atl"]);
+    });
+    it("parses bare comma/space form, and is undefined when absent", () => {
+        const a = parseAgentFile(write("---\nname: x\naliases: foo, bar\n---\nb"));
+        assert.deepEqual(a?.aliases, ["foo", "bar"]);
+        const b = parseAgentFile(write("---\nname: y\n---\nb"));
+        assert.equal(b?.aliases, undefined);
     });
 });

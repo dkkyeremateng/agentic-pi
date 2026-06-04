@@ -48,8 +48,8 @@ import {
     secs,
     isModelFailure,
 } from "./workflow-utils";
-import { writeFileSync } from "fs";
-import { join } from "path";
+import { writeFileSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
 
 // The mutable run/session state shared between the orchestration here and the
 // extension's widget/footer/hooks. Created by the extension; mutated by both.
@@ -350,7 +350,7 @@ export async function runWorkflowCore(
         cwd,
     );
     if (!plan.ok) return fail(s, "Planning", plan.output);
-    runArtifacts.plan = plan.output;
+    capturePlan(runArtifacts, cwd, plan.output);
 
     const planCheck = validatePlan(plan.output);
     if (!planCheck.ok) {
@@ -392,7 +392,7 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!plan.ok) return fail(s, "Planning", plan.output);
-        runArtifacts.plan = plan.output;
+        capturePlan(runArtifacts, cwd, plan.output);
     }
 
     runArtifacts.critique = critique.output;
@@ -634,7 +634,7 @@ export async function runSpecWorkflowCore(
         cwd,
     );
     if (!plan.ok) return fail(s, "Planning", plan.output);
-    runArtifacts.plan = plan.output;
+    capturePlan(runArtifacts, cwd, plan.output);
 
     let critique = { output: "", ok: true };
     let critiqueVerdict: CritiqueVerdict = "unknown";
@@ -666,7 +666,7 @@ export async function runSpecWorkflowCore(
             cwd,
         );
         if (!plan.ok) return fail(s, "Plan revision", plan.output);
-        runArtifacts.plan = plan.output;
+        capturePlan(runArtifacts, cwd, plan.output);
     }
 
     runArtifacts.critique = critique.output;
@@ -732,6 +732,39 @@ const textResult = (text: string): ToolResult => ({
     details: undefined,
 });
 
+// Capture the (possibly revised) plan: record it as the run artifact AND persist
+// it to `.pi/plan.md` so every downstream agent can read it from disk. The planner
+// agent also writes this file; doing it here too guarantees it regardless of
+// whether the agent followed the instruction. Best-effort — never fails the run.
+export function capturePlan(
+    runArtifacts: RunArtifacts,
+    cwd: string,
+    plan: string,
+): void {
+    runArtifacts.plan = plan;
+    try {
+        const file = join(cwd, ".pi", "plan.md");
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, plan, "utf-8");
+    } catch {}
+}
+
+// Resolve an agent by its name or one of its frontmatter `aliases` (e.g. "atl"
+// for "atlassian"). Aliases are matched only when the name lookup misses, so they
+// never shadow a real agent, and the canonical def (with its real `name`) is
+// returned — phases/dashboard always show the proper name.
+export function resolveAgent(
+    agents: Map<string, AgentDef>,
+    key: string,
+): AgentDef | undefined {
+    const k = (key || "").toLowerCase();
+    const direct = agents.get(k);
+    if (direct) return direct;
+    for (const def of agents.values())
+        if (def.aliases?.some((a) => a.toLowerCase() === k)) return def;
+    return undefined;
+}
+
 // ── dispatch_agent: run one specialist on a focused task ──
 export async function dispatchAgentCore(
     s: OrchestratorState,
@@ -776,7 +809,7 @@ export async function dispatchAgentCore(
     // of dispatches within the same turn the agent definitions don't change,
     // so re-reading from disk is wasted I/O.
     if (s.freshDispatchSession) s.agents = h.setup.loadAgents(ctx.cwd);
-    const def = s.agents.get(agent.toLowerCase());
+    const def = resolveAgent(s.agents, agent);
     if (!def) {
         const available = Array.from(s.agents.values())
             .map((d) => d.name)
@@ -977,7 +1010,7 @@ export async function dispatchParallelCore(
     const runnable: { def: AgentDef; task: string }[] = [];
     const skipped: string[] = [];
     for (const it of items) {
-        const def = s.agents.get((it.agent || "").toLowerCase());
+        const def = resolveAgent(s.agents, it.agent || "");
         if (!def) {
             skipped.push(`${it.agent} (unknown)`);
             continue;
@@ -1109,7 +1142,7 @@ export function selectAgentsCore(
     const unknown: string[] = [];
     const seen = new Set<string>();
     for (const n of names) {
-        const def = s.agents.get(n.toLowerCase());
+        const def = resolveAgent(s.agents, n);
         if (def) {
             const key = def.name.toLowerCase();
             // Deduplicate: only add each agent once to the selection

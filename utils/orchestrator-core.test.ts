@@ -1,5 +1,8 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
     newOrchestratorState,
     type OrchestratorState,
@@ -7,6 +10,8 @@ import {
     dispatchAgentCore,
     dispatchParallelCore,
     selectAgentsCore,
+    resolveAgent,
+    capturePlan,
     runWorkflowCore,
     runSpecWorkflowCore,
 } from "./orchestrator-core";
@@ -120,6 +125,27 @@ describe("newOrchestratorState", () => {
         a.totalTokens.input = 100;
         assert.equal(b.running, false);
         assert.equal(b.totalTokens.input, 0);
+    });
+});
+
+// ── resolveAgent ─────────────────────────────────
+
+describe("resolveAgent", () => {
+    it("resolves by name and by alias (case-insensitive), returning the canonical def", () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("atlassian", { ...mkAgent("atlassian"), aliases: ["jira", "atl"] });
+        agents.set("scout", mkAgent("scout"));
+        assert.equal(resolveAgent(agents, "atlassian")?.name, "atlassian");
+        assert.equal(resolveAgent(agents, "atl")?.name, "atlassian");
+        assert.equal(resolveAgent(agents, "JIRA")?.name, "atlassian");
+        assert.equal(resolveAgent(agents, "nope"), undefined);
+    });
+
+    it("a real agent name takes precedence over another's alias", () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("atl", mkAgent("atl"));
+        agents.set("atlassian", { ...mkAgent("atlassian"), aliases: ["atl"] });
+        assert.equal(resolveAgent(agents, "atl")?.name, "atl");
     });
 });
 
@@ -1932,5 +1958,18 @@ describe("spawnAgentWithModel (placeholder)", () => {
         //    which exercise the full pipeline including spawn behavior.
         // 4. The pure function tests above (handleSpawnEvent, computeSpawnResult)
         assert.ok(true);
+    });
+});
+
+describe("capturePlan", () => {
+    it("records the artifact and writes .pi/plan.md", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "plan-"));
+        const artifacts: any = {};
+        capturePlan(artifacts, cwd, "# Plan\n## Phase 1");
+        assert.equal(artifacts.plan, "# Plan\n## Phase 1");
+        assert.equal(
+            readFileSync(join(cwd, ".pi", "plan.md"), "utf-8"),
+            "# Plan\n## Phase 1",
+        );
     });
 });
