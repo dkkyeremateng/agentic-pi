@@ -15,10 +15,11 @@ Talk to the [Linear GraphQL API](https://linear.app/developers/graphql) (`https:
 **1. Put `linear` on PATH** (one-time) so it runs from any directory — the script resolves its own real location through the symlink, so the repo `.env` still loads:
 
 ```bash
-ln -sf /Users/teckdroids/Documents/.configs/pi/skills/linear/linear.py ~/.local/bin/linear
+bash skills/linear/install.sh        # links linear.py -> ~/.local/bin/linear
+# or choose a bin dir:  bash skills/linear/install.sh /usr/local/bin
 ```
 
-If `~/.local/bin` is not on your PATH, call the script by its full path instead.
+The installer resolves its own path, so it works wherever the repo lives. If the bin dir is not on your PATH, call the script by its full path instead.
 
 **2. Set a Personal API key** (Linear → Settings → API → Personal API keys; starts with `lin_api_`):
 

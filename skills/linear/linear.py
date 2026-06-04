@@ -92,6 +92,23 @@ def out(data: dict) -> None:
     print(json.dumps(data, indent=2))
 
 
+def paginate(query: str, base_vars: dict, root: str, limit: int) -> list:
+    """Fetch up to `limit` nodes across pages. `query` must accept $first/$after and
+    return {<root>: {nodes, pageInfo{hasNextPage endCursor}}}. Linear caps a page at
+    250, so this walks the endCursor until `limit` is reached or results run out."""
+    nodes: list = []
+    after = None
+    while len(nodes) < limit:
+        page = min(250, limit - len(nodes))
+        conn = gql(query, {**base_vars, "first": page, "after": after})[root]
+        nodes.extend(conn["nodes"])
+        info = conn["pageInfo"]
+        if not info["hasNextPage"]:
+            break
+        after = info["endCursor"]
+    return nodes[:limit]
+
+
 def team_id_from_key(key: str) -> str:
     """Resolve a team KEY (e.g. 'ENG') to its UUID; pass UUIDs through unchanged."""
     if len(key) == 36 and key.count("-") == 4:
@@ -145,11 +162,16 @@ def cmd_issues(a):
         f["state"] = state
     if a.query:
         f["searchableContent"] = {"contains": a.query}
-    out(gql(
-        "query($f:IssueFilter,$n:Int){issues(filter:$f,first:$n,orderBy:updatedAt)"
-        "{nodes{identifier title priority state{name} assignee{name} updatedAt url}}}",
-        {"f": f, "n": a.limit},
-    ))
+    nodes = paginate(
+        "query($f:IssueFilter,$n:Int,$after:String)"
+        "{issues(filter:$f,first:$n,after:$after,orderBy:updatedAt)"
+        "{nodes{identifier title priority state{name} assignee{name} updatedAt url}"
+        "pageInfo{hasNextPage endCursor}}}",
+        {"f": f},
+        "issues",
+        a.limit,
+    )
+    out({"issues": {"nodes": nodes}})
 
 
 def cmd_issue(a):
@@ -162,11 +184,16 @@ def cmd_issue(a):
 
 
 def cmd_search(a):
-    out(gql(
-        "query($t:String!,$n:Int){searchIssues(term:$t,first:$n)"
-        "{nodes{identifier title state{name} assignee{name} url}}}",
-        {"t": a.text, "n": a.limit},
-    ))
+    nodes = paginate(
+        "query($t:String!,$n:Int,$after:String)"
+        "{searchIssues(term:$t,first:$n,after:$after)"
+        "{nodes{identifier title state{name} assignee{name} url}"
+        "pageInfo{hasNextPage endCursor}}}",
+        {"t": a.text},
+        "searchIssues",
+        a.limit,
+    )
+    out({"searchIssues": {"nodes": nodes}})
 
 
 def cmd_create(a):

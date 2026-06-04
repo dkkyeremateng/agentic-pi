@@ -38,7 +38,7 @@ A token-efficient CLI wrapper around the [Linear GraphQL API](https://linear.app
 
 ```bash
 # one-time: put linear on PATH (resolves the repo .env through the symlink)
-ln -sf /Users/teckdroids/Documents/.configs/pi/skills/linear/linear.py ~/.local/bin/linear
+bash skills/linear/install.sh
 export LINEAR_API_KEY=lin_api_xxxxxxxx
 
 linear me                                   # verify auth
