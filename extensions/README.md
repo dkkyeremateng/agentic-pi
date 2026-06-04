@@ -117,16 +117,15 @@ pi
 
 Or let the primary agent call the **`run_agent_pipeline`** tool for any non-trivial task.
 
-In `agent-team.ts`, the primary agent acts as an **orchestrator that determines the workflow**: it receives
-the user's request, reviews it, and decides which agents to dispatch and in what order.
-It declares that plan with `select_agents` (so the dashboard shows the chosen agents up front), then
-composes the workflow by chaining `dispatch_agent` calls (e.g., scout → planner → critic → implementer),
-or uses `run_agent_team` as a shortcut for the standard full pipeline — picking ONE approach per request.
-Once the deliverable is produced it **stops and summarizes**; it does not auto-start a new workflow or
-chain `run_agent_team` onto finished dispatch work.
-A system prompt is injected at session start that catalogs all available agents,
-describes the standard pipeline stages, and guides the orchestrator to reason about
-what the request needs — rather than following a fixed sequence for every task.
+The primary agent keeps its **full toolset and skills** and **does the work itself by
+default** — it is not forced to delegate. A system prompt injected at session start
+catalogs the available specialist agents and the delegation tools (`select_agents`,
+`dispatch_agent`, `dispatch_parallel`, `run_agent_team`/`run_agent_pipeline`), and
+tells it to **delegate only when** (1) a team is active, (2) the user asks, or (3) a
+specialist agent is genuinely a better fit (e.g. a multi-phase build, deep web
+research, ticket lookups, or an investigate-and-write-up). When it does delegate, it
+declares the plan with `select_agents`, chains `dispatch_agent` (or runs the
+pipeline), finishes every selected agent, then **stops and summarizes**.
 
 A live widget renders the phases as connected cards
 (`Scout ──▶ Plan ──▶ Critique ──▶ Implement ──▶ Test ──▶ Validate ──▶ Document ──▶ Ship`,
@@ -303,12 +302,12 @@ pi -e .pi/extensions/dispatch.ts -e .pi/extensions/agent-team.ts
   CSV export`); cap retries with a `loops=N` token (`/agent-team loops=5 fix the
   bug`).
 - **`/agent-team-clear`** — clear the progress widget.
-- **Or let the primary agent orchestrate.** It receives an orchestrator system
-  prompt cataloguing every loaded agent, then either composes the work itself —
-  `select_agents` to declare the plan (the dashboard marks them queued), then
-  `dispatch_agent` to run specialists in the order the request needs — or calls
-  `run_agent_team` as a shortcut for the standard full pipeline. It picks **one**
-  approach per request, then stops and summarizes.
+- **Or just talk to the primary agent.** It keeps its full tools/skills and **does
+  the work itself by default**, delegating only when a team is active, you ask, or a
+  specialist is clearly better. When it delegates it uses `select_agents` to declare
+  the plan (the dashboard marks them queued), `dispatch_agent`/`dispatch_parallel` to
+  run specialists, or `run_agent_team` as a shortcut for the full pipeline — then
+  stops and summarizes.
 - **Tools** (available to the primary agent): `select_agents { agents }`,
   `dispatch_agent { agent, task }` (both from `dispatch.ts`), and
   `run_agent_team { request, max_loops }`.

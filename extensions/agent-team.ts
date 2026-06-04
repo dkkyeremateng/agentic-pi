@@ -1011,7 +1011,7 @@ export default function (pi: ExtensionAPI) {
             const template = loadPromptTemplate("orchestrator", "", _ctx.cwd);
             const orchestratorAddendum = renderTemplate(template, {
                 run_tool_name: "run_agent_team",
-                team_name: st.activeTeamName,
+                team_name: st.activeTeamName || "none",
                 team_members: teamMembers,
                 agent_catalog: agentCatalog,
             });
