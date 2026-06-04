@@ -179,16 +179,11 @@ export default function (pi: ExtensionAPI) {
         },
     };
 
-    // The only tools the primary agent (orchestrator) may use — it has NO direct
-    // codebase tools and must delegate. Re-asserted before every turn (see
-    // before_agent_start) so the primary keeps delegating instead of doing the
-    // work itself.
-    const ORCHESTRATOR_TOOLS = [
-        "select_agents",
-        "dispatch_agent",
-        "dispatch_parallel",
-        "run_agent_pipeline",
-    ];
+    // The primary agent keeps its FULL toolset (read/write/edit/bash/grep/find/ls
+    // + skills) alongside the dispatch tools (select_agents / dispatch_agent /
+    // dispatch_parallel / run_agent_pipeline). It does work itself by default and
+    // delegates only when warranted (see prompts/orchestrator.md), so we do NOT
+    // lock the toolset down to dispatch-only.
 
     const setupSessions = (cwd: string, wipe: boolean) => {
         sessionDir = setupSessionsCore(cwd, wipe);
@@ -832,19 +827,12 @@ export default function (pi: ExtensionAPI) {
 
     // ── Orchestrator system prompt + tool lockdown ──
     //
-    // The primary agent acts as an orchestrator: it determines which specialist
-    // agents a task needs and dispatches them (on the single session model), or
-    // runs the full pipeline via run_agent_pipeline. This hook re-asserts the
-    // lockdown each turn and injects the orchestrator guidance + agent catalog.
+    // The primary agent does the work itself by default and dispatches specialist
+    // agents (or runs the full pipeline via run_agent_pipeline) when warranted.
+    // This hook injects the orchestrator guidance + agent/skill catalog each turn.
 
     if (active)
         pi.on("before_agent_start", async (event, _ctx) => {
-            // Re-assert the orchestration lockdown every turn. setActiveTools at
-            // session start only holds for the first turn — without re-applying it
-            // here the primary agent regains codebase tools on later turns and stops
-            // delegating, doing the work itself instead.
-            pi.setActiveTools(ORCHESTRATOR_TOOLS);
-
             // A new user request = a new workflow. Mark it so the first
             // dispatch_agent of this request rebuilds the cards from
             // scratch instead of carrying over the previous workflow's state.
@@ -932,10 +920,6 @@ export default function (pi: ExtensionAPI) {
         // Show the idle team dashboard (grid of agents + their models).
         updateWidget();
 
-        // Lock the primary agent to orchestration tools so it determines the
-        // agents a task needs and delegates to them, instead of editing code
-        // itself. Re-asserted each turn in before_agent_start.
-        if (active) pi.setActiveTools(ORCHESTRATOR_TOOLS);
         (globalThis as any).__piKillWorkflowProc = (): boolean => {
             // Kill the running agent subprocess so a cancelled workflow doesn't
             // keep running detached in the background.

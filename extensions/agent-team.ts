@@ -180,17 +180,11 @@ export default function (pi: ExtensionAPI) {
         },
     };
 
-    // The only tools the primary agent (orchestrator) may use. It has NO direct
-    // codebase tools — it must delegate. This lockdown is re-asserted before every
-    // agent turn (see before_agent_start); applying it once at session start is not
-    // enough, because the restriction is dropped between turns and the orchestrator
-    // would then regain codebase tools and start doing the work itself.
-    const ORCHESTRATOR_TOOLS = [
-        "select_agents",
-        "dispatch_agent",
-        "dispatch_parallel",
-        "run_agent_team",
-    ];
+    // The primary agent keeps its FULL toolset (read/write/edit/bash/grep/find/ls
+    // + skills) alongside the dispatch tools (select_agents / dispatch_agent /
+    // dispatch_parallel / run_agent_team). It does work itself by default and
+    // delegates only when warranted (see prompts/orchestrator.md), so we do NOT
+    // lock the toolset down to dispatch-only.
 
     const setupSessions = (cwd: string, wipe: boolean) => {
         sessionDir = setupSessionsCore(cwd, wipe);
@@ -1000,12 +994,6 @@ export default function (pi: ExtensionAPI) {
 
     if (active)
         pi.on("before_agent_start", async (event, _ctx) => {
-            // Re-assert the orchestration lockdown every turn. setActiveTools at
-            // session start only holds for the first turn — without re-applying it
-            // here the primary agent regains codebase tools on later turns and stops
-            // delegating, doing the work itself instead.
-            pi.setActiveTools(ORCHESTRATOR_TOOLS);
-
             // A new user request = a new workflow. Mark it so the first
             // select_agents / dispatch_agent of this request rebuilds the cards from
             // scratch instead of carrying over the previous workflow's state.
@@ -1091,13 +1079,6 @@ export default function (pi: ExtensionAPI) {
 
         // Show the idle team dashboard (grid of agents + their models).
         updateWidget();
-
-        // Lock down the primary agent to orchestration tools only. The primary
-        // agent must NOT have direct codebase tools — it delegates all work to
-        // specialist agents via dispatch_agent or runs the full pipeline via
-        // run_agent_team. Without this lockdown, the primary agent would
-        // just do the work itself instead of coordinating the team.
-        if (active) pi.setActiveTools(ORCHESTRATOR_TOOLS);
         (globalThis as any).__piKillWorkflowProc = (): boolean => {
             // Kill the running agent subprocess so a cancelled workflow doesn't
             // keep running detached in the background.
