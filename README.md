@@ -10,8 +10,8 @@ only `.env` config (no code edits).
 | Path | What it is |
 |------|-----------|
 | `extensions/` | pi extensions. `agent-pipeline.ts` / `agent-team.ts` run a self-healing **plan → critic → implement → test → validate → document → ship** workflow; `dispatch.ts` is a standalone extension owning the `dispatch_agent` / `dispatch_parallel` / `select_agents` tools (used by any agent, in any session). See [`extensions/README.md`](extensions/README.md). |
-| `agents/` | Agent definitions (`.md` with frontmatter): `scout`, `planner`, `critic`, `implementer`, `tester`, `validator`, `documenter`, `shipper`, plus `coordinator` (dispatches specialists), `seeker` (browser/web), and `linear` (issue tracking). |
-| `skills/` | On-demand skills. `linear/` — a stdlib-Python CLI for the [Linear GraphQL API](https://linear.app/developers/graphql); `bowser/` — Playwright browser automation. |
+| `agents/` | Agent definitions (`.md` with frontmatter): `scout`, `planner`, `critic`, `implementer`, `tester`, `validator`, `documenter`, `shipper`, plus `coordinator` (dispatches specialists), `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets). |
+| `skills/` | On-demand skills. `linear/` — a stdlib-Python CLI for the [Linear GraphQL API](https://linear.app/developers/graphql); `atlassian/` — a stdlib-Python CLI for the [Jira Cloud REST API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) (tickets); `bowser/` — Playwright browser automation. |
 | `utils/` | Shared, testable orchestration core (`workflow-core.ts`, `orchestrator-core.ts`) — kept out of `extensions/` so pi doesn't load them as extensions. |
 | `prompts/`, `themes/` | Orchestrator system-prompt template and color themes. |
 | `scripts/`, `run.sh` | Launcher + the dev type-linking helper. |
@@ -30,11 +30,14 @@ Then, in pi: `/agent-pipeline <request>` or `/agent-team <request>`, or just ask
 primary agent to dispatch work. Full usage and the dashboard/report details are in
 [`extensions/README.md`](extensions/README.md).
 
-The `linear` CLI is a separate optional install:
+The issue-tracker CLIs are separate optional installs (each reads its keys from `.env`):
 
 ```bash
-bash skills/linear/install.sh   # puts `linear` on PATH; reads LINEAR_API_KEY from .env
+bash skills/linear/install.sh      # `linear` on PATH (LINEAR_API_KEY)
 linear issues --assignee me --active
+
+bash skills/atlassian/install.sh   # `atlassian` on PATH (ATLASSIAN_SITE/EMAIL/API_TOKEN)
+atlassian tickets                  # your Jira tickets
 ```
 
 ## Configure
@@ -47,6 +50,7 @@ list. Highlights:
 - `PI_DISPATCH_MAX_DEPTH` — how deep dispatch may nest (default 1 = single level;
   a cycle guard is always on). `PI_MAX_DISPATCHES_PER_TURN` — breadth cap.
 - `LINEAR_API_KEY` — for the linear skill.
+- `ATLASSIAN_SITE` / `ATLASSIAN_EMAIL` / `ATLASSIAN_API_TOKEN` — for the atlassian (Jira) skill.
 
 ## Develop
 
@@ -58,6 +62,7 @@ npm run setup:types     # link pi types (auto-runs before typecheck/test)
 npm run typecheck       # tsc --noEmit
 npm test                # unit tests (tsx) — utils/*.test.ts
 npm run test:linear     # Python tests for the linear skill
+npm run test:atlassian  # Python tests for the atlassian skill
 ```
 
 `node_modules` is dev-only and gitignored — it is **not** needed to run.
