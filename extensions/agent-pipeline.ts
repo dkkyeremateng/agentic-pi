@@ -232,6 +232,7 @@ export default function (pi: ExtensionAPI) {
         agentKey: string,
         colWidth: number,
         theme: any,
+        showContext = true,
     ): string[] {
         return renderRichCard({
             agentKey,
@@ -240,6 +241,7 @@ export default function (pi: ExtensionAPI) {
             colWidth,
             theme,
             model: modelFor(agentKey),
+            showContext,
         });
     }
 
@@ -289,7 +291,9 @@ export default function (pi: ExtensionAPI) {
         for (let i = 0; i < allMembers.length; i += cols) {
             const rowMembers = allMembers.slice(i, i + cols);
             const cards = rowMembers.map((m) =>
-                renderAgentCard(m, colWidth, theme),
+                // Context bar only while dispatching (agents have real usage); a
+                // truly idle roster shows no meaningless 0%/window bar.
+                renderAgentCard(m, colWidth, theme, st.dispatchMode),
             );
             lines.push(...renderCardGrid(cards, cols, gap, colWidth));
         }

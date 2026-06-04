@@ -41,8 +41,13 @@ export function renderRichCard(opts: {
     colWidth: number;
     theme: any;
     model: string;
+    // The context-usage bar is meaningful only once an agent has run (real token
+    // usage). Idle dashboards pass false to drop it — `0.0%/<window>` on an agent
+    // that hasn't consumed any context is noise. Default true (live/done cards).
+    showContext?: boolean;
 }): string[] {
     const { agentKey, def, phases, colWidth, theme, model } = opts;
+    const showContext = opts.showContext ?? true;
     const key = agentKey.toLowerCase();
     const w = colWidth - 2;
     const truncate = (s: string, max: number) =>
@@ -129,7 +134,7 @@ export function renderRichCard(opts: {
         theme.fg(borderColor, top),
         border(" " + nameStr, 1 + nameVisible),
         border(" " + statusStr, 1 + statusVisible),
-        border(" " + ctxStr, 1 + ctxVisible),
+        ...(showContext ? [border(" " + ctxStr, 1 + ctxVisible)] : []),
         border(" " + modelStr, 1 + modelVisible),
         border(" " + descLine, 1 + descVisible),
         theme.fg(borderColor, bot),

@@ -230,11 +230,13 @@ export default function (pi: ExtensionAPI) {
     // dashboard so the whole team and the model each agent runs is visible at
     // a glance before a workflow starts.
     // Rich agent card — delegates to the shared renderer so agent-pipeline and
-    // agent-team stay identical. agent-team shows the PER-AGENT model.
+    // agent-team stay identical. agent-team shows the PER-AGENT model. The context
+    // bar is shown only when there's real usage (idle dashboards pass false).
     function renderAgentCard(
         agentKey: string,
         colWidth: number,
         theme: any,
+        showContext = true,
     ): string[] {
         return renderRichCard({
             agentKey,
@@ -243,6 +245,7 @@ export default function (pi: ExtensionAPI) {
             colWidth,
             theme,
             model: modelFor(agentKey),
+            showContext,
         });
     }
 
@@ -366,7 +369,9 @@ export default function (pi: ExtensionAPI) {
         for (let i = 0; i < members.length; i += cols) {
             const rowMembers = members.slice(i, i + cols);
             const cards = rowMembers.map((m) =>
-                renderAgentCard(m, colWidth, theme),
+                // Context bar only while dispatching (agents have real usage); a
+                // truly idle roster shows no meaningless 0%/window bar.
+                renderAgentCard(m, colWidth, theme, st.dispatchMode),
             );
             lines.push(...renderCardGrid(cards, cols, gap, colWidth));
         }
