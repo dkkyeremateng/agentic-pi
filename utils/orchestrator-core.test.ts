@@ -1487,8 +1487,8 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
         return agents;
     }
 
-    // A spec team that includes the documenter, so the optional Document phase
-    // runs (includeDoc resolves from the active team membership).
+    // A spec-shaped team that includes the documenter, so the optional Document
+    // phase runs (it's gated on the documenter being on the active team).
     const specTeamWithDoc: Partial<OrchestratorState> = {
         teams: { spec: ["planner", "critic", "documenter"] },
         activeTeamName: "spec",

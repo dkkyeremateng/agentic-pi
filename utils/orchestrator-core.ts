@@ -296,7 +296,6 @@ export async function runWorkflowCore(
     const valP = pm.validator;
     const docP = pm.documenter;
     const shipP = pm.shipper;
-    const includeDoc = !!docP;
 
     let aborted: RunResult | null;
 
@@ -322,7 +321,7 @@ export async function runWorkflowCore(
         if (aborted) return aborted;
         plan = await h.execution.runPhase(
             planP,
-            planTask(request, scoutFindings, includeDoc),
+            planTask(request, scoutFindings),
             cwd,
         );
         if (!plan.ok) return fail(s, "Planning", plan.output);

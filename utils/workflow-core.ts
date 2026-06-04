@@ -1527,31 +1527,11 @@ export function scoutTask(original: string): string {
     ].join("\n");
 }
 
-// Tell the planner how its plan gets persisted to .pi/plan.md. When a documenter
-// is part of the run we let the planner delegate the write to it (its standing
-// instructions describe how); when there is no documenter on the roster, the
-// planner must NOT dispatch one — the workflow persists the plan automatically.
-export function planPersistDirective(includeDoc: boolean): string[] {
-    return includeDoc
-        ? [
-              "A `documenter` is part of this run. After emitting your plan, delegate persisting it to `.pi/plan.md` to the documenter as described in your instructions.",
-              "",
-          ]
-        : [
-              "No documenter is part of this run — do NOT dispatch one. Just emit your plan as your final message; the workflow persists it to `.pi/plan.md` automatically.",
-              "",
-          ];
-}
-
-export function planTask(
-    original: string,
-    recon = "",
-    includeDoc = true,
-): string {
+export function planTask(original: string, recon = ""): string {
     return [
         "Produce a structured, phased implementation plan.",
+        "After producing it, write the plan VERBATIM to `.pi/plan.md` yourself with the write tool (create the .pi/ directory if needed) AND emit the full plan as your final message.",
         "",
-        ...planPersistDirective(includeDoc),
         "Request:",
         original,
         "",

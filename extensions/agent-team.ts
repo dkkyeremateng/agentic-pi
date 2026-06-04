@@ -789,6 +789,9 @@ export default function (pi: ExtensionAPI) {
                 const firstTok = rawArgs.split(/\s+/)[0] || "";
                 const namedTeam = st.teams[firstTok] ? firstTok : "";
 
+                // A team is selected per job: naming a team selects it, otherwise
+                // the picker does. The team is deactivated once the job finishes
+                // (below), so each run starts from a clean "no team" state.
                 let request: string;
                 if (namedTeam) {
                     activateTeam(namedTeam);
@@ -819,7 +822,7 @@ export default function (pi: ExtensionAPI) {
                     if (!finalRequest) return;
                 }
 
-                return runFullWorkflowCommand(
+                await runFullWorkflowCommand(
                     st,
                     host,
                     finalRequest,
@@ -827,6 +830,10 @@ export default function (pi: ExtensionAPI) {
                     publishReport,
                     maxLoops,
                 );
+                // Deactivate the team after the job so the next run re-selects and
+                // the orchestrator is unscoped again when idle.
+                st.activeTeamName = "";
+                updateWidget();
             },
         });
 
@@ -904,6 +911,9 @@ export default function (pi: ExtensionAPI) {
                     signal?.removeEventListener?.("abort", onAbort);
                     host.signal = undefined;
                 });
+                // Deactivate the team after the job (no-op if none was active).
+                st.activeTeamName = "";
+                updateWidget();
                 const truncated =
                     result.report.length > 8000
                         ? result.report.slice(0, 8000) +
@@ -1013,15 +1023,25 @@ export default function (pi: ExtensionAPI) {
             // scratch instead of carrying over the previous workflow's state.
             st.freshDispatchSession = true;
 
-            // Build a dynamic catalog of all loaded agents
-            const agentCatalog = Array.from(st.agents.values())
+            // The agents the orchestrator may dispatch. Only while a team-scoped
+            // job is actually running do we restrict it to that team's roster;
+            // otherwise (idle, or no team active) the orchestrator may freely pick
+            // the right agent for the work from every loaded agent.
+            const dispatchableDefs =
+                st.activeTeamName && st.running
+                    ? (st.teams[st.activeTeamName] || [])
+                          .filter((m) => st.agents.has(m.toLowerCase()))
+                          .map((m) => st.agents.get(m.toLowerCase())!)
+                    : Array.from(st.agents.values());
+
+            const agentCatalog = dispatchableDefs
                 .map(
                     (def) =>
                         `### ${displayName(def.name)}\n**Dispatch as:** \`${def.name}\`\n${def.description}\n**Tools:** ${def.tools}`,
                 )
                 .join("\n\n");
 
-            const teamMembers = Array.from(st.agents.values())
+            const teamMembers = dispatchableDefs
                 .map((d) => displayName(d.name))
                 .join(", ");
 
@@ -1059,7 +1079,10 @@ export default function (pi: ExtensionAPI) {
         if (Object.keys(st.teams).length === 0) {
             st.teams = { all: Array.from(st.agents.keys()) };
         }
-        activateTeam(Object.keys(st.teams)[0] ?? "");
+        // No team is active on startup — the user must pick one (the picker, or
+        // naming a team as the first token of /agent-team). The idle dashboard
+        // still shows every agent across all teams.
+        st.activeTeamName = "";
         st.dispatchMode = false;
         st.phases = [];
 
