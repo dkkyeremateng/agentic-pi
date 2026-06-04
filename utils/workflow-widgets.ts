@@ -4,7 +4,13 @@
 // ABOUTME: (card styling, model tables, dispatch badges) remain in each extension.
 
 import type { PhaseState } from "./workflow-core";
-import { displayName, statusBadge } from "./workflow-core";
+import {
+    displayName,
+    statusBadge,
+    statusMeta,
+    agentPhaseStatus,
+    formatContextUsage,
+} from "./workflow-core";
 import { secs } from "./workflow-utils";
 
 // ── OSC 8 hyperlinks ──────────────────────────────
@@ -18,6 +24,116 @@ export function osc8(uri: string, text: string): string {
 // A clickable file:// link to an absolute path, displayed as `display`.
 export function fileLink(absPath: string, display: string): string {
     return osc8(`file://${absPath}`, display);
+}
+
+// ── Rich agent card (single source of truth) ──────
+
+// The 7-line agent card used by BOTH agent-pipeline and agent-team, for both the
+// idle dashboard and the live pipeline view: name · status · context-usage bar ·
+// model · description. The caller supplies the resolved `model` to display
+// (agent-team: per-agent; agent-pipeline: the one session model) and the agent's
+// `def` (for the description and frontmatter context_window fallback). Keeping this
+// in one place stops the two extensions' cards from drifting.
+export function renderRichCard(opts: {
+    agentKey: string;
+    def: { description?: string; contextWindow?: number } | undefined;
+    phases: PhaseState[];
+    colWidth: number;
+    theme: any;
+    model: string;
+}): string[] {
+    const { agentKey, def, phases, colWidth, theme, model } = opts;
+    const key = agentKey.toLowerCase();
+    const w = colWidth - 2;
+    const truncate = (s: string, max: number) =>
+        s.length > max ? s.slice(0, Math.max(0, max - 1)) + "…" : s;
+
+    const { status, elapsed, toolCount } = agentPhaseStatus(phases, agentKey);
+
+    // "Selected" = this agent has a phase (declared/dispatched). Selected cards get
+    // a status-colored border and a ▸ marker; a selected-but-pending one is "queued".
+    const selected = phases.some((p) => p.agent === key);
+    const queued = selected && status === "pending";
+
+    let { icon, color } = statusMeta(status);
+    let word = status === "pending" ? "idle" : status;
+    if (queued) {
+        icon = "◌";
+        color = "accent";
+        word = "queued";
+    }
+
+    const borderColor = selected ? color : "dim";
+    const marker = selected ? theme.fg(color, "▸ ") : "";
+    const markerVisible = selected ? 2 : 0;
+
+    const name = displayName(agentKey);
+    const nameStr =
+        marker + theme.fg("accent", theme.bold(truncate(name, w - markerVisible)));
+    const nameVisible = markerVisible + Math.min(name.length, w - markerVisible);
+
+    const timeStr = elapsed > 0 ? ` ${secs(elapsed)}` : "";
+    const toolNote =
+        status === "running" && toolCount > 0
+            ? ` · ${toolCount} tool${toolCount === 1 ? "" : "s"}`
+            : "";
+    const statusRaw = `${icon} ${word}${timeStr}${toolNote}`;
+    const statusStr = theme.fg(color, truncate(statusRaw, w));
+    const statusVisible = Math.min(statusRaw.length, w);
+
+    // The phase whose live state this card reflects (running, else most recent) —
+    // drives the context bar, token count, and active model.
+    const own = phases.filter((p) => p.agent === key);
+    const livePhase =
+        own.find((p) => p.status === "running") ?? own[own.length - 1];
+
+    const ctxWindow =
+        livePhase?.tokens?.contextWindow || def?.contextWindow || 0;
+    const ctxTotalTok = livePhase?.tokens
+        ? (livePhase.tokens.input || 0) + (livePhase.tokens.output || 0)
+        : undefined;
+    const { bar: ctxBar, display: ctxDisplay } = formatContextUsage({
+        contextPct: livePhase?.contextPct ?? 0,
+        tokenCount: ctxTotalTok,
+        contextWindow: ctxWindow || undefined,
+        barLength: 5,
+    });
+    const ctxRaw = `[${ctxBar}] ${ctxDisplay}`;
+    const ctxStr = theme.fg("dim", truncate(ctxRaw, w));
+    const ctxVisible = Math.min(ctxRaw.length, w);
+
+    // The model the agent actually runs on; after a fallback the ◆ becomes ⚠.
+    const fellBack = !!livePhase?.modelFallback;
+    const effectiveModel = livePhase?.activeModel || model;
+    const modelRaw = `${fellBack ? "⚠" : "◆"} ${effectiveModel}`;
+    const modelStr = theme.fg(
+        fellBack ? "accent" : "muted",
+        truncate(modelRaw, w),
+    );
+    const modelVisible = Math.min(modelRaw.length, w);
+
+    const descRaw = (def?.description || "—").split("—")[0].trim() || "—";
+    const descText = truncate(descRaw, w - 1);
+    const descLine = theme.fg("dim", descText);
+    const descVisible = Math.min(descText.length, w - 1);
+
+    const top = "┌" + "─".repeat(w) + "┐";
+    const bot = "└" + "─".repeat(w) + "┘";
+    const border = (content: string, visLen: number) =>
+        theme.fg(borderColor, "│") +
+        content +
+        " ".repeat(Math.max(0, w - visLen)) +
+        theme.fg(borderColor, "│");
+
+    return [
+        theme.fg(borderColor, top),
+        border(" " + nameStr, 1 + nameVisible),
+        border(" " + statusStr, 1 + statusVisible),
+        border(" " + ctxStr, 1 + ctxVisible),
+        border(" " + modelStr, 1 + modelVisible),
+        border(" " + descLine, 1 + descVisible),
+        theme.fg(borderColor, bot),
+    ];
 }
 
 // ── Grid layout ──────────────────────────────────

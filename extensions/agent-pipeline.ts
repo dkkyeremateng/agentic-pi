@@ -47,6 +47,7 @@ import {
     renderPipelineTitle,
     renderPhaseCardsWithArrows,
     renderEmptyAgentMessage,
+    renderRichCard,
 } from "../utils/workflow-widgets";
 import {
     REQUIRED_AGENTS,
@@ -64,7 +65,6 @@ import {
     statusMeta,
     statusBadge,
     agentPhaseStatus,
-    renderCard,
     appendLiveLog as appendLiveLogCore,
     renderWorkflowFooter,
     teamsBlock as teamsBlockCore,
@@ -225,61 +225,22 @@ export default function (pi: ExtensionAPI) {
     // One agent card: name · status · model · description. Used in the idle
     // dashboard so the whole team and the model each agent runs is visible at
     // a glance before a workflow starts.
+    // Rich agent card — delegates to the shared renderer so agent-pipeline and
+    // agent-team stay identical. agent-pipeline shows the ONE session model on
+    // every card (modelFor ignores the key here).
     function renderAgentCard(
         agentKey: string,
         colWidth: number,
         theme: any,
     ): string[] {
-        const w = colWidth - 2;
-        const truncate = (s: string, max: number) =>
-            s.length > max ? s.slice(0, Math.max(0, max - 1)) + "…" : s;
-
-        const def = st.agents.get(agentKey.toLowerCase());
-        const { status, elapsed, toolCount } = agentPhaseStatus(
-            st.phases,
+        return renderRichCard({
             agentKey,
-        );
-        const { icon, color } = statusMeta(status);
-
-        const name = displayName(agentKey);
-        const nameStr = theme.fg("accent", theme.bold(truncate(name, w)));
-        const nameVisible = Math.min(name.length, w);
-
-        const word = status === "pending" ? "idle" : status;
-        const timeStr = elapsed > 0 ? ` ${secs(elapsed)}` : "";
-        const toolNote =
-            status === "running" && toolCount > 0
-                ? ` · ${toolCount} tool${toolCount === 1 ? "" : "s"}`
-                : "";
-        const statusRaw = `${icon} ${word}${timeStr}${toolNote}`;
-        const statusStr = theme.fg(color, truncate(statusRaw, w));
-        const statusVisible = Math.min(statusRaw.length, w);
-
-        // No per-agent model line: every agent runs on the one session model,
-        // shown once in the grid header instead.
-
-        // Descriptions follow a "Short summary — details" convention; show just
-        // the summary (before the em dash) so it fits the card.
-        const descRaw = (def?.description || "—").split("—")[0].trim() || "—";
-        const descText = truncate(descRaw, w - 1);
-        const descLine = theme.fg("dim", descText);
-        const descVisible = Math.min(descText.length, w - 1);
-
-        const top = "┌" + "─".repeat(w) + "┐";
-        const bot = "└" + "─".repeat(w) + "┘";
-        const border = (content: string, visLen: number) =>
-            theme.fg("dim", "│") +
-            content +
-            " ".repeat(Math.max(0, w - visLen)) +
-            theme.fg("dim", "│");
-
-        return [
-            theme.fg("dim", top),
-            border(" " + nameStr, 1 + nameVisible),
-            border(" " + statusStr, 1 + statusVisible),
-            border(" " + descLine, 1 + descVisible),
-            theme.fg("dim", bot),
-        ];
+            def: st.agents.get(agentKey.toLowerCase()),
+            phases: st.phases,
+            colWidth,
+            theme,
+            model: modelFor(agentKey),
+        });
     }
 
     // The idle dashboard: a grid of ALL agents across all teams in teams.yaml.
@@ -363,20 +324,11 @@ export default function (pi: ExtensionAPI) {
                     );
                     const arrowRow = 2; // status row of the card
 
-                    // Show the context-usage bar on the RUNNING card only — it
-                    // updates live as the sub-agent works (the widget re-renders
-                    // via setWidget on every spawn event + the 1s timer, unlike the
-                    // footer). Pass the agent's frontmatter context_window as a
-                    // fallback so the percentage still shows when the provider does
-                    // not report a window. Idle/done cards stay compact.
+                    // Same rich card as the idle dashboard and agent-team: each
+                    // shows its model, a live context-usage bar with token count,
+                    // and its description (single source of truth = renderRichCard).
                     const cards = phases.map((p) =>
-                        renderCard(
-                            p,
-                            colWidth,
-                            theme,
-                            p.status === "running",
-                            st.agents.get(p.agent.toLowerCase())?.contextWindow,
-                        ),
+                        renderAgentCard(p.agent, colWidth, theme),
                     );
                     const lines: string[] = [];
 

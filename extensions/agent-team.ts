@@ -51,6 +51,7 @@ import {
     renderPipelineTitle,
     renderPhaseCardsWithArrows,
     renderEmptyAgentMessage,
+    renderRichCard,
 } from "../utils/workflow-widgets";
 import {
     REQUIRED_AGENTS,
@@ -228,124 +229,21 @@ export default function (pi: ExtensionAPI) {
     // One agent card: name · status · model · description. Used in the idle
     // dashboard so the whole team and the model each agent runs is visible at
     // a glance before a workflow starts.
+    // Rich agent card — delegates to the shared renderer so agent-pipeline and
+    // agent-team stay identical. agent-team shows the PER-AGENT model.
     function renderAgentCard(
         agentKey: string,
         colWidth: number,
         theme: any,
     ): string[] {
-        const w = colWidth - 2;
-        const truncate = (s: string, max: number) =>
-            s.length > max ? s.slice(0, Math.max(0, max - 1)) + "…" : s;
-
-        const def = st.agents.get(agentKey.toLowerCase());
-        const { status, elapsed, toolCount } = agentPhaseStatus(
-            st.phases,
+        return renderRichCard({
             agentKey,
-        );
-
-        // "Selected" = the primary agent has chosen this agent for the current
-        // work (it has a phase — either declared up front via select_agents or
-        // dispatched). A selected agent that hasn't run yet is "queued"; selected
-        // cards get a status-colored border and a ▸ marker so the chosen agents
-        // stand out from the idle roster.
-        const selected = st.phases.some(
-            (p) => p.agent === agentKey.toLowerCase(),
-        );
-        const queued = selected && status === "pending";
-
-        // Resolve the card's icon/colour/word. Queued is distinct from idle so the
-        // determined plan is visible before any agent runs.
-        let { icon, color } = statusMeta(status);
-        let word = status === "pending" ? "idle" : status;
-        if (queued) {
-            icon = "◌";
-            color = "accent";
-            word = "queued";
-        }
-
-        const borderColor = selected ? color : "dim";
-        const marker = selected ? theme.fg(color, "▸ ") : "";
-        const markerVisible = selected ? 2 : 0;
-
-        const name = displayName(agentKey);
-        const nameStr =
-            marker +
-            theme.fg("accent", theme.bold(truncate(name, w - markerVisible)));
-        const nameVisible =
-            markerVisible + Math.min(name.length, w - markerVisible);
-
-        const timeStr = elapsed > 0 ? ` ${secs(elapsed)}` : "";
-        const toolNote =
-            status === "running" && toolCount > 0
-                ? ` · ${toolCount} tool${toolCount === 1 ? "" : "s"}`
-                : "";
-        const statusRaw = `${icon} ${word}${timeStr}${toolNote}`;
-        const statusStr = theme.fg(color, truncate(statusRaw, w));
-        const statusVisible = Math.min(statusRaw.length, w);
-
-        // The phase whose live state this card reflects: the running one, else the
-        // agent's most recent. Drives both the context bar and the active model.
-        const own = st.phases.filter((p) => p.agent === agentKey.toLowerCase());
-        const livePhase =
-            own.find((p) => p.status === "running") ?? own[own.length - 1];
-
-        // Context-usage bar, shown on every card.
-        const ctxPct = livePhase?.contextPct ?? 0;
-        // Use live context window from the API response if available, otherwise
-        // fall back to the agent's declared context_window in its .md frontmatter.
-        const ctxWindow =
-            livePhase?.tokens?.contextWindow || def?.contextWindow || 0;
-        const ctxTotalTok = livePhase?.tokens
-            ? (livePhase.tokens.input || 0) + (livePhase.tokens.output || 0)
-            : undefined;
-        const { bar: ctxBar, display: ctxDisplay } = formatContextUsage({
-            contextPct: ctxPct,
-            tokenCount: ctxTotalTok,
-            contextWindow: ctxWindow || undefined,
-            barLength: 5,
+            def: st.agents.get(agentKey.toLowerCase()),
+            phases: st.phases,
+            colWidth,
+            theme,
+            model: modelFor(agentKey),
         });
-
-        const ctxRaw = `[${ctxBar}] ${ctxDisplay}`;
-        const ctxStr = theme.fg("dim", truncate(ctxRaw, w));
-        const ctxVisible = Math.min(ctxRaw.length, w);
-
-        // Show the model the agent is actually running on. After a model fallback
-        // this is the fallback model, not the originally-configured one; the bullet
-        // switches from ◆ to ⚠ (width-neutral) and the text is highlighted so the
-        // swap is visible.
-        const fellBack = !!livePhase?.modelFallback;
-        const effectiveModel = livePhase?.activeModel || modelFor(agentKey);
-        const modelRaw = `${fellBack ? "⚠" : "◆"} ${effectiveModel}`;
-        const modelStr = theme.fg(
-            fellBack ? "accent" : "muted",
-            truncate(modelRaw, w),
-        );
-        const modelVisible = Math.min(modelRaw.length, w);
-
-        // Agent descriptions follow a "Short summary — details" convention;
-        // show just the summary (before the em dash) so it fits the card.
-        const descRaw = (def?.description || "—").split("—")[0].trim() || "—";
-        const descText = truncate(descRaw, w - 1);
-        const descLine = theme.fg("dim", descText);
-        const descVisible = Math.min(descText.length, w - 1);
-
-        const top = "┌" + "─".repeat(w) + "┐";
-        const bot = "└" + "─".repeat(w) + "┘";
-        const border = (content: string, visLen: number) =>
-            theme.fg(borderColor, "│") +
-            content +
-            " ".repeat(Math.max(0, w - visLen)) +
-            theme.fg(borderColor, "│");
-
-        return [
-            theme.fg(borderColor, top),
-            border(" " + nameStr, 1 + nameVisible),
-            border(" " + statusStr, 1 + statusVisible),
-            border(" " + ctxStr, 1 + ctxVisible),
-            border(" " + modelStr, 1 + modelVisible),
-            border(" " + descLine, 1 + descVisible),
-            theme.fg(borderColor, bot),
-        ];
     }
 
     // The idle dashboard: a grid of ALL agents across all teams in teams.yaml.
