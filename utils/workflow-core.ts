@@ -425,6 +425,9 @@ export function renderWorkflowFooter(opts: {
     // Frontmatter context_window of the single running sub-agent (if any), used as
     // a fallback for the percentage when the provider doesn't report a window.
     activeContextWindow?: number;
+    // When true (agent-pipeline: sub-agents share the primary's model/context), add
+    // the running sub-agent's tokens to the primary's for one combined total.
+    combineActive?: boolean;
     visibleWidth: (s: string) => number;
     truncateToWidth: (s: string, w: number) => string;
 }): string[] {
@@ -443,13 +446,13 @@ export function renderWorkflowFooter(opts: {
         runElapsedMs,
         contextUsage,
         activeContextWindow,
+        combineActive,
         visibleWidth,
         truncateToWidth,
     } = opts;
 
-    // Context usage: show a sub-agent's context only when exactly ONE is running —
-    // a single bar can't represent several parallel agents, so fall back to the
-    // primary session's context when more than one runs at once.
+    // Context usage. A single running sub-agent is the "active" one (a single bar
+    // can't represent several parallel agents).
     const runningPhases = phases.filter((p) => p.status === "running");
     const activePhase =
         runningPhases.length === 1 ? runningPhases[0] : undefined;
@@ -460,37 +463,53 @@ export function renderWorkflowFooter(opts: {
     const activeTokens = activePhase?.tokens
         ? (activePhase.tokens.input || 0) + (activePhase.tokens.output || 0)
         : 0;
-    if (activePhase && (activePhase.contextPct > 0 || activeTokens > 0)) {
-        // A single sub-agent is running — show ITS live context usage + token
-        // count (for agent-pipeline this is the shared/primary context). Use the
-        // provider-reported window, else the agent's frontmatter window so the
-        // percentage still renders.
+
+    // Primary (orchestrator) session usage — the base the footer reports.
+    let usage: any;
+    try {
+        usage = contextUsage();
+    } catch {}
+    const primaryTokens =
+        usage && typeof usage.tokens === "number" && usage.tokens > 0
+            ? usage.tokens
+            : 0;
+    const primaryPct =
+        usage &&
+        typeof usage.percent === "number" &&
+        !Number.isNaN(usage.percent)
+            ? usage.percent
+            : null;
+    const primaryWindow =
+        usage && typeof usage.contextWindow === "number"
+            ? usage.contextWindow
+            : usage && typeof usage.context_window === "number"
+              ? usage.context_window
+              : undefined;
+
+    if (combineActive && activePhase) {
+        // agent-pipeline: sub-agents run on the primary's model/context, so the
+        // running sub-agent's tokens ADD to the primary's — one combined total.
+        const total = primaryTokens + activeTokens;
+        contextWindow =
+            primaryWindow ||
+            activePhase.tokens?.contextWindow ||
+            activeContextWindow ||
+            undefined;
+        tokenCount = total || undefined;
+        // Let formatContextUsage recompute the % from total/window when both are
+        // known; otherwise keep the primary's reported percent.
+        contextPct = contextWindow && total ? null : primaryPct;
+    } else if (activePhase && (activePhase.contextPct > 0 || activeTokens > 0)) {
+        // agent-team: the running sub-agent has its OWN session — show its context.
         contextPct = activePhase.contextPct > 0 ? activePhase.contextPct : null;
         tokenCount = activeTokens || undefined;
         contextWindow =
             activePhase.tokens?.contextWindow || activeContextWindow || undefined;
     } else {
-        // No active sub-agent - show primary session's context
-        let usage: any;
-        try {
-            usage = contextUsage();
-        } catch {}
-        contextPct =
-            usage &&
-            typeof usage.percent === "number" &&
-            !Number.isNaN(usage.percent)
-                ? usage.percent
-                : null;
-        tokenCount =
-            usage && typeof usage.tokens === "number" && usage.tokens > 0
-                ? usage.tokens
-                : undefined;
-        contextWindow =
-            usage && typeof usage.contextWindow === "number"
-                ? usage.contextWindow
-                : usage && typeof usage.context_window === "number"
-                  ? usage.context_window
-                  : undefined;
+        // No active sub-agent — the primary session's context.
+        contextPct = primaryPct;
+        tokenCount = primaryTokens || undefined;
+        contextWindow = primaryWindow;
     }
 
     const { bar, display: pctStr } = formatContextUsage({

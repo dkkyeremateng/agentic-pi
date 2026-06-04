@@ -960,6 +960,9 @@ export default function (pi: ExtensionAPI) {
                     runElapsedMs: st.runElapsedMs,
                     contextUsage: () => ctx.getContextUsage?.(),
                     activeContextWindow: activeSubagentWindow(),
+                    // Sub-agents run on the primary's model/context — fold their
+                    // usage into the primary's total on the footer.
+                    combineActive: true,
                     visibleWidth,
                     truncateToWidth,
                 });
