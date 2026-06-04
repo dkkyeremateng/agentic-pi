@@ -62,9 +62,6 @@ import {
     type PhaseState,
     loadDotEnv,
     displayName,
-    statusMeta,
-    statusBadge,
-    agentPhaseStatus,
     appendLiveLog as appendLiveLogCore,
     renderWorkflowFooter,
     teamsBlock as teamsBlockCore,
@@ -209,7 +206,8 @@ export default function (pi: ExtensionAPI) {
     function activeSubagentWindow(): number | undefined {
         const r = st.phases.filter((p) => p.status === "running");
         return r.length === 1
-            ? st.agents.get(r[0].agent.toLowerCase())?.contextWindow || undefined
+            ? st.agents.get(r[0].agent.toLowerCase())?.contextWindow ||
+                  undefined
             : undefined;
     }
     // Members of the active team that actually resolve to a loaded agent .md.
@@ -551,10 +549,7 @@ export default function (pi: ExtensionAPI) {
                 // roster member must resolve to a loaded agent). Here we only need
                 // at least one agent to exist at all.
                 if (st.agents.size === 0) {
-                    ctx.ui.notify(
-                        "No agents found in .pi/agents/.",
-                        "error",
-                    );
+                    ctx.ui.notify("No agents found in .pi/agents/.", "error");
                     return;
                 }
 
@@ -613,7 +608,11 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 pi.setSessionName?.(
-                    sessionLabel("agent-pipeline", st.activeTeamName, finalRequest),
+                    sessionLabel(
+                        "agent-pipeline",
+                        st.activeTeamName,
+                        finalRequest,
+                    ),
                 );
                 await runFullWorkflowCommand(
                     st,
@@ -831,7 +830,9 @@ export default function (pi: ExtensionAPI) {
             // Skills the orchestrator can use directly (files-only: any SKILL.md).
             const skills = loadSkills(_ctx.cwd);
             const skillCatalog = skills.length
-                ? skills.map((s) => `- **${s.name}** — ${s.description}`).join("\n")
+                ? skills
+                      .map((s) => `- **${s.name}** — ${s.description}`)
+                      .join("\n")
                 : "(none)";
 
             // APPEND the orchestration layer to Pi's base system prompt instead of
@@ -936,37 +937,37 @@ export default function (pi: ExtensionAPI) {
         // skip the chrome entirely in print/json modes).
         if (ctx.hasUI)
             ctx.ui.setFooter?.((_tui: any, theme: any, _data: any) => ({
-            dispose: () => {},
-            invalidate() {},
-            render(width: number): string[] {
-                // Full `provider/model` of the session (primary) agent.
-                const pm = ctx.model;
-                const model =
-                    pm?.provider && pm?.id
-                        ? `${pm.provider}/${pm.id}`
-                        : pm?.id || WORKER_MODEL || "default";
-                return renderWorkflowFooter({
-                    width,
-                    theme,
-                    selfName: "agent-pipeline",
-                    model,
-                    running: st.running,
-                    lastStatus: st.lastStatus,
-                    iteration: st.iteration,
-                    maxLoopsRef: st.maxLoopsRef,
-                    dispatchMode: st.dispatchMode,
-                    phases: st.phases,
-                    dispatchElapsedMs: st.dispatchElapsedMs,
-                    runElapsedMs: st.runElapsedMs,
-                    contextUsage: () => ctx.getContextUsage?.(),
-                    activeContextWindow: activeSubagentWindow(),
-                    // Sub-agents run on the primary's model/context — fold their
-                    // usage into the primary's total on the footer.
-                    combineActive: true,
-                    visibleWidth,
-                    truncateToWidth,
-                });
-            },
-        }));
+                dispose: () => {},
+                invalidate() {},
+                render(width: number): string[] {
+                    // Full `provider/model` of the session (primary) agent.
+                    const pm = ctx.model;
+                    const model =
+                        pm?.provider && pm?.id
+                            ? `${pm.provider}/${pm.id}`
+                            : pm?.id || WORKER_MODEL || "default";
+                    return renderWorkflowFooter({
+                        width,
+                        theme,
+                        selfName: "agent-pipeline",
+                        model,
+                        running: st.running,
+                        lastStatus: st.lastStatus,
+                        iteration: st.iteration,
+                        maxLoopsRef: st.maxLoopsRef,
+                        dispatchMode: st.dispatchMode,
+                        phases: st.phases,
+                        dispatchElapsedMs: st.dispatchElapsedMs,
+                        runElapsedMs: st.runElapsedMs,
+                        contextUsage: () => ctx.getContextUsage?.(),
+                        activeContextWindow: activeSubagentWindow(),
+                        // Sub-agents run on the primary's model/context — fold their
+                        // usage into the primary's total on the footer.
+                        combineActive: true,
+                        visibleWidth,
+                        truncateToWidth,
+                    });
+                },
+            }));
     });
 }

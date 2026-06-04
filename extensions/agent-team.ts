@@ -48,7 +48,6 @@ import { secs } from "../utils/workflow-utils";
 import {
     calculateGridLayout,
     renderCardGrid,
-    renderPipelineTitle,
     renderPhaseCardsWithArrows,
     renderEmptyAgentMessage,
     renderRichCard,
@@ -70,10 +69,7 @@ import {
     type PhaseState,
     loadDotEnv,
     displayName,
-    statusMeta,
     statusBadge,
-    agentPhaseStatus,
-    formatContextUsage,
     appendLiveLog as appendLiveLogCore,
     renderWorkflowFooter,
     teamsBlock as teamsBlockCore,
@@ -214,7 +210,8 @@ export default function (pi: ExtensionAPI) {
     function activeSubagentWindow(): number | undefined {
         const r = st.phases.filter((p) => p.status === "running");
         return r.length === 1
-            ? st.agents.get(r[0].agent.toLowerCase())?.contextWindow || undefined
+            ? st.agents.get(r[0].agent.toLowerCase())?.contextWindow ||
+                  undefined
             : undefined;
     }
     // Members of the active team that actually resolve to a loaded agent .md.
@@ -324,7 +321,10 @@ export default function (pi: ExtensionAPI) {
                 " " +
                 theme.fg("accent", theme.bold("agent-team")) +
                 theme.fg("dim", "  ·  ") +
-                theme.fg("dim", allOff ? "off-team dispatch: " : "cross-team dispatch: ") +
+                theme.fg(
+                    "dim",
+                    allOff ? "off-team dispatch: " : "cross-team dispatch: ",
+                ) +
                 theme.fg("accent", names) +
                 badge;
             const offNames = offActive.map((k) => displayName(k)).join(", ");
@@ -649,10 +649,7 @@ export default function (pi: ExtensionAPI) {
                 // roster member must resolve to a loaded agent). Here we only need
                 // at least one agent to exist at all.
                 if (st.agents.size === 0) {
-                    ctx.ui.notify(
-                        "No agents found in .pi/agents/.",
-                        "error",
-                    );
+                    ctx.ui.notify("No agents found in .pi/agents/.", "error");
                     return;
                 }
 
@@ -936,7 +933,9 @@ export default function (pi: ExtensionAPI) {
             // Skills the orchestrator can use directly (files-only: any SKILL.md).
             const skills = loadSkills(_ctx.cwd);
             const skillCatalog = skills.length
-                ? skills.map((s) => `- **${s.name}** — ${s.description}`).join("\n")
+                ? skills
+                      .map((s) => `- **${s.name}** — ${s.description}`)
+                      .join("\n")
                 : "(none)";
 
             // APPEND the orchestration layer to Pi's base system prompt instead of
@@ -1044,35 +1043,35 @@ export default function (pi: ExtensionAPI) {
         // only — skip the chrome in print/json modes.
         if (ctx.hasUI)
             ctx.ui.setFooter?.((_tui: any, theme: any, _data: any) => ({
-            dispose: () => {},
-            invalidate() {},
-            render(width: number): string[] {
-                // Primary (orchestrator) agent's model — the full `provider/model`
-                // pi was loaded with.
-                const pm = widgetCtx?.model || ctx.model;
-                const primaryFull =
-                    pm?.provider && pm?.id
-                        ? `${pm.provider}/${pm.id}`
-                        : pm?.id || "default";
-                return renderWorkflowFooter({
-                    width,
-                    theme,
-                    selfName: "agent-team",
-                    model: primaryFull,
-                    running: st.running,
-                    lastStatus: st.lastStatus,
-                    iteration: st.iteration,
-                    maxLoopsRef: st.maxLoopsRef,
-                    dispatchMode: st.dispatchMode,
-                    phases: st.phases,
-                    dispatchElapsedMs: st.dispatchElapsedMs,
-                    runElapsedMs: st.runElapsedMs,
-                    contextUsage: () => ctx.getContextUsage?.(),
-                    activeContextWindow: activeSubagentWindow(),
-                    visibleWidth,
-                    truncateToWidth,
-                });
-            },
-        }));
+                dispose: () => {},
+                invalidate() {},
+                render(width: number): string[] {
+                    // Primary (orchestrator) agent's model — the full `provider/model`
+                    // pi was loaded with.
+                    const pm = widgetCtx?.model || ctx.model;
+                    const primaryFull =
+                        pm?.provider && pm?.id
+                            ? `${pm.provider}/${pm.id}`
+                            : pm?.id || "default";
+                    return renderWorkflowFooter({
+                        width,
+                        theme,
+                        selfName: "agent-team",
+                        model: primaryFull,
+                        running: st.running,
+                        lastStatus: st.lastStatus,
+                        iteration: st.iteration,
+                        maxLoopsRef: st.maxLoopsRef,
+                        dispatchMode: st.dispatchMode,
+                        phases: st.phases,
+                        dispatchElapsedMs: st.dispatchElapsedMs,
+                        runElapsedMs: st.runElapsedMs,
+                        contextUsage: () => ctx.getContextUsage?.(),
+                        activeContextWindow: activeSubagentWindow(),
+                        visibleWidth,
+                        truncateToWidth,
+                    });
+                },
+            }));
     });
 }
