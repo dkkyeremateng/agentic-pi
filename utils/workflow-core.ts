@@ -451,18 +451,11 @@ export function renderWorkflowFooter(opts: {
         truncateToWidth,
     } = opts;
 
-    // Context usage. A single running sub-agent is the "active" one (a single bar
-    // can't represent several parallel agents).
+    // Context usage.
     const runningPhases = phases.filter((p) => p.status === "running");
-    const activePhase =
-        runningPhases.length === 1 ? runningPhases[0] : undefined;
     let contextPct: number | null;
     let tokenCount: number | undefined;
     let contextWindow: number | undefined;
-
-    const activeTokens = activePhase?.tokens
-        ? (activePhase.tokens.input || 0) + (activePhase.tokens.output || 0)
-        : 0;
 
     // Largest sub-agent usage seen this run (across ALL phases, not just the one
     // running). With a shared session the latest phase carries the full
@@ -512,14 +505,10 @@ export function renderWorkflowFooter(opts: {
         // Let formatContextUsage recompute the % from total/window when both are
         // known; otherwise keep the primary's reported percent.
         contextPct = contextWindow && total ? null : primaryPct;
-    } else if (activePhase && (activePhase.contextPct > 0 || activeTokens > 0)) {
-        // agent-team: the running sub-agent has its OWN session — show its context.
-        contextPct = activePhase.contextPct > 0 ? activePhase.contextPct : null;
-        tokenCount = activeTokens || undefined;
-        contextWindow =
-            activePhase.tokens?.contextWindow || activeContextWindow || undefined;
     } else {
-        // No active sub-agent — the primary session's context.
+        // agent-team: the footer shows the PRIMARY (orchestrator) session's
+        // context. Each sub-agent runs on its own per-agent model/session and shows
+        // its OWN context on its card — the footer does not flip to a sub-agent.
         contextPct = primaryPct;
         tokenCount = primaryTokens || undefined;
         contextWindow = primaryWindow;
