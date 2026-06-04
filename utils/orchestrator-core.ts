@@ -46,6 +46,7 @@ import {
 } from "./workflow-utils";
 import { writeFileSync, mkdirSync, existsSync, rmSync } from "fs";
 import { join, dirname } from "path";
+import { fileLink } from "./workflow-widgets";
 
 // The mutable run/session state shared between the orchestration here and the
 // extension's widget/footer/hooks. Created by the extension; mutated by both.
@@ -181,8 +182,14 @@ export async function runFullWorkflowCommand(
                 result.status === "failed-after-retries"
               ? "error"
               : "warning";
+    // Clickable link to the on-disk report (degrades to plain text where OSC 8
+    // isn't supported).
+    const reportLink = fileLink(
+        join(ctx.cwd, "workflow-report.md"),
+        "workflow-report.md",
+    );
     ctx.ui.notify(
-        `Workflow ${result.status} in ${secs(s.runElapsedMs)}. Report is shown below.`,
+        `Workflow ${result.status} in ${secs(s.runElapsedMs)}. Report: ${reportLink} (also shown below).`,
         level as any,
     );
     if (s.totalDroppedLines > 0) {

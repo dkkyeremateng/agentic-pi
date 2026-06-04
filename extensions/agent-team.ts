@@ -82,6 +82,7 @@ import {
     loadAgents as loadAgentsCore,
     loadTeams as loadTeamsCore,
     loadSkills,
+    sessionLabel,
     loadPromptTemplate,
     renderTemplate,
     allTeamAgents,
@@ -493,7 +494,7 @@ export default function (pi: ExtensionAPI) {
         );
 
     function updateWidget() {
-        if (!widgetCtx) return;
+        if (!widgetCtx || !widgetCtx.hasUI) return; // no chrome without a UI
         widgetCtx.ui.setWidget("agent-team", (_tui: any, theme: any) => {
             const text = new Text("", 0, 1);
             return {
@@ -700,6 +701,29 @@ export default function (pi: ExtensionAPI) {
     // both auto-load you don't see /agent-pipeline and /agent-team at once.
     const active = isActiveWorkflow();
 
+    // CLI flags (active extension only, so they register once). They surface the
+    // most common env knobs at launch: `--max-loops N` and `--confine-cwd`.
+    if (active) {
+        pi.registerFlag?.("max-loops", {
+            description:
+                "Default implement/validate retries for workflow runs (overrides DEFAULT_MAX_LOOPS)",
+            type: "string",
+        });
+        pi.registerFlag?.("confine-cwd", {
+            description:
+                "Confine sub-agents' file tools to the working directory (sets PI_CONFINE_CWD)",
+            type: "boolean",
+        });
+    }
+
+    // A startup `--confine-cwd` flag is equivalent to PI_CONFINE_CWD=1; set the env
+    // early so subagentExtArgs picks it up when spawning sub-agents.
+    if (pi.getFlag?.("confine-cwd")) process.env.PI_CONFINE_CWD = "1";
+
+    // `--max-loops N` sets the default retry limit (inline `loops=N` still wins).
+    const flagMaxLoops = parseInt(String(pi.getFlag?.("max-loops") ?? ""), 10);
+    const defaultMaxLoops = flagMaxLoops > 0 ? flagMaxLoops : DEFAULT_MAX_LOOPS;
+
     if (active)
         pi.registerCommand("agent-team", {
             description:
@@ -729,7 +753,7 @@ export default function (pi: ExtensionAPI) {
                 let rawArgs = (args || "").trim();
 
                 // Optional `loops=N` token (anywhere) overrides the retry limit.
-                let maxLoops = DEFAULT_MAX_LOOPS;
+                let maxLoops = defaultMaxLoops;
                 const loopsMatch = rawArgs.match(
                     /(?:^|\s)loops=(\d+)(?=\s|$)/i,
                 );
@@ -780,6 +804,9 @@ export default function (pi: ExtensionAPI) {
                     if (!finalRequest) return;
                 }
 
+                pi.setSessionName?.(
+                    sessionLabel("agent-team", st.activeTeamName, finalRequest),
+                );
                 await runFullWorkflowCommand(
                     st,
                     host,
@@ -859,11 +886,14 @@ export default function (pi: ExtensionAPI) {
                 signal?.addEventListener?.("abort", onAbort);
                 // Pass the abort signal to the orchestrator so it stops between phases
                 host.signal = signal ?? undefined;
+                pi.setSessionName?.(
+                    sessionLabel("agent-team", st.activeTeamName, request),
+                );
                 const result = await runWorkflowCore(
                     st,
                     host,
                     request,
-                    max_loops && max_loops > 0 ? max_loops : DEFAULT_MAX_LOOPS,
+                    max_loops && max_loops > 0 ? max_loops : defaultMaxLoops,
                     ctx,
                 ).finally(() => {
                     signal?.removeEventListener?.("abort", onAbort);
@@ -1117,8 +1147,10 @@ export default function (pi: ExtensionAPI) {
         // Footer: workflow status + the PRIMARY (orchestrator) agent's model and its
         // own context usage. The per-agent models and context bars live on the
         // dashboard cards; the footer shows only the primary session's, since that
-        // is the model running the orchestrator that pi was loaded with.
-        ctx.ui.setFooter?.((_tui: any, theme: any, _data: any) => ({
+        // is the model running the orchestrator that pi was loaded with. TUI/RPC
+        // only — skip the chrome in print/json modes.
+        if (ctx.hasUI)
+            ctx.ui.setFooter?.((_tui: any, theme: any, _data: any) => ({
             dispose: () => {},
             invalidate() {},
             render(width: number): string[] {

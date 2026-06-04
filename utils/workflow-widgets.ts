@@ -7,6 +7,19 @@ import type { PhaseState } from "./workflow-core";
 import { displayName, statusBadge } from "./workflow-core";
 import { secs } from "./workflow-utils";
 
+// ── OSC 8 hyperlinks ──────────────────────────────
+
+// Wrap `text` in an OSC 8 hyperlink so terminals that support it (pi's TUI does,
+// as of 0.78.0) render it as clickable. Terminals that don't simply show `text`.
+export function osc8(uri: string, text: string): string {
+    return `\x1b]8;;${uri}\x1b\\${text}\x1b]8;;\x1b\\`;
+}
+
+// A clickable file:// link to an absolute path, displayed as `display`.
+export function fileLink(absPath: string, display: string): string {
+    return osc8(`file://${absPath}`, display);
+}
+
 // ── Grid layout ──────────────────────────────────
 
 // Calculate column width for a grid layout.

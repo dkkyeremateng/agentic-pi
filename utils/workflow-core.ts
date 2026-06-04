@@ -45,6 +45,19 @@ export const REQUIRED_AGENTS = [
 ] as const;
 export const DEFAULT_MAX_LOOPS = 3;
 
+// Build a concise session display name for pi.setSessionName, e.g.
+// "agent-team · building · add CSV export". Omits the team when there isn't one.
+export function sessionLabel(
+    prefix: string,
+    team: string,
+    request: string,
+): string {
+    const req =
+        request.length > 48 ? request.slice(0, 47).trimEnd() + "…" : request;
+    const mid = team && team.toLowerCase() !== "none" ? ` · ${team}` : "";
+    return `${prefix}${mid} · ${req}`;
+}
+
 // Appended to EVERY spawned agent's system prompt so any agent answers a trivial
 // ping / health check directly instead of running its full workload.
 export const TRIVIAL_PING_RULE = `

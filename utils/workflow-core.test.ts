@@ -15,6 +15,7 @@ import {
     parseAgentFile,
     subagentExtArgs,
     loadSkills,
+    sessionLabel,
     type RunArtifacts,
     type PhaseState,
 } from "./workflow-core";
@@ -691,5 +692,31 @@ describe("loadSkills", () => {
             github && github.description.length > 0,
             "github skill should have a description",
         );
+    });
+});
+
+// ── sessionLabel ─────────────────────────────────
+
+describe("sessionLabel", () => {
+    it("includes the team and request", () => {
+        assert.equal(
+            sessionLabel("agent-team", "building", "add CSV export"),
+            "agent-team · building · add CSV export",
+        );
+    });
+    it("omits the team when none / 'none'", () => {
+        assert.equal(
+            sessionLabel("agent-team", "", "do a thing"),
+            "agent-team · do a thing",
+        );
+        assert.equal(
+            sessionLabel("agent-pipeline", "none", "do a thing"),
+            "agent-pipeline · do a thing",
+        );
+    });
+    it("truncates a long request", () => {
+        const label = sessionLabel("agent-team", "", "x".repeat(80));
+        assert.ok(label.endsWith("…"));
+        assert.ok(label.length < 70);
     });
 });
