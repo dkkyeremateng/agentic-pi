@@ -21,3 +21,15 @@ plan-build:
 research-doc:
     - seeker
     - documenter
+
+planing:
+    - planner
+    - critic
+    - documenter
+
+building:
+    - implementer
+    - tester
+    - validator
+    - documenter
+    - shipper
