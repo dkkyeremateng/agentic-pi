@@ -46,8 +46,8 @@ bowser fill "#username" "demo-user" -s demo-session
 bowser fill "#password" "s3cret" -s demo-session
 bowser click "#login" -s demo-session
 
-# Take a snapshot for verification
-bowser snapshot "screens/login.png" -s demo-session
+# Take a snapshot for verification (write under .playwright-cli/, not the project root)
+bowser snapshot ".playwright-cli/login.png" -s demo-session
 
 # Run headless by default for CI; override if needed
 bowser close -s demo-session

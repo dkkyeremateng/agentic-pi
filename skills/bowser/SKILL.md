@@ -49,7 +49,7 @@ Navigate:   go-back, go-forward, reload
 Keyboard:   press <key>, keydown <key>, keyup <key>
 Mouse:      mousemove <x> <y>, mousedown, mouseup, mousewheel <dx> <dy>
 Tabs:       tab-list, tab-new [url], tab-close [index], tab-select <index>
-Save:       screenshot [ref], pdf, screenshot --filename=f
+Save:       screenshot [ref], pdf, screenshot --filename=.playwright-cli/f  (prefix .playwright-cli/)
 Storage:    state-save, state-load, cookie-*, localstorage-*, sessionstorage-*
 Network:    route <pattern>, route-list, unroute, network
 DevTools:   console, run-code <code>, tracing-start/stop, video-start/stop
@@ -59,7 +59,7 @@ Config:     open --headed, open --browser=chrome, resize <w> <h>
 
 ## Workflow
 
-1. Derive a session name from the user's prompt and open with `--persistent` to preserve cookies/state. Always set the viewport via env var at launch:
+1. Derive a session name from the user's prompt and open with `--persistent` to preserve cookies/state. First ensure `.playwright/cli.config.json` exists (see [Configuration](#configuration--output-location)) so generated files land in `.playwright-cli/`, not the project root. Always set the viewport via env var at launch:
 ```bash
 PLAYWRIGHT_MCP_VIEWPORT_SIZE=1440x900 playwright-cli -s=<session-name> open <url> --persistent
 # or headed:
@@ -81,31 +81,52 @@ playwright-cli type "text"
 playwright-cli press Enter
 ```
 
-5. Capture results:
+5. Capture results — **always write under `.playwright-cli/`** (see Configuration):
 ```bash
-playwright-cli screenshot
-playwright-cli screenshot --filename=output.png
+playwright-cli screenshot                                # auto-named -> .playwright-cli/<name>.png (via outputDir)
+playwright-cli screenshot --filename=.playwright-cli/output.png   # -> .playwright-cli/output.png
 ```
+**Important:** an explicit `--filename` is resolved relative to the **cwd**, NOT
+`outputDir` — so `--filename=output.png` lands in the project root. When you name
+an output file (screenshot, `pdf`, `state-save`, etc.), prefix it with
+`.playwright-cli/`, or omit `--filename` to let it auto-name into `.playwright-cli/`.
 
 6. **Always close the session when done.** This is not optional — close the named session after finishing your task:
 ```bash
 playwright-cli -s=<session-name> close
 ```
 
-## Configuration
+## Configuration & output location
 
-If a `playwright-cli.json` exists in the working directory, use it automatically. If the user provides a path to a config file, use `--config path/to/config.json`. Otherwise, skip configuration — the env var and CLI defaults are sufficient.
+Keep all bowser output under `.playwright-cli/` in the working directory, never the
+project root. Two parts to this:
 
-```json
+1. **`outputDir`** governs **auto-named** outputs (a `screenshot` with no
+   `--filename`, traces, default artifacts). The CLI auto-loads its config from
+   `.playwright/cli.config.json` (this config-file path is fixed by the CLI); create
+   it once per project (idempotent) so `outputDir` points at `.playwright-cli/`
+   before opening a session:
+2. **Explicit filenames** (`--filename=…`, `state-save <file>`, etc.) are relative
+   to the **cwd**, not `outputDir` — so always prefix them with `.playwright-cli/`.
+
+```bash
+mkdir -p .playwright
+cat > .playwright/cli.config.json <<'JSON'
 {
   "browser": {
     "browserName": "chromium",
     "launchOptions": { "headless": true },
     "contextOptions": { "viewport": { "width": 1440, "height": 900 } }
   },
-  "outputDir": "./screenshots"
+  "outputDir": ".playwright-cli"
 }
+JSON
 ```
+
+Without this, the CLI falls back to a `.playwright-cli/` (or `.playwright-mcp/`)
+directory it creates in the cwd. Point at a different config with
+`--config path/to/config.json`. Add `.playwright-cli/` (outputs) and `.playwright/`
+(config) to `.gitignore`.
 
 ## Full Help
 

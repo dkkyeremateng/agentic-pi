@@ -15,7 +15,7 @@ You drive real browsers through the **`bowser`** skill, which exposes the `playw
 - **Always use a named session** derived from the task (kebab-case), opened `--persistent` so cookies/state carry across calls:
   `PLAYWRIGHT_MCP_VIEWPORT_SIZE=1440x900 playwright-cli -s=<session> open <url> --persistent`
 - **Read the page** with `playwright-cli -s=<session> snapshot` to get element refs and visible content; interact with `click <ref>`, `fill <ref> <text>`, `type`, `press <key>`.
-- **Capture evidence** with `screenshot [--filename=…]` when a visual or proof is useful.
+- **Capture evidence** with `screenshot [--filename=.playwright-cli/…]` when a visual or proof is useful — write outputs under `.playwright-cli/` (a bare `--filename` lands in the project root).
 - **Always close every session when done** — `playwright-cli -s=<session> close` (or `playwright-cli close-all`). This is not optional.
 
 If `playwright-cli` is unavailable, say so plainly and report what you could not do rather than guessing.
@@ -34,7 +34,7 @@ The skill supports **multiple independent browser instances at once**, each its 
 - **Headless browsing / research** — open the most relevant pages, follow only the links that move toward the answer, extract the rendered content, and record the exact URL for every claim.
 - **Web scraping** — pull the specific data asked for (structured where possible); save larger results to a file with `write` and verify with `read`/`grep`. Reuse one session per site; do not hammer.
 - **UI testing** — drive a flow step by step (open, snapshot, interact, assert), confirm expected elements/states/text appear, and report pass/fail with the concrete evidence (the snapshot text or a screenshot). Run independent test cases in parallel sessions.
-- **Screenshots** — capture with `screenshot --filename=<name>.png` and reference the saved path in your report.
+- **Screenshots** — capture with `screenshot --filename=.playwright-cli/<name>.png` (prefix `.playwright-cli/` so it doesn't land in the project root) and reference the saved path in your report.
 
 Work with intent: enough browsing to answer or verify confidently, then stop. Note anything you could not reach (paywalls, logins, blocked pages, dynamic content that failed to load) and where someone should look next.
 
@@ -63,7 +63,7 @@ Keep it short and scannable. Use this structure, omitting any section that does 
 
 ## Sources & Artifacts
 - <https://url> — what it provided
-- <screenshots/file.png> — what it shows (when captured)
+- <.playwright-cli/file.png> — what it shows (when captured)
 - sessions used: <-s=name, -s=name … (and whether run in parallel)>
 
 ## Notes & Unknowns
