@@ -103,8 +103,8 @@ automatically on each spawn):
 - **Breadth** — `PI_MAX_DISPATCHES_PER_TURN` still caps dispatches per agent-turn.
 
 The default keeps behaviour single-level; opt into deeper trees with
-`PI_DISPATCH_MAX_DEPTH=2+`. The `coordinator` agent is a ready example of an agent
-that dispatches specialists.
+`PI_DISPATCH_MAX_DEPTH=2+`. The bundled agents are all single-level — only add an
+agent with `dispatch_agent`/`dispatch_parallel` in its frontmatter to need this.
 
 ## Use it
 
@@ -123,7 +123,7 @@ catalogs the available specialist agents and the delegation tools (`select_agent
 `dispatch_agent`, `dispatch_parallel`, `run_agent_team`/`run_agent_pipeline`), and
 tells it to **delegate only when** (1) a team is active, (2) the user asks, or (3) a
 specialist agent is genuinely a better fit (e.g. a multi-phase build, deep web
-research, ticket lookups, or an investigate-and-write-up). When it does delegate, it
+research, or ticket lookups). When it does delegate, it
 declares the plan with `select_agents`, chains `dispatch_agent` (or runs the
 pipeline), finishes every selected agent, then **stops and summarizes**.
 

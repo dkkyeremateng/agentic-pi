@@ -313,10 +313,10 @@ export async function runWorkflowCore(
     let members = activeMembers(s);
     if (members.length === 0) members = Array.from(s.agents.keys());
 
-    // A team may include "lead" agents that are not linear pipeline phases (e.g.
-    // researcher, coordinator) — they orchestrate their own sub-work. When present,
-    // run them directly with the request instead of the canonical pipeline (which
-    // only knows scout→…→ship and would silently drop them). If the team also
+    // A team may include "lead" agents that are not linear pipeline phases (e.g. a
+    // seeker/linear/atlassian-led team) — they handle the request on their own. When
+    // present, run them directly with the request instead of the canonical pipeline
+    // (which only knows scout→…→ship and would silently drop them). If the team also
     // includes the critic, it runs as a visible reviewer of the lead's output.
     const pipelineSet = new Set<string>(PIPELINE_ORDER as readonly string[]);
     const leadAgents = members.filter((m) => !pipelineSet.has(m.toLowerCase()));
@@ -375,11 +375,11 @@ export async function runWorkflowCore(
         return bundle ? `${bundle}\n\n---\n\n${task}` : task;
     };
 
-    // ── Lead-agent workflow (delegating agents like researcher / coordinator) ──
-    // Run each lead agent with the user's request as its task (it does its own
-    // sub-dispatching — e.g. the researcher calls atlassian/linear). When the team
-    // includes the critic, it then reviews the lead's output, looping back to the
-    // lead on REVISE — so both the researcher and the critic run as visible phases.
+    // ── Lead-agent workflow (non-pipeline lead agents, e.g. a seeker-led team) ──
+    // Run each lead agent with the user's request as its task (it may do its own
+    // sub-dispatching if it has the dispatch tools). When the team includes the
+    // critic, it then reviews the lead's output, looping back to the lead on REVISE —
+    // so both the lead and the critic run as visible phases.
     if (isLeadWorkflow) {
         const leadKeys = leadAgents.map((a) => a.toLowerCase());
         const lastLeadKey = leadKeys[leadKeys.length - 1];

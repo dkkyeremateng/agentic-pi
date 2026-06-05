@@ -23,7 +23,3 @@ building:
     - validator
     - documenter
     - shipper
-
-research:
-    - researcher
-    - critic
