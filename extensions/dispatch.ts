@@ -142,7 +142,6 @@ export default function (pi: ExtensionAPI) {
     const spawnAgentWithModel = makeSpawnWrapper({
         state: st,
         sessionDir: () => sessionDir,
-        sharedSession: false,
         agentTimeoutMs: AGENT_TIMEOUT_MS,
         updateWidget: () => emitUpdate(),
         setCurrentProc: (p: any) => {

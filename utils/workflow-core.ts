@@ -490,13 +490,6 @@ export function renderWorkflowFooter(opts: {
     dispatchElapsedMs: number;
     runElapsedMs: number;
     contextUsage: () => any;
-    // Frontmatter context_window of the single running sub-agent (if any), used as
-    // a fallback for the percentage when the provider doesn't report a window.
-    activeContextWindow?: number;
-    // When true, add the running sub-agent's tokens to the primary's for one combined
-    // total (for a shared-window mode). Currently unused — agent-workflow runs each
-    // agent in its own session, so the footer reports the primary session only.
-    combineActive?: boolean;
     visibleWidth: (s: string) => number;
     truncateToWidth: (s: string, w: number) => string;
 }): string[] {
@@ -514,8 +507,6 @@ export function renderWorkflowFooter(opts: {
         dispatchElapsedMs,
         runElapsedMs,
         contextUsage,
-        activeContextWindow,
-        combineActive,
         visibleWidth,
         truncateToWidth,
     } = opts;
@@ -526,22 +517,7 @@ export function renderWorkflowFooter(opts: {
     let tokenCount: number | undefined;
     let contextWindow: number | undefined;
 
-    // Largest sub-agent usage seen this run (across ALL phases, not just the one
-    // running). With a shared session the latest phase carries the full
-    // accumulated context, and a finished phase keeps its tokens — so this rises
-    // through the run and does NOT drop back when a sub-agent completes.
-    let maxSubTokens = 0;
-    let maxSubWindow: number | undefined;
-    for (const p of phases) {
-        if (!p.tokens) continue;
-        const t = (p.tokens.input || 0) + (p.tokens.output || 0);
-        if (t > maxSubTokens) {
-            maxSubTokens = t;
-            maxSubWindow = p.tokens.contextWindow;
-        }
-    }
-
-    // Primary (orchestrator) session usage — the base the footer reports.
+    // Primary (orchestrator) session usage — what the footer reports.
     let usage: any;
     try {
         usage = contextUsage();
@@ -563,34 +539,19 @@ export function renderWorkflowFooter(opts: {
               ? usage.context_window
               : undefined;
 
-    if (combineActive) {
-        // Shared-window mode (currently unused): sub-agents share the primary's
-        // window, so the sub-agent usage ADDS to the primary's — one combined total
-        // that persists across the run (uses maxSubTokens, not just the running phase).
-        const total = primaryTokens + maxSubTokens;
-        contextWindow =
-            primaryWindow || maxSubWindow || activeContextWindow || undefined;
-        tokenCount = total || undefined;
-        // Let formatContextUsage recompute the % from total/window when both are
-        // known; otherwise keep the primary's reported percent.
-        contextPct = contextWindow && total ? null : primaryPct;
-    } else {
-        // Default: the footer shows the PRIMARY (orchestrator) session's context.
-        // Each sub-agent runs on its own per-agent model/session and shows its OWN
-        // context on its card — the footer does not flip to a sub-agent.
-        contextPct = primaryPct;
-        tokenCount = primaryTokens || undefined;
-        contextWindow = primaryWindow;
-    }
+    // The footer shows the PRIMARY (orchestrator) session's context. Each sub-agent
+    // runs on its own per-agent model/session and shows its OWN context on its card.
+    contextPct = primaryPct;
+    tokenCount = primaryTokens || undefined;
+    contextWindow = primaryWindow;
 
     const { bar, display: pctStr } = formatContextUsage({
         contextPct,
         tokenCount,
         contextWindow,
         barLength: 10,
-        // The footer reports the primary session: trust the provider's percent.
-        // (combineActive sets contextPct=null to force a recompute from the summed
-        // primary+sub-agent total, so this only takes effect for the plain case.)
+        // The footer reports the primary session: trust the provider's percent
+        // verbatim rather than recomputing it from tokens/window.
         preferContextPct: true,
     });
 
@@ -1195,11 +1156,10 @@ export function setupSessions(cwd: string, wipe: boolean): string {
 }
 
 // Create a spawn wrapper that accumulates token/tool/dropped-line totals into
-// the orchestrator state. Both extensions had identical 30-line wrappers that
-// differed only in the `sharedSession` flag; this factory eliminates the
-// duplication while keeping the per-extension state ownership clear.
-// `state` is the extension's OrchestratorState (typed loosely to avoid a
-// circular import with orchestrator-core.ts).
+// the orchestrator state. Used by the agent-workflow extension and the dispatch
+// extension, keeping each one's state ownership clear. `state` is the extension's
+// OrchestratorState (typed loosely to avoid a circular import with
+// orchestrator-core.ts).
 export function makeSpawnWrapper(opts: {
     state: {
         totalTokens: { input: number; output: number };
@@ -1207,7 +1167,6 @@ export function makeSpawnWrapper(opts: {
         totalDroppedLines: number;
     };
     sessionDir: string | (() => string);
-    sharedSession: boolean;
     agentTimeoutMs: number;
     updateWidget: () => void;
     setCurrentProc: (proc: any) => void;
@@ -1221,7 +1180,6 @@ export function makeSpawnWrapper(opts: {
     const {
         state,
         sessionDir: sessionDirOpt,
-        sharedSession,
         agentTimeoutMs,
         updateWidget,
         setCurrentProc,
@@ -1233,7 +1191,6 @@ export function makeSpawnWrapper(opts: {
     return (agentDef, task, phase, cwd, model) => {
         const cfg: SpawnConfig = {
             sessionDir: getSessionDir(),
-            sharedSession,
             agentTimeoutMs,
             updateWidget,
             setCurrentProc,
@@ -2116,7 +2073,6 @@ export function tokenNote(phase: PhaseState): string {
 // share one implementation instead of carrying ~220-line copies.
 export interface SpawnConfig {
     sessionDir: string;
-    sharedSession: boolean;
     agentTimeoutMs: number;
     updateWidget: () => void;
     setCurrentProc: (proc: any) => void;
@@ -2360,12 +2316,10 @@ function spawnAgentWithModelFallback(
         .replace(/-+/g, "-")
         .substring(0, 50);
 
-    const useSharedSession = config.sharedSession && !phase.dispatchId;
+    // Each agent runs in its own per-agent session file (parallel-safe).
     const sessionFile = join(
         config.sessionDir,
-        useSharedSession
-            ? `pipeline-${projectHash}.json`
-            : `${sessionKey}-${projectHash}.json`,
+        `${sessionKey}-${projectHash}.json`,
     );
 
     // Validate session file before using it
@@ -2560,15 +2514,8 @@ export function spawnAgentWithModel(
         }
     }
 
-    // For parallel dispatches (when dispatchId exists), always use unique session files
-    // to prevent race conditions. Only use shared sessions for sequential pipeline phases.
-    const useSharedSession = config.sharedSession && !phase.dispatchId;
-
-    // Use simple filenames inside the project subdirectory
-    const sessionFile = join(
-        projectSessionDir,
-        useSharedSession ? "pipeline.json" : `${sessionKey}.json`,
-    );
+    // Each agent runs in its own per-agent session file (parallel-safe).
+    const sessionFile = join(projectSessionDir, `${sessionKey}.json`);
 
     // Validate session file before using it
     let hasSession = false;
