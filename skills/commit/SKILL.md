@@ -1,6 +1,7 @@
 ---
 name: commit
-description: "Read this skill before making git commits"
+description: "Create a git commit for the current changes with a concise Conventional Commits-style message (type(scope): summary). Use whenever the user asks to commit, save, or check in changes. Stages only the intended files, never pushes, and adds no sign-offs or footers. Keywords - commit, git, conventional commits, message, stage."
+allowed-tools: Bash
 ---
 
 Create a git commit for the current changes using a concise Conventional Commits-style subject.

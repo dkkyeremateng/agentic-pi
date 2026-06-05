@@ -68,12 +68,12 @@ PLAYWRIGHT_MCP_VIEWPORT_SIZE=1440x900 playwright-cli -s=<session-name> open <url
 PLAYWRIGHT_MCP_VIEWPORT_SIZE=1440x900 PLAYWRIGHT_MCP_CAPS=vision playwright-cli -s=<session-name> open <url> --persistent
 ```
 
-3. Get element references via snapshot:
+2. Get element references via snapshot:
 ```bash
 playwright-cli snapshot
 ```
 
-4. Interact using refs from snapshot:
+3. Interact using refs from snapshot:
 ```bash
 playwright-cli click <ref>
 playwright-cli fill <ref> "text"
@@ -81,7 +81,7 @@ playwright-cli type "text"
 playwright-cli press Enter
 ```
 
-5. Capture results — **always write under `.playwright-cli/`** (see Configuration):
+4. Capture results — **always write under `.playwright-cli/`** (see Configuration):
 ```bash
 playwright-cli screenshot                                # auto-named -> .playwright-cli/<name>.png (via outputDir)
 playwright-cli screenshot --filename=.playwright-cli/output.png   # -> .playwright-cli/output.png
@@ -91,7 +91,7 @@ playwright-cli screenshot --filename=.playwright-cli/output.png   # -> .playwrig
 an output file (screenshot, `pdf`, `state-save`, etc.), prefix it with
 `.playwright-cli/`, or omit `--filename` to let it auto-name into `.playwright-cli/`.
 
-6. **Always close the session when done.** This is not optional — close the named session after finishing your task:
+5. **Always close the session when done.** This is not optional — close the named session after finishing your task:
 ```bash
 playwright-cli -s=<session-name> close
 ```
@@ -132,4 +132,4 @@ directory it creates in the cwd. Point at a different config with
 
 Run `playwright-cli --help` or `playwright-cli --help <command>` for detailed command usage.
 
-See [docs/playwright-cli.md](docs/playwright-cli.md) for full documentation.
+See [README.md](README.md) for full documentation.
