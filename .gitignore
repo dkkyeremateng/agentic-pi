@@ -5,5 +5,5 @@
 node_modules/
 __pycache__/
 *.pyc
-.pi/plan.md
+.agent/
 .pi/

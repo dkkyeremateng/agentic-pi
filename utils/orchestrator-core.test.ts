@@ -2207,26 +2207,26 @@ describe("spawnAgentWithModel (placeholder)", () => {
 });
 
 describe("capturePlan", () => {
-    it("records the artifact and writes .pi/plan.md as a fallback when absent", () => {
+    it("records the artifact and writes .agent/plan.md as a fallback when absent", () => {
         const cwd = mkdtempSync(join(tmpdir(), "plan-"));
         const artifacts: any = {};
         capturePlan(artifacts, cwd, "# Plan\n## Phase 1");
         assert.equal(artifacts.plan, "# Plan\n## Phase 1");
         assert.equal(
-            readFileSync(join(cwd, ".pi", "plan.md"), "utf-8"),
+            readFileSync(join(cwd, ".agent", "plan.md"), "utf-8"),
             "# Plan\n## Phase 1",
         );
     });
 
     it("does NOT clobber an existing plan file (the documenter's version)", () => {
         const cwd = mkdtempSync(join(tmpdir(), "plan-"));
-        mkdirSync(join(cwd, ".pi"), { recursive: true });
-        writeFileSync(join(cwd, ".pi", "plan.md"), "DOCUMENTER VERSION", "utf-8");
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), "DOCUMENTER VERSION", "utf-8");
         const artifacts: any = {};
         capturePlan(artifacts, cwd, "RAW PLANNER OUTPUT");
         assert.equal(artifacts.plan, "RAW PLANNER OUTPUT"); // artifact still recorded
         assert.equal(
-            readFileSync(join(cwd, ".pi", "plan.md"), "utf-8"),
+            readFileSync(join(cwd, ".agent", "plan.md"), "utf-8"),
             "DOCUMENTER VERSION", // file untouched
         );
     });
@@ -2235,10 +2235,10 @@ describe("capturePlan", () => {
 describe("resetPlanFile", () => {
     it("removes a stale plan file (and is a no-op when absent)", () => {
         const cwd = mkdtempSync(join(tmpdir(), "plan-"));
-        mkdirSync(join(cwd, ".pi"), { recursive: true });
-        writeFileSync(join(cwd, ".pi", "plan.md"), "old", "utf-8");
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), "old", "utf-8");
         resetPlanFile(cwd);
-        assert.equal(existsSync(join(cwd, ".pi", "plan.md")), false);
+        assert.equal(existsSync(join(cwd, ".agent", "plan.md")), false);
         resetPlanFile(cwd); // no throw when already gone
     });
 });

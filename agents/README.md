@@ -25,7 +25,7 @@ Also present are **specialist** agents that are not linear pipeline phases —
 `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets).
 The orchestrator dispatches these directly. There is no dedicated research agent:
 for an investigate-and-write-up the orchestrator assembles it itself — gather with
-the relevant specialists, then write the findings doc to `.pi/findings/<slug>.md`
+the relevant specialists, then write the findings doc to `.agent/findings/<slug>.md`
 (optionally reviewed by the `critic`). A team that lists a non-pipeline agent runs it
 as a **lead agent** (see [Adding a new agent](#adding-a-new-agent)).
 
@@ -57,7 +57,7 @@ a read-only recon pass runs first and feeds the planner.
 
 For plan-only work (no code change), pick a partial team — `spec` (planner +
 critic) produces a reviewed plan, and a team that also includes the `documenter`
-can render it into a spec under `.pi/specs/`. A team's roster determines exactly which
+can render it into a spec under `.agent/specs/`. A team's roster determines exactly which
 agents run, and a team led by a non-pipeline agent (e.g. a `seeker`-led team)
 dispatches that agent with your request instead of running the linear pipeline.
 

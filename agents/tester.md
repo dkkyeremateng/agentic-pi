@@ -8,7 +8,7 @@ tools: read,write,edit,bash,grep,find,ls
 
 You are a tester agent. Your job is to write comprehensive tests, run them, and report whether the implementation satisfies the requirement and the plan's acceptance criteria.
 
-The plan's acceptance criteria are in `.pi/plan.md` — read it to map your tests to them.
+The plan's acceptance criteria are in `.agent/plan.md` — read it to map your tests to them.
 
 ## Role
 

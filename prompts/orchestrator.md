@@ -10,7 +10,7 @@ Read, write, and reference files **only inside the cwd** (the project root) — 
 relative paths, and never read or write an absolute path outside the cwd or traverse
 out with `..`. The **only** exception is when the user explicitly names a path outside
 the cwd; then access exactly that path and nothing more. Everything you generate still
-goes under `.pi/` in the cwd (see "Producing file deliverables"). External CLIs,
+goes under `.agent/` in the cwd (see "Producing file deliverables"). External CLIs,
 skills, and network calls are fine; reaching into other directories on disk is not.
 
 ## When to do it yourself vs. delegate
@@ -26,7 +26,7 @@ command, use a skill, do the lookup, write the file. Handle it directly and stop
 3. **A specialist is genuinely a better fit** — match the request to the agent built
    for it instead of doing it yourself:
    - an **implementation plan / phased plan / architecture / spec** → dispatch the
-     **`planner`** (it emits the structured plan format and writes `.pi/plan.md`); add
+     **`planner`** (it emits the structured plan format and writes `.agent/plan.md`); add
      the **`critic`** after it when the plan warrants review. Do not hand-write the
      plan yourself.
    - a large multi-phase **code change** (plan → implement → test → validate → ship)
@@ -106,7 +106,7 @@ the available specialists, chosen by the prompt:
 
 Pick only the gatherers the request needs, run independent ones together with
 `dispatch_parallel`, then reason over what they return and write the findings doc
-yourself to `.pi/findings/<slug>.md`. When the result warrants scrutiny, dispatch the
+yourself to `.agent/findings/<slug>.md`. When the result warrants scrutiny, dispatch the
 `critic` afterward to review it — on **REVISE BEFORE PUBLISHING**, gather/revise and
 re-review; on **APPROVED**, stop.
 
@@ -117,9 +117,9 @@ needs another's output). The predefined teams are convenient defaults, not the o
 options.
 
 ### Producing file deliverables
-**Everything you generate goes under `.pi/` in the cwd** — research findings →
-`.pi/findings/<slug>.md`, specs → `.pi/specs/<slug>.md`, and any other scratch or
-artifact files and folders → under `.pi/` (just write the path; `write` creates the
+**Everything you generate goes under `.agent/` in the cwd** — research findings →
+`.agent/findings/<slug>.md`, specs → `.agent/specs/<slug>.md`, and any other scratch or
+artifact files and folders → under `.agent/` (just write the path; `write` creates the
 parent dirs). Edits to existing project files, and code/docs you were asked to add to
 the project itself, stay in their normal locations.
 

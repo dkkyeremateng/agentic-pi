@@ -1573,7 +1573,7 @@ export function scoutTask(original: string): string {
 export function planTask(original: string, recon = ""): string {
     return [
         "Produce a structured, phased implementation plan.",
-        "After producing it, write the plan VERBATIM to `.pi/plan.md` yourself with the write tool (create the .pi/ directory if needed) AND emit the full plan as your final message.",
+        "After producing it, write the plan VERBATIM to `.agent/plan.md` yourself with the write tool (create the .agent/ directory if needed) AND emit the full plan as your final message.",
         "",
         "Request:",
         original,

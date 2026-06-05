@@ -419,7 +419,7 @@ export async function runWorkflowCore(
                 h.ui.updateWidget();
                 critique = await h.execution.runPhase(
                     reviewerPhase,
-                    `Evaluate the research findings the ${lastLeadName} just produced for this request — the document is in the .pi/findings/ folder, so read it there. Return APPROVED or REVISE BEFORE PUBLISHING with specific required fixes.\n\nRequest:\n${request}\n\n${lastLeadName}'s summary:\n${leadOutput}`,
+                    `Evaluate the research findings the ${lastLeadName} just produced for this request — the document is in the .agent/findings/ folder, so read it there. Return APPROVED or REVISE BEFORE PUBLISHING with specific required fixes.\n\nRequest:\n${request}\n\n${lastLeadName}'s summary:\n${leadOutput}`,
                     cwd,
                 );
                 if (!critique.ok) return fail(s, "Critique", critique.output);
@@ -433,7 +433,7 @@ export async function runWorkflowCore(
                 h.ui.updateWidget();
                 const revised = await h.execution.runPhase(
                     leadPhase,
-                    `The critic asked for revisions. Update your findings document in the .pi/findings/ folder to address EVERY required fix, then summarize what changed.\n\nRequest:\n${request}\n\nYour previous result:\n${leadOutput}\n\nCritic feedback:\n${critique.output}`,
+                    `The critic asked for revisions. Update your findings document in the .agent/findings/ folder to address EVERY required fix, then summarize what changed.\n\nRequest:\n${request}\n\nYour previous result:\n${leadOutput}\n\nCritic feedback:\n${critique.output}`,
                     cwd,
                 );
                 if (!revised.ok) return fail(s, lastLeadName, revised.output);
@@ -775,14 +775,14 @@ const textResult = (text: string): ToolResult => ({
 });
 
 // Capture the (possibly revised) plan: record it as the run artifact AND persist
-// it to `.pi/plan.md` so every downstream agent can read it from disk. The planner
+// it to `.agent/plan.md` so every downstream agent can read it from disk. The planner
 // agent also writes this file; doing it here too guarantees it regardless of
 // whether the agent followed the instruction. Best-effort — never fails the run.
 // Remove a stale plan file from a previous run, so capturePlan's "the documenter
 // already wrote it" check (existsSync) is reliable for THIS run.
 export function resetPlanFile(cwd: string): void {
     try {
-        rmSync(join(cwd, ".pi", "plan.md"), { force: true });
+        rmSync(join(cwd, ".agent", "plan.md"), { force: true });
     } catch {}
 }
 
@@ -793,9 +793,9 @@ export function capturePlan(
 ): void {
     runArtifacts.plan = plan;
     try {
-        const file = join(cwd, ".pi", "plan.md");
+        const file = join(cwd, ".agent", "plan.md");
         // The planner delegates writing the plan to the documenter, which produces
-        // .pi/plan.md. Only write here as a FALLBACK — when no plan file was written
+        // .agent/plan.md. Only write here as a FALLBACK — when no plan file was written
         // this run (documenter not dispatched, or dispatch unavailable) — so the
         // documenter's version is never clobbered.
         if (!existsSync(file)) {
