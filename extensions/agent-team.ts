@@ -399,7 +399,43 @@ export default function (pi: ExtensionAPI) {
             visibleWidth,
         );
 
+    // Coalesce re-renders: parallel dispatch fires a DISPATCH_UPDATE for every
+    // stream event of every sub-agent — dozens per second with 3+ agents — which
+    // tears the terminal and stacks frames. Collapse a burst into at most one
+    // render per WIDGET_MIN_INTERVAL_MS, always trailing so the final state paints.
+    let widgetTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastWidgetRender = 0;
+    const WIDGET_MIN_INTERVAL_MS = 80;
+
     function updateWidget() {
+        const now = Date.now();
+        const since = now - lastWidgetRender;
+        if (since >= WIDGET_MIN_INTERVAL_MS) {
+            if (widgetTimer) {
+                clearTimeout(widgetTimer);
+                widgetTimer = null;
+            }
+            lastWidgetRender = now;
+            renderWidgetNow();
+        } else if (!widgetTimer) {
+            widgetTimer = setTimeout(() => {
+                widgetTimer = null;
+                lastWidgetRender = Date.now();
+                renderWidgetNow();
+            }, WIDGET_MIN_INTERVAL_MS - since);
+        }
+    }
+
+    // Cancel a pending trailing render so an explicit widget clear can't be
+    // resurrected ~WIDGET_MIN_INTERVAL_MS later.
+    function cancelPendingWidget() {
+        if (widgetTimer) {
+            clearTimeout(widgetTimer);
+            widgetTimer = null;
+        }
+    }
+
+    function renderWidgetNow() {
         if (!widgetCtx || !widgetCtx.hasUI) return; // no chrome without a UI
         widgetCtx.ui.setWidget("agent-team", (_tui: any, theme: any) => {
             const text = new Text("", 0, 1);
@@ -730,6 +766,7 @@ export default function (pi: ExtensionAPI) {
             description: "Clear the agent-team progress widget",
             handler: async (_args, ctx) => {
                 widgetCtx = ctx;
+                cancelPendingWidget();
                 ctx.ui.setWidget("agent-team", undefined);
                 ctx.ui.notify("Workflow-team widget cleared.", "info");
             },

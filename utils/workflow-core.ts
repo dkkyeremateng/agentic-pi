@@ -359,6 +359,75 @@ export function appendLiveLog(
     running: boolean,
     visibleWidth: (s: string) => number,
 ): void {
+    // Parallel dispatch: several agents stream at once. The single live-log panel
+    // can only show one of them, so render a compact per-agent status block (label
+    // · tools · last line) instead of one agent's full, fast-scrolling stream.
+    const runningPhases = phases.filter((p) => p.status === "running");
+    if (runningPhases.length > 1) {
+        const label = ` ─── ${runningPhases.length} agents · live ─── `;
+        const rule = "─".repeat(Math.max(0, width - visibleWidth(label) - 1));
+        lines.push("");
+        lines.push(theme.fg("dim", label + rule));
+        // Same height budget as the single-agent panel below: never taller than
+        // half the screen, always leaving LOG_PANEL_RESERVE rows for the editor +
+        // footer so the panel never overlaps the footer.
+        const rows = process.stdout.rows || 24;
+        const maxRows = Math.max(
+            3,
+            Math.min(
+                Math.floor(rows / 2),
+                rows - lines.length - LOG_PANEL_RESERVE,
+            ),
+        );
+        const bodyStart = lines.length;
+        const n = runningPhases.length;
+        const clip = (s: string, indent: number) => {
+            const w = Math.max(10, width - indent - 1);
+            return s.length > w ? s.slice(0, w - 1) + "…" : s;
+        };
+        const agentLabel = (p: PhaseState) => {
+            const toolNote =
+                p.toolCount > 0
+                    ? ` · ${p.toolCount} tool${p.toolCount === 1 ? "" : "s"}`
+                    : "";
+            return `${p.label}${toolNote}`;
+        };
+        const recentLog = (p: PhaseState, count: number) =>
+            (p.log || "")
+                .split("\n")
+                .map((l) => l.replace(/\s+$/, ""))
+                .filter((l) => l.length)
+                .slice(-count);
+
+        // Share the panel height evenly: each agent gets a label line plus up to 5
+        // recent log lines when there is room; otherwise fall back to one compact
+        // line per agent (label + its latest log line).
+        const perAgent = Math.floor(maxRows / n);
+        if (perAgent >= 2) {
+            // No fixed cap: split the available rows across agents — one label line
+            // each, the remaining rows as log lines, with any remainder handed to
+            // the earlier agents so the panel is filled.
+            const logCapacity = maxRows - n;
+            const baseLog = Math.floor(logCapacity / n);
+            const extra = logCapacity % n;
+            runningPhases.forEach((p, i) => {
+                lines.push("   " + theme.fg("muted", clip(agentLabel(p), 3)));
+                const allot = baseLog + (i < extra ? 1 : 0);
+                for (const l of recentLog(p, allot))
+                    lines.push("      " + theme.fg("dim", clip(l, 6)));
+            });
+        } else {
+            for (const p of runningPhases.slice(0, maxRows)) {
+                const tail = recentLog(p, 1)[0] || "";
+                const row = ` ${agentLabel(p)}${tail ? " — " + tail : ""}`;
+                lines.push("   " + theme.fg("muted", clip(row, 3)));
+            }
+        }
+        // Pad to the reserved height so the editor + footer keep their space.
+        for (let i = lines.length - bodyStart; i < maxRows; i++) lines.push("");
+        return;
+    }
+
     const active = phases.find((p) => p.status === "running");
     if (!running && !(active && active.log)) return;
     const toolNote =
@@ -519,6 +588,10 @@ export function renderWorkflowFooter(opts: {
         tokenCount,
         contextWindow,
         barLength: 10,
+        // The footer reports the primary session: trust the provider's percent.
+        // (combineActive sets contextPct=null to force a recompute from the summed
+        // primary+sub-agent total, so this only takes effect for the plain case.)
+        preferContextPct: true,
     });
 
     // Ad-hoc dispatch doesn't set `running`, so derive its state from the phases
@@ -1239,8 +1312,19 @@ export function formatContextUsage(opts: {
     tokenCount?: number | undefined;
     contextWindow?: number | undefined;
     barLength?: number;
+    // Trust the provider-reported `contextPct` (current occupancy, cache/
+    // compaction-aware) over recomputing it from tokenCount/contextWindow. The
+    // primary-session footer sets this; the per-agent cards leave it off so their
+    // percent stays consistent with the frontmatter window they display.
+    preferContextPct?: boolean;
 }): { bar: string; display: string; known: boolean } {
-    const { contextPct, tokenCount, contextWindow, barLength = 10 } = opts;
+    const {
+        contextPct,
+        tokenCount,
+        contextWindow,
+        barLength = 10,
+        preferContextPct = false,
+    } = opts;
 
     const ctxKnown = contextWindow && contextWindow > 0;
 
@@ -1270,7 +1354,12 @@ export function formatContextUsage(opts: {
         !Number.isNaN(contextPct);
     let pct: number;
     let pctKnown: boolean;
-    if (ctxKnown && tokenCount && tokenCount > 0) {
+    if (preferContextPct && known) {
+        // Use the provider's reported percent verbatim (matches pi-context-usage),
+        // not a raw tokens/window recompute that ignores caching/compaction.
+        pct = Math.min(100, contextPct!);
+        pctKnown = true;
+    } else if (ctxKnown && tokenCount && tokenCount > 0) {
         pct = Math.min(100, (tokenCount / contextWindow!) * 100);
         pctKnown = true;
     } else if (known) {
