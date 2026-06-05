@@ -2,8 +2,8 @@
 
 Agent definitions for the self-healing **plan → critic → implement → test →
 validate → document → ship** workflow, plus an optional read-only recon pass.
-These `.md` files are consumed by the `agent-pipeline.ts` / `agent-team.ts`
-extensions in `../extensions/` (see `../extensions/README.md`). pi discovers
+These `.md` files are consumed by the `agent-workflow.ts`
+extension in `../extensions/` (see `../extensions/README.md`). pi discovers
 agents from `cwd/.pi/agents/` first, so running `pi` from this directory — or
 copying this `.pi/agents/` folder into another project — makes the agents
 available there.
@@ -37,7 +37,7 @@ The workflow is driven by the extensions, not by a YAML pipeline definition:
 cd <the codebase you want to fix>   # or stay here to try it out
 cp -r /path/to/.pi .pi              # only if copying into another project (include .pi/extensions and .pi/utils)
 pi
-/agent-pipeline                     # pick a team (Select Team dialog), then type the request
+/agent-workflow                     # pick a team (Select Team dialog), then type the request
 ```
 
 Type the bug or requirement. The planner produces a phased plan, which the
@@ -51,9 +51,8 @@ ships — committing code + tests + docs and opening a draft PR on a `fix/...`
 branch (or pausing if there is no remote). If the chosen team includes `scout`,
 a read-only recon pass runs first and feeds the planner.
 
-- `/agent-pipeline [request]` — single-model lifecycle (every agent uses the session model)
-- `/agent-team [request]` — per-agent models (env / `models.yaml`); see `../extensions/README.md`
-- Name a team as the first token to skip the picker (e.g. `/agent-team building …`), or add `loops=N` to override the retry limit.
+- `/agent-workflow [request]` — run the lifecycle; each agent runs on its own model (its `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `models.yaml`, falling back to the session model). See `../extensions/README.md`.
+- Name a team as the first token to skip the picker (e.g. `/agent-workflow building …`), or add `loops=N` to override the retry limit.
 
 For plan-only work (no code change), pick a partial team — `spec` (planner +
 critic) produces a reviewed plan, and a team that also includes the `documenter`
@@ -83,7 +82,7 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
    It is loaded on the next run, listed in the orchestrator's **Available Agents**,
    and dispatchable by name (`dispatch_agent agent="<name>"`) immediately.
 
-2. To run it from `/agent-team` / `/agent-pipeline`, add it to a team in
+2. To run it from `/agent-workflow`, add it to a team in
    `teams.yaml`:
 
    ```yaml
@@ -100,9 +99,9 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
    - Naming it one of `scout, planner, critic, implementer, tester, validator,
      documenter, shipper` slots it into the linear pipeline at that position.
 
-3. Per-agent model (`agent-team` only): set `PI_AGENT_<NAME>_MODEL=...` or add a
-   `<name>: <model>` line to `.pi/agents/models.yaml`. (`agent-pipeline` runs every
-   agent on the primary/session model.)
+3. Per-agent model: set `PI_AGENT_<NAME>_MODEL=...`, add a `<name>: <model>` line to
+   `.pi/agents/models.yaml`, or set the agent's `.md` `model:` frontmatter. Agents
+   without one fall back to `PI_WORKFLOW_MODEL` / the session model.
 
 **The only change that needs TypeScript** is introducing a brand-new *linear
 pipeline phase* — a new step woven into `scout → … → ship` with its own

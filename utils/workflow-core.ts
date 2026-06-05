@@ -1,5 +1,5 @@
-// ABOUTME: Shared, stateless core for the workflow orchestrator extensions
-// ABOUTME: (agent-pipeline.ts and agent-team.ts). Holds the identical types,
+// ABOUTME: Shared, stateless core for the workflow orchestrator extension
+// ABOUTME: (agent-workflow.ts). Holds the types,
 // ABOUTME: constants, agent/team/.env loaders, prompt templates, and the pure
 // ABOUTME: card-rendering helpers (statusMeta, statusBadge, agentPhaseStatus,
 // ABOUTME: renderCard) so the two extensions don't duplicate them. Stateful
@@ -46,7 +46,7 @@ export const REQUIRED_AGENTS = [
 export const DEFAULT_MAX_LOOPS = 3;
 
 // Build a concise session display name for pi.setSessionName, e.g.
-// "agent-team · building · add CSV export". Omits the team when there isn't one.
+// "agent-workflow · building · add CSV export". Omits the team when there isn't one.
 export function sessionLabel(
     prefix: string,
     team: string,
@@ -109,11 +109,10 @@ export interface PhaseState {
 }
 
 // ── Active-workflow detection ────────────────────
-// Both agent-pipeline.ts and agent-team.ts may auto-load from .pi/extensions/ at
-// once; only one renders the dashboard/footer. The one launched with -e wins;
-// with no explicit choice, the base "agent-pipeline" is the default. These helpers are
-// shared but parameterized over each extension's own identity (its module URL,
-// filename, and SELF_NAME) since `import.meta.url` is per-module.
+// The workflow extension (agent-workflow.ts) owns the dashboard/footer. These
+// helpers are parameterized over the extension's identity (module URL, filename,
+// SELF_NAME) since `import.meta.url` is per-module, so they keep working even if
+// another workflow extension is added alongside it later.
 
 // True only when pi was started with this extension via -e/--extension (not when
 // it was auto-discovered). `selfUrl` is the caller's import.meta.url.
@@ -156,7 +155,7 @@ export function selectedWorkflowExtension(): string | null {
         else if (a.startsWith("-e=")) val = a.slice("-e=".length);
         if (!val) continue;
         const n = nameOf(val);
-        if (n === "agent-pipeline" || n === "agent-team") return n;
+        if (n === "agent-workflow") return n;
     }
     return null;
 }
@@ -164,7 +163,7 @@ export function selectedWorkflowExtension(): string | null {
 // Whether the extension with the given SELF_NAME owns the on-screen chrome.
 export function isActiveWorkflow(selfName: string): boolean {
     const sel = selectedWorkflowExtension();
-    return sel ? sel === selfName : selfName === "agent-pipeline";
+    return sel ? sel === selfName : selfName === "agent-workflow";
 }
 
 // ── .env loader ──────────────────────────────────
@@ -494,8 +493,9 @@ export function renderWorkflowFooter(opts: {
     // Frontmatter context_window of the single running sub-agent (if any), used as
     // a fallback for the percentage when the provider doesn't report a window.
     activeContextWindow?: number;
-    // When true (agent-pipeline: sub-agents share the primary's model/context), add
-    // the running sub-agent's tokens to the primary's for one combined total.
+    // When true, add the running sub-agent's tokens to the primary's for one combined
+    // total (for a shared-window mode). Currently unused — agent-workflow runs each
+    // agent in its own session, so the footer reports the primary session only.
     combineActive?: boolean;
     visibleWidth: (s: string) => number;
     truncateToWidth: (s: string, w: number) => string;
@@ -564,9 +564,9 @@ export function renderWorkflowFooter(opts: {
               : undefined;
 
     if (combineActive) {
-        // agent-pipeline: sub-agents run on the primary's model/context, so the
-        // sub-agent usage ADDS to the primary's — one combined total that persists
-        // across the run (uses maxSubTokens, not just the running phase).
+        // Shared-window mode (currently unused): sub-agents share the primary's
+        // window, so the sub-agent usage ADDS to the primary's — one combined total
+        // that persists across the run (uses maxSubTokens, not just the running phase).
         const total = primaryTokens + maxSubTokens;
         contextWindow =
             primaryWindow || maxSubWindow || activeContextWindow || undefined;
@@ -575,9 +575,9 @@ export function renderWorkflowFooter(opts: {
         // known; otherwise keep the primary's reported percent.
         contextPct = contextWindow && total ? null : primaryPct;
     } else {
-        // agent-team: the footer shows the PRIMARY (orchestrator) session's
-        // context. Each sub-agent runs on its own per-agent model/session and shows
-        // its OWN context on its card — the footer does not flip to a sub-agent.
+        // Default: the footer shows the PRIMARY (orchestrator) session's context.
+        // Each sub-agent runs on its own per-agent model/session and shows its OWN
+        // context on its card — the footer does not flip to a sub-agent.
         contextPct = primaryPct;
         tokenCount = primaryTokens || undefined;
         contextWindow = primaryWindow;
@@ -961,7 +961,7 @@ export function loadAgents(
 // ── Teams (.pi/agents/teams.yaml) ────────────────
 
 // Minimal YAML parser for the flat `team:\n  - member` shape teams.yaml uses.
-// Avoids a YAML dependency; mirrors the agent-team extension's parser.
+// Avoids a YAML dependency; mirrors the agent-workflow extension's parser.
 function parseTeamsYaml(raw: string): Record<string, string[]> {
     const teams: Record<string, string[]> = {};
     let current: string | null = null;
@@ -1562,8 +1562,8 @@ export function validatePlan(plan: string): PlanCheck {
 // ── Shared run context (curated cross-agent bundle) ──
 // Durable artifacts earlier pipeline phases produced. Prepended to a later
 // agent's task so every agent can build on the others' work without the lossy
-// digest-into-the-next-prompt handoff. Used by both agent-pipeline (always on)
-// and agent-team (on by default; opt out with PI_AGENT_TEAM_SHARED_CONTEXT=0).
+// digest-into-the-next-prompt handoff. Used by the agent-workflow extension (on by
+// default; opt out with PI_AGENT_WORKFLOW_SHARED_CONTEXT=0).
 export interface RunArtifacts {
     recon?: string; // scout findings
     plan?: string; // approved plan
@@ -2112,7 +2112,7 @@ export function tokenNote(phase: PhaseState): string {
 // ── Shared agent spawn ────────────────────────────
 
 // Configuration for spawning a sub-agent subprocess. Extracted so both
-// extensions (agent-pipeline, agent-team) and the WorkflowRuntime class
+// extension (agent-workflow) and the WorkflowRuntime class
 // share one implementation instead of carrying ~220-line copies.
 export interface SpawnConfig {
     sessionDir: string;
@@ -2170,7 +2170,7 @@ export function subagentExtArgs(tools: string): string[] {
 }
 
 // Spawn a pi subprocess for an agent, stream its output, and return the result.
-// This is the single shared implementation used by agent-pipeline, agent-team,
+// This is the single shared implementation used by agent-workflow,
 // and the WorkflowRuntime class. Each caller handles model resolution and
 // fallback differently, so this function only handles the spawn itself.
 // ── Pure event handler for spawn events ────────────

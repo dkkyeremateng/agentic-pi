@@ -1,4 +1,4 @@
-// ABOUTME: Shared orchestration for the agent-pipeline / agent-team extensions.
+// ABOUTME: Shared orchestration for the agent-workflow extension.
 // ABOUTME: runWorkflow / dispatchAgent / selectAgents are byte-
 // ABOUTME: identical between the two except the per-agent vs single model strategy
 // ABOUTME: and the SHARED_CONTEXT flag, so they live here over a shared state object
@@ -157,7 +157,7 @@ type RunResult = { status: string; report: string };
 type ToolResult = AgentToolResult<unknown>;
 
 // ── Shared command handler ───────────────────────
-// runWorkflowCommand is byte-identical between agent-pipeline and agent-team
+// runWorkflowCommand is used by the agent-workflow extension
 // (same notifications, same dropped-lines warning, same publishReport call).
 // Extracted here so both extensions share one copy.
 
@@ -308,7 +308,7 @@ export async function runWorkflowCore(
     }
 
     // The active team's roster IS the pipeline: run exactly the agents it lists,
-    // in canonical order. With no team selected (e.g. the run_agent_team tool),
+    // in canonical order. With no team selected (e.g. the run_agent_workflow tool),
     // fall back to every loaded agent so the whole pipeline runs.
     let members = activeMembers(s);
     if (members.length === 0) members = Array.from(s.agents.keys());

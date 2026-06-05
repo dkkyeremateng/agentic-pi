@@ -592,7 +592,7 @@ describe("renderWorkflowFooter", () => {
         return renderWorkflowFooter({
             width: 200,
             theme,
-            selfName: "agent-team",
+            selfName: "agent-workflow",
             model: "m",
             running: false,
             lastStatus: "idle",
@@ -700,22 +700,22 @@ describe("loadSkills", () => {
 describe("sessionLabel", () => {
     it("includes the team and request", () => {
         assert.equal(
-            sessionLabel("agent-team", "building", "add CSV export"),
-            "agent-team · building · add CSV export",
+            sessionLabel("agent-workflow", "building", "add CSV export"),
+            "agent-workflow · building · add CSV export",
         );
     });
     it("omits the team when none / 'none'", () => {
         assert.equal(
-            sessionLabel("agent-team", "", "do a thing"),
-            "agent-team · do a thing",
+            sessionLabel("agent-workflow", "", "do a thing"),
+            "agent-workflow · do a thing",
         );
         assert.equal(
-            sessionLabel("agent-pipeline", "none", "do a thing"),
-            "agent-pipeline · do a thing",
+            sessionLabel("agent-workflow", "none", "do a thing"),
+            "agent-workflow · do a thing",
         );
     });
     it("truncates a long request", () => {
-        const label = sessionLabel("agent-team", "", "x".repeat(80));
+        const label = sessionLabel("agent-workflow", "", "x".repeat(80));
         assert.ok(label.endsWith("…"));
         assert.ok(label.length < 70);
     });

@@ -1,7 +1,6 @@
 // ABOUTME: Shared widget rendering utilities for the workflow orchestrator extensions.
-// ABOUTME: Extracts the common grid layout and pipeline view logic that's identical
-// ABOUTME: between agent-pipeline and agent-team. Extension-specific customizations
-// ABOUTME: (card styling, model tables, dispatch badges) remain in each extension.
+// ABOUTME: Extracts the common grid layout and pipeline view logic used by the
+// ABOUTME: agent-workflow extension (card styling, model tables, dispatch badges).
 
 import type { PhaseState } from "./workflow-core";
 import {
@@ -28,10 +27,10 @@ export function fileLink(absPath: string, display: string): string {
 
 // ── Rich agent card (single source of truth) ──────
 
-// The 7-line agent card used by BOTH agent-pipeline and agent-team, for both the
+// The 7-line agent card used by the agent-workflow extension, for both the
 // idle dashboard and the live pipeline view: name · status · context-usage bar ·
 // model · description. The caller supplies the resolved `model` to display
-// (agent-team: per-agent; agent-pipeline: the one session model) and the agent's
+// (the per-agent model) and the agent's
 // `def` (for the description and frontmatter context_window fallback). Keeping this
 // in one place stops the two extensions' cards from drifting.
 export function renderRichCard(opts: {
@@ -46,7 +45,7 @@ export function renderRichCard(opts: {
     // that hasn't consumed any context is noise. Default true (live/done cards).
     showContext?: boolean;
     // When false, show the `model` string verbatim instead of the live
-    // activeModel (agent-pipeline pins this to "default"). Default true.
+    // activeModel. Default true.
     useActiveModel?: boolean;
 }): string[] {
     const { agentKey, def, phases, colWidth, theme, model } = opts;
@@ -111,9 +110,7 @@ export function renderRichCard(opts: {
     const ctxVisible = Math.min(ctxRaw.length, w);
 
     // The model the agent actually runs on; after a fallback the ◆ becomes ⚠.
-    // When useActiveModel is false the card shows the passed `model` verbatim
-    // (agent-pipeline pins this to "default" — every sub-agent uses the session
-    // model, shown in full in the footer).
+    // When useActiveModel is false the card shows the passed `model` verbatim.
     const useActiveModel = opts.useActiveModel ?? true;
     const fellBack = useActiveModel && !!livePhase?.modelFallback;
     const effectiveModel = (useActiveModel && livePhase?.activeModel) || model;

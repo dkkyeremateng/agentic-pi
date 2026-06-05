@@ -1,17 +1,17 @@
 // ABOUTME: Standalone `dispatch` extension. Owns the `dispatch_agent` and
 // `select_agents` tools so ANY agent can dispatch a specialist — in a plain pi
-// session, not just inside the agent-pipeline / agent-team workflows. Those
-// workflows depend on this extension for free-form dispatch but can no longer
-// register the tools themselves; instead they subscribe to DISPATCH_UPDATE on
-// pi.events and mirror the phase snapshot into their dashboard.
+// session, not just inside the agent-workflow workflow. That workflow depends on
+// this extension for free-form dispatch but can no longer register the tools
+// itself; instead it subscribes to DISPATCH_UPDATE on pi.events and mirrors the
+// phase snapshot into its dashboard.
 //
 // This extension keeps its OWN orchestrator state and emits a phase snapshot on
 // every change — it never reaches into a workflow's state. Default UI is plain
 // notifications, so dispatch is fully usable with no dashboard mounted.
 //
-// The workflow extensions (agent-pipeline / agent-team) depend on this extension
-// for dispatch: they no longer register dispatch_agent/select_agents themselves and
-// instead subscribe to DISPATCH_UPDATE on pi.events. Load all three together.
+// The agent-workflow extension depends on this extension for dispatch: it no longer
+// registers dispatch_agent/select_agents itself and instead subscribes to
+// DISPATCH_UPDATE on pi.events. Load both together (dispatch first).
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -47,12 +47,12 @@ import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/dispatch-events";
 // Run before any process.env reads below.
 loadDotEnv(process.cwd());
 
-// ── Config (mirrors agent-team.ts so dispatch behaves identically) ───────────
+// ── Config (mirrors agent-workflow.ts so dispatch behaves identically) ───────
 const WORKER_MODEL = process.env.PI_WORKFLOW_MODEL || "";
 const AGENT_TIMEOUT_MS =
     Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_TIMEOUT || "0") || 0) *
     60_000;
-const SHARED_CONTEXT = process.env.PI_AGENT_TEAM_SHARED_CONTEXT !== "0";
+const SHARED_CONTEXT = process.env.PI_AGENT_WORKFLOW_SHARED_CONTEXT !== "0";
 const MAX_DISPATCHES_PER_TURN = Math.max(
     1,
     parseInt(process.env.PI_MAX_DISPATCHES_PER_TURN || "20", 10) || 20,

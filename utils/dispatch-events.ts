@@ -1,5 +1,5 @@
 // ABOUTME: Event-bus contract between the standalone `dispatch` extension and any
-// workflow dashboard (agent-team / agent-pipeline) that wants to mirror dispatch
+// workflow dashboard (agent-workflow) that wants to mirror dispatch
 // activity. The dispatch extension OWNS dispatch_agent + select_agents and emits a
 // phase snapshot on every state change; dashboards subscribe (pi.events.on) and
 // render from it. This keeps dispatch decoupled from the workflow UIs — no shared

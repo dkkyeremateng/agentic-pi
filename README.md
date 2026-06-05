@@ -9,7 +9,7 @@ only `.env` config (no code edits).
 
 | Path | What it is |
 |------|-----------|
-| `extensions/` | pi extensions. `agent-pipeline.ts` / `agent-team.ts` run a self-healing **plan → critic → implement → test → validate → document → ship** workflow; `dispatch.ts` is a standalone extension owning the `dispatch_agent` / `dispatch_parallel` / `select_agents` tools (used by any agent, in any session). See [`extensions/README.md`](extensions/README.md). |
+| `extensions/` | pi extensions. `agent-workflow.ts` runs a self-healing **plan → critic → implement → test → validate → document → ship** workflow with per-agent models; `dispatch.ts` is a standalone extension owning the `dispatch_agent` / `dispatch_parallel` / `select_agents` tools (used by any agent, in any session). See [`extensions/README.md`](extensions/README.md). |
 | `agents/` | Agent definitions (`.md` with frontmatter): `scout`, `planner`, `critic`, `implementer`, `tester`, `validator`, `documenter`, `shipper`, plus `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets). |
 | `skills/` | On-demand skills. `linear/` — a stdlib-Python CLI for the [Linear GraphQL API](https://linear.app/developers/graphql); `atlassian/` — a stdlib-Python CLI for the [Jira Cloud REST API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) (tickets); `bowser/` — Playwright browser automation. |
 | `utils/` | Shared, testable orchestration core (`workflow-core.ts`, `orchestrator-core.ts`) — kept out of `extensions/` so pi doesn't load them as extensions. |
@@ -20,14 +20,13 @@ only `.env` config (no code edits).
 
 ```bash
 cp example.env .env          # then fill in your models / API keys
-./run.sh                     # agent-pipeline owns the dashboard
-./run.sh team                # agent-team (per-agent models) owns it instead
+./run.sh                     # launch the agent-workflow extension
 ```
 
-`run.sh` loads `dispatch.ts` + both workflows resolved relative to itself, so you
+`run.sh` loads `dispatch.ts` + `agent-workflow.ts` resolved relative to itself, so you
 never edit pi's global settings per machine. The only requirement is `pi` on PATH.
-Then, in pi: `/agent-pipeline <request>` or `/agent-team <request>`, or just ask the
-primary agent to dispatch work. Full usage and the dashboard/report details are in
+Then, in pi: `/agent-workflow <request>`, or just ask the primary agent to dispatch
+work. Full usage and the dashboard/report details are in
 [`extensions/README.md`](extensions/README.md).
 
 The issue-tracker CLIs are separate optional installs (each reads its keys from `.env`):
