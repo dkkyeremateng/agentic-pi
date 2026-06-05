@@ -335,7 +335,9 @@ export async function runWorkflowCore(
     h.setup.setupSessions(cwd, true);
     s.phases = isLeadWorkflow
         ? [
-              ...leadAgents.map((a) => mkPhase(displayName(a), a.toLowerCase())),
+              ...leadAgents.map((a) =>
+                  mkPhase(displayName(a), a.toLowerCase()),
+              ),
               ...(reviewerKey
                   ? [mkPhase(displayName(reviewerKey), reviewerKey)]
                   : []),
@@ -417,7 +419,7 @@ export async function runWorkflowCore(
                 h.ui.updateWidget();
                 critique = await h.execution.runPhase(
                     reviewerPhase,
-                    `Evaluate the research findings the ${lastLeadName} just produced for this request — the document is in the findings/ folder, so read it there. Return APPROVED or REVISE BEFORE PUBLISHING with specific required fixes.\n\nRequest:\n${request}\n\n${lastLeadName}'s summary:\n${leadOutput}`,
+                    `Evaluate the research findings the ${lastLeadName} just produced for this request — the document is in the .pi/findings/ folder, so read it there. Return APPROVED or REVISE BEFORE PUBLISHING with specific required fixes.\n\nRequest:\n${request}\n\n${lastLeadName}'s summary:\n${leadOutput}`,
                     cwd,
                 );
                 if (!critique.ok) return fail(s, "Critique", critique.output);
@@ -431,7 +433,7 @@ export async function runWorkflowCore(
                 h.ui.updateWidget();
                 const revised = await h.execution.runPhase(
                     leadPhase,
-                    `The critic asked for revisions. Update your findings document in the findings/ folder to address EVERY required fix, then summarize what changed.\n\nRequest:\n${request}\n\nYour previous result:\n${leadOutput}\n\nCritic feedback:\n${critique.output}`,
+                    `The critic asked for revisions. Update your findings document in the .pi/findings/ folder to address EVERY required fix, then summarize what changed.\n\nRequest:\n${request}\n\nYour previous result:\n${leadOutput}\n\nCritic feedback:\n${critique.output}`,
                     cwd,
                 );
                 if (!revised.ok) return fail(s, lastLeadName, revised.output);
@@ -646,7 +648,10 @@ export async function runWorkflowCore(
         h.ui.updateWidget();
         val = await h.execution.runPhase(
             valP,
-            shared(validateTask(request, plan.output, test.output), "validator"),
+            shared(
+                validateTask(request, plan.output, test.output),
+                "validator",
+            ),
             cwd,
         );
         if (!val.ok) return fail(s, "Validation", val.output);
@@ -753,7 +758,6 @@ export async function runWorkflowCore(
     return { status, report };
 }
 
-
 function writeReport(h: OrchestratorHost, cwd: string, report: string): void {
     try {
         writeFileSync(join(cwd, "workflow-report.md"), report, "utf-8");
@@ -837,7 +841,8 @@ export async function dispatchAgentCore(
     // ancestry catches cycles (A dispatches B dispatches A). Default max depth 1 =
     // single level (only the top dispatches); raise PI_DISPATCH_MAX_DEPTH to allow
     // sub-agents to dispatch further.
-    const dispatchDepth = parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
+    const dispatchDepth =
+        parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
     const maxDispatchDepth =
         parseInt(process.env.PI_DISPATCH_MAX_DEPTH || "1", 10) || 1;
     if (dispatchDepth >= maxDispatchDepth)
@@ -1043,7 +1048,8 @@ export async function dispatchParallelCore(
             "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
         );
 
-    const dispatchDepth = parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
+    const dispatchDepth =
+        parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
     const maxDispatchDepth =
         parseInt(process.env.PI_DISPATCH_MAX_DEPTH || "1", 10) || 1;
     if (dispatchDepth >= maxDispatchDepth)

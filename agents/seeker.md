@@ -32,7 +32,7 @@ The skill supports **multiple independent browser instances at once**, each its 
 ## What you do
 
 - **Headless browsing / research** — open the most relevant pages, follow only the links that move toward the answer, extract the rendered content, and record the exact URL for every claim.
-- **Web scraping** — pull the specific data asked for (structured where possible); save larger results to a file with `write` and verify with `read`/`grep`. Reuse one session per site; do not hammer.
+- **Web scraping** — pull the specific data asked for (structured where possible); save larger results to a file with `write` under `.pi/` (e.g. `.pi/scrape-<slug>.json`; `mkdir -p .pi` first) and verify with `read`/`grep`. Reuse one session per site; do not hammer.
 - **UI testing** — drive a flow step by step (open, snapshot, interact, assert), confirm expected elements/states/text appear, and report pass/fail with the concrete evidence (the snapshot text or a screenshot). Run independent test cases in parallel sessions.
 - **Screenshots** — capture with `screenshot --filename=.playwright-cli/<name>.png` (prefix `.playwright-cli/` so it doesn't land in the project root) and reference the saved path in your report.
 

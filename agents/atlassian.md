@@ -47,7 +47,7 @@ If `atlassian` is unavailable or unauthenticated, say so plainly and report what
 - **Comment** — post a comment to a ticket exactly as instructed.
 - **Update / transition** — change summary/description/assignee/priority via `update`; move status via `transition` (resolve the status name first).
 
-Work with intent: read before you write, run only the commands the request needs, then stop. When a list is large, save the full JSON with `write` and surface only the relevant rows.
+Work with intent: read before you write, run only the commands the request needs, then stop. When a list is large, save the full JSON with `write` under `.pi/` (e.g. `.pi/atlassian-<slug>.json`; `mkdir -p .pi` first) and surface only the relevant rows.
 
 ## Constraints
 

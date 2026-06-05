@@ -43,7 +43,7 @@ If `linear` is unavailable or unauthenticated, say so plainly and report what yo
 - **Comment** — post a comment to an issue exactly as instructed.
 - **Update** — change title/description/state/assignee/priority; for state, resolve the state name to its UUID first.
 
-Work with intent: read before you write, run only the commands the request needs, then stop. When a list is large, save the full JSON with `write` and surface only the relevant rows.
+Work with intent: read before you write, run only the commands the request needs, then stop. When a list is large, save the full JSON with `write` under `.pi/` (e.g. `.pi/linear-<slug>.json`; `mkdir -p .pi` first) and surface only the relevant rows.
 
 ## Constraints
 

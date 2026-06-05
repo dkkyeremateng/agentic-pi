@@ -23,7 +23,7 @@ available there.
 
 Also present are **delegating / specialist** agents that are not linear pipeline
 phases — `researcher.md` (investigate-and-write: gathers via specialists, gets the
-critic's review, writes `findings/<slug>.md`), plus `coordinator`, `seeker`,
+critic's review, writes `.pi/findings/<slug>.md`), plus `coordinator`, `seeker`,
 `linear`, `atlassian`. The orchestrator can dispatch any of these directly, and a
 team that lists one runs it as a **lead agent** (see [Adding a new agent](#adding-a-new-agent)).
 
@@ -55,7 +55,7 @@ a read-only recon pass runs first and feeds the planner.
 
 For plan-only work (no code change), pick a partial team — `spec` (planner +
 critic) produces a reviewed plan, and a team that also includes the `documenter`
-can render it into a spec under `specs/`. A team's roster determines exactly which
+can render it into a spec under `.pi/specs/`. A team's roster determines exactly which
 agents run, and a team led by a delegating agent (e.g. `research`) dispatches that
 agent with your request instead of running the linear pipeline.
 

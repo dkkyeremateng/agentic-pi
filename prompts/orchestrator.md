@@ -87,10 +87,10 @@ Some agents run their OWN sub-dispatches to gather and return a finished result.
 NOT pre-dispatch the specialists they call. A **reviewer** (the `critic`) is
 different: dispatch it AFTER the delegating agent to check the output.
 - **researcher** — investigates by dispatching `seeker` / `linear` / `atlassian` /
-  `scout` ITSELF, then writes a findings doc to `findings/`. Do NOT add those
+  `scout` ITSELF, then writes a findings doc to `.pi/findings/`. Do NOT add those
   gathering specialists to the plan. When a `critic` is available, select
   `researcher → critic`: dispatch the researcher to investigate and write, then the
-  critic to review its findings in `findings/`; on **REVISE BEFORE PUBLISHING**
+  critic to review its findings in `.pi/findings/`; on **REVISE BEFORE PUBLISHING**
   re-dispatch the researcher with the feedback and re-review, on **APPROVED** stop.
 - **coordinator** — splits a multi-part request across specialists on its own.
 
