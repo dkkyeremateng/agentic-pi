@@ -74,13 +74,12 @@ for it.`;
 // screen height, any extra row tips the terminal into scrolling and the viewport
 // bounces up/down on every repaint.
 export const LOG_PANEL_RESERVE = 8;
-// Max rows the live-log panel may occupy. The dashboard is an `aboveEditor`
-// sticky widget, so it must stay COMPACT — if it fills the screen, growth in the
-// conversation beneath it (incl. pi's own "Working…" indicator) pushes the total
-// past the terminal height and the whole widget scrolls into the scrollback,
-// leaving a trail of stale dashboard frames. Cap the panel so the widget is a
-// modest, bounded height; the full per-phase log is in the collapsible card.
-export const LOG_PANEL_MAX_ROWS = 10;
+// Generous sanity cap on the live-log panel height. The real bound is the
+// extension's clampWidget (terminal rows minus the editor/footer reserve), which
+// lets the panel grow to fill the space below the cards; this just stops a giant
+// terminal from producing an absurdly tall panel. The full per-phase log is in
+// the collapsible card regardless.
+export const LOG_PANEL_MAX_ROWS = 24;
 export const LOG_CAP_CHARS = 16000; // bound the stored per-phase log
 export const STDERR_TAIL_CAP = 2000; // bound the captured stderr tail used in failure reports
 

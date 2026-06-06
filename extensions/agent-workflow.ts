@@ -37,6 +37,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
     Text,
+    Container,
     Markdown,
     truncateToWidth,
     visibleWidth,
@@ -506,7 +507,18 @@ export default function (pi: ExtensionAPI) {
         if (!widgetCtx || !widgetCtx.hasUI) return; // no chrome without a UI
         const theme = widgetCtx.ui.theme;
         const width = process.stdout.columns || 80;
-        widgetCtx.ui.setWidget("agent-workflow", buildWidgetLines(width, theme));
+        const lines = buildWidgetLines(width, theme);
+        // Use the component (factory) overload, not the string[] one: pi hard-caps
+        // string[] widgets at MAX_WIDGET_LINES (10) with "(widget truncated)", which
+        // would cut the live-log panel. Build the same per-line Container pi uses
+        // internally for string[] (so it redraws cleanly in place — no ghosting),
+        // but without the 10-line cap. Our own clampWidget already bounds the height
+        // to the screen, so this can't push the editor/footer off.
+        widgetCtx.ui.setWidget("agent-workflow", (_tui: any) => {
+            const container = new Container();
+            for (const line of lines) container.addChild(new Text(line, 1, 0));
+            return container;
+        });
     }
 
     // ── Run a single agent as a subprocess ───────
