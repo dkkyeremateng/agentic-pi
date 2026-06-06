@@ -23,11 +23,11 @@ available there.
 
 Also present are **specialist** agents that are not linear pipeline phases —
 `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets).
-The orchestrator dispatches these directly. There is no dedicated research agent:
-for an investigate-and-write-up the orchestrator assembles it itself — gather with
-the relevant specialists, then write the findings doc to `.agent/findings/<slug>.md`
-(optionally reviewed by the `critic`). A team that lists a non-pipeline agent runs it
-as a **lead agent** (see [Adding a new agent](#adding-a-new-agent)).
+These are **not** run as teams; the orchestrator dispatches them directly. There is
+no dedicated research agent: for an investigate-and-write-up the orchestrator
+assembles it itself — pick the relevant specialists/skills for the request, gather
+(in parallel when independent), then write the findings doc to
+`.agent/findings/<slug>.md`, optionally sending it to the `critic` for review.
 
 ## Run it
 
@@ -56,9 +56,9 @@ a read-only recon pass runs first and feeds the planner.
 
 For plan-only work (no code change), pick a partial team — `spec` (planner +
 critic) produces a reviewed plan, and a team that also includes the `documenter`
-can render it into a spec under `.agent/specs/`. A team's roster determines exactly which
-agents run, and a team led by a non-pipeline agent (e.g. a `seeker`-led team)
-dispatches that agent with your request instead of running the linear pipeline.
+can render it into a spec under `.agent/specs/`. A team's roster determines exactly
+which pipeline phases run; non-pipeline specialists added to a team are ignored —
+dispatch those ad-hoc through the orchestrator instead.
 
 ## Adding a new agent
 
@@ -90,14 +90,12 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
        - <name>
    ```
 
-   - A **non-pipeline / utility** agent (anything not named one of the eight canonical
-     roles) runs as a **lead agent** — dispatched directly with your prompt. (Give it
-     `dispatch_agent`/`dispatch_parallel` and it can run its own sub-dispatches, which
-     needs `PI_DISPATCH_MAX_DEPTH=2`.) If the team also lists the `critic`, the critic
-     then runs as a visible reviewer of the lead's output, looping back on REVISE — so
-     a team like `[seeker, critic]` runs the seeker, then the critic reviews its result.
    - Naming it one of `scout, planner, critic, implementer, tester, validator,
-     documenter, shipper` slots it into the linear pipeline at that position.
+     documenter, shipper` slots it into the linear pipeline at that position, and a
+     team listing it runs it there.
+   - Any **other** (non-pipeline) agent is a specialist the orchestrator dispatches
+     ad-hoc (e.g. `seeker`); it is not run via a team — adding it to a team roster
+     has no effect, since only pipeline roles execute.
 
 3. Per-agent model: set `PI_AGENT_<NAME>_MODEL=...`, add a `<name>: <model>` line to
    `.pi/agents/models.yaml`, or set the agent's `.md` `model:` frontmatter. Agents
@@ -106,7 +104,7 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
 **The only change that needs TypeScript** is introducing a brand-new *linear
 pipeline phase* — a new step woven into `scout → … → ship` with its own
 retry/gating logic — which lives in `PIPELINE_ORDER`, the per-phase task builders,
-and `runWorkflowCore` (`../utils/`). Standalone and delegating agents are files-only.
+and `runWorkflowCore` (`../utils/`). Standalone specialist agents are files-only.
 
 ## Note
 

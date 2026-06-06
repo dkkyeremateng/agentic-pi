@@ -378,7 +378,7 @@ describe("dispatchAgentCore", () => {
 
     it("does not flag tool-driven agents with short output as empty", async () => {
         const agents = new Map<string, AgentDef>();
-        agents.set("researcher", mkAgent("researcher"));
+        agents.set("seeker", mkAgent("seeker"));
         const host = mkHost({
             setup: {
                 loadAgents: () => agents,
@@ -400,7 +400,7 @@ describe("dispatchAgentCore", () => {
         const result = await dispatchAgentCore(
             st,
             host,
-            "researcher",
+            "seeker",
             "research this",
             undefined,
             mkCtx(),
@@ -1685,7 +1685,7 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
 describe("runWorkflowCore (ping mode)", () => {
     it("pings every loaded agent in parallel instead of running the pipeline", async () => {
         const agents = new Map<string, AgentDef>();
-        for (const n of ["planner", "critic", "implementer", "researcher"]) {
+        for (const n of ["planner", "critic", "implementer", "seeker"]) {
             agents.set(n, mkAgent(n));
         }
         const calls: string[] = [];
@@ -1721,109 +1721,15 @@ describe("runWorkflowCore (ping mode)", () => {
             mkCtx(),
         );
         assert.equal(result.status, "done");
-        // ALL loaded agents pinged (incl. researcher, not in the active team)...
+        // ALL loaded agents pinged (incl. seeker, not in the active team)...
         assert.deepEqual(
             calls.slice().sort(),
-            ["critic", "implementer", "planner", "researcher"],
+            ["critic", "implementer", "planner", "seeker"],
         );
         // ...and they ran concurrently, not sequentially.
         assert.ok(maxConcurrent > 1, "expected parallel execution");
         assert.ok(result.report.includes("Ping Report"));
         assert.ok(result.report.includes("in parallel"));
-    });
-});
-
-// ── runWorkflowCore — lead-agent (delegating) teams ──
-
-describe("runWorkflowCore (lead-agent teams)", () => {
-    it("runs the lead agent with the request, then the critic reviews it", async () => {
-        const agents = new Map<string, AgentDef>();
-        agents.set("researcher", mkAgent("researcher"));
-        agents.set("critic", mkAgent("critic"));
-        const calls: { agent: string; task: string }[] = [];
-        const host = mkHost({
-            setup: {
-                loadAgents: () => agents,
-                setupSessions: () => {},
-                prepareRun: () => {},
-            },
-            execution: {
-                runPhase: async (phase: any, task: string) => {
-                    calls.push({ agent: phase.agent, task });
-                    if (phase.agent === "critic") {
-                        return { output: "APPROVED\nLooks good", ok: true };
-                    }
-                    return { output: `${phase.agent} output`, ok: true };
-                },
-            },
-        });
-        const st = mkStateWithAgents(agents, {
-            teams: { research: ["researcher", "critic"] },
-            activeTeamName: "research",
-        });
-        const result = await runWorkflowCore(
-            st,
-            host,
-            "investigate WAL-2977",
-            3,
-            mkCtx(),
-        );
-        assert.equal(result.status, "done");
-        // Researcher runs as the lead with the raw request; the critic then runs
-        // as a visible reviewer phase. Both appear as phases.
-        assert.deepEqual(
-            calls.map((c) => c.agent),
-            ["researcher", "critic"],
-        );
-        assert.equal(calls[0].task, "investigate WAL-2977");
-        assert.deepEqual(
-            st.phases.map((p) => p.agent),
-            ["researcher", "critic"],
-        );
-    });
-
-    it("loops the lead agent back when the critic says REVISE BEFORE PUBLISHING", async () => {
-        const agents = new Map<string, AgentDef>();
-        agents.set("researcher", mkAgent("researcher"));
-        agents.set("critic", mkAgent("critic"));
-        const seq: string[] = [];
-        let criticRuns = 0;
-        const host = mkHost({
-            setup: {
-                loadAgents: () => agents,
-                setupSessions: () => {},
-                prepareRun: () => {},
-            },
-            execution: {
-                runPhase: async (phase: any) => {
-                    seq.push(phase.agent);
-                    if (phase.agent === "critic") {
-                        criticRuns += 1;
-                        // Revise once, then approve.
-                        return criticRuns === 1
-                            ? {
-                                  output: "REVISE BEFORE PUBLISHING\nadd sources",
-                                  ok: true,
-                              }
-                            : { output: "APPROVED", ok: true };
-                    }
-                    return { output: "researcher output", ok: true };
-                },
-            },
-        });
-        const st = mkStateWithAgents(agents, {
-            teams: { research: ["researcher", "critic"] },
-            activeTeamName: "research",
-        });
-        const result = await runWorkflowCore(st, host, "do research", 3, mkCtx());
-        assert.equal(result.status, "done");
-        // researcher → critic(REVISE) → researcher(revise) → critic(APPROVED)
-        assert.deepEqual(seq, [
-            "researcher",
-            "critic",
-            "researcher",
-            "critic",
-        ]);
     });
 });
 
