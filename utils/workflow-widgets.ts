@@ -52,7 +52,11 @@ export function renderRichCard(opts: {
     const { agentKey, def, phases, colWidth, theme, model } = opts;
     const showContext = opts.showContext ?? true;
     const key = agentKey.toLowerCase();
-    const w = colWidth - 2;
+    const w = colWidth - 2; // inner width between the │ borders
+    // Usable text width with a 1-space gutter on BOTH sides, so every line has
+    // matching left/right padding (text truncated to `inner` can never fill `w`
+    // and leave a 0-width right gutter).
+    const inner = w - 2;
     const truncate = (s: string, max: number) =>
         s.length > max ? s.slice(0, Math.max(0, max - 1)) + "…" : s;
 
@@ -77,8 +81,10 @@ export function renderRichCard(opts: {
 
     const name = displayName(agentKey);
     const nameStr =
-        marker + theme.fg("accent", theme.bold(truncate(name, w - markerVisible)));
-    const nameVisible = markerVisible + Math.min(name.length, w - markerVisible);
+        marker +
+        theme.fg("accent", theme.bold(truncate(name, inner - markerVisible)));
+    const nameVisible =
+        markerVisible + Math.min(name.length, inner - markerVisible);
 
     const timeStr = elapsed > 0 ? ` ${secs(elapsed)}` : "";
     const toolNote =
@@ -86,8 +92,8 @@ export function renderRichCard(opts: {
             ? ` · ${toolCount} tool${toolCount === 1 ? "" : "s"}`
             : "";
     const statusRaw = `${icon} ${word}${timeStr}${toolNote}`;
-    const statusStr = theme.fg(color, truncate(statusRaw, w));
-    const statusVisible = Math.min(statusRaw.length, w);
+    const statusStr = theme.fg(color, truncate(statusRaw, inner));
+    const statusVisible = Math.min(statusRaw.length, inner);
 
     // The phase whose live state this card reflects (running, else most recent) —
     // drives the context bar, token count, and active model.
@@ -110,8 +116,8 @@ export function renderRichCard(opts: {
     // so the card height stays constant. Always shown ($0.00 for unpriced models).
     const costSuffix = ` · ${formatCostUsd(livePhase?.tokens?.costUsd)}`;
     const ctxRaw = `[${ctxBar}] ${ctxDisplay}${costSuffix}`;
-    const ctxStr = theme.fg("dim", truncate(ctxRaw, w));
-    const ctxVisible = Math.min(ctxRaw.length, w);
+    const ctxStr = theme.fg("dim", truncate(ctxRaw, inner));
+    const ctxVisible = Math.min(ctxRaw.length, inner);
 
     // The model the agent actually runs on; after a fallback the ◆ becomes ⚠.
     // When useActiveModel is false the card shows the passed `model` verbatim.
@@ -121,14 +127,14 @@ export function renderRichCard(opts: {
     const modelRaw = `${fellBack ? "⚠" : "◆"} ${effectiveModel}`;
     const modelStr = theme.fg(
         fellBack ? "accent" : "muted",
-        truncate(modelRaw, w),
+        truncate(modelRaw, inner),
     );
-    const modelVisible = Math.min(modelRaw.length, w);
+    const modelVisible = Math.min(modelRaw.length, inner);
 
     const descRaw = (def?.description || "—").split("—")[0].trim() || "—";
-    const descText = truncate(descRaw, w - 1);
+    const descText = truncate(descRaw, inner);
     const descLine = theme.fg("dim", descText);
-    const descVisible = Math.min(descText.length, w - 1);
+    const descVisible = Math.min(descText.length, inner);
 
     const top = "┌" + "─".repeat(w) + "┐";
     const bot = "└" + "─".repeat(w) + "┘";
@@ -154,7 +160,7 @@ export function renderRichCard(opts: {
 // Cap on a single card's width so cards don't stretch across a wide terminal
 // (a lone agent would otherwise fill the whole row). Sized to fit the longest
 // usual content line (the `◆ provider/model` string) plus borders.
-export const MAX_CARD_WIDTH = 48;
+export const MAX_CARD_WIDTH = 50;
 
 // Calculate column width for a grid layout.
 // Returns { cols, gap, colWidth } for rendering agent cards in a grid.
