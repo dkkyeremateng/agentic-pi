@@ -1653,6 +1653,7 @@ describe("handleSpawnEvent", () => {
                 input: 0,
                 output: 0,
             },
+            costUsd: 0,
         };
     }
 
@@ -1795,9 +1796,52 @@ describe("handleSpawnEvent", () => {
             input: 1000,
             output: 500,
             contextWindow: 100000,
+            costUsd: 0,
         });
         // pct = round((input + output) / contextWindow * 100) = round(1500/100000*100) = 2
         assert.equal(phase.contextPct, 2);
+    });
+
+    it("accumulates per-turn cost from usage.cost.total across turns", () => {
+        const state = mkState();
+        const phase = mkPhase();
+        const turn = (input: number, output: number, total: number) => ({
+            type: "message_end",
+            message: {
+                role: "assistant",
+                content: [],
+                usage: {
+                    input,
+                    output,
+                    contextWindow: 100000,
+                    cost: { total },
+                },
+            },
+        });
+        handleSpawnEvent(turn(1000, 200, 0.01), state, phase, noopPaint);
+        handleSpawnEvent(turn(1500, 300, 0.02), state, phase, noopPaint);
+        // per-turn cost is additive (input is re-billed each turn)
+        assert.ok(Math.abs((state.capturedTokens?.costUsd ?? 0) - 0.03) < 1e-9);
+        assert.ok(Math.abs((phase.tokens?.costUsd ?? 0) - 0.03) < 1e-9);
+    });
+
+    it("leaves cost at 0 when usage.cost is absent (unpriced model)", () => {
+        const state = mkState();
+        const phase = mkPhase();
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: {
+                    role: "assistant",
+                    content: [],
+                    usage: { input: 1000, output: 500, contextWindow: 100000 },
+                },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+        assert.equal(state.capturedTokens?.costUsd, 0);
     });
 
     it("captures finalError from message_end with stopReason error", () => {
@@ -1862,6 +1906,7 @@ describe("computeSpawnResult", () => {
                 input: 0,
                 output: 0,
             },
+            costUsd: 0,
             ...overrides,
         };
     }

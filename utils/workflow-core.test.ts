@@ -8,6 +8,7 @@ import {
     failPhase,
     renderTemplate,
     tokenNote,
+    formatCostUsd,
     mkPhase,
     freshPhases,
     dispatchEnv,
@@ -336,6 +337,42 @@ describe("tokenNote", () => {
         const phase = testPhase("planner");
         phase.tokens = { input: 700, output: 300, contextWindow: 200000 };
         assert.equal(tokenNote(phase), ", 1.0k tokens");
+    });
+
+    it("appends cost when a priced model reported one", () => {
+        const phase = testPhase("planner");
+        phase.tokens = {
+            input: 700,
+            output: 300,
+            contextWindow: 200000,
+            costUsd: 0.0123,
+        };
+        assert.equal(tokenNote(phase), ", 1.0k tokens, $0.012");
+    });
+
+    it("omits cost when zero/absent", () => {
+        const phase = testPhase("planner");
+        phase.tokens = { input: 700, output: 300, contextWindow: 200000 };
+        assert.equal(tokenNote(phase), ", 1.0k tokens");
+        phase.tokens.costUsd = 0;
+        assert.equal(tokenNote(phase), ", 1.0k tokens");
+    });
+});
+
+describe("formatCostUsd", () => {
+    it("returns $0.00 for zero/undefined/negative", () => {
+        assert.equal(formatCostUsd(0), "$0.00");
+        assert.equal(formatCostUsd(undefined), "$0.00");
+        assert.equal(formatCostUsd(-1), "$0.00");
+    });
+    it("uses 4 decimals for sub-cent costs", () => {
+        assert.equal(formatCostUsd(0.0003), "$0.0003");
+    });
+    it("uses 3 decimals for sub-dollar costs", () => {
+        assert.equal(formatCostUsd(0.012), "$0.012");
+    });
+    it("uses 2 decimals for dollar-plus costs", () => {
+        assert.equal(formatCostUsd(1.5), "$1.50");
     });
 });
 

@@ -61,6 +61,7 @@ export interface OrchestratorState {
     totalDroppedLines: number;
     totalToolCalls: number;
     totalTokens: { input: number; output: number };
+    totalCostUsd: number;
     runStartedAt: number;
     runElapsedMs: number;
     includeScout: boolean;
@@ -88,6 +89,7 @@ export function newOrchestratorState(): OrchestratorState {
         totalDroppedLines: 0,
         totalToolCalls: 0,
         totalTokens: { input: 0, output: 0 },
+        totalCostUsd: 0,
         runStartedAt: 0,
         runElapsedMs: 0,
         includeScout: false,
@@ -267,6 +269,7 @@ export async function runWorkflowCore(
         s.totalDroppedLines = 0;
         s.totalToolCalls = 0;
         s.totalTokens = { input: 0, output: 0 };
+        s.totalCostUsd = 0;
         s.runStartedAt = Date.now();
         s.runElapsedMs = 0;
         s.iteration = 0;
@@ -323,6 +326,7 @@ export async function runWorkflowCore(
     s.totalDroppedLines = 0;
     s.totalToolCalls = 0;
     s.totalTokens = { input: 0, output: 0 };
+    s.totalCostUsd = 0;
     s.runStartedAt = Date.now();
     s.runElapsedMs = 0;
     s.iteration = 0;
@@ -607,6 +611,7 @@ export async function runWorkflowCore(
             totalToolCalls: s.totalToolCalls,
             totalTokens: s.totalTokens,
             totalDroppedLines: s.totalDroppedLines,
+            totalCostUsd: s.totalCostUsd,
         },
         scoutP,
         planP,

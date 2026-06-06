@@ -120,7 +120,11 @@ A live widget renders the phases as connected cards
 with the leading `Scout` card present only when the team includes it). Each card
 shows a status icon
 (`○` pending, `●` running, `✓` done, `✗` error), elapsed time, and a context-usage
-bar — but **not** a snippet of the agent's log; that lives in the live activity
+bar. Once an agent has run on a **priced** model, its **estimated USD cost** is
+appended to the usage line (e.g. `· $0.012`) — pi computes per-response cost from
+the model's token rates, so this is accurate for models that carry pricing and
+shows nothing for models priced at 0 (e.g. a custom proxy). The card shows **not**
+a snippet of the agent's log; that lives in the live activity
 panel below the cards, so the cards stay compact. A status badge by the title shows
 the overall result (`● running`, `✓ shipped`, `‖ paused (no remote)`, `✗ failed`).
 
@@ -147,8 +151,12 @@ like any tool result to read the full markdown). It is also written to
   the verdict, pass count, and the PR URL when one was opened.
 - **Summary of work** — one digest line per phase (scout when present, planner,
   implementer, reviewer, tester, validator, then ship once it passes)
-  with the time each took and, for the tester, a passed/failed count. When scout
-  ran, a **Reconnaissance** section precedes the Plan in the Details.
+  with the time each took, its token count and **USD cost**, and, for the tester,
+  a passed/failed count. When scout ran, a **Reconnaissance** section precedes the
+  Plan in the Details.
+- **Totals** — wall-clock time, tool calls, total tokens, and **total run cost**
+  (summed across every phase, each priced on its own model). The footer also shows
+  this running total live during the run.
 - **Details** — the full transcript from every agent below the summary.
 
 When idle (no run in progress), the widget shows a **team dashboard** instead —

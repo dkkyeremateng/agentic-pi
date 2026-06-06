@@ -9,6 +9,7 @@ import {
     statusMeta,
     agentPhaseStatus,
     formatContextUsage,
+    formatCostUsd,
 } from "./workflow-core";
 import { secs } from "./workflow-utils";
 
@@ -105,7 +106,12 @@ export function renderRichCard(opts: {
         contextWindow: ctxWindow || undefined,
         barLength: 5,
     });
-    const ctxRaw = `[${ctxBar}] ${ctxDisplay}`;
+    // Append the phase's USD cost to the usage line (where tokens already live)
+    // so the card height stays constant — only when a priced model reported a cost.
+    const cardCost = livePhase?.tokens?.costUsd;
+    const costSuffix =
+        cardCost && cardCost > 0 ? ` · ${formatCostUsd(cardCost)}` : "";
+    const ctxRaw = `[${ctxBar}] ${ctxDisplay}${costSuffix}`;
     const ctxStr = theme.fg("dim", truncate(ctxRaw, w));
     const ctxVisible = Math.min(ctxRaw.length, w);
 

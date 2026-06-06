@@ -628,7 +628,16 @@ export function renderWorkflowFooter(opts: {
         theme.fg("accent", selfName) +
         theme.fg("dim", " ") +
         theme.fg(statusColor, statusText);
-    const right = theme.fg("dim", `[${bar}] ${pctStr} `);
+    // Total spend across this run's sub-agent phases (each prices its own model).
+    const totalCostUsd = phases.reduce(
+        (sum, p) => sum + (p.tokens?.costUsd || 0),
+        0,
+    );
+    const costStr =
+        totalCostUsd > 0
+            ? theme.fg("muted", `${formatCostUsd(totalCostUsd)} · `)
+            : "";
+    const right = costStr + theme.fg("dim", `[${bar}] ${pctStr} `);
     const pad = " ".repeat(
         Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
     );
@@ -1223,6 +1232,7 @@ export function makeSpawnWrapper(opts: {
         totalTokens: { input: number; output: number };
         totalToolCalls: number;
         totalDroppedLines: number;
+        totalCostUsd: number;
     };
     sessionDir: string | (() => string);
     agentTimeoutMs: number;
@@ -1260,6 +1270,7 @@ export function makeSpawnWrapper(opts: {
                 if (result.tokens) {
                     state.totalTokens.input += result.tokens.input;
                     state.totalTokens.output += result.tokens.output;
+                    state.totalCostUsd += result.tokens.costUsd || 0;
                     phase.tokens = result.tokens;
                 }
                 state.totalToolCalls += phase.toolCount - prevToolCount;
@@ -1410,6 +1421,7 @@ interface ReportTotals {
     totalToolCalls: number;
     totalTokens: { input: number; output: number };
     totalDroppedLines: number;
+    totalCostUsd?: number;
 }
 
 function totalsLine(t: ReportTotals): string {
@@ -1417,7 +1429,11 @@ function totalsLine(t: ReportTotals): string {
         t.totalTokens.input > 0
             ? ` · ${(t.totalTokens.input + t.totalTokens.output).toLocaleString()} tokens (${t.totalTokens.input.toLocaleString()} in / ${t.totalTokens.output.toLocaleString()} out)`
             : "";
-    return `${secs(t.runElapsedMs)} wall-clock · ${t.totalToolCalls} tool call(s)${tok}`;
+    const cost =
+        t.totalCostUsd && t.totalCostUsd > 0
+            ? ` · ${formatCostUsd(t.totalCostUsd)}`
+            : "";
+    return `${secs(t.runElapsedMs)} wall-clock · ${t.totalToolCalls} tool call(s)${tok}${cost}`;
 }
 
 // One "- **Name** (Ns, tokens) — digest [N dropped]" summary line for a phase.
@@ -2080,6 +2096,16 @@ export interface TokenUsage {
     input: number;
     output: number;
     contextWindow: number; // 0 when unknown
+    costUsd?: number; // USD cost for this phase: sum of per-turn usage.cost.total
+}
+
+// Format a USD cost compactly for cards/footers/report. Sub-cent costs get extra
+// precision so cheap runs don't all collapse to "$0.00".
+export function formatCostUsd(usd: number | undefined): string {
+    if (!usd || usd <= 0) return "$0.00";
+    if (usd < 0.01) return "$" + usd.toFixed(4);
+    if (usd < 1) return "$" + usd.toFixed(3);
+    return "$" + usd.toFixed(2);
 }
 
 // Format a per-phase token note for the workflow report summary line.
@@ -2092,7 +2118,11 @@ export function tokenNote(phase: PhaseState): string {
         return "";
     const total = phase.tokens.input + phase.tokens.output;
     const k = total >= 1000 ? `${(total / 1000).toFixed(1)}k` : `${total}`;
-    return `, ${k} tokens`;
+    const cost =
+        phase.tokens.costUsd && phase.tokens.costUsd > 0
+            ? `, ${formatCostUsd(phase.tokens.costUsd)}`
+            : "";
+    return `, ${k} tokens${cost}`;
 }
 
 // ── Shared agent spawn ────────────────────────────
@@ -2174,6 +2204,7 @@ export interface SpawnEventState {
         input: number;
         output: number;
     };
+    costUsd: number; // running USD total: sum of each turn's usage.cost.total
 }
 
 export function handleSpawnEvent(
@@ -2273,6 +2304,10 @@ export function handleSpawnEvent(
             );
             // output tokens: genuinely additive across turns
             state.cumulativeTokens.output += msg.usage.output || 0;
+            // cost: pi's providers run calculateCost() on each response, so
+            // msg.usage.cost.total is this turn's spend (input is re-billed every
+            // turn). Per-turn cost is additive — sum it for the phase total.
+            state.costUsd += msg.usage.cost?.total || 0;
 
             const totalTokens =
                 state.cumulativeTokens.input + state.cumulativeTokens.output;
@@ -2288,6 +2323,7 @@ export function handleSpawnEvent(
                 input: state.cumulativeTokens.input,
                 output: state.cumulativeTokens.output,
                 contextWindow: ctxWindow,
+                costUsd: state.costUsd,
             };
             // Also set phase.tokens immediately so the card can display it during the spawn
             phase.tokens = state.capturedTokens;
@@ -2423,6 +2459,7 @@ function spawnAgentWithModelFallback(
             input: 0,
             output: 0,
         },
+        costUsd: 0,
     };
     const start = Date.now();
 
@@ -2664,6 +2701,7 @@ export function spawnAgentWithModel(
             input: 0,
             output: 0,
         },
+        costUsd: 0,
     };
     const start = Date.now();
 
