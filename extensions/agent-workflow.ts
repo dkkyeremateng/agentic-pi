@@ -773,12 +773,38 @@ export default function (pi: ExtensionAPI) {
             description:
                 "Change a sub-agent's model for this session: '/agent-model' to list, '/agent-model <agent> <model>' to set, '/agent-model <agent> reset' or '/agent-model reset' to clear",
             getArgumentCompletions: (prefix: string) => {
-                // Complete only the first token (the agent name, plus "reset").
-                if (/\s/.test(prefix)) return null;
-                const p = prefix.toLowerCase();
-                return ["reset", ...Array.from(st.agents.keys())]
-                    .filter((c) => c.startsWith(p))
-                    .map((c) => ({ value: c, label: c }));
+                // First token: the agent name (plus the bare "reset" form).
+                if (!/\s/.test(prefix)) {
+                    const p = prefix.toLowerCase();
+                    return ["reset", ...Array.from(st.agents.keys())]
+                        .filter((c) => c.startsWith(p))
+                        .map((c) => ({ value: c, label: c }));
+                }
+                // Second token: the model. Only offered for a known agent, and
+                // never after the bare "reset" form.
+                const m = prefix.match(/^(\S+)\s+(.*)$/);
+                if (!m) return null;
+                const [, first, modelPrefix] = m;
+                if (first.toLowerCase() === "reset") return null;
+                if (!resolveAgent(st.agents, first)) return null;
+                // Available models (auth configured), falling back to all known.
+                let models: { id: string; provider: string }[] = [];
+                try {
+                    models = pi.modelRegistry.getAvailable();
+                    if (models.length === 0) models = pi.modelRegistry.getAll();
+                } catch {
+                    return null;
+                }
+                const q = modelPrefix.toLowerCase();
+                const ids = Array.from(
+                    new Set(models.map((mm) => `${mm.provider}/${mm.id}`)),
+                )
+                    .filter((id) => id.toLowerCase().includes(q))
+                    .sort();
+                // Let "reset" also complete in the model slot (clears the override).
+                const opts = "reset".startsWith(q) ? ["reset", ...ids] : ids;
+                if (opts.length === 0) return null;
+                return opts.map((id) => ({ value: `${first} ${id}`, label: id }));
             },
             handler: async (args, ctx) => {
                 widgetCtx = ctx;

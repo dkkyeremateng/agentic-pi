@@ -209,7 +209,7 @@ never modifies files; it appears as the first card in the flow and gets its own
 
 Commands:
 - `/agent-workflow [request]` — pick a team (Select Team dialog), then run the lifecycle (prompts for the request if omitted). Add a `loops=N` token (e.g. `/agent-workflow loops=5 fix the bug`) to override the retry limit for this run.
-- `/agent-model [<agent> <model>]` — change a sub-agent's model **on the fly** for this session only (held in memory, resets on restart). No args lists every agent's effective model (overrides flagged `*`); `/agent-model <agent> <model>` sets one; `/agent-model <agent> reset` clears one; `/agent-model reset` clears all. A runtime override wins over `PI_AGENT_<NAME>_MODEL`, the `.md` `model:`, and `models.yaml`.
+- `/agent-model [<agent> <model>]` — change a sub-agent's model **on the fly** for this session only (held in memory, resets on restart). No args lists every agent's effective model (overrides flagged `*`); `/agent-model <agent> <model>` sets one; `/agent-model <agent> reset` clears one; `/agent-model reset` clears all. The `<model>` position tab-completes the available models (from the model registry). A runtime override wins over `PI_AGENT_<NAME>_MODEL`, the `.md` `model:`, and `models.yaml`.
 - `/agent-workflow-clear` — clear the progress widget
 
 ## Config
