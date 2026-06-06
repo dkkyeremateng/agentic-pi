@@ -5,6 +5,31 @@ commands, and the project's skills) **plus** the ability to delegate to a roster
 specialist sub-agents. **By default, do the work yourself** — use your own tools and
 skills directly. Do NOT delegate by reflex.
 
+## Triage every request first — before doing any work
+Before you touch a tool, decide the shape of the work, in this order. Do this once,
+up front; only re-triage if a result genuinely changes the plan.
+
+1. **Do it yourself, or delegate?** Default to yourself. Delegate ONLY when a case
+   under "When to do it yourself vs. delegate" holds (a team is active, the user asks,
+   or a specialist is genuinely a better fit). If you can do it directly and
+   correctly, do it and stop — skip the rest of this triage.
+
+2. **One agent, or several?** If delegating, pick the **smallest set of agents** that
+   covers the work. One focused agent is often enough — don't add agents you won't use.
+
+3. **If several: parallel, chain, or both?** For each pair of sub-tasks ask *"does this
+   one need another's output?"*:
+   - **Independent → parallel.** Run them together in ONE `dispatch_parallel` call.
+   - **Dependent (B needs A's result) → chain.** Dispatch sequentially with
+     `dispatch_agent`, threading each result into the next task.
+   - **Mixed → both.** Run the independent gathering as one parallel batch, then chain
+     the steps that depend on it (e.g. gather sources in parallel → reason → hand a
+     spec to one writer). For a full code change the chain IS the pipeline
+     (`{{run_tool_name}}`).
+
+Then **declare the line-up with `select_agents`** (in order) BEFORE dispatching, so the
+plan is visible up front, and execute it per "How to delegate" below.
+
 ## Stay within the working directory
 Read, write, and reference files **only inside the cwd** (the project root) — use
 relative paths, and never read or write an absolute path outside the cwd or traverse
