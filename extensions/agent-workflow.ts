@@ -440,100 +440,73 @@ export default function (pi: ExtensionAPI) {
         }
     }
 
+    // Hard safety net: never let the widget grow taller than the screen minus the
+    // rows reserved for the editor + footer. A tall team grid or live-log panel
+    // would otherwise push the input box and footer off-screen. Clip the overflow
+    // with a notice so those always keep their rows.
+    function clampWidget(out: string[], theme: any): string[] {
+        const rows = process.stdout.rows || 24;
+        const max = Math.max(3, rows - LOG_PANEL_RESERVE);
+        if (out.length <= max) return out;
+        const kept = out.slice(0, Math.max(1, max - 1));
+        kept.push(
+            theme.fg(
+                "dim",
+                `   … ${out.length - kept.length} more line(s) — clipped to fit`,
+            ),
+        );
+        return kept;
+    }
+
+    // Build the dashboard as a plain line array. Returned to pi via the string[]
+    // setWidget overload (below) so pi owns the diffing/redraw — re-issuing a
+    // custom component each tick made the sticky widget redraw incorrectly
+    // (status lines ghosted frame-over-frame).
+    function buildWidgetLines(width: number, theme: any): string[] {
+        if (st.phases.length === 0 || st.dispatchMode) {
+            // Idle or ad-hoc dispatch: the team grid (selected cards marked once
+            // the orchestrator dispatches), with the running agent's live log below.
+            const gridLines = renderAgentGrid(width, theme);
+            if (st.dispatchMode) appendLiveLog(gridLines, width, theme);
+            return clampWidget(gridLines, theme);
+        }
+
+        // ── Pipeline view (full run_agent_workflow) ───────────
+        const arrowWidth = 5; // " ──▸ "
+        const cols = st.phases.length;
+        const colWidth = Math.max(
+            14,
+            Math.floor((width - arrowWidth * (cols - 1)) / cols),
+        );
+        const cards = st.phases.map((p) => renderAgentCard(p.agent, colWidth, theme));
+        const lines: string[] = [];
+        const passInfo =
+            st.iteration > 1
+                ? theme.fg("dim", `  attempt ${st.iteration}/${st.maxLoopsRef}`)
+                : "";
+        const doneCount = st.phases.filter((p) => p.status === "done").length;
+        const phaseProgress = st.running
+            ? ` (${doneCount}/${st.phases.length})`
+            : "";
+        const workflowTitle =
+            st.phases.map((p) => p.label).join("→") + phaseProgress;
+        lines.push(
+            " " +
+                theme.fg("accent", theme.bold(workflowTitle)) +
+                passInfo +
+                statusBadge(theme, st.running, st.lastStatus),
+        );
+        lines.push("");
+        lines.push(...renderPhaseCardsWithArrows(cards, theme, st.phases));
+        appendLiveLog(lines, width, theme);
+        return clampWidget(lines, theme);
+    }
+
     function renderWidgetNow() {
         if (!widgetCtx || !widgetCtx.hasUI) return; // no chrome without a UI
-        widgetCtx.ui.setWidget("agent-workflow", (_tui: any, theme: any) => {
-            const text = new Text("", 0, 1);
-            // Hard safety net: never let the widget grow taller than the screen
-            // minus the rows reserved for the editor + footer. A tall team grid (many
-            // agents) or live-log panel on a short terminal would otherwise push the
-            // input box and footer off-screen. Clip the overflow with a notice so
-            // those always keep their rows.
-            const clampWidget = (out: string[], theme: any): string[] => {
-                const rows = process.stdout.rows || 24;
-                const max = Math.max(3, rows - LOG_PANEL_RESERVE);
-                if (out.length <= max) return out;
-                const kept = out.slice(0, Math.max(1, max - 1));
-                kept.push(
-                    theme.fg(
-                        "dim",
-                        `   … ${out.length - kept.length} more line(s) — clipped to fit`,
-                    ),
-                );
-                return kept;
-            };
-            return {
-                render(width: number): string[] {
-                    if (st.phases.length === 0 || st.dispatchMode) {
-                        // Idle or ad-hoc dispatch: keep the full team grid on
-                        // screen. At bootup every card is idle; once the primary
-                        // agent dispatches work, the selected cards are marked and
-                        // reflect live status, while the rest stay idle. The live
-                        // log of the running agent is appended below the grid.
-                        const gridLines = renderAgentGrid(width, theme);
-                        if (st.dispatchMode)
-                            appendLiveLog(gridLines, width, theme);
-                        text.setText(clampWidget(gridLines, theme).join("\n"));
-                        return text.render(width);
-                    }
-
-                    // ── Pipeline view (full run_agent_workflow) ───────────
-                    // Use the SAME rich cards as the idle/dispatch dashboard
-                    // (name · status · context bar · model · description) so the
-                    // view is consistent before and during a run.
-                    const arrowWidth = 5; // " ──▸ "
-                    const cols = st.phases.length;
-                    const colWidth = Math.max(
-                        14,
-                        Math.floor((width - arrowWidth * (cols - 1)) / cols),
-                    );
-
-                    const cards = st.phases.map((p) =>
-                        renderAgentCard(p.agent, colWidth, theme),
-                    );
-                    const lines: string[] = [];
-
-                    const passInfo =
-                        st.iteration > 1
-                            ? theme.fg(
-                                  "dim",
-                                  `  attempt ${st.iteration}/${st.maxLoopsRef}`,
-                              )
-                            : "";
-                    // Reflect the agents actually running, not a fixed label.
-                    const doneCount = st.phases.filter(
-                        (p) => p.status === "done",
-                    ).length;
-                    const phaseProgress = st.running
-                        ? ` (${doneCount}/${st.phases.length})`
-                        : "";
-                    const workflowTitle =
-                        st.phases.map((p) => p.label).join("→") + phaseProgress;
-                    lines.push(
-                        " " +
-                            theme.fg("accent", theme.bold(workflowTitle)) +
-                            passInfo +
-                            statusBadge(theme, st.running, st.lastStatus),
-                    );
-                    lines.push("");
-
-                    // Use shared arrow layout renderer
-                    lines.push(
-                        ...renderPhaseCardsWithArrows(cards, theme, st.phases),
-                    );
-
-                    // Live log of the currently running agent — grows to fill the
-                    // available vertical space, pushing the editor down, then tails.
-                    appendLiveLog(lines, width, theme);
-
-                    text.setText(clampWidget(lines, theme).join("\n"));
-                    return text.render(width);
-                },
-                invalidate() {
-                    text.invalidate();
-                },
-            };
-        });
+        const theme = widgetCtx.ui.theme;
+        const width = process.stdout.columns || 80;
+        widgetCtx.ui.setWidget("agent-workflow", buildWidgetLines(width, theme));
     }
 
     // ── Run a single agent as a subprocess ───────
