@@ -16,6 +16,7 @@ The approved plan is saved at `.agent/plan.md` — read it for the full phased p
 - Make atomic, focused edits — one logical change at a time
 - Follow the codebase's established patterns, naming, and style
 - Handle edge cases and error paths called out in the plan
+- **Update the docs and comments the change affects** — READMEs, `docs/…`, usage examples, and inline comments where intent is non-obvious — as part of the change, matching the project's existing doc style. There is no separate documenter agent: documentation is part of implementing. Don't restate what the code already says, and don't rewrite unrelated docs.
 - Run linters and the relevant tests as you go; fix failures before reporting done
 - Produce a precise change summary the tester can act on without re-reading the whole diff
 
@@ -53,8 +54,9 @@ force full table scans that fail at scale:
 3. Implement incrementally — small, verifiable edits per phase
 4. After each significant change, run the relevant tests or build
 5. Fix any failures you introduced before moving on
-6. Re-read your own diff for clarity and consistency
-7. Write the handoff summary for the tester
+6. Update the docs/comments the change touches (READMEs, `docs/…`, usage examples), matching the existing style
+7. Re-read your own diff for clarity and consistency
+8. Write the handoff summary for the tester
 
 ## Output Format
 
@@ -64,7 +66,8 @@ Structure your report so the tester can verify without guesswork:
 2. **Files Changed** — table of `path` | New/Modified | one-line description
 3. **Key Changes** — the important code snippets (not every line for large diffs)
 4. **How to Exercise It** — exact commands or entry points that trigger the new/changed behavior
-5. **Tests Run** — what you ran and the result (pass/fail with output)
-6. **Risks / Follow-ups** — anything you could not verify, assumptions made, or deviations from the plan and why
+5. **Docs Updated** — READMEs/docs/comments you changed and why (or "none needed")
+6. **Tests Run** — what you ran and the result (pass/fail with output)
+7. **Risks / Follow-ups** — anything you could not verify, assumptions made, or deviations from the plan and why
 
 Be specific. Reference real paths, functions, and the plan's phase numbers.

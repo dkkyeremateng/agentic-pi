@@ -17,9 +17,8 @@ available there.
 | `implementer.md` | Applies the plan exactly, reports a precise change summary |
 | `reviewer.md` | Reviews the implementation against the plan — finds bugs, regressions, missed criteria; sends the implementer back to fix them |
 | `tester.md` | Writes and runs tests, reports pass/fail |
-| `documenter.md` | Updates READMEs/docs, adds comments where needed, writes usage examples in the existing style |
 | `validator.md` | Runs the full suite, confirms criteria; in ship mode opens a draft PR on PASS |
-| `teams.yaml` | Selectable teams for the workflow extensions. A team's roster IS the pipeline — the workflow runs exactly its members in canonical order (`scout → planner → implementer → reviewer → tester → validator → documenter → shipper`). No spec/full mode; e.g. `full` (all), `spec` (planner), `plan-build`, `building`. |
+| `teams.yaml` | Selectable teams for the workflow extensions. A team's roster IS the pipeline — the workflow runs exactly its members in canonical order (`scout → planner → implementer → reviewer → tester → validator → shipper`). No spec/full mode; e.g. `full` (all), `spec` (planner), `plan-build`, `building`. Each agent updates the docs/comments its own work touches — there is no separate documenter. |
 
 Also present are **specialist** agents that are not linear pipeline phases —
 `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets).
@@ -47,19 +46,19 @@ plan — if it requests changes (`REVISE BEFORE MERGE`), the implementer fixes t
 the reviewer re-reviews (looping up to the configured max). Then the tester writes
 and runs tests, and the validator gates a correctness loop (implement ⇄ test ⇄
 validate, retrying on FAIL up to the configured max). Only after it passes does the
-documenter update the docs, after which the validator ships — committing code + tests
-+ docs and opening a draft PR on a `fix/...` branch (or pausing if there is no
-remote). If the chosen team includes `scout`, a read-only recon pass runs first and
-feeds the planner.
+validator ship — committing code + tests + docs and opening a draft PR on a `fix/...`
+branch (or pausing if there is no remote). The implementer updates any docs its change
+touches as part of implementing. If the chosen team includes `scout`, a read-only
+recon pass runs first and feeds the planner.
 
 - `/agent-workflow [request]` — run the lifecycle; each agent runs on its own model (its `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `models.yaml`, falling back to the session model). See `../extensions/README.md`.
 - Name a team as the first token to skip the picker (e.g. `/agent-workflow building …`), or add `loops=N` to override the retry limit.
 
-For plan-only work (no code change), pick a partial team — `spec` (planner)
-produces a plan, and a team that also includes the `documenter`
-can render it into a spec under `.agent/specs/`. A team's roster determines exactly
-which pipeline phases run; non-pipeline specialists added to a team are ignored —
-dispatch those ad-hoc through the orchestrator instead.
+For plan-only work (no code change), pick the `spec` team (planner) — it produces a
+plan under `.agent/plan.md`. A team's roster determines exactly which pipeline phases
+run; non-pipeline specialists added to a team are ignored — dispatch those ad-hoc
+through the orchestrator instead. Documentation is the implementer's job (it updates
+the docs its change touches), so there is no documenter phase.
 
 ## Adding a new agent
 
@@ -92,8 +91,8 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
    ```
 
    - Naming it one of `scout, planner, implementer, reviewer, tester, validator,
-     documenter, shipper` slots it into the linear pipeline at that position, and a
-     team listing it runs it there.
+     shipper` slots it into the linear pipeline at that position, and a team listing
+     it runs it there.
    - Any **other** (non-pipeline) agent is a specialist the orchestrator dispatches
      ad-hoc (e.g. `seeker`); it is not run via a team — adding it to a team roster
      has no effect, since only pipeline roles execute.

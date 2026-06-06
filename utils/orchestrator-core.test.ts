@@ -1112,7 +1112,6 @@ describe("runWorkflowCore re-entry guard", () => {
             "implementer",
             "reviewer",
             "tester",
-            "documenter",
             "validator",
         ]) {
             agents.set(name, mkAgent(name));
@@ -1144,7 +1143,6 @@ describe("runWorkflowCore re-entry guard", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
         agents.set("reviewer", mkAgent("reviewer"));
-        agents.set("documenter", mkAgent("documenter"));
         const host = mkHost({
             setup: {
                 loadAgents: () => agents,
@@ -1175,7 +1173,6 @@ describe("runWorkflowCore", () => {
             "implementer",
             "reviewer",
             "tester",
-            "documenter",
             "validator",
             "shipper",
         ]) {
@@ -1249,7 +1246,6 @@ Build feature X according to the requirements.
         assert.ok(runPhaseCalls.includes("implementer"));
         assert.ok(runPhaseCalls.includes("tester"));
         assert.ok(runPhaseCalls.includes("validator"));
-        assert.ok(runPhaseCalls.includes("documenter"));
     });
 
     it("handles review revision loop (reviewer sends the implementer back)", async () => {
@@ -1428,7 +1424,6 @@ Build feature X according to the requirements.
                     "implementer",
                     "reviewer",
                     "tester",
-                    "documenter",
                     "validator",
                 ],
             },
@@ -1445,46 +1440,6 @@ Build feature X according to the requirements.
         assert.ok(result.report.includes("Scout"));
         // Verify planner never ran
         assert.ok(!runPhaseCalls.includes("planner"));
-    });
-
-    it("continues to ship when documenter fails", async () => {
-        const agents = mkFullAgentSet();
-        const host = mkHost({
-            setup: {
-                loadAgents: () => agents,
-                setupSessions: () => {},
-                prepareRun: () => {},
-            },
-            execution: {
-                runPhase: async (phase) => {
-                    if (phase.agent === "planner") {
-                        return { output: mkValidPlan(), ok: true };
-                    }
-                    if (phase.agent === "validator") {
-                        return { output: "VERDICT: PASS", ok: true };
-                    }
-                    if (phase.agent === "reviewer") {
-                        return { output: "APPROVED\nPlan approved", ok: true };
-                    }
-                    if (phase.agent === "documenter") {
-                        return { output: "Documentation failed", ok: false };
-                    }
-                    if (phase.agent === "shipper") {
-                        return { output: "SHIP: SHIPPED", ok: true };
-                    }
-                    return { output: `${phase.agent} output`, ok: true };
-                },
-            },
-        });
-        const st = mkStateWithAgents(agents);
-        const result = await runWorkflowCore(
-            st,
-            host,
-            "Build feature X",
-            3,
-            mkCtx(),
-        );
-        assert.equal(result.status, "shipped");
     });
 
     it("respects abort signal between phases", async () => {
@@ -1531,24 +1486,21 @@ Build feature X according to the requirements.
     });
 });
 
-// ── runWorkflowCore — spec-shaped teams (planner[/documenter]) ──
+// ── runWorkflowCore — spec-shaped teams (planner-only) ──
 
 describe("runWorkflowCore (spec-shaped teams)", () => {
     function mkSpecAgentSet(): Map<string, AgentDef> {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
-        agents.set("documenter", mkAgent("documenter"));
         return agents;
     }
 
-    // A spec-shaped team that includes the documenter, so the optional Document
-    // phase runs (it's gated on the documenter being on the active team).
-    const specTeamWithDoc: Partial<OrchestratorState> = {
-        teams: { spec: ["planner", "documenter"] },
+    const specTeam: Partial<OrchestratorState> = {
+        teams: { spec: ["planner"] },
         activeTeamName: "spec",
     };
 
-    it("runs happy path: plan → document", async () => {
+    it("runs happy path: plan only", async () => {
         const agents = mkSpecAgentSet();
         const runPhaseCalls: string[] = [];
         const host = mkHost({
@@ -1560,14 +1512,11 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
             execution: {
                 runPhase: async (phase) => {
                     runPhaseCalls.push(phase.agent);
-                    if (phase.agent === "reviewer") {
-                        return { output: "APPROVED\nSpec approved", ok: true };
-                    }
                     return { output: `${phase.agent} output`, ok: true };
                 },
             },
         });
-        const st = mkStateWithAgents(agents, specTeamWithDoc);
+        const st = mkStateWithAgents(agents, specTeam);
         const result = await runWorkflowCore(
             st,
             host,
@@ -1578,45 +1527,7 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
         assert.equal(result.status, "done");
         assert.ok(st.running === false);
         assert.ok(runPhaseCalls.includes("planner"));
-        assert.ok(runPhaseCalls.includes("documenter"));
-    });
-
-    it("omits the Document phase when documenter is not on the active team", async () => {
-        const agents = mkSpecAgentSet();
-        const runPhaseCalls: string[] = [];
-        const host = mkHost({
-            setup: {
-                loadAgents: () => agents,
-                setupSessions: () => {},
-                prepareRun: () => {},
-            },
-            execution: {
-                runPhase: async (phase) => {
-                    runPhaseCalls.push(phase.agent);
-                    if (phase.agent === "reviewer") {
-                        return { output: "APPROVED\nLooks good", ok: true };
-                    }
-                    return { output: `${phase.agent} output`, ok: true };
-                },
-            },
-        });
-        // Active team is planner only — no documenter.
-        const st = mkStateWithAgents(agents, {
-            teams: { spec: ["planner"] },
-            activeTeamName: "spec",
-        });
-        const result = await runWorkflowCore(
-            st,
-            host,
-            "Design feature Y",
-            3,
-            mkCtx(),
-        );
-        assert.equal(result.status, "done");
-        assert.ok(runPhaseCalls.includes("planner"));
-        assert.ok(!runPhaseCalls.includes("documenter"));
-        // No documenter ran, so the report has no Documentation section.
-        assert.ok(!result.report.includes("### Documentation"));
+        assert.ok(!runPhaseCalls.includes("implementer"));
     });
 
     it("exits early on planner failure", async () => {
@@ -1638,7 +1549,7 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
                 },
             },
         });
-        const st = mkStateWithAgents(agents, specTeamWithDoc);
+        const st = mkStateWithAgents(agents, specTeam);
         const result = await runWorkflowCore(
             st,
             host,
@@ -1648,8 +1559,6 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
         );
         assert.equal(result.status, "error");
         assert.ok(result.report.includes("Planning"));
-        // Verify documenter never ran
-        assert.ok(!runPhaseCalls.includes("documenter"));
     });
 });
 
@@ -2097,7 +2006,7 @@ describe("capturePlan", () => {
         );
     });
 
-    it("does NOT clobber an existing plan file (the documenter's version)", () => {
+    it("does NOT clobber an existing plan file (the planner's version)", () => {
         const cwd = mkdtempSync(join(tmpdir(), "plan-"));
         mkdirSync(join(cwd, ".agent"), { recursive: true });
         writeFileSync(join(cwd, ".agent", "plan.md"), "DOCUMENTER VERSION", "utf-8");

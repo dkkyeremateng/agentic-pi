@@ -10,7 +10,7 @@ only `.env` config (no code edits).
 | Path | What it is |
 |------|-----------|
 | `extensions/` | pi extensions. `agent-workflow.ts` runs a self-healing **plan → implement → review → test → validate → document → ship** workflow with per-agent models; `dispatch.ts` is a standalone extension owning the `dispatch_agent` / `dispatch_parallel` / `select_agents` tools (used by any agent, in any session). See [`extensions/README.md`](extensions/README.md). |
-| `agents/` | Agent definitions (`.md` with frontmatter): `scout`, `planner`, `implementer`, `reviewer`, `tester`, `validator`, `documenter`, `shipper`, plus `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets). |
+| `agents/` | Agent definitions (`.md` with frontmatter): `scout`, `planner`, `implementer`, `reviewer`, `tester`, `validator`, `shipper`, plus `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets). |
 | `skills/` | On-demand skills. `linear/` — a stdlib-Python CLI for the [Linear GraphQL API](https://linear.app/developers/graphql); `atlassian/` — a stdlib-Python CLI for the [Jira Cloud REST API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) (tickets); `bowser/` — Playwright browser automation. |
 | `utils/` | Shared, testable orchestration core (`workflow-core.ts`, `orchestrator-core.ts`) — kept out of `extensions/` so pi doesn't load them as extensions. |
 | `prompts/`, `themes/` | Orchestrator system-prompt template and color themes. |

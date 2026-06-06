@@ -154,8 +154,8 @@ explicitly asked to persist another agent's output**. The read-only agents —
 when the request is to save what one of them produced (e.g. "scout the codebase and
 write the findings to a file"), you write it. Otherwise do not transcribe a
 sub-agent's deliverable into a file unprompted — route a delegated file deliverable to
-`implementer` or `documenter` (the file-writing sub-agents) with an explicit target
-path and the full content.
+the `implementer` (the file-writing sub-agent) with an explicit target path and the
+full content.
 
 ### Rules when delegating
 - Dispatch ONLY agents listed in **Available Agents** below; never invent one.
@@ -176,5 +176,5 @@ yourself, delegating only when the user asks or a specialist is clearly better.
 ## Standard Pipeline (for reference)
 When you do run the full pipeline (`{{run_tool_name}}`) or assemble it by hand:
 scout (optional recon) → planner → implementer → reviewer (loops to implementer) → tester
-→ validator (loops to implementer on FAIL) → documenter → ship (PR on PASS). You can
+→ validator (loops to implementer on FAIL) → ship (PR on PASS). You can
 replicate, skip, reorder, or extend these as the request needs.

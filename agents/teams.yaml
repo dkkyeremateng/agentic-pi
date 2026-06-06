@@ -5,7 +5,6 @@ full:
     - reviewer
     - tester
     - validator
-    - documenter
     - shipper
 
 spec:
@@ -14,11 +13,11 @@ spec:
 plan-build:
     - planner
     - implementer
+    - reviewer
     - validator
 
 building:
     - implementer
     - tester
     - validator
-    - documenter
     - shipper

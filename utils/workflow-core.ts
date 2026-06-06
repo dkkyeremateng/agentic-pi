@@ -39,7 +39,6 @@ export const REQUIRED_AGENTS = [
     "implementer",
     "reviewer",
     "tester",
-    "documenter",
     "validator",
     "shipper",
 ] as const;
@@ -1402,7 +1401,6 @@ export function buildWorkflowReport(o: {
     reviewerP: PhaseState | null;
     testP: PhaseState | null;
     valP: PhaseState | null;
-    docP: PhaseState | null;
     shipP: PhaseState | null;
     scoutFindings: string;
     plan: string;
@@ -1410,7 +1408,6 @@ export function buildWorkflowReport(o: {
     review: string;
     test: string;
     val: string;
-    doc: string;
     ship: string;
 }): string {
     // Each section appears only when its phase actually ran — the active team
@@ -1460,7 +1457,6 @@ export function buildWorkflowReport(o: {
                   ),
               ]
             : []),
-        ...(o.docP ? [summaryLine("Documenter", o.docP, digest(o.doc))] : []),
         ...(o.shipP ? [summaryLine("Ship", o.shipP, digest(o.ship))] : []),
         ``,
         `## Details`,
@@ -1480,9 +1476,6 @@ export function buildWorkflowReport(o: {
             : []),
         ...(o.valP
             ? [`### Validation`, ``, truncatePhaseOutput(o.val), ``]
-            : []),
-        ...(o.docP
-            ? [`### Documentation`, ``, truncatePhaseOutput(o.doc), ``]
             : []),
         ...(o.shipP ? [`### Ship`, ``, truncatePhaseOutput(o.ship), ``] : []),
     ].join("\n");
@@ -1533,7 +1526,6 @@ export interface RunArtifacts {
     review?: string; // reviewer's verdict + findings
     implSummary?: string; // implementer's change summary
     testReport?: string; // tester's report
-    docReport?: string; // documenter's report
 }
 
 // Render the artifacts present into a labelled "## Shared run context" block,
@@ -1554,7 +1546,6 @@ export function contextBundle(a: RunArtifacts): string {
     add("Implementation summary (implementer)", a.implSummary);
     add("Review (reviewer)", a.review);
     add("Test report (tester)", a.testReport);
-    add("Documentation report (documenter)", a.docReport);
     if (parts.length === 0) return "";
     return [
         "## Shared run context",
@@ -1578,8 +1569,7 @@ const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     reviewer: ["recon", "plan", "implSummary"],
     tester: ["recon", "plan", "implSummary"],
     validator: ["recon", "plan", "implSummary", "testReport"],
-    documenter: ["recon", "plan", "implSummary", "testReport"],
-    shipper: ["recon", "plan", "implSummary", "testReport", "docReport"],
+    shipper: ["recon", "plan", "implSummary", "testReport"],
 };
 
 // Selective context bundle: only include artifacts the given phase actually
@@ -1732,29 +1722,6 @@ export function testTask(
     ].join("\n");
 }
 
-export function documentTask(
-    original: string,
-    plan: string,
-    implSummary: string,
-    testReport: string,
-): string {
-    return [
-        "Document the change just implemented and verified.",
-        "",
-        "Original requirement:",
-        original,
-        "",
-        "Plan:",
-        plan,
-        "",
-        "Implementer's change summary:",
-        implSummary,
-        "",
-        "Tester's report:",
-        testReport,
-    ].join("\n");
-}
-
 export function validateTask(
     original: string,
     plan: string,
@@ -1774,22 +1741,16 @@ export function validateTask(
     ].join("\n");
 }
 
-export function shipTask(
-    original: string,
-    testReport: string,
-    docReport: string,
-): string {
+export function shipTask(original: string, testReport: string): string {
     return [
-        "The change has passed validation and been documented. Ship it.",
+        "The change has passed validation. Ship it — commit the code, tests, and any",
+        "doc updates the implementer made as part of the change.",
         "",
         "Original requirement:",
         original,
         "",
         "Tester's report:",
         testReport,
-        "",
-        "Documenter's report (these doc changes must be committed too):",
-        docReport,
     ].join("\n");
 }
 
@@ -1805,7 +1766,6 @@ export interface PhaseMap {
     reviewer: PhaseState | null;
     tester: PhaseState | null;
     validator: PhaseState | null;
-    documenter: PhaseState | null;
     shipper: PhaseState | null;
 }
 
@@ -1823,7 +1783,6 @@ export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
         reviewer: byAgent("reviewer"),
         tester: byAgent("tester"),
         validator: byAgent("validator"),
-        documenter: byAgent("documenter"),
         shipper: byAgent("shipper"),
     };
 }
@@ -1878,7 +1837,6 @@ export const PIPELINE_ORDER = [
     "reviewer",
     "tester",
     "validator",
-    "documenter",
     "shipper",
 ] as const;
 
@@ -1889,7 +1847,6 @@ const PHASE_LABELS: Record<string, string> = {
     reviewer: "Review",
     tester: "Test",
     validator: "Validate",
-    documenter: "Document",
     shipper: "Ship",
 };
 

@@ -180,7 +180,6 @@ describe("contextBundle", () => {
             review: "review",
             implSummary: "impl",
             testReport: "test",
-            docReport: "doc",
         };
         const result = contextBundle(a);
         assert.ok(result.includes("Reconnaissance"));
@@ -188,7 +187,6 @@ describe("contextBundle", () => {
         assert.ok(result.includes("Review"));
         assert.ok(result.includes("Implementation summary"));
         assert.ok(result.includes("Test report"));
-        assert.ok(result.includes("Documentation report"));
     });
 
     it("truncates artifacts longer than 3000 chars", () => {
@@ -221,7 +219,6 @@ describe("buildPhaseMap", () => {
             testPhase("reviewer"),
             testPhase("tester"),
             testPhase("validator"),
-            testPhase("documenter"),
             testPhase("shipper"),
         ];
         const pm = buildPhaseMap(phases);
@@ -231,7 +228,6 @@ describe("buildPhaseMap", () => {
         assert.equal(pm.implementer?.agent, "implementer");
         assert.equal(pm.tester?.agent, "tester");
         assert.equal(pm.validator?.agent, "validator");
-        assert.equal(pm.documenter?.agent, "documenter");
         assert.equal(pm.shipper?.agent, "shipper");
     });
 
@@ -374,7 +370,6 @@ describe("freshPhases", () => {
         "reviewer",
         "tester",
         "validator",
-        "documenter",
         "shipper",
     ];
 
@@ -399,8 +394,8 @@ describe("freshPhases", () => {
     });
 
     it("ignores non-pipeline members (e.g. seeker)", () => {
-        const phases = freshPhases(["seeker", "documenter"]);
-        assert.deepEqual(phases.map((p) => p.agent), ["documenter"]);
+        const phases = freshPhases(["seeker", "tester"]);
+        assert.deepEqual(phases.map((p) => p.agent), ["tester"]);
     });
 
     it("is case-insensitive on member names", () => {
@@ -426,9 +421,8 @@ describe("freshPhases", () => {
         assert.equal(phases[3].label, "Review");
         assert.equal(phases[4].label, "Test");
         assert.equal(phases[5].label, "Validate");
-        assert.equal(phases[6].label, "Document");
-        assert.equal(phases[7].label, "Ship");
-        assert.equal(phases[7].agent, "shipper");
+        assert.equal(phases[6].label, "Ship");
+        assert.equal(phases[6].agent, "shipper");
     });
 });
 
@@ -441,7 +435,6 @@ describe("contextBundleForPhase", () => {
         review: "Review feedback",
         implSummary: "Implementation done",
         testReport: "Tests passed",
-        docReport: "Docs updated",
     };
 
     it("scout gets no artifacts (read-only recon pass)", () => {
@@ -484,7 +477,7 @@ describe("contextBundleForPhase", () => {
         assert.ok(bundle.includes("The plan"));
         assert.ok(bundle.includes("Implementation done"));
         assert.ok(!bundle.includes("Review feedback"));
-        assert.ok(!bundle.includes("Docs updated"));
+        assert.ok(!bundle.includes("Tests passed"));
     });
 
     it("validator gets recon, plan, implSummary, and testReport", () => {
@@ -494,26 +487,14 @@ describe("contextBundleForPhase", () => {
         assert.ok(bundle.includes("Implementation done"));
         assert.ok(bundle.includes("Tests passed"));
         assert.ok(!bundle.includes("Review feedback"));
-        assert.ok(!bundle.includes("Docs updated"));
     });
 
-    it("documenter gets recon, plan, implSummary, and testReport", () => {
-        const bundle = contextBundleForPhase("documenter", fullArtifacts);
-        assert.ok(bundle.includes("Scout findings"));
-        assert.ok(bundle.includes("The plan"));
-        assert.ok(bundle.includes("Implementation done"));
-        assert.ok(bundle.includes("Tests passed"));
-        assert.ok(!bundle.includes("Review feedback"));
-        assert.ok(!bundle.includes("Docs updated"));
-    });
-
-    it("shipper gets all artifacts", () => {
+    it("shipper gets recon, plan, implSummary, and testReport", () => {
         const bundle = contextBundleForPhase("shipper", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
         assert.ok(bundle.includes("The plan"));
         assert.ok(bundle.includes("Implementation done"));
         assert.ok(bundle.includes("Tests passed"));
-        assert.ok(bundle.includes("Docs updated"));
     });
 
     it("unknown agent falls back to all artifacts", () => {
@@ -524,7 +505,6 @@ describe("contextBundleForPhase", () => {
         assert.ok(bundle.includes("Review feedback"));
         assert.ok(bundle.includes("Implementation done"));
         assert.ok(bundle.includes("Tests passed"));
-        assert.ok(bundle.includes("Docs updated"));
     });
 
     it("returns empty string when no artifacts are set", () => {

@@ -30,7 +30,6 @@ import {
     fixTask,
     testTask,
     validateTask,
-    documentTask,
     shipTask,
 } from "./workflow-core";
 import {
@@ -359,7 +358,6 @@ export async function runWorkflowCore(
     const implP = pm.implementer;
     const testP = pm.tester;
     const valP = pm.validator;
-    const docP = pm.documenter;
     const shipP = pm.shipper;
 
     let aborted: RunResult | null;
@@ -472,7 +470,6 @@ export async function runWorkflowCore(
 
     let test = { output: "", ok: false };
     let val = { output: "", ok: false };
-    let doc: { output: string; ok: boolean } = { output: "", ok: false };
     let ship = { output: "", ok: false };
     let verdict: Verdict = "unknown";
 
@@ -557,40 +554,17 @@ export async function runWorkflowCore(
         verdict = detectVerdict(val.output);
     }
 
-    // ── Document + ship ──
-    // When a validator ran, document/ship only on PASS; otherwise (no validator
-    // to gate on) run them straight after whatever build work happened.
+    // ── Ship ──
+    // When a validator ran, ship only on PASS; otherwise (no validator to gate on)
+    // ship straight after whatever build work happened. The implementer updates any
+    // docs/comments as part of the change, so there is no separate document phase.
     const passed = valP ? verdict === "pass" : true;
-    if (passed && docP) {
-        aborted = checkAbort(s, h);
-        if (aborted) return aborted;
-        doc = await h.execution.runPhase(
-            docP,
-            shared(
-                documentTask(request, plan.output, impl.output, test.output),
-                "documenter",
-            ),
-            cwd,
-        );
-        if (!doc.ok) {
-            h.ui.notify(
-                "Documenter failed — proceeding without updated docs.",
-                "warning",
-            );
-            doc = {
-                output: "[Documenter failed — see activity logs]",
-                ok: false,
-            };
-        } else {
-            runArtifacts.docReport = doc.output;
-        }
-    }
     if (passed && shipP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
         ship = await h.execution.runPhase(
             shipP,
-            shared(shipTask(request, test.output, doc.output), "shipper"),
+            shared(shipTask(request, test.output), "shipper"),
             cwd,
         );
         if (!ship.ok) return fail(s, "Shipping", ship.output);
@@ -640,7 +614,6 @@ export async function runWorkflowCore(
         reviewerP,
         testP,
         valP,
-        docP,
         shipP,
         scoutFindings,
         plan: plan.output,
@@ -648,7 +621,6 @@ export async function runWorkflowCore(
         review: review.output,
         test: test.output,
         val: val.output,
-        doc: doc.output,
         ship: ship.output,
     });
 
@@ -677,7 +649,7 @@ const textResult = (text: string): ToolResult => ({
 // it to `.agent/plan.md` so every downstream agent can read it from disk. The planner
 // agent also writes this file; doing it here too guarantees it regardless of
 // whether the agent followed the instruction. Best-effort — never fails the run.
-// Remove a stale plan file from a previous run, so capturePlan's "the documenter
+// Remove a stale plan file from a previous run, so capturePlan's "the planner
 // already wrote it" check (existsSync) is reliable for THIS run.
 export function resetPlanFile(cwd: string): void {
     try {
@@ -693,10 +665,9 @@ export function capturePlan(
     runArtifacts.plan = plan;
     try {
         const file = join(cwd, ".agent", "plan.md");
-        // The planner delegates writing the plan to the documenter, which produces
-        // .agent/plan.md. Only write here as a FALLBACK — when no plan file was written
-        // this run (documenter not dispatched, or dispatch unavailable) — so the
-        // documenter's version is never clobbered.
+        // The planner writes .agent/plan.md itself. Only write here as a FALLBACK —
+        // when no plan file was written this run — so the planner's version is never
+        // clobbered.
         if (!existsSync(file)) {
             mkdirSync(dirname(file), { recursive: true });
             writeFileSync(file, plan, "utf-8");

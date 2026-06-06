@@ -25,11 +25,10 @@ limit is reached), the change proceeds to the tester and validator.
 ### Partial teams (roster = pipeline)
 
 There is no separate "spec" mode. A team simply runs the subsequence of the
-pipeline its roster contains. For example a `planner` (optionally with a
-`documenter`) team runs:
+pipeline its roster contains. For example a `planner`-only team just runs:
 
 ```
-scout ──▶ planner ──▶ document (only if the team has a documenter)
+scout ──▶ planner   (produces .agent/plan.md)
 (optional)
 ```
 
@@ -52,7 +51,7 @@ Handles **bug fixes, new features, and new apps** — the planner classifies the
 
 pi auto-discovers `cwd/.pi/extensions/*.ts`. Run `pi` from this directory and the
 extension loads automatically — no registration. It reads the agent definitions
-from `.pi/agents/` (scout, planner, implementer, reviewer, tester, documenter, validator).
+from `.pi/agents/` (scout, planner, implementer, reviewer, tester, validator, shipper).
 
 `agent-workflow.ts` is the single workflow extension. It runs each agent on its own
 model (the agent's `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `.pi/agents/models.yaml`,
@@ -117,7 +116,7 @@ declares the plan with `select_agents`, chains `dispatch_agent` (or runs the
 pipeline), finishes every selected agent, then **stops and summarizes**.
 
 A live widget renders the phases as connected cards
-(`Scout ──▶ Plan ──▶ Implement ──▶ Review ──▶ Test ──▶ Validate ──▶ Document ──▶ Ship`,
+(`Scout ──▶ Plan ──▶ Implement ──▶ Review ──▶ Test ──▶ Validate ──▶ Ship`,
 with the leading `Scout` card present only when the team includes it). Each card
 shows a status icon
 (`○` pending, `●` running, `✓` done, `✗` error), elapsed time, and a context-usage
@@ -147,7 +146,7 @@ like any tool result to read the full markdown). It is also written to
 - **Outcome** — a plain-English result (SHIPPED / PAUSED / FAILED / NEEDS REVIEW),
   the verdict, pass count, and the PR URL when one was opened.
 - **Summary of work** — one digest line per phase (scout when present, planner,
-  implementer, reviewer, tester, validator, then documenter + ship once it passes)
+  implementer, reviewer, tester, validator, then ship once it passes)
   with the time each took and, for the tester, a passed/failed count. When scout
   ran, a **Reconnaissance** section precedes the Plan in the Details.
 - **Details** — the full transcript from every agent below the summary.
@@ -157,11 +156,11 @@ a grid of cards, one per agent in the active team, each with its status, the
 **model it will run** (`◆ <model>`), and a short description. Teams come from
 `.pi/agents/teams.yaml`. There is **no spec/full mode**: a team's roster *is* the
 pipeline — the workflow runs exactly the agents the team lists, in the canonical
-order `scout → planner → implementer → reviewer → tester → validator → documenter →
-shipper`. A `planner` (optionally `documenter`) team produces a plan/spec; a
-`implementer, reviewer, tester, validator, documenter, shipper` team builds, reviews,
-tests, documents, and ships; each loop (implement↔review, test↔validate) runs only
-when both of its agents are on the team.
+order `scout → planner → implementer → reviewer → tester → validator → shipper`. A
+`planner` team produces a plan; an `implementer, reviewer, tester, validator, shipper`
+team builds, reviews, tests, and ships; each loop (implement↔review, test↔validate)
+runs only when both of its agents are on the team. (Docs are part of the
+implementer's change — there is no documenter phase.)
 
 When the primary agent drives **ad-hoc work** (rather than the full
 `run_agent_workflow` pipeline), the dashboard grid **stays on screen** and narrows
@@ -171,7 +170,7 @@ once the orchestrator has determined the agents the work needs, it calls
 keeping only the chosen ones — a status-colored border and a `▸` marker, each
 showing `◌ queued` before it runs. The header also updates to the chosen set — it
 retitles to `selected from <team>` and its agent count reflects the selection
-(e.g. `8/8 agents` → `3/8 agents`). As the
+(e.g. `7/7 agents` → `3/7 agents`). As the
 orchestrator then dispatches each agent, the cards update in place (`◌ queued` →
 `● running` → `✓ done`/`✗ error`) with elapsed time, and the badge counts
 completions over the selected set (`◌ queued: 0/3` → `● working: 1/3` →
@@ -226,7 +225,7 @@ reconnaissance and the reviewer's verdict — the artifacts the per-phase prompt
 otherwise drop — are prepended to every downstream agent's task as a `## Shared run
 context` block. Combined with what the prompts already thread through (the plan,
 the implementer's change summary, the tester's report), every agent
-(reviewer → tester → validator → documenter → ship) sees the full cross-agent
+(reviewer → tester → validator → ship) sees the full cross-agent
 context, with no duplication. The bundle stays small, so it adds context without
 bloating the window.
 
@@ -253,11 +252,10 @@ PI_WORKFLOW_MODEL=anthropic/claude-opus-4-8        # global fallback for all age
 # Per-agent model overrides
 PI_AGENT_SCOUT_MODEL=anthropic/claude-haiku-4-5
 PI_AGENT_PLANNER_MODEL=anthropic/claude-opus-4-8
-PI_AGENT_CRITIC_MODEL=anthropic/claude-opus-4-8
 PI_AGENT_IMPLEMENTER_MODEL=anthropic/claude-sonnet-4-6
+PI_AGENT_REVIEWER_MODEL=anthropic/claude-opus-4-8
 PI_AGENT_TESTER_MODEL=anthropic/claude-haiku-4-5
 PI_AGENT_VALIDATOR_MODEL=anthropic/claude-opus-4-8
-PI_AGENT_DOCUMENTER_MODEL=openrouter/google/gemini-3-flash
 ```
 
 `export KEY=value` lines and `# comments` are both accepted. Add `.env` to your
@@ -300,8 +298,8 @@ pi -e .pi/extensions/dispatch.ts -e .pi/extensions/agent-workflow.ts
 Per-agent models come from either source (env wins over the file):
 
 - **Env vars** — `PI_AGENT_SCOUT_MODEL`, `PI_AGENT_PLANNER_MODEL`,
-  `PI_AGENT_CRITIC_MODEL`, `PI_AGENT_IMPLEMENTER_MODEL`, `PI_AGENT_TESTER_MODEL`,
-  `PI_AGENT_VALIDATOR_MODEL`, `PI_AGENT_DOCUMENTER_MODEL`. These only work if
+  `PI_AGENT_IMPLEMENTER_MODEL`, `PI_AGENT_REVIEWER_MODEL`, `PI_AGENT_TESTER_MODEL`,
+  `PI_AGENT_VALIDATOR_MODEL`. These only work if
   they're **exported in the shell that launches pi** — if you start pi from an
   IDE/GUI or forget to `export`, they won't be visible.
 - **`.pi/agents/models.yaml`** — a flat `agent: model` file, robust regardless of
@@ -310,7 +308,7 @@ Per-agent models come from either source (env wins over the file):
   ```yaml
   scout: anthropic/claude-haiku-4-5
   planner: anthropic/claude-opus-4-8
-  documenter: openrouter/google/gemini-3-flash
+  reviewer: anthropic/claude-opus-4-8
   default: anthropic/claude-haiku-4-5
   ```
 
@@ -334,7 +332,7 @@ until the agent runs), the **model it will run** (`◆ <model>`), and its
 description:
 
 ```
- agent-workflow  ·  team full (8/8 agents)
+ agent-workflow  ·  team full (7/7 agents)
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
 │ Scout        │ │ Planner      │ │ Implementer  │ │ Reviewer     │
 │ ○ idle       │ │ ○ idle       │ │ ○ idle       │ │ ○ idle       │
@@ -348,12 +346,12 @@ Once the primary agent has **determined which agents the work needs**, it calls
 `select_agents` and the grid **drops the unselected agents** and shows only the
 chosen ones, marked (`▸` + status-colored border). The header retitles to
 `selected from <team>` and its **agent count updates to the chosen set** — here 3
-of 8, so it flips from `8/8 agents` to `3/8 agents`. The plan is visible up front;
+of 7, so it flips from `7/7 agents` to `3/7 agents`. The plan is visible up front;
 selected agents show `◌ queued` before any of them runs, and the badge counts
 completions (`0/3`):
 
 ```
- agent-workflow  ·  selected from full (3/8 agents)  ·  ◌ queued: 0/3
+ agent-workflow  ·  selected from full (3/7 agents)  ·  ◌ queued: 0/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
 │ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Implementer      │
 │ ◌ queued           │ │ ◌ queued           │ │ ◌ queued           │
@@ -368,7 +366,7 @@ As it then dispatches each agent (`dispatch_agent`), the cards update in place �
 (`◌ queued: 0/3` → `● working: 1/3` → `✓ done: 3/3`):
 
 ```
- agent-workflow  ·  selected from full (3/8 agents)  ·  ● working: 1/3
+ agent-workflow  ·  selected from full (3/7 agents)  ·  ● working: 1/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
 │ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Implementer      │
 │ ✓ done 4s          │ │ ● running 9s       │ │ ◌ queued           │
@@ -381,10 +379,10 @@ As it then dispatches each agent (`dispatch_agent`), the cards update in place �
 Teams are defined in `.pi/agents/teams.yaml` (a flat `team:` → `- member` list).
 A team's roster **is** the pipeline: the workflow runs exactly its members in the
 canonical order `scout → planner → implementer → reviewer → tester → validator →
-documenter → ship`. There is no spec/full mode — `full` (all eight) runs the
-whole pipeline, `building` (implementer + tester + validator + documenter +
-shipper) builds and ships, `plan-build` (planner + implementer + validator)
-plans and builds, and so on. Running `/agent-workflow` opens a **Select Team** dialog
+ship`. There is no spec/full mode — `full` (all seven) runs the whole pipeline,
+`building` (implementer + tester + validator + shipper) builds and ships,
+`plan-build` (planner + implementer + reviewer + validator) plans and builds, and so
+on. Running `/agent-workflow` opens a **Select Team** dialog
 first; name a team as the first token to skip it (`/agent-workflow building …`).
 
 The footer shows the **workflow status**, the **primary (orchestrator) agent's

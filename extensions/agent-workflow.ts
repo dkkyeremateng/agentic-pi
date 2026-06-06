@@ -6,7 +6,7 @@
  *
  * Runs the agents defined in .pi/agents/*.md (the validator twice — to validate,
  * then to ship), optionally led by a read-only scout recon pass:
- *   scout? -> planner -> implementer -> reviewer -> tester -> validator(gate) -> documenter -> validator(ship)
+ *   scout? -> planner -> implementer -> reviewer -> tester -> validator(gate) -> validator(ship)
  *
  * Unlike a static chain, the validator's verdict drives a feedback loop:
  *   - PASS    -> done (PR opened by validator if a remote exists)
