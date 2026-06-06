@@ -157,30 +157,34 @@ export function renderRichCard(opts: {
 
 // ── Grid layout ──────────────────────────────────
 
-// Cap on a single card's width so cards don't stretch across a wide terminal
-// (a lone agent would otherwise fill the whole row). Sized to fit the longest
-// usual content line (the `◆ provider/model` string) plus borders.
+// Card width bounds. MAX keeps a lone card from stretching across a wide terminal
+// (sized to fit the `◆ provider/model` line + borders); MIN lets the grid pack
+// more columns so all agents fit in as FEW ROWS as possible — important because
+// pi caps the dashboard widget's height and truncates extra rows ("widget
+// truncated"). Narrower cards truncate the model string but keep every agent
+// visible.
 export const MAX_CARD_WIDTH = 50;
+export const MIN_CARD_WIDTH = 32;
 
 // Calculate column width for a grid layout.
 // Returns { cols, gap, colWidth } for rendering agent cards in a grid.
-// Cards are left-aligned and width-capped, so pack as many columns as fit across
-// the terminal (one more card to the right whenever there's room) rather than a
-// fixed column count — a wide terminal shows 2-3+ cards per row, a narrow one
-// stacks them.
+// Pack as many columns as fit at MIN width (fewest rows), then widen each column
+// up to MAX so a small roster still gets roomy cards. Left-aligned.
 export function calculateGridLayout(
     memberCount: number,
     totalWidth: number,
 ): { cols: number; gap: number; colWidth: number } {
     const gap = 1;
-    const fit = Math.max(
+    // Most columns that fit if cards shrink to MIN width — lets all members land
+    // on one row when the terminal is wide enough.
+    const maxFit = Math.max(
         1,
-        Math.floor((totalWidth + gap) / (MAX_CARD_WIDTH + gap)),
+        Math.floor((totalWidth + gap) / (MIN_CARD_WIDTH + gap)),
     );
-    const cols = Math.max(1, Math.min(memberCount, fit));
+    const cols = Math.max(1, Math.min(memberCount, maxFit));
     const colWidth = Math.min(
         MAX_CARD_WIDTH,
-        Math.max(18, Math.floor((totalWidth - gap * (cols - 1)) / cols)),
+        Math.max(MIN_CARD_WIDTH, Math.floor((totalWidth - gap * (cols - 1)) / cols)),
     );
     return { cols, gap, colWidth };
 }
