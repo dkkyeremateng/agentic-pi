@@ -401,7 +401,7 @@ export function appendLiveLog(
         // tell apart. Keyed by position (not name) since parallel agents are often
         // the SAME agent — e.g. three `seeker`s. Wraps if there are more agents than
         // colors. These are theme palette names, so they adapt to the active theme.
-        const PALETTE = ["accent", "success", "warning", "error", "toolTitle"];
+        const PALETTE = ["accent", "success", "warning", "toolTitle"];
         const colorOf = (i: number) => PALETTE[i % PALETTE.length];
 
         // Share the panel height evenly: each agent gets a label line plus up to 5
