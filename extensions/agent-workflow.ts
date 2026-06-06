@@ -389,7 +389,14 @@ export default function (pi: ExtensionAPI) {
             );
             lines.push(...renderCardGrid(cards, cols, gap, colWidth));
         }
-        return lines;
+        // Cards are width-capped, so a lone/narrow grid no longer fills the row.
+        // Split the leftover width into equal left/right margins so the block sits
+        // centered with the same padding on both sides.
+        const gridWidth = cols * colWidth + gap * (cols - 1);
+        const leftMargin = Math.max(0, Math.floor((width - gridWidth) / 2));
+        if (leftMargin === 0) return lines;
+        const pad = " ".repeat(leftMargin);
+        return lines.map((l) => (l.length ? pad + l : l));
     }
 
     // Append the live log of the currently running agent — delegates to the

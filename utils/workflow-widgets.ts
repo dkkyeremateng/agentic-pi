@@ -151,6 +151,11 @@ export function renderRichCard(opts: {
 
 // ── Grid layout ──────────────────────────────────
 
+// Cap on a single card's width so cards don't stretch across a wide terminal
+// (a lone agent would otherwise fill the whole row). Sized to fit the longest
+// usual content line (the `◆ provider/model` string) plus borders.
+export const MAX_CARD_WIDTH = 48;
+
 // Calculate column width for a grid layout.
 // Returns { cols, gap, colWidth } for rendering agent cards in a grid.
 export function calculateGridLayout(
@@ -159,9 +164,9 @@ export function calculateGridLayout(
 ): { cols: number; gap: number; colWidth: number } {
     const cols = Math.min(memberCount <= 3 ? memberCount : 3, memberCount);
     const gap = 1;
-    const colWidth = Math.max(
-        18,
-        Math.floor((totalWidth - gap * (cols - 1)) / cols),
+    const colWidth = Math.min(
+        MAX_CARD_WIDTH,
+        Math.max(18, Math.floor((totalWidth - gap * (cols - 1)) / cols)),
     );
     return { cols, gap, colWidth };
 }
