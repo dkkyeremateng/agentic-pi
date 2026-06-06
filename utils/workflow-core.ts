@@ -74,6 +74,13 @@ for it.`;
 // screen height, any extra row tips the terminal into scrolling and the viewport
 // bounces up/down on every repaint.
 export const LOG_PANEL_RESERVE = 8;
+// Max rows the live-log panel may occupy. The dashboard is an `aboveEditor`
+// sticky widget, so it must stay COMPACT — if it fills the screen, growth in the
+// conversation beneath it (incl. pi's own "Working…" indicator) pushes the total
+// past the terminal height and the whole widget scrolls into the scrollback,
+// leaving a trail of stale dashboard frames. Cap the panel so the widget is a
+// modest, bounded height; the full per-phase log is in the collapsible card.
+export const LOG_PANEL_MAX_ROWS = 10;
 export const LOG_CAP_CHARS = 16000; // bound the stored per-phase log
 export const STDERR_TAIL_CAP = 2000; // bound the captured stderr tail used in failure reports
 
@@ -399,7 +406,10 @@ export function appendLiveLog(
         // clear for the editor + footer (LOG_PANEL_RESERVE). The panel never overlaps
         // the footer but uses the full remaining space for logs.
         const rows = process.stdout.rows || 24;
-        const maxRows = Math.max(3, rows - lines.length - LOG_PANEL_RESERVE);
+        const maxRows = Math.max(
+            3,
+            Math.min(LOG_PANEL_MAX_ROWS, rows - lines.length - LOG_PANEL_RESERVE),
+        );
         const bodyStart = lines.length;
         const n = runningPhases.length;
         const clip = (s: string, indent: number) =>
@@ -476,7 +486,10 @@ export function appendLiveLog(
     // Fill the available height: everything below the grid except the rows kept clear
     // for the editor + footer, so the log uses the full space and pushes the editor +
     // footer to the bottom of the screen.
-    const maxLogRows = Math.max(3, rows - lines.length - LOG_PANEL_RESERVE);
+    const maxLogRows = Math.max(
+        3,
+        Math.min(LOG_PANEL_MAX_ROWS, rows - lines.length - LOG_PANEL_RESERVE),
+    );
     const colW = width - 4;
     // Reserve the first panel row for the "earlier lines" notice (blank when not
     // needed) so the panel height is constant.
