@@ -1,7 +1,7 @@
 ---
 name: shipper
 description: Shipping — creates a feature branch, commits code + tests + docs, pushes to remote, and opens a draft pull request
-model:
+model: gateframe/gateframe_yoda/qwen-plus-3-6-yoda
 context_window: 1000000
 tools: read,write,bash,grep,find,ls
 ---

@@ -1,7 +1,7 @@
 ---
 name: critic
 description: Critical evaluation of implementation plans and research/findings documents — identifies flaws, gaps, risks, unsupported claims, and implicit assumptions
-model:
+model: gateframe/gateframe_yoda/qwen-plus-3-6-yoda
 context_window: 1000000
 tools: read,grep,find,ls
 ---

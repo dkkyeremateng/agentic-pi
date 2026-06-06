@@ -1,7 +1,7 @@
 ---
 name: documenter
 description: Documentation — writes clear, concise docs, updates READMEs, adds inline comments where needed, and generates usage examples, matching the project's existing doc style
-model: gateframe/gateframe/deepseek-v4-flash
+model: gateframe/gateframe_yoda/qwen-plus-3-6-yoda
 context_window: 1000000
 tools: read,write,edit,bash,grep,find,ls
 ---

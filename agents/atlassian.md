@@ -2,7 +2,7 @@
 name: atlassian
 aliases: jira,atl
 description: Jira ticket tracking and triage — list, search (JQL), read, create, comment on, update, and transition tickets via the atlassian (Jira REST) skill. Use for backlog queries, ticket creation, status/assignee changes, and project lookups. Reports concise, sourced results without changing the codebase
-model: gateframe/gateframe/gemini-3.1-flash-lite
+model: gateframe/gateframe_yoda/qwen-plus-3-6-yoda
 context_window: 1000000
 tools: bash,read,write,grep,find,ls
 ---

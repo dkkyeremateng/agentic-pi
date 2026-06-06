@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Architecture and implementation planning — produces structured, phased plans with file-level specificity
-model:
+model: gateframe/gateframe_yoda/qwen-plus-3-6-yoda
 context_window: 1000000
 tools: read,write,grep,find,ls
 ---
