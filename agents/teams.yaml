@@ -1,8 +1,8 @@
 full:
     - scout
     - planner
-    - critic
     - implementer
+    - reviewer
     - tester
     - validator
     - documenter
@@ -10,7 +10,6 @@ full:
 
 spec:
     - planner
-    - critic
 
 plan-build:
     - planner

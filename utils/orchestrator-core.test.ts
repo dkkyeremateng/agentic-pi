@@ -1109,8 +1109,8 @@ describe("runWorkflowCore re-entry guard", () => {
         const agents = new Map<string, AgentDef>();
         for (const name of [
             "planner",
-            "critic",
             "implementer",
+            "reviewer",
             "tester",
             "documenter",
             "validator",
@@ -1143,7 +1143,7 @@ describe("runWorkflowCore re-entry guard", () => {
     it("rejects when a workflow is already running", async () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
-        agents.set("critic", mkAgent("critic"));
+        agents.set("reviewer", mkAgent("reviewer"));
         agents.set("documenter", mkAgent("documenter"));
         const host = mkHost({
             setup: {
@@ -1172,8 +1172,8 @@ describe("runWorkflowCore", () => {
         const agents = new Map<string, AgentDef>();
         for (const name of [
             "planner",
-            "critic",
             "implementer",
+            "reviewer",
             "tester",
             "documenter",
             "validator",
@@ -1215,7 +1215,7 @@ Build feature X according to the requirements.
                     if (phase.agent === "validator") {
                         return { output: "VERDICT: PASS", ok: true };
                     }
-                    if (phase.agent === "critic") {
+                    if (phase.agent === "reviewer") {
                         return {
                             output: "APPROVED\nPlan looks good",
                             ok: true,
@@ -1252,9 +1252,10 @@ Build feature X according to the requirements.
         assert.ok(runPhaseCalls.includes("documenter"));
     });
 
-    it("handles critique revision loop", async () => {
+    it("handles review revision loop (reviewer sends the implementer back)", async () => {
         const agents = mkFullAgentSet();
-        let criticCalls = 0;
+        let reviewerCalls = 0;
+        let implementerCalls = 0;
         const host = mkHost({
             setup: {
                 loadAgents: () => agents,
@@ -1266,15 +1267,19 @@ Build feature X according to the requirements.
                     if (phase.agent === "planner") {
                         return { output: mkValidPlan(), ok: true };
                     }
-                    if (phase.agent === "critic") {
-                        criticCalls++;
-                        if (criticCalls === 1) {
+                    if (phase.agent === "implementer") {
+                        implementerCalls++;
+                        return { output: "Implementation complete", ok: true };
+                    }
+                    if (phase.agent === "reviewer") {
+                        reviewerCalls++;
+                        if (reviewerCalls === 1) {
                             return {
-                                output: "REVISE BEFORE IMPLEMENTING\nNeeds more detail",
+                                output: "REVISE BEFORE MERGE\nFix the edge case",
                                 ok: true,
                             };
                         }
-                        return { output: "APPROVED\nPlan approved", ok: true };
+                        return { output: "APPROVED\nLooks good", ok: true };
                     }
                     if (phase.agent === "validator") {
                         return { output: "VERDICT: PASS", ok: true };
@@ -1295,7 +1300,9 @@ Build feature X according to the requirements.
             mkCtx(),
         );
         assert.equal(result.status, "shipped");
-        assert.equal(criticCalls, 2);
+        // reviewer: REVISE then APPROVED; implementer: first pass + the review fix.
+        assert.equal(reviewerCalls, 2);
+        assert.equal(implementerCalls, 2);
     });
 
     it("handles validation FAIL → re-implementation loop", async () => {
@@ -1327,7 +1334,7 @@ Build feature X according to the requirements.
                         implementerCalls++;
                         return { output: "Implementation complete", ok: true };
                     }
-                    if (phase.agent === "critic") {
+                    if (phase.agent === "reviewer") {
                         return { output: "APPROVED\nPlan approved", ok: true };
                     }
                     if (phase.agent === "shipper") {
@@ -1371,7 +1378,7 @@ Build feature X according to the requirements.
                             ok: true,
                         };
                     }
-                    if (phase.agent === "critic") {
+                    if (phase.agent === "reviewer") {
                         return { output: "APPROVED\nPlan approved", ok: true };
                     }
                     return { output: `${phase.agent} output`, ok: true };
@@ -1418,8 +1425,8 @@ Build feature X according to the requirements.
                 all: [
                     "scout",
                     "planner",
-                    "critic",
                     "implementer",
+                    "reviewer",
                     "tester",
                     "documenter",
                     "validator",
@@ -1456,7 +1463,7 @@ Build feature X according to the requirements.
                     if (phase.agent === "validator") {
                         return { output: "VERDICT: PASS", ok: true };
                     }
-                    if (phase.agent === "critic") {
+                    if (phase.agent === "reviewer") {
                         return { output: "APPROVED\nPlan approved", ok: true };
                     }
                     if (phase.agent === "documenter") {
@@ -1502,7 +1509,7 @@ Build feature X according to the requirements.
                     if (phase.agent === "validator") {
                         return { output: "VERDICT: PASS", ok: true };
                     }
-                    if (phase.agent === "critic") {
+                    if (phase.agent === "reviewer") {
                         return { output: "APPROVED\nPlan approved", ok: true };
                     }
                     return { output: `${phase.agent} output`, ok: true };
@@ -1524,13 +1531,12 @@ Build feature X according to the requirements.
     });
 });
 
-// ── runWorkflowCore — spec-shaped teams (planner/critic[/documenter]) ──
+// ── runWorkflowCore — spec-shaped teams (planner[/documenter]) ──
 
 describe("runWorkflowCore (spec-shaped teams)", () => {
     function mkSpecAgentSet(): Map<string, AgentDef> {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
-        agents.set("critic", mkAgent("critic"));
         agents.set("documenter", mkAgent("documenter"));
         return agents;
     }
@@ -1538,7 +1544,7 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
     // A spec-shaped team that includes the documenter, so the optional Document
     // phase runs (it's gated on the documenter being on the active team).
     const specTeamWithDoc: Partial<OrchestratorState> = {
-        teams: { spec: ["planner", "critic", "documenter"] },
+        teams: { spec: ["planner", "documenter"] },
         activeTeamName: "spec",
     };
 
@@ -1554,7 +1560,7 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
             execution: {
                 runPhase: async (phase) => {
                     runPhaseCalls.push(phase.agent);
-                    if (phase.agent === "critic") {
+                    if (phase.agent === "reviewer") {
                         return { output: "APPROVED\nSpec approved", ok: true };
                     }
                     return { output: `${phase.agent} output`, ok: true };
@@ -1587,16 +1593,16 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
             execution: {
                 runPhase: async (phase) => {
                     runPhaseCalls.push(phase.agent);
-                    if (phase.agent === "critic") {
+                    if (phase.agent === "reviewer") {
                         return { output: "APPROVED\nLooks good", ok: true };
                     }
                     return { output: `${phase.agent} output`, ok: true };
                 },
             },
         });
-        // Active team is planner + critic only — no documenter.
+        // Active team is planner only — no documenter.
         const st = mkStateWithAgents(agents, {
-            teams: { spec: ["planner", "critic"] },
+            teams: { spec: ["planner"] },
             activeTeamName: "spec",
         });
         const result = await runWorkflowCore(
@@ -1608,42 +1614,9 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
         );
         assert.equal(result.status, "done");
         assert.ok(runPhaseCalls.includes("planner"));
-        assert.ok(runPhaseCalls.includes("critic"));
         assert.ok(!runPhaseCalls.includes("documenter"));
         // No documenter ran, so the report has no Documentation section.
         assert.ok(!result.report.includes("### Documentation"));
-    });
-
-    it("returns needs-review when critic rejects", async () => {
-        const agents = mkSpecAgentSet();
-        const host = mkHost({
-            setup: {
-                loadAgents: () => agents,
-                setupSessions: () => {},
-                prepareRun: () => {},
-            },
-            execution: {
-                runPhase: async (phase) => {
-                    if (phase.agent === "critic") {
-                        return {
-                            output: "REVISE BEFORE DOCUMENTING\nNeeds more detail",
-                            ok: true,
-                        };
-                    }
-                    return { output: `${phase.agent} output`, ok: true };
-                },
-            },
-        });
-        const st = mkStateWithAgents(agents, specTeamWithDoc);
-        const result = await runWorkflowCore(
-            st,
-            host,
-            "Design feature Y",
-            3,
-            mkCtx(),
-        );
-        assert.equal(result.status, "needs-review");
-        assert.ok(st.running === false);
     });
 
     it("exits early on planner failure", async () => {

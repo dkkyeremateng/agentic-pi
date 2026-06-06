@@ -17,14 +17,14 @@ request references something you cannot find in the local files, plan from what 
 there and explicitly note what you could not verify.
 
 Once your plan is complete, **write it to `.agent/plan.md` yourself** with the `write`
-tool (create the `.agent/` directory if needed) so every downstream agent (critic,
-implementer, tester, validator) can read it from disk. Write the plan **verbatim** —
-the same content you emit as your message.
+tool (create the `.agent/` directory if needed) so every downstream agent
+(implementer, reviewer, tester, validator) can read it from disk. Write the plan
+**verbatim** — the same content you emit as your message.
 
 Writing the file is **in addition to** your normal output, not a replacement: you
 must STILL emit the complete plan as your final message (it is structurally
-validated and threaded to the implementer). If you revise the plan (e.g. after
-critic feedback), overwrite `.agent/plan.md` with the new version.
+validated and threaded to the implementer). If you re-run, overwrite
+`.agent/plan.md` with the new version.
 
 ## Intake Types
 

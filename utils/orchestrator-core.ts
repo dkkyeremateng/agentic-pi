@@ -24,8 +24,8 @@ import {
     buildWorkflowReport,
     scoutTask,
     planTask,
-    criticTask,
-    revisePlanTask,
+    reviewTask,
+    reviewFixTask,
     implementTask,
     fixTask,
     testTask,
@@ -355,7 +355,7 @@ export async function runWorkflowCore(
     const pm = buildPhaseMap(s.phases);
     const scoutP = pm.scout;
     const planP = pm.planner;
-    const critiqueP = pm.critic;
+    const reviewerP = pm.reviewer;
     const implP = pm.implementer;
     const testP = pm.tester;
     const valP = pm.validator;
@@ -406,42 +406,6 @@ export async function runWorkflowCore(
         }
     }
 
-    // ── Critique (plan ⇄ critic loop; revision needs a planner) ──
-    let critique = { output: "", ok: true };
-    let critiqueVerdict: CritiqueVerdict = "unknown";
-    if (critiqueP) {
-        for (let loop = 1; loop <= maxLoops; loop++) {
-            aborted = checkAbort(s, h);
-            if (aborted) return aborted;
-            critiqueP.status = "pending";
-            h.ui.updateWidget();
-            critique = await h.execution.runPhase(
-                critiqueP,
-                shared(criticTask(request, plan.output), "critic"),
-                cwd,
-            );
-            if (!critique.ok) return fail(s, "Critique", critique.output);
-
-            critiqueVerdict = detectCritique(critique.output);
-            if (critiqueVerdict !== "revise") break;
-
-            if (loop === maxLoops || !planP) break;
-            aborted = checkAbort(s, h);
-            if (aborted) return aborted;
-            planP.status = "pending";
-            planP.note = "";
-            h.ui.updateWidget();
-            plan = await h.execution.runPhase(
-                planP,
-                revisePlanTask(request, plan.output, critique.output),
-                cwd,
-            );
-            if (!plan.ok) return fail(s, "Planning", plan.output);
-            capturePlan(runArtifacts, cwd, plan.output);
-        }
-        runArtifacts.critique = critique.output;
-    }
-
     // ── Implement (first pass) ──
     let impl = { output: "", ok: false };
     if (implP) {
@@ -454,6 +418,56 @@ export async function runWorkflowCore(
         );
         if (!impl.ok) return fail(s, "Implementing", impl.output);
         runArtifacts.implSummary = impl.output;
+    }
+
+    // ── Review ⇄ implement ──
+    // The reviewer checks the implementation against the plan; on REVISE BEFORE
+    // MERGE the implementer fixes exactly the issues raised and the reviewer
+    // re-reviews, looping up to maxLoops.
+    let review = { output: "", ok: true };
+    let reviewVerdict: CritiqueVerdict = "unknown";
+    if (reviewerP && impl.ok) {
+        for (let loop = 1; loop <= maxLoops; loop++) {
+            aborted = checkAbort(s, h);
+            if (aborted) return aborted;
+            reviewerP.status = "pending";
+            h.ui.updateWidget();
+            review = await h.execution.runPhase(
+                reviewerP,
+                shared(
+                    reviewTask(request, plan.output, impl.output),
+                    "reviewer",
+                ),
+                cwd,
+            );
+            if (!review.ok) return fail(s, "Review", review.output);
+
+            reviewVerdict = detectCritique(review.output);
+            if (reviewVerdict !== "revise") break;
+
+            if (loop === maxLoops || !implP) break;
+            aborted = checkAbort(s, h);
+            if (aborted) return aborted;
+            implP.status = "pending";
+            implP.note = "";
+            h.ui.updateWidget();
+            impl = await h.execution.runPhase(
+                implP,
+                shared(
+                    reviewFixTask(
+                        request,
+                        plan.output,
+                        review.output,
+                        impl.output,
+                    ),
+                    "implementer",
+                ),
+                cwd,
+            );
+            if (!impl.ok) return fail(s, "Implementing", impl.output);
+            runArtifacts.implSummary = `[review fix] ${impl.output}`;
+        }
+        runArtifacts.review = review.output;
     }
 
     let test = { output: "", ok: false };
@@ -591,7 +605,7 @@ export async function runWorkflowCore(
             detectShip(ship.output) === "paused"
                 ? "paused-no-remote"
                 : "shipped";
-    } else if (critiqueP && critiqueVerdict === "revise") {
+    } else if (reviewerP && reviewVerdict === "revise") {
         status = "needs-review";
     } else {
         status = "done";
@@ -622,16 +636,16 @@ export async function runWorkflowCore(
         },
         scoutP,
         planP,
-        critiqueP,
         implP,
+        reviewerP,
         testP,
         valP,
         docP,
         shipP,
         scoutFindings,
         plan: plan.output,
-        critique: critique.output,
         impl: impl.output,
+        review: review.output,
         test: test.output,
         val: val.output,
         doc: doc.output,

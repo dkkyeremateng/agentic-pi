@@ -153,7 +153,7 @@ describe("contextBundle", () => {
         const a: RunArtifacts = {
             recon: undefined,
             plan: undefined,
-            critique: undefined,
+            review: undefined,
         };
         assert.equal(contextBundle(a), "");
     });
@@ -169,7 +169,7 @@ describe("contextBundle", () => {
         assert.ok(result.includes("Scout found X"));
         assert.ok(result.includes("Approved plan (planner)"));
         assert.ok(result.includes("Plan says Y"));
-        assert.ok(!result.includes("Critique"));
+        assert.ok(!result.includes("Review"));
         assert.ok(!result.includes("Implementation summary"));
     });
 
@@ -177,7 +177,7 @@ describe("contextBundle", () => {
         const a: RunArtifacts = {
             recon: "recon",
             plan: "plan",
-            critique: "critique",
+            review: "review",
             implSummary: "impl",
             testReport: "test",
             docReport: "doc",
@@ -185,7 +185,7 @@ describe("contextBundle", () => {
         const result = contextBundle(a);
         assert.ok(result.includes("Reconnaissance"));
         assert.ok(result.includes("Approved plan"));
-        assert.ok(result.includes("Critique"));
+        assert.ok(result.includes("Review"));
         assert.ok(result.includes("Implementation summary"));
         assert.ok(result.includes("Test report"));
         assert.ok(result.includes("Documentation report"));
@@ -217,8 +217,8 @@ describe("buildPhaseMap", () => {
         const phases: PhaseState[] = [
             testPhase("scout"),
             testPhase("planner"),
-            testPhase("critic"),
             testPhase("implementer"),
+            testPhase("reviewer"),
             testPhase("tester"),
             testPhase("validator"),
             testPhase("documenter"),
@@ -227,7 +227,7 @@ describe("buildPhaseMap", () => {
         const pm = buildPhaseMap(phases);
         assert.equal(pm.scout?.agent, "scout");
         assert.equal(pm.planner?.agent, "planner");
-        assert.equal(pm.critic?.agent, "critic");
+        assert.equal(pm.reviewer?.agent, "reviewer");
         assert.equal(pm.implementer?.agent, "implementer");
         assert.equal(pm.tester?.agent, "tester");
         assert.equal(pm.validator?.agent, "validator");
@@ -238,7 +238,7 @@ describe("buildPhaseMap", () => {
     it("returns null for any phase the team omits", () => {
         const phases: PhaseState[] = [
             testPhase("planner"),
-            testPhase("critic"),
+            testPhase("reviewer"),
         ];
         const pm = buildPhaseMap(phases);
         assert.equal(pm.scout, null);
@@ -370,8 +370,8 @@ describe("freshPhases", () => {
     const FULL = [
         "scout",
         "planner",
-        "critic",
         "implementer",
+        "reviewer",
         "tester",
         "validator",
         "documenter",
@@ -393,9 +393,9 @@ describe("freshPhases", () => {
         ]);
     });
 
-    it("supports a planner+critic team", () => {
-        const phases = freshPhases(["planner", "critic"]);
-        assert.deepEqual(phases.map((p) => p.agent), ["planner", "critic"]);
+    it("supports a planner+reviewer team", () => {
+        const phases = freshPhases(["planner", "reviewer"]);
+        assert.deepEqual(phases.map((p) => p.agent), ["planner", "reviewer"]);
     });
 
     it("ignores non-pipeline members (e.g. seeker)", () => {
@@ -422,8 +422,8 @@ describe("freshPhases", () => {
         const phases = freshPhases(FULL);
         assert.equal(phases[0].label, "Scout");
         assert.equal(phases[1].label, "Plan");
-        assert.equal(phases[2].label, "Critique");
-        assert.equal(phases[3].label, "Implement");
+        assert.equal(phases[2].label, "Implement");
+        assert.equal(phases[3].label, "Review");
         assert.equal(phases[4].label, "Test");
         assert.equal(phases[5].label, "Validate");
         assert.equal(phases[6].label, "Document");
@@ -438,7 +438,7 @@ describe("contextBundleForPhase", () => {
     const fullArtifacts: RunArtifacts = {
         recon: "Scout findings",
         plan: "The plan",
-        critique: "Critique feedback",
+        review: "Review feedback",
         implSummary: "Implementation done",
         testReport: "Tests passed",
         docReport: "Docs updated",
@@ -450,40 +450,40 @@ describe("contextBundleForPhase", () => {
         // The bundle should only include recon if it's in the whitelist.
         assert.ok(bundle.includes("Scout findings"));
         assert.ok(!bundle.includes("The plan"));
-        assert.ok(!bundle.includes("Critique"));
+        assert.ok(!bundle.includes("Review feedback"));
     });
 
     it("planner gets only recon", () => {
         const bundle = contextBundleForPhase("planner", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
         assert.ok(!bundle.includes("The plan"));
-        assert.ok(!bundle.includes("Critique"));
+        assert.ok(!bundle.includes("Review feedback"));
         assert.ok(!bundle.includes("Implementation"));
     });
 
-    it("critic gets recon and plan", () => {
-        const bundle = contextBundleForPhase("critic", fullArtifacts);
-        assert.ok(bundle.includes("Scout findings"));
-        assert.ok(bundle.includes("The plan"));
-        assert.ok(!bundle.includes("Critique"));
-        assert.ok(!bundle.includes("Implementation"));
-    });
-
-    it("implementer gets recon, plan, and critique", () => {
+    it("implementer gets recon and plan (not the review)", () => {
         const bundle = contextBundleForPhase("implementer", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
         assert.ok(bundle.includes("The plan"));
-        assert.ok(bundle.includes("Critique feedback"));
+        assert.ok(!bundle.includes("Review feedback"));
         assert.ok(!bundle.includes("Implementation done"));
+    });
+
+    it("reviewer gets recon, plan, and implSummary", () => {
+        const bundle = contextBundleForPhase("reviewer", fullArtifacts);
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(bundle.includes("The plan"));
+        assert.ok(bundle.includes("Implementation done"));
+        assert.ok(!bundle.includes("Review feedback"));
         assert.ok(!bundle.includes("Tests passed"));
     });
 
-    it("tester gets recon, plan, and implSummary (not critique)", () => {
+    it("tester gets recon, plan, and implSummary (not the review)", () => {
         const bundle = contextBundleForPhase("tester", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
         assert.ok(bundle.includes("The plan"));
         assert.ok(bundle.includes("Implementation done"));
-        assert.ok(!bundle.includes("Critique feedback"));
+        assert.ok(!bundle.includes("Review feedback"));
         assert.ok(!bundle.includes("Docs updated"));
     });
 
@@ -493,7 +493,7 @@ describe("contextBundleForPhase", () => {
         assert.ok(bundle.includes("The plan"));
         assert.ok(bundle.includes("Implementation done"));
         assert.ok(bundle.includes("Tests passed"));
-        assert.ok(!bundle.includes("Critique feedback"));
+        assert.ok(!bundle.includes("Review feedback"));
         assert.ok(!bundle.includes("Docs updated"));
     });
 
@@ -503,7 +503,7 @@ describe("contextBundleForPhase", () => {
         assert.ok(bundle.includes("The plan"));
         assert.ok(bundle.includes("Implementation done"));
         assert.ok(bundle.includes("Tests passed"));
-        assert.ok(!bundle.includes("Critique feedback"));
+        assert.ok(!bundle.includes("Review feedback"));
         assert.ok(!bundle.includes("Docs updated"));
     });
 
@@ -521,7 +521,7 @@ describe("contextBundleForPhase", () => {
         // Unknown agents get the full bundle (forward-compat)
         assert.ok(bundle.includes("Scout findings"));
         assert.ok(bundle.includes("The plan"));
-        assert.ok(bundle.includes("Critique feedback"));
+        assert.ok(bundle.includes("Review feedback"));
         assert.ok(bundle.includes("Implementation done"));
         assert.ok(bundle.includes("Tests passed"));
         assert.ok(bundle.includes("Docs updated"));

@@ -46,13 +46,14 @@ export function detectVerdict(output: string): Verdict {
 }
 
 /**
- * Detect the critic's verdict from its output.
- * Prefers the explicit REVISE BEFORE DOCUMENTING / APPROVED WITH RESERVATIONS /
- * APPROVED marker; falls back to scanning only the first 20 lines.
+ * Detect a review verdict from an agent's output (the reviewer's code review, or a
+ * critic-style document review). Prefers the explicit REVISE BEFORE
+ * MERGE/IMPLEMENTING/DOCUMENTING/PUBLISHING / APPROVED WITH RESERVATIONS / APPROVED
+ * marker; falls back to scanning only the first 20 lines.
  */
 export function detectCritique(output: string): CritiqueVerdict {
     const marker = output.match(
-        /REVISE\s+BEFORE\s+(?:IMPLEMENTING|DOCUMENTING|PUBLISHING)|APPROVED\s+WITH\s+RESERVATIONS|APPROVED/i,
+        /REVISE\s+BEFORE\s+(?:MERGE|MERGING|IMPLEMENTING|DOCUMENTING|PUBLISHING)|APPROVED\s+WITH\s+RESERVATIONS|APPROVED/i,
     );
     if (marker) {
         const v = marker[0].toUpperCase();
@@ -66,7 +67,7 @@ export function detectCritique(output: string): CritiqueVerdict {
     // "approved" buried in the critic's reasoning text.
     const head = output.split("\n").slice(0, 20).join("\n");
     if (
-        /^.*\brevise\s+before\s+(?:implementing|documenting|publishing)\b.*$/im.test(
+        /^.*\brevise\s+before\s+(?:merge|merging|implementing|documenting|publishing)\b.*$/im.test(
             head,
         )
     )

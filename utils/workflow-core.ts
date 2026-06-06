@@ -36,8 +36,8 @@ import {
 
 export const REQUIRED_AGENTS = [
     "planner",
-    "critic",
     "implementer",
+    "reviewer",
     "tester",
     "documenter",
     "validator",
@@ -708,8 +708,8 @@ export function renderRunWorkflowCall(
     const flow = [
         ...(members.some((m) => m.toLowerCase() === "scout") ? ["Scout"] : []),
         "Plan",
-        "Critique",
         "Implement",
+        "Review",
         "Test",
         "Validate",
         "Document",
@@ -1398,16 +1398,16 @@ export function buildWorkflowReport(o: {
     totals: ReportTotals;
     scoutP: PhaseState | null;
     planP: PhaseState | null;
-    critiqueP: PhaseState | null;
     implP: PhaseState | null;
+    reviewerP: PhaseState | null;
     testP: PhaseState | null;
     valP: PhaseState | null;
     docP: PhaseState | null;
     shipP: PhaseState | null;
     scoutFindings: string;
     plan: string;
-    critique: string;
     impl: string;
+    review: string;
     test: string;
     val: string;
     doc: string;
@@ -1436,11 +1436,11 @@ export function buildWorkflowReport(o: {
             ? [summaryLine("Scout", o.scoutP, digest(o.scoutFindings))]
             : []),
         ...(o.planP ? [summaryLine("Planner", o.planP, digest(o.plan))] : []),
-        ...(o.critiqueP
-            ? [summaryLine("Critic", o.critiqueP, digest(o.critique))]
-            : []),
         ...(o.implP
             ? [summaryLine("Implementer", o.implP, digest(o.impl))]
+            : []),
+        ...(o.reviewerP
+            ? [summaryLine("Reviewer", o.reviewerP, digest(o.review))]
             : []),
         ...(o.testP
             ? [
@@ -1469,11 +1469,11 @@ export function buildWorkflowReport(o: {
             ? [`### Reconnaissance`, ``, truncatePhaseOutput(o.scoutFindings), ``]
             : []),
         ...(o.planP ? [`### Plan`, ``, truncatePhaseOutput(o.plan), ``] : []),
-        ...(o.critiqueP
-            ? [`### Critique`, ``, truncatePhaseOutput(o.critique), ``]
-            : []),
         ...(o.implP
             ? [`### Implementation`, ``, truncatePhaseOutput(o.impl), ``]
+            : []),
+        ...(o.reviewerP
+            ? [`### Review`, ``, truncatePhaseOutput(o.review), ``]
             : []),
         ...(o.testP
             ? [`### Test Report`, ``, truncatePhaseOutput(o.test), ``]
@@ -1530,7 +1530,7 @@ export function validatePlan(plan: string): PlanCheck {
 export interface RunArtifacts {
     recon?: string; // scout findings
     plan?: string; // approved plan
-    critique?: string; // critic's verdict + findings
+    review?: string; // reviewer's verdict + findings
     implSummary?: string; // implementer's change summary
     testReport?: string; // tester's report
     docReport?: string; // documenter's report
@@ -1551,8 +1551,8 @@ export function contextBundle(a: RunArtifacts): string {
     };
     add("Reconnaissance (scout)", a.recon);
     add("Approved plan (planner)", a.plan);
-    add("Critique (critic)", a.critique);
     add("Implementation summary (implementer)", a.implSummary);
+    add("Review (reviewer)", a.review);
     add("Test report (tester)", a.testReport);
     add("Documentation report (documenter)", a.docReport);
     if (parts.length === 0) return "";
@@ -1574,8 +1574,8 @@ export function contextBundle(a: RunArtifacts): string {
 const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     scout: ["recon"],
     planner: ["recon"],
-    critic: ["recon", "plan"],
-    implementer: ["recon", "plan", "critique"],
+    implementer: ["recon", "plan"],
+    reviewer: ["recon", "plan", "implSummary"],
     tester: ["recon", "plan", "implSummary"],
     validator: ["recon", "plan", "implSummary", "testReport"],
     documenter: ["recon", "plan", "implSummary", "testReport"],
@@ -1634,34 +1634,47 @@ export function planTask(original: string, recon = ""): string {
     ].join("\n");
 }
 
-export function criticTask(original: string, plan: string): string {
-    return [
-        "Evaluate this implementation plan before it is handed to the implementer.",
-        "",
-        "Request:",
-        original,
-        "",
-        "Plan to evaluate:",
-        plan,
-    ].join("\n");
-}
-
-export function revisePlanTask(
+export function reviewTask(
     original: string,
     plan: string,
-    critique: string,
+    implSummary: string,
 ): string {
     return [
-        "The critic REJECTED your plan. Revise it to address the issues raised. Do not start over — adjust the existing plan.",
+        "Review the implementation the implementer just produced against the plan.",
+        "Read the changed files in the working directory and the plan at `.agent/plan.md`.",
+        "Return APPROVED, or REVISE BEFORE MERGE with specific required fixes.",
         "",
         "Original request:",
         original,
         "",
-        "Your previous plan:",
+        "Plan:",
         plan,
         "",
-        "Critic findings to address:",
-        critique,
+        "Implementer's change summary:",
+        implSummary,
+    ].join("\n");
+}
+
+export function reviewFixTask(
+    original: string,
+    plan: string,
+    review: string,
+    prevSummary: string,
+): string {
+    return [
+        "The reviewer REQUESTED CHANGES to your implementation. Address exactly the issues raised — do not start over.",
+        "",
+        "Original request:",
+        original,
+        "",
+        "Plan:",
+        plan,
+        "",
+        "Your previous change summary:",
+        prevSummary,
+        "",
+        "Reviewer findings to address:",
+        review,
     ].join("\n");
 }
 
@@ -1788,8 +1801,8 @@ export function shipTask(
 export interface PhaseMap {
     scout: PhaseState | null;
     planner: PhaseState | null;
-    critic: PhaseState | null;
     implementer: PhaseState | null;
+    reviewer: PhaseState | null;
     tester: PhaseState | null;
     validator: PhaseState | null;
     documenter: PhaseState | null;
@@ -1806,8 +1819,8 @@ export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
     return {
         scout: byAgent("scout"),
         planner: byAgent("planner"),
-        critic: byAgent("critic"),
         implementer: byAgent("implementer"),
+        reviewer: byAgent("reviewer"),
         tester: byAgent("tester"),
         validator: byAgent("validator"),
         documenter: byAgent("documenter"),
@@ -1861,8 +1874,8 @@ export function mkPhase(
 export const PIPELINE_ORDER = [
     "scout",
     "planner",
-    "critic",
     "implementer",
+    "reviewer",
     "tester",
     "validator",
     "documenter",
@@ -1872,8 +1885,8 @@ export const PIPELINE_ORDER = [
 const PHASE_LABELS: Record<string, string> = {
     scout: "Scout",
     planner: "Plan",
-    critic: "Critique",
     implementer: "Implement",
+    reviewer: "Review",
     tester: "Test",
     validator: "Validate",
     documenter: "Document",

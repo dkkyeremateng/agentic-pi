@@ -1,6 +1,6 @@
 # Workflow agents — pi orchestrator definitions
 
-Agent definitions for the self-healing **plan → critic → implement → test →
+Agent definitions for the self-healing **plan → implement → review → test →
 validate → document → ship** workflow, plus an optional read-only recon pass.
 These `.md` files are consumed by the `agent-workflow.ts`
 extension in `../extensions/` (see `../extensions/README.md`). pi discovers
@@ -14,12 +14,12 @@ available there.
 |------|---------|
 | `scout.md` | Read-only recon — maps structure, patterns, key entry points; runs first when the team includes it |
 | `planner.md` | Identifies the bug/requirement, writes a phased plan + acceptance criteria |
-| `critic.md` | Critically evaluates the plan — flags flaws, gaps, risks, and unverified assumptions before any code is written |
 | `implementer.md` | Applies the plan exactly, reports a precise change summary |
+| `reviewer.md` | Reviews the implementation against the plan — finds bugs, regressions, missed criteria; sends the implementer back to fix them |
 | `tester.md` | Writes and runs tests, reports pass/fail |
 | `documenter.md` | Updates READMEs/docs, adds comments where needed, writes usage examples in the existing style |
 | `validator.md` | Runs the full suite, confirms criteria; in ship mode opens a draft PR on PASS |
-| `teams.yaml` | Selectable teams for the workflow extensions. A team's roster IS the pipeline — the workflow runs exactly its members in canonical order (`scout → planner → critic → implementer → tester → validator → documenter → shipper`). No spec/full mode; e.g. `full` (all), `spec` (planner + critic), `plan-build`, `building`. |
+| `teams.yaml` | Selectable teams for the workflow extensions. A team's roster IS the pipeline — the workflow runs exactly its members in canonical order (`scout → planner → implementer → reviewer → tester → validator → documenter → shipper`). No spec/full mode; e.g. `full` (all), `spec` (planner), `plan-build`, `building`. |
 
 Also present are **specialist** agents that are not linear pipeline phases —
 `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets).
@@ -41,21 +41,21 @@ pi
 ```
 
 Type the bug or requirement. The planner produces a phased plan, which the
-**critic** evaluates before the implementer sees it — if the critic rejects the
-plan, findings are fed back to the planner for revision (looping up to the
-configured max). Once approved, the implementer applies the plan, the tester
-writes and runs tests, and the validator gates a correctness loop
-(implement ⇄ test ⇄ validate, retrying on FAIL up to the configured max). Only
-after it passes does the documenter update the docs, after which the validator
-ships — committing code + tests + docs and opening a draft PR on a `fix/...`
-branch (or pausing if there is no remote). If the chosen team includes `scout`,
-a read-only recon pass runs first and feeds the planner.
+implementer applies. The **reviewer** then reviews that implementation against the
+plan — if it requests changes (`REVISE BEFORE MERGE`), the implementer fixes them and
+the reviewer re-reviews (looping up to the configured max). Then the tester writes
+and runs tests, and the validator gates a correctness loop (implement ⇄ test ⇄
+validate, retrying on FAIL up to the configured max). Only after it passes does the
+documenter update the docs, after which the validator ships — committing code + tests
++ docs and opening a draft PR on a `fix/...` branch (or pausing if there is no
+remote). If the chosen team includes `scout`, a read-only recon pass runs first and
+feeds the planner.
 
 - `/agent-workflow [request]` — run the lifecycle; each agent runs on its own model (its `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `models.yaml`, falling back to the session model). See `../extensions/README.md`.
 - Name a team as the first token to skip the picker (e.g. `/agent-workflow building …`), or add `loops=N` to override the retry limit.
 
-For plan-only work (no code change), pick a partial team — `spec` (planner +
-critic) produces a reviewed plan, and a team that also includes the `documenter`
+For plan-only work (no code change), pick a partial team — `spec` (planner)
+produces a plan, and a team that also includes the `documenter`
 can render it into a spec under `.agent/specs/`. A team's roster determines exactly
 which pipeline phases run; non-pipeline specialists added to a team are ignored —
 dispatch those ad-hoc through the orchestrator instead.
@@ -90,7 +90,7 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
        - <name>
    ```
 
-   - Naming it one of `scout, planner, critic, implementer, tester, validator,
+   - Naming it one of `scout, planner, implementer, reviewer, tester, validator,
      documenter, shipper` slots it into the linear pipeline at that position, and a
      team listing it runs it there.
    - Any **other** (non-pipeline) agent is a specialist the orchestrator dispatches
