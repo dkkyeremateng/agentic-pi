@@ -155,6 +155,10 @@ export default function (pi: ExtensionAPI) {
     const st = newOrchestratorState();
     // Extension-local: live ctx, session dir, subprocess.
     let widgetCtx: any;
+    // The model registry lives on the command/event ctx (not the factory `pi`),
+    // so capture it whenever a ctx is available for use in getArgumentCompletions
+    // (which receives no ctx of its own).
+    let modelRegistry: any;
     let sessionDir = "";
     let currentProc: any = null;
 
@@ -788,10 +792,11 @@ export default function (pi: ExtensionAPI) {
                 if (first.toLowerCase() === "reset") return null;
                 if (!resolveAgent(st.agents, first)) return null;
                 // Available models (auth configured), falling back to all known.
+                if (!modelRegistry) return null;
                 let models: { id: string; provider: string }[] = [];
                 try {
-                    models = pi.modelRegistry.getAvailable();
-                    if (models.length === 0) models = pi.modelRegistry.getAll();
+                    models = modelRegistry.getAvailable();
+                    if (models.length === 0) models = modelRegistry.getAll();
                 } catch {
                     return null;
                 }
@@ -808,6 +813,7 @@ export default function (pi: ExtensionAPI) {
             },
             handler: async (args, ctx) => {
                 widgetCtx = ctx;
+                modelRegistry = (ctx as any).modelRegistry;
                 st.agents = loadAgents(ctx.cwd);
                 const raw = (args || "").trim();
 
@@ -1118,6 +1124,7 @@ export default function (pi: ExtensionAPI) {
 
     pi.on("session_start", async (_event, ctx) => {
         widgetCtx = ctx;
+        modelRegistry = (ctx as any).modelRegistry;
         loadDotEnv(ctx.cwd); // pick up cwd/.env in case pi launched from elsewhere
         st.agents = loadAgents(ctx.cwd);
         st.teams = loadTeams(ctx.cwd);
