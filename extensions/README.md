@@ -155,8 +155,10 @@ like any tool result to read the full markdown). It is also written to
   a passed/failed count. When scout ran, a **Reconnaissance** section precedes the
   Plan in the Details.
 - **Totals** — wall-clock time, tool calls, total tokens, and **total run cost**
-  (summed across every phase, each priced on its own model). The footer also shows
-  this running total live during the run.
+  (summed across every phase, each priced on its own model). The footer shows a
+  live running total too — the **orchestrator's own spend plus the sub-agents'** —
+  so it reflects cost even when you're only talking to the primary agent. (Both
+  read `$0.00` for models the registry prices at 0, e.g. a custom proxy.)
 - **Details** — the full transcript from every agent below the summary.
 
 When idle (no run in progress), the widget shows a **team dashboard** instead —

@@ -159,6 +159,11 @@ export default function (pi: ExtensionAPI) {
     // so capture it whenever a ctx is available for use in getArgumentCompletions
     // (which receives no ctx of its own).
     let modelRegistry: any;
+    // Running USD cost of the PRIMARY (orchestrator) session this session. pi's
+    // getContextUsage() exposes tokens but no cost, so accumulate it ourselves from
+    // each assistant message's usage.cost (the provider already priced it). The
+    // footer adds this to the sub-agent phase total so it reflects all spend.
+    let primaryCostUsd = 0;
     let sessionDir = "";
     let currentProc: any = null;
 
@@ -1024,6 +1029,20 @@ export default function (pi: ExtensionAPI) {
 
     // ── Cancellation hook (integrates with escape-cancel if present) ──
 
+    // ── Primary-session cost ──
+    // Accumulate the orchestrator's own spend from each assistant message's
+    // usage.cost (priced by the provider). Sub-agents run in separate processes,
+    // so their messages never fire this on the primary session — no double count.
+    if (active)
+        pi.on("message_end", async (event: any) => {
+            const msg = event?.message;
+            const total = msg?.usage?.cost?.total;
+            if (msg?.role === "assistant" && typeof total === "number" && total > 0) {
+                primaryCostUsd += total;
+                updateWidget(); // refresh the footer with the new total
+            }
+        });
+
     // ── Primary-turn timing ──
     // The orchestrator's turn wraps both its own reasoning and the sub-agent work
     // it triggers, so timing it gives the total INCLUDING the primary agent's time.
@@ -1130,6 +1149,7 @@ export default function (pi: ExtensionAPI) {
         // re-fires session_start), while still persisting across turns within a
         // session. Restart clears them too (new process).
         clearAllModelOverrides();
+        primaryCostUsd = 0; // fresh per-session spend tally
         loadDotEnv(ctx.cwd); // pick up cwd/.env in case pi launched from elsewhere
         st.agents = loadAgents(ctx.cwd);
         st.teams = loadTeams(ctx.cwd);
@@ -1231,6 +1251,7 @@ export default function (pi: ExtensionAPI) {
                         phases: st.phases,
                         dispatchElapsedMs: st.dispatchElapsedMs,
                         runElapsedMs: st.runElapsedMs,
+                        primaryCostUsd,
                         contextUsage: () => ctx.getContextUsage?.(),
                         visibleWidth,
                         truncateToWidth,

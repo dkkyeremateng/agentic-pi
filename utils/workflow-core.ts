@@ -515,6 +515,9 @@ export function renderWorkflowFooter(opts: {
     phases: PhaseState[];
     dispatchElapsedMs: number;
     runElapsedMs: number;
+    // USD cost of the primary (orchestrator) session itself, folded into the
+    // footer total alongside the sub-agent phase costs. Optional (defaults to 0).
+    primaryCostUsd?: number;
     contextUsage: () => any;
     visibleWidth: (s: string) => number;
     truncateToWidth: (s: string, w: number) => string;
@@ -532,6 +535,7 @@ export function renderWorkflowFooter(opts: {
         phases,
         dispatchElapsedMs,
         runElapsedMs,
+        primaryCostUsd = 0,
         contextUsage,
         visibleWidth,
         truncateToWidth,
@@ -628,13 +632,12 @@ export function renderWorkflowFooter(opts: {
         theme.fg("accent", selfName) +
         theme.fg("dim", " ") +
         theme.fg(statusColor, statusText);
-    // Total spend across this run's sub-agent phases (each prices its own model).
-    // Always shown — $0.00 when nothing priced has run yet — so the field is never
-    // mistaken for "missing".
-    const totalCostUsd = phases.reduce(
-        (sum, p) => sum + (p.tokens?.costUsd || 0),
-        0,
-    );
+    // Total spend = the primary (orchestrator) session's own cost plus this run's
+    // sub-agent phases (each prices its own model). Always shown — $0.00 when
+    // nothing priced has run yet — so the field is never mistaken for "missing".
+    const totalCostUsd =
+        primaryCostUsd +
+        phases.reduce((sum, p) => sum + (p.tokens?.costUsd || 0), 0);
     const costStr = theme.fg("muted", `${formatCostUsd(totalCostUsd)} · `);
     const right = costStr + theme.fg("dim", `[${bar}] ${pctStr} `);
     const pad = " ".repeat(
