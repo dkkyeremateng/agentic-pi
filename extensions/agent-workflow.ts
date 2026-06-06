@@ -71,6 +71,7 @@ import {
     displayName,
     statusBadge,
     appendLiveLog as appendLiveLogCore,
+    LOG_PANEL_RESERVE,
     renderWorkflowFooter,
     teamsBlock as teamsBlockCore,
     chooseTeam as chooseTeamCore,
@@ -443,6 +444,24 @@ export default function (pi: ExtensionAPI) {
         if (!widgetCtx || !widgetCtx.hasUI) return; // no chrome without a UI
         widgetCtx.ui.setWidget("agent-workflow", (_tui: any, theme: any) => {
             const text = new Text("", 0, 1);
+            // Hard safety net: never let the widget grow taller than the screen
+            // minus the rows reserved for the editor + footer. A tall team grid (many
+            // agents) or live-log panel on a short terminal would otherwise push the
+            // input box and footer off-screen. Clip the overflow with a notice so
+            // those always keep their rows.
+            const clampWidget = (out: string[], theme: any): string[] => {
+                const rows = process.stdout.rows || 24;
+                const max = Math.max(3, rows - LOG_PANEL_RESERVE);
+                if (out.length <= max) return out;
+                const kept = out.slice(0, Math.max(1, max - 1));
+                kept.push(
+                    theme.fg(
+                        "dim",
+                        `   … ${out.length - kept.length} more line(s) — clipped to fit`,
+                    ),
+                );
+                return kept;
+            };
             return {
                 render(width: number): string[] {
                     if (st.phases.length === 0 || st.dispatchMode) {
@@ -454,7 +473,7 @@ export default function (pi: ExtensionAPI) {
                         const gridLines = renderAgentGrid(width, theme);
                         if (st.dispatchMode)
                             appendLiveLog(gridLines, width, theme);
-                        text.setText(gridLines.join("\n"));
+                        text.setText(clampWidget(gridLines, theme).join("\n"));
                         return text.render(width);
                     }
 
@@ -507,7 +526,7 @@ export default function (pi: ExtensionAPI) {
                     // available vertical space, pushing the editor down, then tails.
                     appendLiveLog(lines, width, theme);
 
-                    text.setText(lines.join("\n"));
+                    text.setText(clampWidget(lines, theme).join("\n"));
                     return text.render(width);
                 },
                 invalidate() {
