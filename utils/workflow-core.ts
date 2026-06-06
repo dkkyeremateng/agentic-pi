@@ -397,6 +397,12 @@ export function appendLiveLog(
                 .map((l) => l.replace(/\s+$/, ""))
                 .filter((l) => l.length)
                 .slice(-count);
+        // Give each concurrent agent its own color so interleaved blocks are easy to
+        // tell apart. Keyed by position (not name) since parallel agents are often
+        // the SAME agent — e.g. three `seeker`s. Wraps if there are more agents than
+        // colors. These are theme palette names, so they adapt to the active theme.
+        const PALETTE = ["accent", "success", "warning", "error", "toolTitle"];
+        const colorOf = (i: number) => PALETTE[i % PALETTE.length];
 
         // Share the panel height evenly: each agent gets a label line plus up to 5
         // recent log lines when there is room; otherwise fall back to one compact
@@ -410,17 +416,20 @@ export function appendLiveLog(
             const baseLog = Math.floor(logCapacity / n);
             const extra = logCapacity % n;
             runningPhases.forEach((p, i) => {
-                lines.push("   " + theme.fg("muted", clip(agentLabel(p), 3)));
+                const c = colorOf(i);
+                lines.push(
+                    "   " + theme.fg(c, theme.bold(clip(agentLabel(p), 3))),
+                );
                 const allot = baseLog + (i < extra ? 1 : 0);
                 for (const l of recentLog(p, allot))
-                    lines.push("      " + theme.fg("dim", clip(l, 6)));
+                    lines.push("      " + theme.fg(c, clip(l, 6)));
             });
         } else {
-            for (const p of runningPhases.slice(0, maxRows)) {
+            runningPhases.slice(0, maxRows).forEach((p, i) => {
                 const tail = recentLog(p, 1)[0] || "";
                 const row = ` ${agentLabel(p)}${tail ? " — " + tail : ""}`;
-                lines.push("   " + theme.fg("muted", clip(row, 3)));
-            }
+                lines.push("   " + theme.fg(colorOf(i), clip(row, 3)));
+            });
         }
         // Pad to the reserved height so the editor + footer keep their space.
         for (let i = lines.length - bodyStart; i < maxRows; i++) lines.push("");
