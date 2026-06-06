@@ -164,12 +164,20 @@ export const MAX_CARD_WIDTH = 50;
 
 // Calculate column width for a grid layout.
 // Returns { cols, gap, colWidth } for rendering agent cards in a grid.
+// Cards are left-aligned and width-capped, so pack as many columns as fit across
+// the terminal (one more card to the right whenever there's room) rather than a
+// fixed column count — a wide terminal shows 2-3+ cards per row, a narrow one
+// stacks them.
 export function calculateGridLayout(
     memberCount: number,
     totalWidth: number,
 ): { cols: number; gap: number; colWidth: number } {
-    const cols = Math.min(memberCount <= 3 ? memberCount : 3, memberCount);
     const gap = 1;
+    const fit = Math.max(
+        1,
+        Math.floor((totalWidth + gap) / (MAX_CARD_WIDTH + gap)),
+    );
+    const cols = Math.max(1, Math.min(memberCount, fit));
     const colWidth = Math.min(
         MAX_CARD_WIDTH,
         Math.max(18, Math.floor((totalWidth - gap * (cols - 1)) / cols)),
