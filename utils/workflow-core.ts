@@ -69,7 +69,11 @@ browsing, or analysis. Reply with a single short line confirming you are ready
 (e.g. "pong — ready") and stop. Only do real work when the request actually asks
 for it.`;
 
-export const LOG_PANEL_RESERVE = 6; // rows kept clear below the live panel for the editor + footer
+// Rows kept clear below the live panel for the editor + footer + pi's own chrome
+// (hint line, spacing). Needs a little slack: if the panel fills to exactly the
+// screen height, any extra row tips the terminal into scrolling and the viewport
+// bounces up/down on every repaint.
+export const LOG_PANEL_RESERVE = 8;
 export const LOG_CAP_CHARS = 16000; // bound the stored per-phase log
 export const STDERR_TAIL_CAP = 2000; // bound the captured stderr tail used in failure reports
 
@@ -357,6 +361,31 @@ export function appendLiveLog(
     running: boolean,
     visibleWidth: (s: string) => number,
 ): void {
+    // Sanitize a raw streamed log line for safe single-row rendering. Streamed
+    // output can carry ANSI escapes and other control chars (a stray \r or a
+    // cursor-move sequence makes the whole terminal jump), and tabs render at an
+    // unpredictable width. Strip them so each log line is plain, printable text.
+    const sanitize = (s: string): string =>
+        s
+            .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC
+            .replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, "") // CSI
+            .replace(/\x1b[@-Z\\-_]/g, "") // other escapes
+            .replace(/\t/g, "  ")
+            .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ""); // ctrl chars incl. \r (keeps \n)
+    // Truncate by DISPLAY width (not char count) so wide glyphs — box-drawing,
+    // emoji, CJK — never push a line past `max` and wrap onto a second terminal
+    // row, which would make the panel taller than budgeted and bounce the viewport.
+    const truncW = (s: string, max: number): string => {
+        if (max <= 0) return "";
+        if (visibleWidth(s) <= max) return s;
+        let out = "";
+        for (const ch of s) {
+            if (visibleWidth(out) + visibleWidth(ch) > max - 1) break;
+            out += ch;
+        }
+        return out + "…";
+    };
+
     // Parallel dispatch: several agents stream at once. The single live-log panel
     // can only show one of them, so render a compact per-agent status block (label
     // · tools · last line) instead of one agent's full, fast-scrolling stream.
@@ -373,10 +402,8 @@ export function appendLiveLog(
         const maxRows = Math.max(3, rows - lines.length - LOG_PANEL_RESERVE);
         const bodyStart = lines.length;
         const n = runningPhases.length;
-        const clip = (s: string, indent: number) => {
-            const w = Math.max(10, width - indent - 1);
-            return s.length > w ? s.slice(0, w - 1) + "…" : s;
-        };
+        const clip = (s: string, indent: number) =>
+            truncW(sanitize(s), Math.max(10, width - indent - 1));
         const agentLabel = (p: PhaseState) => {
             const toolNote =
                 p.toolCount > 0
@@ -465,8 +492,7 @@ export function appendLiveLog(
             : "",
     );
     for (const l of shown) {
-        const t = l.length > colW ? l.slice(0, colW - 1) + "…" : l;
-        lines.push("   " + theme.fg("muted", t));
+        lines.push("   " + theme.fg("muted", truncW(sanitize(l), colW)));
     }
     // Pad to the stable panel height so the widget never shrinks.
     for (let i = shown.length; i < bodyRows; i++) lines.push("");
