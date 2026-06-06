@@ -1125,6 +1125,11 @@ export default function (pi: ExtensionAPI) {
     pi.on("session_start", async (_event, ctx) => {
         widgetCtx = ctx;
         modelRegistry = (ctx as any).modelRegistry;
+        // /agent-model overrides are session-scoped: drop any carried over by the
+        // process-global store so they clear on a fresh start and on /reload (which
+        // re-fires session_start), while still persisting across turns within a
+        // session. Restart clears them too (new process).
+        clearAllModelOverrides();
         loadDotEnv(ctx.cwd); // pick up cwd/.env in case pi launched from elsewhere
         st.agents = loadAgents(ctx.cwd);
         st.teams = loadTeams(ctx.cwd);

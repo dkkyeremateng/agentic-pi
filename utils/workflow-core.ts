@@ -862,9 +862,17 @@ export function agentModelEnvVar(agentKey: string): string {
 
 // Runtime per-agent model overrides, set via /agent-model during a session. In
 // memory only — NOT persisted, so they reset when pi restarts. Keyed by lowercase
-// agent name and shared in-process by the workflow + dispatch extensions (both
-// import this module), so an override applies wherever the agent is dispatched.
-const runtimeModelOverrides = new Map<string, string>();
+// agent name.
+//
+// pi loads each `-e` extension in its own module graph, so dispatch.ts and
+// agent-workflow.ts each get a SEPARATE copy of this module — a plain
+// module-level Map would not be shared between them, and an override set via
+// /agent-model (agent-workflow) would be invisible to dispatch_agent (dispatch).
+// Anchor the Map on a process-global keyed by a shared Symbol so every module
+// copy in the process resolves to the one-and-only store.
+const OVERRIDES_KEY = Symbol.for("pi.agentWorkflow.runtimeModelOverrides");
+const runtimeModelOverrides: Map<string, string> =
+    ((globalThis as any)[OVERRIDES_KEY] ??= new Map<string, string>());
 
 export function setModelOverride(agentKey: string, model: string): void {
     runtimeModelOverrides.set(agentKey.toLowerCase(), model);
