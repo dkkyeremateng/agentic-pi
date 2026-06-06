@@ -522,9 +522,6 @@ export function renderWorkflowFooter(opts: {
 
     // Context usage.
     const runningPhases = phases.filter((p) => p.status === "running");
-    let contextPct: number | null;
-    let tokenCount: number | undefined;
-    let contextWindow: number | undefined;
 
     // Primary (orchestrator) session usage — what the footer reports.
     let usage: any;
@@ -550,9 +547,9 @@ export function renderWorkflowFooter(opts: {
 
     // The footer shows the PRIMARY (orchestrator) session's context. Each sub-agent
     // runs on its own per-agent model/session and shows its OWN context on its card.
-    contextPct = primaryPct;
-    tokenCount = primaryTokens || undefined;
-    contextWindow = primaryWindow;
+    const contextPct = primaryPct;
+    const tokenCount = primaryTokens || undefined;
+    const contextWindow = primaryWindow;
 
     const { bar, display: pctStr } = formatContextUsage({
         contextPct,

@@ -52,7 +52,6 @@ const WORKER_MODEL = process.env.PI_WORKFLOW_MODEL || "";
 const AGENT_TIMEOUT_MS =
     Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_TIMEOUT || "0") || 0) *
     60_000;
-const SHARED_CONTEXT = process.env.PI_AGENT_WORKFLOW_SHARED_CONTEXT !== "0";
 const MAX_DISPATCHES_PER_TURN = Math.max(
     1,
     parseInt(process.env.PI_MAX_DISPATCHES_PER_TURN || "20", 10) || 20,
@@ -207,7 +206,9 @@ export default function (pi: ExtensionAPI) {
             prepareRun: () => {},
         },
         config: {
-            sharedContext: SHARED_CONTEXT,
+            // Unused here — ad-hoc dispatch never runs the pipeline (runPhase is a
+            // no-op), so the curated-context bundle setting doesn't apply.
+            sharedContext: false,
             maxDispatchesPerTurn: MAX_DISPATCHES_PER_TURN,
             minDispatchOutputChars: MIN_DISPATCH_OUTPUT_CHARS,
         },
