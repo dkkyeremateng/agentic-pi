@@ -8,6 +8,7 @@ full:
     - shipper
 
 spec:
+    - scout
     - planner
 
 plan-build:
