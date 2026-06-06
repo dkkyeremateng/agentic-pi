@@ -64,7 +64,7 @@ export function detectCritique(output: string): CritiqueVerdict {
 
     // Fallback: scan only the first 20 lines and require the verdict to appear
     // on its own line (optionally under a ## heading) to avoid matching the word
-    // "approved" buried in the critic's reasoning text.
+    // "approved" buried in the agent's reasoning text.
     const head = output.split("\n").slice(0, 20).join("\n");
     if (
         /^.*\brevise\s+before\s+(?:merge|merging|implementing|documenting|publishing)\b.*$/im.test(

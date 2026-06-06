@@ -1569,7 +1569,7 @@ export function contextBundle(a: RunArtifacts): string {
 
 // Per-phase artifact whitelist: which RunArtifacts keys each phase actually
 // needs. Later phases receive all artifacts by default, but the implementer
-// doesn't need the test report, the tester doesn't need the critique, etc.
+// doesn't need the test report, the tester doesn't need the review, etc.
 // Selective bundling reduces token consumption ~30% on complex runs.
 const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     scout: ["recon"],

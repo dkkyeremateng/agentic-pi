@@ -1658,7 +1658,7 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
 describe("runWorkflowCore (ping mode)", () => {
     it("pings every loaded agent in parallel instead of running the pipeline", async () => {
         const agents = new Map<string, AgentDef>();
-        for (const n of ["planner", "critic", "implementer", "seeker"]) {
+        for (const n of ["planner", "reviewer", "implementer", "seeker"]) {
             agents.set(n, mkAgent(n));
         }
         const calls: string[] = [];
@@ -1683,7 +1683,7 @@ describe("runWorkflowCore (ping mode)", () => {
             },
         });
         const st = mkStateWithAgents(agents, {
-            teams: { full: ["planner", "critic", "implementer"] },
+            teams: { full: ["planner", "reviewer", "implementer"] },
             activeTeamName: "full",
         });
         const result = await runWorkflowCore(
@@ -1697,7 +1697,7 @@ describe("runWorkflowCore (ping mode)", () => {
         // ALL loaded agents pinged (incl. seeker, not in the active team)...
         assert.deepEqual(
             calls.slice().sort(),
-            ["critic", "implementer", "planner", "seeker"],
+            ["implementer", "planner", "reviewer", "seeker"],
         );
         // ...and they ran concurrently, not sequentially.
         assert.ok(maxConcurrent > 1, "expected parallel execution");

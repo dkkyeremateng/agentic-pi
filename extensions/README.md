@@ -1,50 +1,41 @@
-# agent-workflow.ts — plan / critic / implement / test / validate / document / ship orchestrator
+# agent-workflow.ts — plan / implement / review / test / validate / document / ship orchestrator
 
 A self-contained pi extension that runs the agents as a **self-healing loop**,
-gated by the validator — optionally led by a read-only **scout** recon pass. The
-validator runs twice: once to gate the correctness loop, and once at the end to
-ship.
+gated by the reviewer and the validator — optionally led by a read-only **scout**
+recon pass. The validator runs twice: once to gate the correctness loop, and once
+at the end to ship.
 
 ### Full workflow
 
 ```
-scout ──▶ planner ◀──┐                tester ──▶ validate
-(optional)     │      │ REVISE             ▲            │
-               ▼      │                     │            │
-            critic ───┘    implementer ─────┘      FAIL ◀┘ (loops back)
-               │ APPROVED                              │ PASS
-               ▼                                       ▼
-                                        document ──▶ ship (open PR)
+scout ──▶ planner ──▶ implementer ──▶ reviewer ──▶ tester ──▶ validate ──▶ document ──▶ ship
+(optional)                ▲              │              ▲          │          (on PASS)
+                          │   REVISE     │              │   FAIL   │
+                          └──────────────┘              └──────────┘
+                          (reviewer loops to            (validator loops to
+                           the implementer)              the implementer)
 ```
 
-The **critic** evaluates the planner's output before the implementer sees it.
-If the critic rejects the plan (`REVISE BEFORE IMPLEMENTING`), findings are
-fed back to the planner for revision. This loop runs up to `loops=N` times
-(default 3). Once the critic approves (or the limit is reached), the approved
-plan proceeds to the implementer.
+The **reviewer** reviews the implementation against the plan after the implementer
+runs. If it requests changes (`REVISE BEFORE MERGE`), its findings go back to the
+implementer, which fixes exactly those issues, and the reviewer re-reviews. This
+loop runs up to `loops=N` times (default 3). Once the reviewer approves (or the
+limit is reached), the change proceeds to the tester and validator.
 
 ### Partial teams (roster = pipeline)
 
 There is no separate "spec" mode. A team simply runs the subsequence of the
-pipeline its roster contains. For example a `planner, critic` (optionally with a
+pipeline its roster contains. For example a `planner` (optionally with a
 `documenter`) team runs:
 
 ```
-scout ──▶ planner ◀──┐
-(optional)     │      │ REVISE
-               ▼      │
-            critic ───┘   (loops back with findings)
-               │ APPROVED
-               ▼
-           document (only if the team has a documenter)
+scout ──▶ planner ──▶ document (only if the team has a documenter)
+(optional)
 ```
 
-The **critic** evaluates the planner's output and sends findings back to the
-planner for revision if it rejects the plan. This loop runs up to `loops=N` times
-(default 3). If the critic never approves, the report status is `NEEDS REVIEW`.
-The plan↔critic loop only runs when the team has both a planner and a critic;
-likewise the test↔validate loop only runs when it has both a tester and a
-validator.
+The **implement↔review** loop only runs when the team has both an implementer and a
+reviewer; likewise the **test↔validate** loop only runs when it has both a tester and
+a validator. A team missing a loop's agents just runs its phases straight through.
 
 Documentation runs **only after** the change passes validation — no docs are
 written for an implementation that might be reworked. The ship step then commits
@@ -61,7 +52,7 @@ Handles **bug fixes, new features, and new apps** — the planner classifies the
 
 pi auto-discovers `cwd/.pi/extensions/*.ts`. Run `pi` from this directory and the
 extension loads automatically — no registration. It reads the agent definitions
-from `.pi/agents/` (scout, planner, critic, implementer, tester, documenter, validator).
+from `.pi/agents/` (scout, planner, implementer, reviewer, tester, documenter, validator).
 
 `agent-workflow.ts` is the single workflow extension. It runs each agent on its own
 model (the agent's `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `.pi/agents/models.yaml`,
@@ -126,9 +117,9 @@ declares the plan with `select_agents`, chains `dispatch_agent` (or runs the
 pipeline), finishes every selected agent, then **stops and summarizes**.
 
 A live widget renders the phases as connected cards
-(`Scout ──▶ Plan ──▶ Critique ──▶ Implement ──▶ Test ──▶ Validate ──▶ Document ──▶ Ship`,
-with the leading `Scout` card present only when the team includes it). Both the full and
-spec workflows include the Critique card. Each card shows a status icon
+(`Scout ──▶ Plan ──▶ Implement ──▶ Review ──▶ Test ──▶ Validate ──▶ Document ──▶ Ship`,
+with the leading `Scout` card present only when the team includes it). Each card
+shows a status icon
 (`○` pending, `●` running, `✓` done, `✗` error), elapsed time, and a context-usage
 bar — but **not** a snippet of the agent's log; that lives in the live activity
 panel below the cards, so the cards stay compact. A status badge by the title shows
@@ -156,7 +147,7 @@ like any tool result to read the full markdown). It is also written to
 - **Outcome** — a plain-English result (SHIPPED / PAUSED / FAILED / NEEDS REVIEW),
   the verdict, pass count, and the PR URL when one was opened.
 - **Summary of work** — one digest line per phase (scout when present, planner,
-  critic, implementer, tester, validator, then documenter + ship once it passes)
+  implementer, reviewer, tester, validator, then documenter + ship once it passes)
   with the time each took and, for the tester, a passed/failed count. When scout
   ran, a **Reconnaissance** section precedes the Plan in the Details.
 - **Details** — the full transcript from every agent below the summary.
@@ -166,11 +157,11 @@ a grid of cards, one per agent in the active team, each with its status, the
 **model it will run** (`◆ <model>`), and a short description. Teams come from
 `.pi/agents/teams.yaml`. There is **no spec/full mode**: a team's roster *is* the
 pipeline — the workflow runs exactly the agents the team lists, in the canonical
-order `scout → planner → critic → implementer → tester → validator → documenter →
-shipper`. A `planner, critic` team produces a plan + critique; a `implementer,
-tester, validator, documenter, shipper` team builds, tests, documents, and ships;
-each loop (plan↔critic, test↔validate) runs only when both of its agents are on
-the team.
+order `scout → planner → implementer → reviewer → tester → validator → documenter →
+shipper`. A `planner` (optionally `documenter`) team produces a plan/spec; a
+`implementer, reviewer, tester, validator, documenter, shipper` team builds, reviews,
+tests, documents, and ships; each loop (implement↔review, test↔validate) runs only
+when both of its agents are on the team.
 
 When the primary agent drives **ad-hoc work** (rather than the full
 `run_agent_workflow` pipeline), the dashboard grid **stays on screen** and narrows
@@ -231,13 +222,13 @@ Commands:
 
 The phase agents share a **curated context bundle** so each
 can build on the others' work instead of relying on lossy hand-offs. The scout's
-reconnaissance and the critic's verdict — the artifacts the per-phase prompts would
+reconnaissance and the reviewer's verdict — the artifacts the per-phase prompts would
 otherwise drop — are prepended to every downstream agent's task as a `## Shared run
 context` block. Combined with what the prompts already thread through (the plan,
 the implementer's change summary, the tester's report), every agent
-(implementer → tester → validator → documenter → ship) sees the full cross-agent
-context, with no duplication. The bundle stays small (recon + critique only), so it
-adds context without bloating the window.
+(reviewer → tester → validator → documenter → ship) sees the full cross-agent
+context, with no duplication. The bundle stays small, so it adds context without
+bloating the window.
 
 Each agent runs in its own per-agent session; the curated bundle above is how
 cross-agent context is shared (a single shared session window is ill-defined when
@@ -345,11 +336,11 @@ description:
 ```
  agent-workflow  ·  team full (8/8 agents)
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-│ Scout        │ │ Planner      │ │ Critic       │ │ Implementer  │
+│ Scout        │ │ Planner      │ │ Implementer  │ │ Reviewer     │
 │ ○ idle       │ │ ○ idle       │ │ ○ idle       │ │ ○ idle       │
 │ [-----] 0%   │ │ [-----] 0%   │ │ [-----] 0%   │ │ [-----] 0%   │
 │ ◆ haiku-4-5  │ │ ◆ opus-4-8   │ │ ◆ opus-4-8   │ │ ◆ opus-4-8   │
-│ Fast codeb…  │ │ Architectu…  │ │ Critical e…  │ │ Requiremen…  │
+│ Fast codeb…  │ │ Architectu…  │ │ Requiremen…  │ │ Reviews im…  │
 └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
 ```
 
@@ -364,11 +355,11 @@ completions (`0/3`):
 ```
  agent-workflow  ·  selected from full (3/8 agents)  ·  ◌ queued: 0/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
-│ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Critic           │
+│ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Implementer      │
 │ ◌ queued           │ │ ◌ queued           │ │ ◌ queued           │
 │ [-----] 0%         │ │ [-----] 0%         │ │ [-----] 0%         │
 │ ◆ haiku-4-5        │ │ ◆ opus-4-8         │ │ ◆ opus-4-8         │
-│ Fast codebase rec… │ │ Architecture and … │ │ Critical evaluati… │
+│ Fast codebase rec… │ │ Architecture and … │ │ Requirement and b… │
 └────────────────────┘ └────────────────────┘ └────────────────────┘
 ```
 
@@ -379,17 +370,17 @@ As it then dispatches each agent (`dispatch_agent`), the cards update in place �
 ```
  agent-workflow  ·  selected from full (3/8 agents)  ·  ● working: 1/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
-│ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Critic           │
+│ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Implementer      │
 │ ✓ done 4s          │ │ ● running 9s       │ │ ◌ queued           │
 │ [#----] 12%        │ │ [##---] 34%        │ │ [-----] 0%         │
 │ ◆ haiku-4-5        │ │ ◆ opus-4-8         │ │ ◆ opus-4-8         │
-│ Fast codebase rec… │ │ Architecture and … │ │ Critical evaluati… │
+│ Fast codebase rec… │ │ Architecture and … │ │ Requirement and b… │
 └────────────────────┘ └────────────────────┘ └────────────────────┘
 ```
 
 Teams are defined in `.pi/agents/teams.yaml` (a flat `team:` → `- member` list).
 A team's roster **is** the pipeline: the workflow runs exactly its members in the
-canonical order `scout → planner → critic → implementer → tester → validator →
+canonical order `scout → planner → implementer → reviewer → tester → validator →
 documenter → ship`. There is no spec/full mode — `full` (all eight) runs the
 whole pipeline, `building` (implementer + tester + validator + documenter +
 shipper) builds and ships, `plan-build` (planner + implementer + validator)

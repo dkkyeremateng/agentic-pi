@@ -27,7 +27,8 @@ These are **not** run as teams; the orchestrator dispatches them directly. There
 no dedicated research agent: for an investigate-and-write-up the orchestrator
 assembles it itself — pick the relevant specialists/skills for the request, gather
 (in parallel when independent), then write the findings doc to
-`.agent/findings/<slug>.md`, optionally sending it to the `critic` for review.
+`.agent/findings/<slug>.md`. (The `reviewer` reviews code against a plan, not
+research write-ups, so it is not used here.)
 
 ## Run it
 
