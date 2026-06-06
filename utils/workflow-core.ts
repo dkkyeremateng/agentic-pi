@@ -69,7 +69,7 @@ browsing, or analysis. Reply with a single short line confirming you are ready
 (e.g. "pong — ready") and stop. Only do real work when the request actually asks
 for it.`;
 
-export const LOG_PANEL_RESERVE = 10; // rows kept clear below the live panel for the editor + footer
+export const LOG_PANEL_RESERVE = 6; // rows kept clear below the live panel for the editor + footer
 export const LOG_CAP_CHARS = 16000; // bound the stored per-phase log
 export const STDERR_TAIL_CAP = 2000; // bound the captured stderr tail used in failure reports
 
@@ -366,17 +366,11 @@ export function appendLiveLog(
         const rule = "─".repeat(Math.max(0, width - visibleWidth(label) - 1));
         lines.push("");
         lines.push(theme.fg("dim", label + rule));
-        // Same height budget as the single-agent panel below: never taller than
-        // half the screen, always leaving LOG_PANEL_RESERVE rows for the editor +
-        // footer so the panel never overlaps the footer.
+        // Fill the available height: everything below the grid except the rows kept
+        // clear for the editor + footer (LOG_PANEL_RESERVE). The panel never overlaps
+        // the footer but uses the full remaining space for logs.
         const rows = process.stdout.rows || 24;
-        const maxRows = Math.max(
-            3,
-            Math.min(
-                Math.floor(rows / 2),
-                rows - lines.length - LOG_PANEL_RESERVE,
-            ),
-        );
+        const maxRows = Math.max(3, rows - lines.length - LOG_PANEL_RESERVE);
         const bodyStart = lines.length;
         const n = runningPhases.length;
         const clip = (s: string, indent: number) => {
@@ -452,12 +446,10 @@ export function appendLiveLog(
         .map((l) => l.replace(/\s+$/, ""))
         .filter((l) => l.length);
     const rows = process.stdout.rows || 24;
-    // Hard bound so the editor + footer always stay on screen: never taller than
-    // half the terminal, and always leaving room below.
-    const maxLogRows = Math.max(
-        3,
-        Math.min(Math.floor(rows / 2), rows - lines.length - LOG_PANEL_RESERVE),
-    );
+    // Fill the available height: everything below the grid except the rows kept clear
+    // for the editor + footer, so the log uses the full space and pushes the editor +
+    // footer to the bottom of the screen.
+    const maxLogRows = Math.max(3, rows - lines.length - LOG_PANEL_RESERVE);
     const colW = width - 4;
     // Reserve the first panel row for the "earlier lines" notice (blank when not
     // needed) so the panel height is constant.
