@@ -16,6 +16,14 @@ import {
     subagentExtArgs,
     loadSkills,
     sessionLabel,
+    resolveAgentModel,
+    agentModelEnvVar,
+    setModelOverride,
+    clearModelOverride,
+    clearAllModelOverrides,
+    getModelOverride,
+    getModelOverrides,
+    type AgentDef,
     type RunArtifacts,
     type PhaseState,
 } from "./workflow-core";
@@ -698,5 +706,114 @@ describe("sessionLabel", () => {
         const label = sessionLabel("agent-workflow", "", "x".repeat(80));
         assert.ok(label.endsWith("…"));
         assert.ok(label.length < 70);
+    });
+});
+
+// ── resolveAgentModel + runtime model overrides ──
+
+function mkAgentDef(name: string, model = ""): AgentDef {
+    return {
+        name,
+        description: "",
+        tools: "",
+        model,
+        contextWindow: 0,
+        systemPrompt: "",
+    };
+}
+// A unique agent key so a real PI_AGENT_<NAME>_MODEL in the environment can't
+// shadow these tests (the dev env exports some PI_AGENT_*_MODEL vars).
+const A = "qa-probe";
+const ENV = "PI_AGENT_QA_PROBE_MODEL";
+const oneAgent = (model = ""): Map<string, AgentDef> =>
+    new Map([[A, mkAgentDef(A, model)]]);
+
+describe("agentModelEnvVar", () => {
+    it("derives the env var name from an agent key", () => {
+        assert.equal(agentModelEnvVar("seeker"), "PI_AGENT_SEEKER_MODEL");
+        assert.equal(
+            agentModelEnvVar("plan-build"),
+            "PI_AGENT_PLAN_BUILD_MODEL",
+        );
+        assert.equal(agentModelEnvVar(A), ENV);
+    });
+});
+
+describe("resolveAgentModel", () => {
+    it("falls back to the workflow model, then the caller fallback", () => {
+        assert.equal(
+            resolveAgentModel(A, oneAgent(), "wf-model", "fb"),
+            "wf-model",
+        );
+        assert.equal(resolveAgentModel(A, oneAgent(), "", "fb"), "fb");
+    });
+
+    it("prefers the agent's frontmatter model over the workflow model", () => {
+        assert.equal(resolveAgentModel(A, oneAgent("fm"), "wf", "fb"), "fm");
+    });
+
+    it("prefers PI_AGENT_<NAME>_MODEL over frontmatter", () => {
+        const prev = process.env[ENV];
+        process.env[ENV] = "env-model";
+        try {
+            assert.equal(
+                resolveAgentModel(A, oneAgent("fm"), "wf", "fb"),
+                "env-model",
+            );
+        } finally {
+            if (prev === undefined) delete process.env[ENV];
+            else process.env[ENV] = prev;
+        }
+    });
+});
+
+describe("runtime model overrides", () => {
+    it("a runtime override wins over env, frontmatter, and workflow model", () => {
+        const prev = process.env[ENV];
+        process.env[ENV] = "env-model";
+        setModelOverride(A, "override-model");
+        try {
+            assert.equal(
+                resolveAgentModel(A, oneAgent("fm"), "wf", "fb"),
+                "override-model",
+            );
+            assert.equal(getModelOverride(A), "override-model");
+            assert.equal(getModelOverrides().get(A), "override-model");
+        } finally {
+            clearAllModelOverrides();
+            if (prev === undefined) delete process.env[ENV];
+            else process.env[ENV] = prev;
+        }
+    });
+
+    it("is case-insensitive on the agent key", () => {
+        setModelOverride("QA-Probe", "m1");
+        try {
+            assert.equal(resolveAgentModel(A, oneAgent("fm"), "wf", "fb"), "m1");
+        } finally {
+            clearAllModelOverrides();
+        }
+    });
+
+    it("clearModelOverride removes one; resolution returns to frontmatter", () => {
+        setModelOverride(A, "m1");
+        assert.equal(clearModelOverride(A), true);
+        assert.equal(clearModelOverride(A), false);
+        assert.equal(resolveAgentModel(A, oneAgent("fm"), "wf", "fb"), "fm");
+    });
+
+    it("clearAllModelOverrides returns the count cleared and empties the map", () => {
+        setModelOverride(A, "m1");
+        setModelOverride("qa-probe-2", "m2");
+        assert.equal(clearAllModelOverrides(), 2);
+        assert.equal(getModelOverrides().size, 0);
+    });
+
+    it("getModelOverrides returns a copy (mutating it does not affect state)", () => {
+        setModelOverride(A, "m1");
+        const snap = getModelOverrides() as Map<string, string>;
+        snap.delete(A);
+        assert.equal(getModelOverride(A), "m1");
+        clearAllModelOverrides();
     });
 });

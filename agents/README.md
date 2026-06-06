@@ -52,6 +52,7 @@ touches as part of implementing. If the chosen team includes `scout`, a read-onl
 recon pass runs first and feeds the planner.
 
 - `/agent-workflow [request]` — run the lifecycle; each agent runs on its own model (its `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `models.yaml`, falling back to the session model). See `../extensions/README.md`.
+- `/agent-model [<agent> <model>]` — change an agent's model on the fly for this session (in memory, resets on restart); no args lists effective models, `reset` clears one or (bare) all. A runtime override outranks the env var, `.md` `model:`, and `models.yaml`.
 - Name a team as the first token to skip the picker (e.g. `/agent-workflow building …`), or add `loops=N` to override the retry limit.
 
 For plan-only work (no code change), pick the `spec` team (planner) — it produces a

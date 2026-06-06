@@ -85,12 +85,17 @@ import {
     allTeamAgents,
     makeSpawnWrapper,
     resolveAgentModel,
+    setModelOverride,
+    clearModelOverride,
+    clearAllModelOverrides,
+    getModelOverrides,
 } from "../utils/workflow-core";
 import {
     newOrchestratorState,
     type OrchestratorHost,
     runWorkflowCore,
     runFullWorkflowCommand,
+    resolveAgent,
 } from "../utils/orchestrator-core";
 import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/dispatch-events";
 
@@ -756,6 +761,104 @@ export default function (pi: ExtensionAPI) {
                 cancelPendingWidget();
                 ctx.ui.setWidget("agent-workflow", undefined);
                 ctx.ui.notify("Workflow-team widget cleared.", "info");
+            },
+        });
+
+    // ── /agent-model — change a sub-agent's model on the fly (this session) ──
+    // Overrides are in memory only: they apply to every subsequent dispatch/run of
+    // that agent and reset when pi restarts. The dashboard cards re-render with the
+    // new model immediately.
+    if (active)
+        pi.registerCommand("agent-model", {
+            description:
+                "Change a sub-agent's model for this session: '/agent-model' to list, '/agent-model <agent> <model>' to set, '/agent-model <agent> reset' or '/agent-model reset' to clear",
+            getArgumentCompletions: (prefix: string) => {
+                // Complete only the first token (the agent name, plus "reset").
+                if (/\s/.test(prefix)) return null;
+                const p = prefix.toLowerCase();
+                return ["reset", ...Array.from(st.agents.keys())]
+                    .filter((c) => c.startsWith(p))
+                    .map((c) => ({ value: c, label: c }));
+            },
+            handler: async (args, ctx) => {
+                widgetCtx = ctx;
+                st.agents = loadAgents(ctx.cwd);
+                const raw = (args || "").trim();
+
+                // No args → list each agent's effective model, marking overrides.
+                if (!raw) {
+                    const overrides = getModelOverrides();
+                    const rows = Array.from(st.agents.values())
+                        .map((d) => {
+                            const key = d.name.toLowerCase();
+                            const mark = overrides.has(key)
+                                ? "  *(override)"
+                                : "";
+                            return `  ${displayName(d.name).padEnd(13)} ${modelFor(d.name)}${mark}`;
+                        })
+                        .join("\n");
+                    ctx.ui.notify(
+                        `Sub-agent models (this session)\n${rows}\n\n` +
+                            `Set:       /agent-model <agent> <model>\n` +
+                            `Reset one: /agent-model <agent> reset\n` +
+                            `Reset all: /agent-model reset`,
+                        "info",
+                    );
+                    return;
+                }
+
+                // "/agent-model reset" → clear all overrides.
+                if (raw.toLowerCase() === "reset") {
+                    const n = clearAllModelOverrides();
+                    updateWidget();
+                    ctx.ui.notify(
+                        `Cleared ${n} model override${n === 1 ? "" : "s"} — agents back to their configured models.`,
+                        "info",
+                    );
+                    return;
+                }
+
+                const parts = raw.split(/\s+/);
+                const def = resolveAgent(st.agents, parts[0]);
+                if (!def) {
+                    ctx.ui.notify(
+                        `Unknown agent "${parts[0]}". Loaded: ${Array.from(st.agents.keys()).join(", ")}`,
+                        "error",
+                    );
+                    return;
+                }
+                const key = def.name.toLowerCase();
+                const rest = parts.slice(1).join(" ").trim();
+
+                // "/agent-model <agent>" → show its current effective model.
+                if (!rest) {
+                    ctx.ui.notify(
+                        `${displayName(def.name)} → ${modelFor(def.name)}`,
+                        "info",
+                    );
+                    return;
+                }
+
+                // "/agent-model <agent> reset|default|clear" → clear its override.
+                if (/^(reset|default|clear)$/i.test(rest)) {
+                    const had = clearModelOverride(key);
+                    updateWidget();
+                    ctx.ui.notify(
+                        had
+                            ? `Reset ${displayName(def.name)} to its configured model (${modelFor(def.name)}).`
+                            : `${displayName(def.name)} has no override.`,
+                        "info",
+                    );
+                    return;
+                }
+
+                // Otherwise set the override to the given model string.
+                setModelOverride(key, rest);
+                updateWidget();
+                ctx.ui.notify(
+                    `${displayName(def.name)} model → ${rest} (this session).`,
+                    "info",
+                );
             },
         });
 

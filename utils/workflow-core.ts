@@ -860,17 +860,44 @@ export function agentModelEnvVar(agentKey: string): string {
     return `PI_AGENT_${name}_MODEL`;
 }
 
+// Runtime per-agent model overrides, set via /agent-model during a session. In
+// memory only — NOT persisted, so they reset when pi restarts. Keyed by lowercase
+// agent name and shared in-process by the workflow + dispatch extensions (both
+// import this module), so an override applies wherever the agent is dispatched.
+const runtimeModelOverrides = new Map<string, string>();
+
+export function setModelOverride(agentKey: string, model: string): void {
+    runtimeModelOverrides.set(agentKey.toLowerCase(), model);
+}
+export function clearModelOverride(agentKey: string): boolean {
+    return runtimeModelOverrides.delete(agentKey.toLowerCase());
+}
+export function clearAllModelOverrides(): number {
+    const n = runtimeModelOverrides.size;
+    runtimeModelOverrides.clear();
+    return n;
+}
+export function getModelOverride(agentKey: string): string | undefined {
+    return runtimeModelOverrides.get(agentKey.toLowerCase());
+}
+export function getModelOverrides(): ReadonlyMap<string, string> {
+    return new Map(runtimeModelOverrides);
+}
+
 // Resolve the model for an agent. Precedence:
-// 1. PI_AGENT_<NAME>_MODEL env var (e.g. PI_AGENT_SEEKER_MODEL)
-// 2. Agent .md frontmatter `model:` field
-// 3. PI_WORKFLOW_MODEL env var
-// 4. fallback (caller-provided)
+// 1. Runtime override set via /agent-model this session (setModelOverride)
+// 2. PI_AGENT_<NAME>_MODEL env var (e.g. PI_AGENT_SEEKER_MODEL)
+// 3. Agent .md frontmatter `model:` field
+// 4. PI_WORKFLOW_MODEL env var
+// 5. fallback (caller-provided)
 export function resolveAgentModel(
     agentKey: string,
     agents: Map<string, AgentDef>,
     workflowModel: string,
     fallback: string,
 ): string {
+    const override = runtimeModelOverrides.get(agentKey.toLowerCase());
+    if (override) return override;
     const envModel = process.env[agentModelEnvVar(agentKey)];
     if (envModel) return envModel;
     const def = agents.get(agentKey.toLowerCase());
