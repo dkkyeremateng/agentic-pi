@@ -107,10 +107,8 @@ export function renderRichCard(opts: {
         barLength: 5,
     });
     // Append the phase's USD cost to the usage line (where tokens already live)
-    // so the card height stays constant — only when a priced model reported a cost.
-    const cardCost = livePhase?.tokens?.costUsd;
-    const costSuffix =
-        cardCost && cardCost > 0 ? ` · ${formatCostUsd(cardCost)}` : "";
+    // so the card height stays constant. Always shown ($0.00 for unpriced models).
+    const costSuffix = ` · ${formatCostUsd(livePhase?.tokens?.costUsd)}`;
     const ctxRaw = `[${ctxBar}] ${ctxDisplay}${costSuffix}`;
     const ctxStr = theme.fg("dim", truncate(ctxRaw, w));
     const ctxVisible = Math.min(ctxRaw.length, w);

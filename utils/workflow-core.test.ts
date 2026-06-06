@@ -324,22 +324,22 @@ describe("tokenNote", () => {
     it("formats small token counts without k suffix", () => {
         const phase = testPhase("planner");
         phase.tokens = { input: 500, output: 300, contextWindow: 200000 };
-        assert.equal(tokenNote(phase), ", 800 tokens");
+        assert.equal(tokenNote(phase), ", 800 tokens, $0.00");
     });
 
     it("formats large token counts with k suffix", () => {
         const phase = testPhase("planner");
         phase.tokens = { input: 10000, output: 2340, contextWindow: 200000 };
-        assert.equal(tokenNote(phase), ", 12.3k tokens");
+        assert.equal(tokenNote(phase), ", 12.3k tokens, $0.00");
     });
 
     it("formats exactly 1000 tokens with k suffix", () => {
         const phase = testPhase("planner");
         phase.tokens = { input: 700, output: 300, contextWindow: 200000 };
-        assert.equal(tokenNote(phase), ", 1.0k tokens");
+        assert.equal(tokenNote(phase), ", 1.0k tokens, $0.00");
     });
 
-    it("appends cost when a priced model reported one", () => {
+    it("shows cost when a priced model reported one", () => {
         const phase = testPhase("planner");
         phase.tokens = {
             input: 700,
@@ -350,12 +350,12 @@ describe("tokenNote", () => {
         assert.equal(tokenNote(phase), ", 1.0k tokens, $0.012");
     });
 
-    it("omits cost when zero/absent", () => {
+    it("shows $0.00 when cost is zero/absent", () => {
         const phase = testPhase("planner");
         phase.tokens = { input: 700, output: 300, contextWindow: 200000 };
-        assert.equal(tokenNote(phase), ", 1.0k tokens");
+        assert.equal(tokenNote(phase), ", 1.0k tokens, $0.00");
         phase.tokens.costUsd = 0;
-        assert.equal(tokenNote(phase), ", 1.0k tokens");
+        assert.equal(tokenNote(phase), ", 1.0k tokens, $0.00");
     });
 });
 

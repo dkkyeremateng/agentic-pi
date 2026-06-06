@@ -629,14 +629,13 @@ export function renderWorkflowFooter(opts: {
         theme.fg("dim", " ") +
         theme.fg(statusColor, statusText);
     // Total spend across this run's sub-agent phases (each prices its own model).
+    // Always shown — $0.00 when nothing priced has run yet — so the field is never
+    // mistaken for "missing".
     const totalCostUsd = phases.reduce(
         (sum, p) => sum + (p.tokens?.costUsd || 0),
         0,
     );
-    const costStr =
-        totalCostUsd > 0
-            ? theme.fg("muted", `${formatCostUsd(totalCostUsd)} · `)
-            : "";
+    const costStr = theme.fg("muted", `${formatCostUsd(totalCostUsd)} · `);
     const right = costStr + theme.fg("dim", `[${bar}] ${pctStr} `);
     const pad = " ".repeat(
         Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
@@ -1429,10 +1428,7 @@ function totalsLine(t: ReportTotals): string {
         t.totalTokens.input > 0
             ? ` · ${(t.totalTokens.input + t.totalTokens.output).toLocaleString()} tokens (${t.totalTokens.input.toLocaleString()} in / ${t.totalTokens.output.toLocaleString()} out)`
             : "";
-    const cost =
-        t.totalCostUsd && t.totalCostUsd > 0
-            ? ` · ${formatCostUsd(t.totalCostUsd)}`
-            : "";
+    const cost = ` · ${formatCostUsd(t.totalCostUsd)}`;
     return `${secs(t.runElapsedMs)} wall-clock · ${t.totalToolCalls} tool call(s)${tok}${cost}`;
 }
 
@@ -2118,11 +2114,9 @@ export function tokenNote(phase: PhaseState): string {
         return "";
     const total = phase.tokens.input + phase.tokens.output;
     const k = total >= 1000 ? `${(total / 1000).toFixed(1)}k` : `${total}`;
-    const cost =
-        phase.tokens.costUsd && phase.tokens.costUsd > 0
-            ? `, ${formatCostUsd(phase.tokens.costUsd)}`
-            : "";
-    return `, ${k} tokens${cost}`;
+    // Always show cost ($0.00 for unpriced models) so every priced/unpriced phase
+    // reads consistently.
+    return `, ${k} tokens, ${formatCostUsd(phase.tokens.costUsd)}`;
 }
 
 // ── Shared agent spawn ────────────────────────────

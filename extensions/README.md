@@ -120,10 +120,10 @@ A live widget renders the phases as connected cards
 with the leading `Scout` card present only when the team includes it). Each card
 shows a status icon
 (`○` pending, `●` running, `✓` done, `✗` error), elapsed time, and a context-usage
-bar. Once an agent has run on a **priced** model, its **estimated USD cost** is
-appended to the usage line (e.g. `· $0.012`) — pi computes per-response cost from
-the model's token rates, so this is accurate for models that carry pricing and
-shows nothing for models priced at 0 (e.g. a custom proxy). The card shows **not**
+bar with the agent's **estimated USD cost** appended (e.g. `· $0.012`). pi computes
+per-response cost from the model's token rates, so this is accurate for models that
+carry pricing and reads `$0.00` for models priced at 0 (e.g. a custom proxy) — the
+field is always shown so it's never mistaken for missing. The card shows **not**
 a snippet of the agent's log; that lives in the live activity
 panel below the cards, so the cards stay compact. A status badge by the title shows
 the overall result (`● running`, `✓ shipped`, `‖ paused (no remote)`, `✗ failed`).
