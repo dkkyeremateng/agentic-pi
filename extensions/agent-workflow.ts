@@ -1101,12 +1101,25 @@ export default function (pi: ExtensionAPI) {
                           .map((m) => st.agents.get(m.toLowerCase())!)
                     : Array.from(st.agents.values());
 
+            // Terse summary of a description: the concise lead before the first
+            // em-dash separator (falling back to the whole text), capped — keeps the
+            // routing signal while cutting the per-turn prompt size sharply vs. the
+            // full multi-sentence descriptions.
+            const terse = (d: string, max: number): string => {
+                const t = (d || "").trim();
+                const lead = t.split(" — ")[0]!.trim();
+                const base = lead.length >= 12 ? lead : t;
+                return base.length > max
+                    ? base.slice(0, max - 1).trimEnd() + "…"
+                    : base;
+            };
+
+            // One compact line per agent: `name` — short capability. The orchestrator
+            // routes via the explicit Routing section of the prompt; this is the roster
+            // reference, so it stays terse (no full description, no per-agent tools).
             const agentCatalog = dispatchableDefs
-                .map(
-                    (def) =>
-                        `### ${displayName(def.name)}\n**Dispatch as:** \`${def.name}\`\n${def.description}\n**Tools:** ${def.tools}`,
-                )
-                .join("\n\n");
+                .map((def) => `- \`${def.name}\` — ${terse(def.description, 110)}`)
+                .join("\n");
 
             const teamMembers = dispatchableDefs
                 .map((d) => displayName(d.name))
@@ -1116,7 +1129,7 @@ export default function (pi: ExtensionAPI) {
             const skills = loadSkills(_ctx.cwd);
             const skillCatalog = skills.length
                 ? skills
-                      .map((s) => `- **${s.name}** — ${s.description}`)
+                      .map((s) => `- **${s.name}** — ${terse(s.description, 140)}`)
                       .join("\n")
                 : "(none)";
 
