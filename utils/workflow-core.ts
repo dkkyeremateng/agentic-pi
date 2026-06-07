@@ -2187,7 +2187,13 @@ export function subagentExtArgs(tools: string): string[] {
         const p = join(extDir, name);
         if (existsSync(p)) args.push("-e", p);
     };
-    if (process.env.PI_CONFINE_CWD === "1") add("cwd-guard.ts");
+    if (process.env.PI_CONFINE_CWD === "1") {
+        // Tell the guard where the bundled skills live (sibling of extensions/) so
+        // it can let read-only tools reach skill files that sit outside the cwd.
+        // Resolved here in the parent (reliable) and inherited by the spawn's env.
+        process.env.PI_SKILLS_DIR = join(extDir, "..", "skills");
+        add("cwd-guard.ts");
+    }
     if (/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))
         add("dispatch.ts");
     return args;

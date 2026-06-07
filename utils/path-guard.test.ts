@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isOutsideCwd } from "./path-guard";
+import { isOutsideCwd, isWithinAny } from "./path-guard";
 
 describe("isOutsideCwd", () => {
     const cwd = "/home/user/project";
@@ -26,5 +26,29 @@ describe("isOutsideCwd", () => {
 
     it("is empty-safe", () => {
         assert.equal(isOutsideCwd(cwd, ""), false);
+    });
+});
+
+describe("isWithinAny", () => {
+    const cwd = "/home/user/project";
+    const skills = "/opt/pi/skills";
+
+    it("allows paths inside the cwd", () => {
+        assert.equal(isWithinAny([cwd, skills], "src/app.ts"), true);
+        assert.equal(isWithinAny([cwd, skills], "/home/user/project/x.ts"), true);
+    });
+
+    it("allows paths inside an extra trusted root (skills dir)", () => {
+        assert.equal(isWithinAny([cwd, skills], "/opt/pi/skills/bowser/SKILL.md"), true);
+    });
+
+    it("blocks paths outside every root", () => {
+        assert.equal(isWithinAny([cwd, skills], "/etc/passwd"), false);
+        assert.equal(isWithinAny([cwd, skills], "../secret.txt"), false);
+    });
+
+    it("ignores falsy roots", () => {
+        assert.equal(isWithinAny([cwd, undefined], "src/app.ts"), true);
+        assert.equal(isWithinAny([undefined], "/anything"), false);
     });
 });

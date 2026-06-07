@@ -17,3 +17,11 @@ export function isOutsideCwd(cwd: string, p: string): boolean {
         return false; // fail open — this is a guardrail, not a hard sandbox
     }
 }
+
+// True if `p` resolves INSIDE at least one of `roots` (falsy roots are ignored).
+// Used to allow read-only access to extra trusted roots (e.g. the skills dir)
+// even when they sit outside the cwd. Relative paths resolve against the FIRST
+// root (the cwd) for the membership test.
+export function isWithinAny(roots: (string | undefined)[], p: string): boolean {
+    return roots.some((r) => !!r && !isOutsideCwd(r, p));
+}
