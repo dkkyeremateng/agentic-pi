@@ -22,7 +22,13 @@ import {
     readSync,
     closeSync,
 } from "fs";
-import { join, basename, dirname, resolve as resolvePath } from "path";
+import {
+    join,
+    basename,
+    dirname,
+    resolve as resolvePath,
+    delimiter as pathDelimiter,
+} from "path";
 import { fileURLToPath } from "url";
 import {
     secs,
@@ -2188,10 +2194,23 @@ export function subagentExtArgs(tools: string): string[] {
         if (existsSync(p)) args.push("-e", p);
     };
     if (process.env.PI_CONFINE_CWD === "1") {
-        // Tell the guard where the bundled skills live (sibling of extensions/) so
-        // it can let read-only tools reach skill files that sit outside the cwd.
-        // Resolved here in the parent (reliable) and inherited by the spawn's env.
-        process.env.PI_SKILLS_DIR = join(extDir, "..", "skills");
+        // Tell the guard which skill roots read-only tools may reach even though
+        // they sit outside the cwd. Resolved here in the parent (reliable) and
+        // inherited by the spawn's env as a path-delimited list:
+        //   1. the bundled skills shipped with this repo (sibling of extensions/)
+        //   2. pi's GLOBAL skills — getAgentDir()/skills, i.e. $PI_CODING_AGENT_DIR
+        //      (tilde-expanded) or ~/.pi/agent, plus the legacy ~/.pi/skills.
+        const expand = (p: string) =>
+            p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+        const agentDir = process.env.PI_CODING_AGENT_DIR
+            ? expand(process.env.PI_CODING_AGENT_DIR)
+            : join(homedir(), ".pi", "agent");
+        const skillRoots = [
+            join(extDir, "..", "skills"),
+            join(agentDir, "skills"),
+            join(homedir(), ".pi", "skills"),
+        ];
+        process.env.PI_SKILLS_DIR = skillRoots.join(pathDelimiter);
         add("cwd-guard.ts");
     }
     if (/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))

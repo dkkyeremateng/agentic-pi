@@ -3,10 +3,12 @@
 // path escapes the cwd. Loaded into sub-agent processes by the spawn when
 // PI_CONFINE_CWD=1 (see workflow-core.subagentExtArgs).
 //
-// READ-ONLY tools (read/grep/find/ls) may ALSO reach the bundled skills directory,
-// which lives in this repo (outside the user's cwd) — otherwise a skill-using agent
-// (e.g. seeker + the bowser skill) can't read its own skill files and falls back to
-// guessing/exploring. WRITE tools (edit/write) stay confined to the cwd.
+// READ-ONLY tools (read/grep/find/ls) may ALSO reach the skill roots — the bundled
+// skills in this repo AND pi's global skills (getAgentDir()/skills) — which live
+// outside the user's cwd. Otherwise a skill-using agent (e.g. seeker + the bowser
+// skill) can't read its own skill files and falls back to guessing/exploring. The
+// parent passes these roots via PI_SKILLS_DIR (a path-delimited list). WRITE tools
+// (edit/write) stay confined to the cwd.
 //
 // LIMITATION: `bash` is NOT confined — a shell command can read/write anywhere and
 // can't be reliably parsed. True bash confinement needs OS-level sandboxing, which
@@ -16,21 +18,27 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "url";
-import { dirname, resolve } from "path";
+import { dirname, resolve, delimiter as pathDelimiter } from "path";
 import { isOutsideCwd, isWithinAny } from "../utils/path-guard";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 const WRITE_TOOLS = ["edit", "write"] as const;
 
-// The repo's skills directory (extensions/ and skills/ are siblings). Prefer the
-// path the spawn passes via PI_SKILLS_DIR (resolved reliably in the parent); fall
-// back to resolving from this file's own location.
-let skillsDir: string | undefined = process.env.PI_SKILLS_DIR || undefined;
-if (!skillsDir) {
+// Skill roots read-only tools may reach even outside the cwd. Prefer the list the
+// spawn passes via PI_SKILLS_DIR (path-delimited: bundled skills + pi's global
+// skills, resolved reliably in the parent); fall back to resolving the bundled
+// skills dir from this file's own location.
+const skillRoots: string[] = (process.env.PI_SKILLS_DIR || "")
+    .split(pathDelimiter)
+    .map((p) => p.trim())
+    .filter(Boolean);
+if (skillRoots.length === 0) {
     try {
-        skillsDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "skills");
+        skillRoots.push(
+            resolve(dirname(fileURLToPath(import.meta.url)), "..", "skills"),
+        );
     } catch {
-        skillsDir = undefined; // no exemption if we can't locate ourselves
+        // no exemption if we can't locate ourselves
     }
 }
 
@@ -46,14 +54,14 @@ export default function (pi: ExtensionAPI) {
             return input.path ?? input.file_path;
         };
 
-        // Read-only tools: allowed inside the cwd OR the bundled skills dir.
+        // Read-only tools: allowed inside the cwd OR any skill root.
         for (const tool of READ_ONLY_TOOLS) {
             if (isToolCallEventType(tool, event)) {
                 const p = pathOf(event);
-                if (typeof p === "string" && !isWithinAny([cwd, skillsDir], p)) {
+                if (typeof p === "string" && !isWithinAny([cwd, ...skillRoots], p)) {
                     return {
                         block: true,
-                        reason: `Blocked: "${p}" is outside the working directory (${cwd}) and the skills directory. This agent may only read files within the cwd (plus its bundled skills).`,
+                        reason: `Blocked: "${p}" is outside the working directory (${cwd}) and the skill directories. This agent may only read files within the cwd (plus bundled and global skills).`,
                     };
                 }
                 return undefined;
