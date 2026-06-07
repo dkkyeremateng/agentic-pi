@@ -1,6 +1,6 @@
 ---
 name: validator
-description: Validation gate — runs the full suite and renders a PASS/FAIL verdict
+description: Independent validation gate — runs the full build/lint/test suite, judges that the implementer's tests actually cover the acceptance criteria (not just that they pass), and renders a PASS/FAIL verdict, looping back to the implementer on FAIL
 model: gateframe/gateframe_yoda/qwen-max-3-7-yoda-2
 context_window: 1000000
 tools: read,bash,grep,find,ls

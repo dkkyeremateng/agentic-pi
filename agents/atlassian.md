@@ -1,7 +1,7 @@
 ---
 name: atlassian
 aliases: jira,atl
-description: Atlassian Cloud (Jira + Confluence) — Jira ticket tracking and triage (list, search by JQL, read, create, comment, update, transition) AND Confluence/wiki pages (read a page by id or URL, CQL search, list spaces) via the atlassian skill. Use for ANYTHING on *.atlassian.net — tickets/issues, backlog, sprints, projects, and Confluence wiki pages/spaces. Reports concise, sourced results without changing the codebase
+description: Atlassian Cloud (Jira + Confluence) — Jira tickets (list, search/JQL, read, create, comment, update, transition) and Confluence/wiki pages (read by id or URL, CQL search, list spaces) via the atlassian skill. Use for anything on *.atlassian.net. Reports concise, sourced results without changing the codebase
 model: gateframe/gateframe_yoda/qwen-max-3-7-yoda-2
 context_window: 1000000
 tools: bash,read,write,grep,find,ls

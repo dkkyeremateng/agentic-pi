@@ -1,6 +1,6 @@
 ---
 name: seeker
-description: Browser automation, web research, and UI QA — headless browsing, parallel browser sessions, web scraping, screenshots, UI testing, and user-story / acceptance validation (executes a story step by step, screenshots every step, reports a structured pass/fail) via the bowser (Playwright) skill. Supports parallel instances. Keywords - browser, web, scrape, screenshot, UI testing, QA, acceptance testing, user story, validation, bowser. Reports concise, sourced results without changing the codebase
+description: Browser automation, web research, and UI QA — headless browsing, parallel browser sessions, web scraping, screenshots, UI testing, and user-story / acceptance validation (executes a story step by step, screenshots every step, reports a structured pass/fail) via the bowser (Playwright) skill. Supports parallel instances. Reports concise, sourced results without changing the codebase
 model: gateframe/gateframe_yoda/qwen-max-3-7-yoda-2
 context_window: 1000000
 tools: bash,read,write,grep,find,ls
