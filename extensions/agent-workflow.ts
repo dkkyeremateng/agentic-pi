@@ -2,11 +2,11 @@
 // ABOUTME: per-agent model (each agent's .md `model:` / PI_AGENT_<NAME>_MODEL, falling back to
 // ABOUTME: PI_WORKFLOW_MODEL or the session model) and per-agent sessions.
 /**
- * Workflow Team — scout / plan / implement / review / test / validate / document / ship orchestrator
+ * Workflow Team — scout / plan / refine / implement / review / validate / ship orchestrator
  *
- * Runs the agents defined in .pi/agents/*.md (the validator twice — to validate,
- * then to ship), optionally led by a read-only scout recon pass:
- *   scout? -> planner -> implementer -> reviewer -> tester -> validator(gate) -> validator(ship)
+ * Runs the agents defined in .pi/agents/*.md, optionally led by a read-only scout
+ * recon pass. The implementer writes the tests (TDD); the validator is the gate:
+ *   scout? -> planner -> refiner -> implementer -> reviewer -> validator(gate) -> shipper
  *
  * Unlike a static chain, the validator's verdict drives a feedback loop:
  *   - PASS    -> done (PR opened by validator if a remote exists)

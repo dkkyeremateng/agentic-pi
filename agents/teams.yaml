@@ -1,24 +1,25 @@
 full:
     - scout
     - planner
+    - refiner
     - implementer
     - reviewer
-    - tester
     - validator
     - shipper
 
 spec:
     - scout
     - planner
+    - refiner
 
 plan-build:
     - planner
+    - refiner
     - implementer
     - reviewer
     - validator
 
 building:
     - implementer
-    - tester
     - validator
     - shipper

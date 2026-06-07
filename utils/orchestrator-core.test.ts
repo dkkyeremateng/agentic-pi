@@ -1177,7 +1177,6 @@ describe("runWorkflowCore", () => {
             "planner",
             "implementer",
             "reviewer",
-            "tester",
             "validator",
             "shipper",
         ]) {
@@ -1249,8 +1248,76 @@ Build feature X according to the requirements.
         // Verify all required agents ran
         assert.ok(runPhaseCalls.includes("planner"));
         assert.ok(runPhaseCalls.includes("implementer"));
-        assert.ok(runPhaseCalls.includes("tester"));
         assert.ok(runPhaseCalls.includes("validator"));
+        assert.ok(!runPhaseCalls.includes("tester"), "no tester phase");
+    });
+
+    it("runs the refiner between planner and implementer, threading the hardened plan", async () => {
+        const agents = mkFullAgentSet();
+        agents.set("refiner", mkAgent("refiner"));
+        const draftPlan =
+            "## Phase 1: Draft\nDraft.\n\n## Acceptance Criteria\n- works\n\n## Critical Files\n- a.ts";
+        const refinedPlan =
+            "## Phase 1: REFINED\nHardened.\n\n## Acceptance Criteria\n- works\n- edge cases handled\n\n## Critical Files\n- a.ts";
+        const order: string[] = [];
+        let implementerSawPlan = "";
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase, task) => {
+                    order.push(phase.agent);
+                    if (phase.agent === "planner")
+                        return { output: draftPlan, ok: true };
+                    if (phase.agent === "refiner")
+                        return { output: refinedPlan, ok: true };
+                    if (phase.agent === "implementer") {
+                        implementerSawPlan = task;
+                        return { output: "impl output", ok: true };
+                    }
+                    if (phase.agent === "reviewer")
+                        return { output: "APPROVED", ok: true };
+                    if (phase.agent === "validator")
+                        return { output: "VERDICT: PASS", ok: true };
+                    if (phase.agent === "shipper")
+                        return {
+                            output: "SHIP: SHIPPED\nhttps://github.com/t/pull/1",
+                            ok: true,
+                        };
+                    return { output: `${phase.agent} output`, ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Build feature X",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "shipped");
+        // Order: planner -> refiner -> implementer
+        assert.ok(
+            order.indexOf("planner") < order.indexOf("refiner"),
+            "planner before refiner",
+        );
+        assert.ok(
+            order.indexOf("refiner") < order.indexOf("implementer"),
+            "refiner before implementer",
+        );
+        // The implementer received the REFINED plan, not the draft.
+        assert.ok(
+            implementerSawPlan.includes("REFINED"),
+            "implementer got the hardened plan",
+        );
+        assert.ok(
+            !implementerSawPlan.includes("Phase 1: Draft"),
+            "implementer did not get the draft plan",
+        );
     });
 
     it("handles review revision loop (reviewer sends the implementer back)", async () => {
@@ -1428,7 +1495,6 @@ Build feature X according to the requirements.
                     "planner",
                     "implementer",
                     "reviewer",
-                    "tester",
                     "validator",
                 ],
             },

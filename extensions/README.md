@@ -1,4 +1,4 @@
-# agent-workflow.ts — plan / implement / review / test / validate / document / ship orchestrator
+# agent-workflow.ts — plan / refine / implement / review / validate / ship orchestrator
 
 A self-contained pi extension that runs the agents as a **self-healing loop**,
 gated by the reviewer and the validator — optionally led by a read-only **scout**
@@ -8,19 +8,19 @@ at the end to ship.
 ### Full workflow
 
 ```
-scout ──▶ planner ──▶ implementer ──▶ reviewer ──▶ tester ──▶ validate ──▶ document ──▶ ship
-(optional)                ▲              │              ▲          │          (on PASS)
-                          │   REVISE     │              │   FAIL   │
-                          └──────────────┘              └──────────┘
-                          (reviewer loops to            (validator loops to
-                           the implementer)              the implementer)
+scout ──▶ planner ──▶ refiner ──▶ implementer ⇄ reviewer ──▶ validator ──▶ ship
+(optional)            (hardens     (REVISE BEFORE MERGE        (FAIL loops    (on PASS)
+                       the plan)    loops back)                 to implementer)
 ```
 
-The **reviewer** reviews the implementation against the plan after the implementer
-runs. If it requests changes (`REVISE BEFORE MERGE`), its findings go back to the
-implementer, which fixes exactly those issues, and the reviewer re-reviews. This
-loop runs up to `loops=N` times (default 3). Once the reviewer approves (or the
-limit is reached), the change proceeds to the tester and validator.
+The **refiner** reviews and hardens the planner's plan (completeness, edge cases,
+security, testability, sequencing) and rewrites `.agent/plan.md` before the
+implementer runs. The **implementer** writes the code AND its tests (TDD — there is
+no separate tester). The **reviewer** then reviews the implementation against the
+plan; if it requests changes (`REVISE BEFORE MERGE`), its findings go back to the
+implementer, which fixes exactly those issues, and the reviewer re-reviews (up to
+`loops=N`, default 3). Once approved, the change proceeds to the **validator** — the
+independent gate that runs the full suite and confirms the acceptance criteria.
 
 ### Partial teams (roster = pipeline)
 
@@ -33,16 +33,17 @@ scout ──▶ planner   (produces .agent/plan.md)
 ```
 
 The **implement↔review** loop only runs when the team has both an implementer and a
-reviewer; likewise the **test↔validate** loop only runs when it has both a tester and
-a validator. A team missing a loop's agents just runs its phases straight through.
+reviewer; likewise the **validate↔implement** loop only runs when it has a validator
+(and an implementer to send fixes to). A team missing a loop's agents just runs its
+phases straight through.
 
-Documentation runs **only after** the change passes validation — no docs are
-written for an implementation that might be reworked. The ship step then commits
-code + tests + docs together and opens the PR, so the docs are in it.
+Documentation is the implementer's job — it updates the docs/comments its change
+touches as part of implementing (there is no separate documenter phase). The ship
+step commits code + tests + docs together and opens the PR, so the docs are in it.
 
-- **PASS** → document, then ship. Ship opens a draft PR (if a GitHub remote exists).
+- **PASS** → ship. Ship opens a draft PR (if a GitHub remote exists).
 - **PAUSED** → ship found no GitHub remote. It made the local branch + commit and stopped; the report shows the exact commands to add a remote.
-- **FAIL** → the validator's findings are fed back to the implementer and it retries (up to `max_loops`, default 3). Documentation/ship are skipped.
+- **FAIL** → the validator's findings are fed back to the implementer and it retries (up to `max_loops`, default 3). Ship is skipped.
 - **UNKNOWN** → no clear verdict; surfaced for human review.
 
 Handles **bug fixes, new features, and new apps** — the planner classifies the request and the pipeline follows.
@@ -51,7 +52,7 @@ Handles **bug fixes, new features, and new apps** — the planner classifies the
 
 pi auto-discovers `cwd/.pi/extensions/*.ts`. Run `pi` from this directory and the
 extension loads automatically — no registration. It reads the agent definitions
-from `.pi/agents/` (scout, planner, implementer, reviewer, tester, validator, shipper).
+from `.pi/agents/` (scout, planner, refiner, implementer, reviewer, validator, shipper).
 
 `agent-workflow.ts` is the single workflow extension. It runs each agent on its own
 model (the agent's `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `.pi/agents/models.yaml`,
@@ -116,7 +117,7 @@ declares the plan with `select_agents`, chains `dispatch_agent` (or runs the
 pipeline), finishes every selected agent, then **stops and summarizes**.
 
 A live widget renders the phases as connected cards
-(`Scout ──▶ Plan ──▶ Implement ──▶ Review ──▶ Test ──▶ Validate ──▶ Ship`,
+(`Scout ──▶ Plan ──▶ Refine ──▶ Implement ──▶ Review ──▶ Validate ──▶ Ship`,
 with the leading `Scout` card present only when the team includes it). Each card
 shows a status icon
 (`○` pending, `●` running, `✓` done, `✗` error), elapsed time, and a context-usage
@@ -150,10 +151,10 @@ like any tool result to read the full markdown). It is also written to
 - **Outcome** — a plain-English result (SHIPPED / PAUSED / FAILED / NEEDS REVIEW),
   the verdict, pass count, and the PR URL when one was opened.
 - **Summary of work** — one digest line per phase (scout when present, planner,
-  implementer, reviewer, tester, validator, then ship once it passes)
-  with the time each took, its token count and **USD cost**, and, for the tester,
-  a passed/failed count. When scout ran, a **Reconnaissance** section precedes the
-  Plan in the Details.
+  refiner, implementer, reviewer, validator, then ship once it passes)
+  with the time each took, its token count and **USD cost**, and, for the validator,
+  the verdict + a passed/failed count. When scout ran, a **Reconnaissance** section
+  precedes the Plan in the Details.
 - **Totals** — wall-clock time, tool calls, total tokens, and **total run cost**
   (summed across every phase, each priced on its own model). The footer shows a
   live running total too — the **orchestrator's own spend plus the sub-agents'** —
@@ -166,10 +167,10 @@ a grid of cards, one per agent in the active team, each with its status, the
 **model it will run** (`◆ <model>`), and a short description. Teams come from
 `.pi/agents/teams.yaml`. There is **no spec/full mode**: a team's roster *is* the
 pipeline — the workflow runs exactly the agents the team lists, in the canonical
-order `scout → planner → implementer → reviewer → tester → validator → shipper`. A
-`planner` team produces a plan; an `implementer, reviewer, tester, validator, shipper`
-team builds, reviews, tests, and ships; each loop (implement↔review, test↔validate)
-runs only when both of its agents are on the team. (Docs are part of the
+order `scout → planner → refiner → implementer → reviewer → validator → shipper`. A
+`planner` team produces a plan; an `implementer, reviewer, validator, shipper`
+team builds, reviews, validates, and ships; each loop (implement↔review,
+validate↔implement) runs only when its agents are on the team. (Docs are part of the
 implementer's change — there is no documenter phase.)
 
 When the primary agent drives **ad-hoc work** (rather than the full
@@ -240,8 +241,8 @@ can build on the others' work instead of relying on lossy hand-offs. The scout's
 reconnaissance and the reviewer's verdict — the artifacts the per-phase prompts would
 otherwise drop — are prepended to every downstream agent's task as a `## Shared run
 context` block. Combined with what the prompts already thread through (the plan,
-the implementer's change summary, the tester's report), every agent
-(reviewer → tester → validator → ship) sees the full cross-agent
+the implementer's change summary), every agent
+(reviewer → validator → ship) sees the full cross-agent
 context, with no duplication. The bundle stays small, so it adds context without
 bloating the window.
 
@@ -397,9 +398,9 @@ As it then dispatches each agent (`dispatch_agent`), the cards update in place �
 
 Teams are defined in `.pi/agents/teams.yaml` (a flat `team:` → `- member` list).
 A team's roster **is** the pipeline: the workflow runs exactly its members in the
-canonical order `scout → planner → implementer → reviewer → tester → validator →
-ship`. There is no spec/full mode — `full` (all seven) runs the whole pipeline,
-`building` (implementer + tester + validator + shipper) builds and ships,
+canonical order `scout → planner → refiner → implementer → reviewer → validator →
+ship`. There is no spec/full mode — `full` (all of them) runs the whole pipeline,
+`building` (implementer + validator + shipper) builds and ships,
 `plan-build` (planner + implementer + reviewer + validator) plans and builds, and so
 on. Running `/agent-workflow` opens a **Select Team** dialog
 first; name a team as the first token to skip it (`/agent-workflow building …`).

@@ -24,11 +24,11 @@ import {
     buildWorkflowReport,
     scoutTask,
     planTask,
+    refineTask,
     reviewTask,
     reviewFixTask,
     implementTask,
     fixTask,
-    testTask,
     validateTask,
     shipTask,
 } from "./workflow-core";
@@ -363,9 +363,9 @@ export async function runWorkflowCore(
     const pm = buildPhaseMap(s.phases);
     const scoutP = pm.scout;
     const planP = pm.planner;
+    const refinerP = pm.refiner;
     const reviewerP = pm.reviewer;
     const implP = pm.implementer;
-    const testP = pm.tester;
     const valP = pm.validator;
     const shipP = pm.shipper;
 
@@ -398,18 +398,35 @@ export async function runWorkflowCore(
         );
         if (!plan.ok) return fail(s, "Planning", plan.output);
         capturePlan(runArtifacts, cwd, plan.output);
+    }
 
-        // Enforce plan structure only when an implementer will consume it.
-        if (implP) {
-            const planCheck = validatePlan(plan.output);
-            if (!planCheck.ok) {
-                s.running = false;
-                s.lastStatus = "error";
-                return {
-                    status: "error",
-                    report: `Plan is missing required structure. The planner's output lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe implementer cannot act reliably on this plan. Re-run with a more specific request, or check that the planner agent definition is complete.`,
-                };
-            }
+    // ── Refine (review + harden the plan before implementation) ──
+    // The refiner reviews the planner's draft against the codebase and rewrites a
+    // hardened plan; that becomes THE plan threaded to the implementer/reviewer.
+    if (refinerP && planP && plan.ok) {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
+        const refine = await h.execution.runPhase(
+            refinerP,
+            shared(refineTask(request, plan.output, scoutFindings), "refiner"),
+            cwd,
+        );
+        if (!refine.ok) return fail(s, "Refining", refine.output);
+        plan = refine;
+        capturePlan(runArtifacts, cwd, plan.output);
+    }
+
+    // Enforce plan structure on the FINAL plan (post-refine), only when an
+    // implementer will consume it.
+    if (planP && implP) {
+        const planCheck = validatePlan(plan.output);
+        if (!planCheck.ok) {
+            s.running = false;
+            s.lastStatus = "error";
+            return {
+                status: "error",
+                report: `Plan is missing required structure. The plan lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe implementer cannot act reliably on this plan. Re-run with a more specific request, or check that the planner/refiner agent definitions are complete.`,
+            };
         }
     }
 
@@ -477,35 +494,27 @@ export async function runWorkflowCore(
         runArtifacts.review = review.output;
     }
 
-    let test = { output: "", ok: false };
     let val = { output: "", ok: false };
     let ship = { output: "", ok: false };
     let verdict: Verdict = "unknown";
 
-    // ── Test ⇄ validate ──
-    if (testP && valP) {
-        // Full correctness loop, gated by the validator; fixes go to the
-        // implementer when the team has one.
+    // ── Validate ⇄ implement ──
+    // The validator is the independent gate: it RUNS the full suite (including the
+    // tests the implementer wrote) and confirms the acceptance criteria, then emits
+    // the verdict. On FAIL its findings go back to the implementer and it re-runs,
+    // looping up to maxLoops.
+    if (valP) {
         for (let loop = 1; loop <= maxLoops; loop++) {
             aborted = checkAbort(s, h);
             if (aborted) return aborted;
             s.iteration = loop;
 
-            testP.status = "pending";
             valP.status = "pending";
             h.ui.updateWidget();
-            test = await h.execution.runPhase(
-                testP,
-                shared(testTask(request, plan.output, impl.output), "tester"),
-                cwd,
-            );
-            if (!test.ok) return fail(s, "Testing", test.output);
-            runArtifacts.testReport = test.output;
-
             val = await h.execution.runPhase(
                 valP,
                 shared(
-                    validateTask(request, plan.output, test.output),
+                    validateTask(request, plan.output, impl.output),
                     "validator",
                 ),
                 cwd,
@@ -532,35 +541,6 @@ export async function runWorkflowCore(
             if (!impl.ok) return fail(s, "Implementing", impl.output);
             runArtifacts.implSummary = `[attempt ${implP.attempt}] ${impl.output}`;
         }
-    } else if (testP) {
-        aborted = checkAbort(s, h);
-        if (aborted) return aborted;
-        s.iteration = 1;
-        testP.status = "pending";
-        h.ui.updateWidget();
-        test = await h.execution.runPhase(
-            testP,
-            shared(testTask(request, plan.output, impl.output), "tester"),
-            cwd,
-        );
-        if (!test.ok) return fail(s, "Testing", test.output);
-        runArtifacts.testReport = test.output;
-    } else if (valP) {
-        aborted = checkAbort(s, h);
-        if (aborted) return aborted;
-        s.iteration = 1;
-        valP.status = "pending";
-        h.ui.updateWidget();
-        val = await h.execution.runPhase(
-            valP,
-            shared(
-                validateTask(request, plan.output, test.output),
-                "validator",
-            ),
-            cwd,
-        );
-        if (!val.ok) return fail(s, "Validation", val.output);
-        verdict = detectVerdict(val.output);
     }
 
     // ── Ship ──
@@ -573,7 +553,7 @@ export async function runWorkflowCore(
         if (aborted) return aborted;
         ship = await h.execution.runPhase(
             shipP,
-            shared(shipTask(request, test.output), "shipper"),
+            shared(shipTask(request, val.output), "shipper"),
             cwd,
         );
         if (!ship.ok) return fail(s, "Shipping", ship.output);
@@ -620,16 +600,15 @@ export async function runWorkflowCore(
         },
         scoutP,
         planP,
+        refinerP,
         implP,
         reviewerP,
-        testP,
         valP,
         shipP,
         scoutFindings,
         plan: plan.output,
         impl: impl.output,
         review: review.output,
-        test: test.output,
         val: val.output,
         ship: ship.output,
     });

@@ -1,7 +1,6 @@
 # Workflow agents — pi orchestrator definitions
 
-Agent definitions for the self-healing **plan → implement → review → test →
-validate → document → ship** workflow, plus an optional read-only recon pass.
+Agent definitions for the self-healing **plan → refine → implement → review → validate → ship** workflow, plus an optional read-only recon pass.
 These `.md` files are consumed by the `agent-workflow.ts`
 extension in `../extensions/` (see `../extensions/README.md`). pi discovers
 agents from `cwd/.pi/agents/` first, so running `pi` from this directory — or
@@ -14,11 +13,11 @@ available there.
 |------|---------|
 | `scout.md` | Read-only recon — maps structure, patterns, key entry points; runs first when the team includes it |
 | `planner.md` | Identifies the bug/requirement, writes a phased plan + acceptance criteria |
-| `implementer.md` | Applies the plan exactly, reports a precise change summary |
+| `refiner.md` | Reviews and hardens the planner's plan before implementation — completeness, edge cases, security, testability, sequencing; rewrites `.agent/plan.md` |
+| `implementer.md` | Applies the plan exactly **and writes the tests that prove it (TDD)**; reports a precise change summary |
 | `reviewer.md` | Reviews the implementation against the plan — finds bugs, regressions, missed criteria; sends the implementer back to fix them |
-| `tester.md` | Writes and runs tests, reports pass/fail |
-| `validator.md` | Runs the full suite, confirms criteria; in ship mode opens a draft PR on PASS |
-| `teams.yaml` | Selectable teams for the workflow extensions. A team's roster IS the pipeline — the workflow runs exactly its members in canonical order (`scout → planner → implementer → reviewer → tester → validator → shipper`). No spec/full mode; e.g. `full` (all), `spec` (planner), `plan-build`, `building`. Each agent updates the docs/comments its own work touches — there is no separate documenter. |
+| `validator.md` | Independent gate — runs the full suite, judges the implementer's tests, confirms acceptance criteria, loops back to the implementer on FAIL |
+| `teams.yaml` | Selectable teams for the workflow extensions. A team's roster IS the pipeline — the workflow runs exactly its members in canonical order (`scout → planner → refiner → implementer → reviewer → validator → shipper`). No spec/full mode; e.g. `full` (all), `spec` (planner), `plan-build`, `building`. Each agent updates the docs/comments its own work touches — there is no separate documenter. |
 
 Also present are **specialist** agents that are not linear pipeline phases —
 `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets).
@@ -43,10 +42,11 @@ pi
 Type the bug or requirement. The planner produces a phased plan, which the
 implementer applies. The **reviewer** then reviews that implementation against the
 plan — if it requests changes (`REVISE BEFORE MERGE`), the implementer fixes them and
-the reviewer re-reviews (looping up to the configured max). Then the tester writes
-and runs tests, and the validator gates a correctness loop (implement ⇄ test ⇄
-validate, retrying on FAIL up to the configured max). Only after it passes does the
-validator ship — committing code + tests + docs and opening a draft PR on a `fix/...`
+the reviewer re-reviews (looping up to the configured max). The implementer writes
+the tests as part of implementing; the **validator** then gates a correctness loop
+(validate ⇄ implement, retrying on FAIL up to the configured max) — it runs the full
+suite and confirms the acceptance criteria independently. Only after it passes does the
+shipper ship — committing code + tests + docs and opening a draft PR on a `fix/...`
 branch (or pausing if there is no remote). The implementer updates any docs its change
 touches as part of implementing. If the chosen team includes `scout`, a read-only
 recon pass runs first and feeds the planner.
@@ -91,7 +91,7 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
        - <name>
    ```
 
-   - Naming it one of `scout, planner, implementer, reviewer, tester, validator,
+   - Naming it one of `scout, planner, refiner, implementer, reviewer, validator,
      shipper` slots it into the linear pipeline at that position, and a team listing
      it runs it there.
    - Any **other** (non-pipeline) agent is a specialist the orchestrator dispatches

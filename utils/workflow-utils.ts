@@ -130,7 +130,7 @@ export function digest(text: string, maxLen = 280): string {
 }
 
 /**
- * Best-effort "N passed / M failed" signal from a tester report.
+ * Best-effort "N passed / M failed" signal from a validator's suite output.
  */
 export function testSignal(output: string): string {
     const pass = output.match(/(\d+)\s+(?:tests?\s+)?pass(?:ed|ing)?/i);

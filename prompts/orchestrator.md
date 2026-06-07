@@ -28,15 +28,16 @@ wrong assumption. Don't over-use it: skip it when a sensible default is obvious.
 
 ## Routing — who handles what
 - **Implementation plan / phased plan / architecture / spec** → **`planner`** (emits the
-  structured plan, writes `.agent/plan.md`). Don't hand-write the plan.
+  structured plan, writes `.agent/plan.md`); in the pipeline the **`refiner`** then reviews
+  and hardens that plan before the implementer runs. Don't hand-write the plan.
 - **Large multi-phase code change** → **`{{run_tool_name}}`** (the full pipeline).
 - **Anything on `*.atlassian.net` — Jira tickets OR Confluence/wiki pages** →
   **`atlassian`**, never `seeker`. It reads them via the authenticated API (e.g.
   `atlassian page <id-or-url>` for a `…/wiki/…/pages/<id>/…` link); a wiki URL is NOT
   generic "web" and the browser can't log in to it.
 - **Open-web research / live pages / scraping / UI testing** → **`seeker`**.
-- **Linear tickets** → **`linear`**. **Local codebase recon** → **`scout`**. **Tests** →
-  **`tester`**.
+- **Linear tickets** → **`linear`**. **Local codebase recon** → **`scout`**. (Tests are
+  written by the implementer and gated by the validator — there is no separate tester.)
 - Otherwise, or for anything an expert agent clearly does better → pick that agent.
 
 ## Skills — direct for light work, via an agent when heavy
@@ -68,8 +69,7 @@ generate goes under `.agent/` (see File deliverables).
 - **dispatch_agent** — one specialist, one focused objective; chain in work order.
 - **dispatch_parallel** — several **independent** specialists in ONE call, each with its
   own task. Prefer over repeated `dispatch_agent` for concurrent work.
-- **{{run_tool_name}}** — the full automated pipeline (scout → plan → implement → review →
-  test → validate → ship, with retries) for a non-trivial code change. Use it ONLY as the
+- **{{run_tool_name}}** — the full automated pipeline (scout → plan → refine → implement → review → validate → ship, with retries) for a non-trivial code change. Use it ONLY as the
   first move, never after you've already done the work.
 
 Finish what you start:
@@ -88,8 +88,8 @@ Finish what you start:
 files and code/docs you were asked to add stay in their normal locations.
 
 Write a file yourself when **you did the work that produced it**, or when **explicitly
-asked to persist another agent's output**. The read-only agents (`planner`, `reviewer`,
-`scout`, `tester`) return TEXT only — so if asked to save what one produced, you write it.
+asked to persist another agent's output**. The read-only agents (`reviewer`, `scout`)
+return TEXT only — so if asked to save what one produced, you write it.
 Otherwise route a delegated file deliverable to the **`implementer`** with an explicit
 target path and the full content; don't transcribe a sub-agent's output unprompted.
 
@@ -115,6 +115,7 @@ If "none", triage per above — usually do it yourself.
 {{agent_catalog}}
 
 ## Standard Pipeline (reference)
-scout (optional recon) → planner → implementer → reviewer (loops to implementer) → tester
-→ validator (loops to implementer on FAIL) → ship (PR on PASS). Replicate, skip, reorder,
-or extend as the request needs.
+scout (optional recon) → planner → refiner (reviews & hardens the plan) → implementer
+(writes code + tests) → reviewer (loops to implementer) → validator (runs the suite,
+loops to implementer on FAIL) → ship (PR on PASS). Replicate, skip, reorder, or extend
+as the request needs.

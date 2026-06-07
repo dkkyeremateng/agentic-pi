@@ -42,9 +42,9 @@ import {
 
 export const REQUIRED_AGENTS = [
     "planner",
+    "refiner",
     "implementer",
     "reviewer",
-    "tester",
     "validator",
     "shipper",
 ] as const;
@@ -1499,16 +1499,15 @@ export function buildWorkflowReport(o: {
     totals: ReportTotals;
     scoutP: PhaseState | null;
     planP: PhaseState | null;
+    refinerP: PhaseState | null;
     implP: PhaseState | null;
     reviewerP: PhaseState | null;
-    testP: PhaseState | null;
     valP: PhaseState | null;
     shipP: PhaseState | null;
     scoutFindings: string;
     plan: string;
     impl: string;
     review: string;
-    test: string;
     val: string;
     ship: string;
 }): string {
@@ -1535,27 +1534,27 @@ export function buildWorkflowReport(o: {
             ? [summaryLine("Scout", o.scoutP, digest(o.scoutFindings))]
             : []),
         ...(o.planP ? [summaryLine("Planner", o.planP, digest(o.plan))] : []),
+        ...(o.refinerP
+            ? [
+                  summaryLine(
+                      "Refiner",
+                      o.refinerP,
+                      "reviewed and hardened the plan",
+                  ),
+              ]
+            : []),
         ...(o.implP
             ? [summaryLine("Implementer", o.implP, digest(o.impl))]
             : []),
         ...(o.reviewerP
             ? [summaryLine("Reviewer", o.reviewerP, digest(o.review))]
             : []),
-        ...(o.testP
-            ? [
-                  summaryLine(
-                      "Tester",
-                      o.testP,
-                      `${digest(o.test)}${testSignal(o.test)}`,
-                  ),
-              ]
-            : []),
         ...(o.valP
             ? [
                   summaryLine(
                       "Validator",
                       o.valP,
-                      `verdict ${o.verdict.toUpperCase()}. ${digest(o.val)}`,
+                      `verdict ${o.verdict.toUpperCase()}. ${digest(o.val)}${testSignal(o.val)}`,
                   ),
               ]
             : []),
@@ -1572,9 +1571,6 @@ export function buildWorkflowReport(o: {
             : []),
         ...(o.reviewerP
             ? [`### Review`, ``, truncatePhaseOutput(o.review), ``]
-            : []),
-        ...(o.testP
-            ? [`### Test Report`, ``, truncatePhaseOutput(o.test), ``]
             : []),
         ...(o.valP
             ? [`### Validation`, ``, truncatePhaseOutput(o.val), ``]
@@ -1626,8 +1622,7 @@ export interface RunArtifacts {
     recon?: string; // scout findings
     plan?: string; // approved plan
     review?: string; // reviewer's verdict + findings
-    implSummary?: string; // implementer's change summary
-    testReport?: string; // tester's report
+    implSummary?: string; // implementer's change summary (includes the tests it wrote)
 }
 
 // Render the artifacts present into a labelled "## Shared run context" block,
@@ -1647,7 +1642,6 @@ export function contextBundle(a: RunArtifacts): string {
     add("Approved plan (planner)", a.plan);
     add("Implementation summary (implementer)", a.implSummary);
     add("Review (reviewer)", a.review);
-    add("Test report (tester)", a.testReport);
     if (parts.length === 0) return "";
     return [
         "## Shared run context",
@@ -1662,16 +1656,16 @@ export function contextBundle(a: RunArtifacts): string {
 
 // Per-phase artifact whitelist: which RunArtifacts keys each phase actually
 // needs. Later phases receive all artifacts by default, but the implementer
-// doesn't need the test report, the tester doesn't need the review, etc.
+// doesn't need the review, the validator doesn't need the recon dump, etc.
 // Selective bundling reduces token consumption ~30% on complex runs.
 const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     scout: ["recon"],
     planner: ["recon"],
+    refiner: ["recon"], // the draft plan is threaded in the refine task itself
     implementer: ["recon", "plan"],
     reviewer: ["recon", "plan", "implSummary"],
-    tester: ["recon", "plan", "implSummary"],
-    validator: ["recon", "plan", "implSummary", "testReport"],
-    shipper: ["recon", "plan", "implSummary", "testReport"],
+    validator: ["recon", "plan", "implSummary"],
+    shipper: ["recon", "plan", "implSummary"],
 };
 
 // Selective context bundle: only include artifacts the given phase actually
@@ -1721,6 +1715,23 @@ export function planTask(original: string, recon = ""): string {
         "",
         "Request:",
         original,
+        "",
+        ...reconBlock(recon),
+    ].join("\n");
+}
+
+export function refineTask(original: string, plan: string, recon = ""): string {
+    return [
+        "Review and refine the implementation plan below before it goes to the implementer.",
+        "Read the plan at `.agent/plan.md` and ground every change in the actual codebase.",
+        "Apply your production-grade review rules, then write the HARDENED plan VERBATIM to `.agent/plan.md` (overwriting it) AND emit the full refined plan as your final message.",
+        "Keep the required structure (## Phase N, Acceptance Criteria, file-level specificity); refine, do not rewrite from scratch.",
+        "",
+        "Original request:",
+        original,
+        "",
+        "Draft plan from the planner:",
+        plan,
         "",
         ...reconBlock(recon),
     ].join("\n");
@@ -1805,32 +1816,16 @@ export function fixTask(
     ].join("\n");
 }
 
-export function testTask(
+export function validateTask(
     original: string,
     plan: string,
     implSummary: string,
 ): string {
     return [
-        "Test the change just implemented.",
-        "",
-        "Original requirement:",
-        original,
-        "",
-        "Plan (contains the acceptance criteria):",
-        plan,
-        "",
-        "Implementer's change summary:",
-        implSummary,
-    ].join("\n");
-}
-
-export function validateTask(
-    original: string,
-    plan: string,
-    testReport: string,
-): string {
-    return [
-        "Validate the completed work.",
+        "Validate the completed work as the independent gate. RUN the full test suite",
+        "yourself (including the tests the implementer wrote) and confirm EVERY",
+        "acceptance criterion in the plan holds. Return VERDICT: PASS, or VERDICT: FAIL",
+        "with the specific failures the implementer must fix.",
         "",
         "Original requirement:",
         original,
@@ -1838,12 +1833,12 @@ export function validateTask(
         "Plan (with the acceptance criteria to confirm):",
         plan,
         "",
-        "Tester's report:",
-        testReport,
+        "Implementer's change summary (lists the code AND tests it wrote):",
+        implSummary,
     ].join("\n");
 }
 
-export function shipTask(original: string, testReport: string): string {
+export function shipTask(original: string, validationReport: string): string {
     return [
         "The change has passed validation. Ship it — commit the code, tests, and any",
         "doc updates the implementer made as part of the change.",
@@ -1851,8 +1846,8 @@ export function shipTask(original: string, testReport: string): string {
         "Original requirement:",
         original,
         "",
-        "Tester's report:",
-        testReport,
+        "Validation report:",
+        validationReport,
     ].join("\n");
 }
 
@@ -1864,9 +1859,9 @@ export function shipTask(original: string, testReport: string): string {
 export interface PhaseMap {
     scout: PhaseState | null;
     planner: PhaseState | null;
+    refiner: PhaseState | null;
     implementer: PhaseState | null;
     reviewer: PhaseState | null;
-    tester: PhaseState | null;
     validator: PhaseState | null;
     shipper: PhaseState | null;
 }
@@ -1881,9 +1876,9 @@ export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
     return {
         scout: byAgent("scout"),
         planner: byAgent("planner"),
+        refiner: byAgent("refiner"),
         implementer: byAgent("implementer"),
         reviewer: byAgent("reviewer"),
-        tester: byAgent("tester"),
         validator: byAgent("validator"),
         shipper: byAgent("shipper"),
     };
@@ -1935,9 +1930,9 @@ export function mkPhase(
 export const PIPELINE_ORDER = [
     "scout",
     "planner",
+    "refiner",
     "implementer",
     "reviewer",
-    "tester",
     "validator",
     "shipper",
 ] as const;
@@ -1945,9 +1940,9 @@ export const PIPELINE_ORDER = [
 const PHASE_LABELS: Record<string, string> = {
     scout: "Scout",
     planner: "Plan",
+    refiner: "Refine",
     implementer: "Implement",
     reviewer: "Review",
-    tester: "Test",
     validator: "Validate",
     shipper: "Ship",
 };

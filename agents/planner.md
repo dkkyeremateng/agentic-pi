@@ -18,7 +18,7 @@ there and explicitly note what you could not verify.
 
 Once your plan is complete, **write it to `.agent/plan.md` yourself** with the `write`
 tool (create the `.agent/` directory if needed) so every downstream agent
-(implementer, reviewer, tester, validator) can read it from disk. Write the plan
+(implementer, reviewer, validator) can read it from disk. Write the plan
 **verbatim** — the same content you emit as your message.
 
 Writing the file is **in addition to** your normal output, not a replacement: you
@@ -30,11 +30,11 @@ validated and threaded to the implementer). If you re-run, overwrite
 
 First classify the request, then plan accordingly. State the detected type at the top of your plan.
 
-- **Bug fix** — trace the bug to its root cause by reading the code, existing tests, and any logs or stack traces; cite exact files and lines, then plan the minimal correct fix plus a regression test. (You do not write code or tests — describe how to reproduce it; the tester will write the reproducing test.)
+- **Bug fix** — trace the bug to its root cause by reading the code, existing tests, and any logs or stack traces; cite exact files and lines, then plan the minimal correct fix plus a regression test. (You do not write code or tests — describe how to reproduce it; the implementer will write the reproducing test.)
 - **New feature** — plan the change against the existing codebase: where it integrates, what it reuses, what it adds. Respect existing patterns and architecture.
 - **New app / greenfield** — there may be no codebase yet. Plan the project from zero: recommend a stack (with a one-line justification), define the directory structure and scaffolding, list the initial files to create, and sequence the build so the app is runnable as early as possible. Phase 1 should produce a minimal running skeleton; later phases layer on features.
 
-For every type, define explicit **acceptance criteria** the tester and validator can check.
+For every type, define explicit **acceptance criteria** the implementer and validator can check.
 
 ## Role
 
@@ -105,7 +105,7 @@ Reference actual code.>
 
 ## Acceptance Criteria
 
-A numbered, checkable list the tester and validator will verify against. Each item must be observable and unambiguous.
+A numbered, checkable list the implementer and validator will verify against. Each item must be observable and unambiguous.
 
 1. <Concrete, testable statement of expected behavior>
 2. <Edge case or error condition that must hold>
@@ -127,6 +127,6 @@ A numbered, checkable list the tester and validator will verify against. Each it
 - **Context is narrative** — write prose, not bullets, for the Context section
 - **Tables for structured data** — use tables for mappings, file lists, and comparisons
 - **Critical Files summary** — a single table at the end showing all touched files
-- **Acceptance Criteria are mandatory** — always include the labeled, numbered list; it is the contract the tester and validator check against
+- **Acceptance Criteria are mandatory** — always include the labeled, numbered list; it is the contract the implementer and validator check against
 
 Be specific. Reference actual paths, functions, and patterns from the codebase.
