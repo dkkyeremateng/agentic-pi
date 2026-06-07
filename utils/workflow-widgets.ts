@@ -10,6 +10,7 @@ import {
     agentPhaseStatus,
     formatContextUsage,
     formatCostUsd,
+    totalTokens,
 } from "./workflow-core";
 import { secs } from "./workflow-utils";
 
@@ -104,7 +105,7 @@ export function renderRichCard(opts: {
     const ctxWindow =
         livePhase?.tokens?.contextWindow || def?.contextWindow || 0;
     const ctxTotalTok = livePhase?.tokens
-        ? (livePhase.tokens.input || 0) + (livePhase.tokens.output || 0)
+        ? totalTokens(livePhase.tokens)
         : undefined;
     const { bar: ctxBar, display: ctxDisplay } = formatContextUsage({
         contextPct: livePhase?.contextPct ?? 0,

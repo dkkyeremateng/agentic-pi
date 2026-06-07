@@ -9,6 +9,7 @@ import {
     renderTemplate,
     tokenNote,
     formatCostUsd,
+    totalTokens,
     mkPhase,
     freshPhases,
     dispatchEnv,
@@ -356,6 +357,41 @@ describe("tokenNote", () => {
         assert.equal(tokenNote(phase), ", 1.0k tokens, $0.00");
         phase.tokens.costUsd = 0;
         assert.equal(tokenNote(phase), ", 1.0k tokens, $0.00");
+    });
+
+    it("counts cache read/write tokens too (matches the cost basis)", () => {
+        const phase = testPhase("planner");
+        phase.tokens = {
+            input: 500,
+            output: 300,
+            cacheRead: 1000,
+            cacheWrite: 200,
+            contextWindow: 200000,
+            costUsd: 0.0123,
+        };
+        // 500 + 300 + 1000 + 200 = 2000
+        assert.equal(tokenNote(phase), ", 2.0k tokens, $0.012");
+    });
+});
+
+describe("totalTokens", () => {
+    it("sums input + output + cache read/write", () => {
+        assert.equal(
+            totalTokens({
+                input: 500,
+                output: 300,
+                cacheRead: 1000,
+                cacheWrite: 200,
+                contextWindow: 0,
+            }),
+            2000,
+        );
+    });
+    it("treats missing cache fields as 0", () => {
+        assert.equal(totalTokens({ input: 5, output: 7, contextWindow: 0 }), 12);
+    });
+    it("is undefined-safe", () => {
+        assert.equal(totalTokens(undefined), 0);
     });
 });
 

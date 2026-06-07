@@ -1249,7 +1249,12 @@ export function setupSessions(cwd: string, wipe: boolean): string {
 // orchestrator-core.ts).
 export function makeSpawnWrapper(opts: {
     state: {
-        totalTokens: { input: number; output: number };
+        totalTokens: {
+            input: number;
+            output: number;
+            cacheRead: number;
+            cacheWrite: number;
+        };
         totalToolCalls: number;
         totalDroppedLines: number;
         totalCostUsd: number;
@@ -1290,6 +1295,8 @@ export function makeSpawnWrapper(opts: {
                 if (result.tokens) {
                     state.totalTokens.input += result.tokens.input;
                     state.totalTokens.output += result.tokens.output;
+                    state.totalTokens.cacheRead += result.tokens.cacheRead || 0;
+                    state.totalTokens.cacheWrite += result.tokens.cacheWrite || 0;
                     state.totalCostUsd += result.tokens.costUsd || 0;
                     phase.tokens = result.tokens;
                 }
@@ -1439,15 +1446,24 @@ export function formatContextUsage(opts: {
 interface ReportTotals {
     runElapsedMs: number;
     totalToolCalls: number;
-    totalTokens: { input: number; output: number };
+    totalTokens: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+    };
     totalDroppedLines: number;
     totalCostUsd?: number;
 }
 
 function totalsLine(t: ReportTotals): string {
+    const tt = t.totalTokens;
+    const cache = (tt.cacheRead || 0) + (tt.cacheWrite || 0);
+    const grand = tt.input + tt.output + cache;
+    // Token total includes cache read/write so it lines up with the cost.
     const tok =
-        t.totalTokens.input > 0
-            ? ` · ${(t.totalTokens.input + t.totalTokens.output).toLocaleString()} tokens (${t.totalTokens.input.toLocaleString()} in / ${t.totalTokens.output.toLocaleString()} out)`
+        grand > 0
+            ? ` · ${grand.toLocaleString()} tokens (${tt.input.toLocaleString()} in / ${tt.output.toLocaleString()} out${cache > 0 ? ` / ${cache.toLocaleString()} cache` : ""})`
             : "";
     const cost = ` · ${formatCostUsd(t.totalCostUsd)}`;
     return `${secs(t.runElapsedMs)} wall-clock · ${t.totalToolCalls} tool call(s)${tok}${cost}`;
@@ -2112,8 +2128,22 @@ export async function runPhaseCore(
 export interface TokenUsage {
     input: number;
     output: number;
+    cacheRead?: number; // tokens read from prompt cache (summed across turns)
+    cacheWrite?: number; // tokens written to prompt cache (summed across turns)
     contextWindow: number; // 0 when unknown
     costUsd?: number; // USD cost for this phase: sum of per-turn usage.cost.total
+}
+
+// Total billed tokens for a usage record — input + output + cache read/write — so
+// the displayed token count lines up with the cost (which also prices cache).
+export function totalTokens(u: TokenUsage | undefined): number {
+    if (!u) return 0;
+    return (
+        (u.input || 0) +
+        (u.output || 0) +
+        (u.cacheRead || 0) +
+        (u.cacheWrite || 0)
+    );
 }
 
 // Format a USD cost compactly for cards/footers/report. Sub-cent costs get extra
@@ -2128,15 +2158,11 @@ export function formatCostUsd(usd: number | undefined): string {
 // Format a per-phase token note for the workflow report summary line.
 // Returns ", Nk tokens" when tokens are present, or "" otherwise.
 export function tokenNote(phase: PhaseState): string {
-    if (
-        !phase.tokens ||
-        (phase.tokens.input === 0 && phase.tokens.output === 0)
-    )
-        return "";
-    const total = phase.tokens.input + phase.tokens.output;
+    const total = totalTokens(phase.tokens);
+    if (!phase.tokens || total === 0) return "";
     const k = total >= 1000 ? `${(total / 1000).toFixed(1)}k` : `${total}`;
-    // Always show cost ($0.00 for unpriced models) so every priced/unpriced phase
-    // reads consistently.
+    // Token count includes cache read/write so it matches the cost basis. Always
+    // show cost ($0.00 for unpriced models) so every phase reads consistently.
     return `, ${k} tokens, ${formatCostUsd(phase.tokens.costUsd)}`;
 }
 
@@ -2237,6 +2263,8 @@ export interface SpawnEventState {
     cumulativeTokens: {
         input: number;
         output: number;
+        cacheRead: number;
+        cacheWrite: number;
     };
     costUsd: number; // running USD total: sum of each turn's usage.cost.total
 }
@@ -2338,24 +2366,31 @@ export function handleSpawnEvent(
             );
             // output tokens: genuinely additive across turns
             state.cumulativeTokens.output += msg.usage.output || 0;
+            // cache read/write tokens: per-turn, additive (disjoint from input).
+            // Tracked so the displayed token count matches the cost basis.
+            state.cumulativeTokens.cacheRead += msg.usage.cacheRead || 0;
+            state.cumulativeTokens.cacheWrite += msg.usage.cacheWrite || 0;
             // cost: pi's providers run calculateCost() on each response, so
             // msg.usage.cost.total is this turn's spend (input is re-billed every
             // turn). Per-turn cost is additive — sum it for the phase total.
             state.costUsd += msg.usage.cost?.total || 0;
 
-            const totalTokens =
+            // Context-window fill uses input + output (the live conversation size).
+            const ctxTokens =
                 state.cumulativeTokens.input + state.cumulativeTokens.output;
 
             // Only compute percentage when the context window is known
             const pct =
                 ctxWindow > 0
-                    ? Math.min(100, Math.round((totalTokens / ctxWindow) * 100))
+                    ? Math.min(100, Math.round((ctxTokens / ctxWindow) * 100))
                     : 0;
             phase.contextPct = pct;
             state.contextPct = phase.contextPct;
             state.capturedTokens = {
                 input: state.cumulativeTokens.input,
                 output: state.cumulativeTokens.output,
+                cacheRead: state.cumulativeTokens.cacheRead,
+                cacheWrite: state.cumulativeTokens.cacheWrite,
                 contextWindow: ctxWindow,
                 costUsd: state.costUsd,
             };
@@ -2492,6 +2527,8 @@ function spawnAgentWithModelFallback(
         cumulativeTokens: {
             input: 0,
             output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
         },
         costUsd: 0,
     };
@@ -2734,6 +2771,8 @@ export function spawnAgentWithModel(
         cumulativeTokens: {
             input: 0,
             output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
         },
         costUsd: 0,
     };

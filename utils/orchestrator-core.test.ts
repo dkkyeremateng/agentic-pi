@@ -112,7 +112,12 @@ describe("newOrchestratorState", () => {
         assert.equal(st.iteration, 0);
         assert.equal(st.dispatchMode, false);
         assert.equal(st.freshDispatchSession, false);
-        assert.deepEqual(st.totalTokens, { input: 0, output: 0 });
+        assert.deepEqual(st.totalTokens, {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+        });
         assert.equal(st.totalToolCalls, 0);
         assert.equal(st.totalDroppedLines, 0);
         assert.equal(st.dispatchesThisTurn, 0);
@@ -1652,6 +1657,8 @@ describe("handleSpawnEvent", () => {
             cumulativeTokens: {
                 input: 0,
                 output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
             },
             costUsd: 0,
         };
@@ -1795,6 +1802,8 @@ describe("handleSpawnEvent", () => {
         assert.deepEqual(state.capturedTokens, {
             input: 1000,
             output: 500,
+            cacheRead: 0,
+            cacheWrite: 0,
             contextWindow: 100000,
             costUsd: 0,
         });
@@ -1823,6 +1832,32 @@ describe("handleSpawnEvent", () => {
         // per-turn cost is additive (input is re-billed each turn)
         assert.ok(Math.abs((state.capturedTokens?.costUsd ?? 0) - 0.03) < 1e-9);
         assert.ok(Math.abs((phase.tokens?.costUsd ?? 0) - 0.03) < 1e-9);
+    });
+
+    it("accumulates cache read/write tokens across turns", () => {
+        const state = mkState();
+        const phase = mkPhase();
+        const turn = (cacheRead: number, cacheWrite: number) => ({
+            type: "message_end",
+            message: {
+                role: "assistant",
+                content: [],
+                usage: {
+                    input: 100,
+                    output: 50,
+                    cacheRead,
+                    cacheWrite,
+                    contextWindow: 100000,
+                    cost: { total: 0 },
+                },
+            },
+        });
+        handleSpawnEvent(turn(1000, 200), state, phase, noopPaint);
+        handleSpawnEvent(turn(500, 0), state, phase, noopPaint);
+        // cache tokens are per-turn, additive
+        assert.equal(state.capturedTokens?.cacheRead, 1500);
+        assert.equal(state.capturedTokens?.cacheWrite, 200);
+        assert.equal(phase.tokens?.cacheRead, 1500);
     });
 
     it("leaves cost at 0 when usage.cost is absent (unpriced model)", () => {
@@ -1905,6 +1940,8 @@ describe("computeSpawnResult", () => {
             cumulativeTokens: {
                 input: 0,
                 output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
             },
             costUsd: 0,
             ...overrides,

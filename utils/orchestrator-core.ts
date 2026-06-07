@@ -60,7 +60,12 @@ export interface OrchestratorState {
     phaseLogs: { label: string; log: string }[];
     totalDroppedLines: number;
     totalToolCalls: number;
-    totalTokens: { input: number; output: number };
+    totalTokens: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+    };
     totalCostUsd: number;
     runStartedAt: number;
     runElapsedMs: number;
@@ -88,7 +93,7 @@ export function newOrchestratorState(): OrchestratorState {
         phaseLogs: [],
         totalDroppedLines: 0,
         totalToolCalls: 0,
-        totalTokens: { input: 0, output: 0 },
+        totalTokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         totalCostUsd: 0,
         runStartedAt: 0,
         runElapsedMs: 0,
@@ -268,7 +273,7 @@ export async function runWorkflowCore(
         s.phaseLogs = [];
         s.totalDroppedLines = 0;
         s.totalToolCalls = 0;
-        s.totalTokens = { input: 0, output: 0 };
+        s.totalTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
         s.totalCostUsd = 0;
         s.runStartedAt = Date.now();
         s.runElapsedMs = 0;
@@ -325,7 +330,7 @@ export async function runWorkflowCore(
     s.phaseLogs = [];
     s.totalDroppedLines = 0;
     s.totalToolCalls = 0;
-    s.totalTokens = { input: 0, output: 0 };
+    s.totalTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     s.totalCostUsd = 0;
     s.runStartedAt = Date.now();
     s.runElapsedMs = 0;
