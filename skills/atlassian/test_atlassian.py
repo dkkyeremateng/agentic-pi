@@ -142,6 +142,54 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(body["fields"]["priority"], {"name": "High"})
 
 
+class ConfluenceTests(unittest.TestCase):
+    def test_page_id_from_number_and_url(self):
+        self.assertEqual(atlassian._page_id("2133032963"), "2133032963")
+        self.assertEqual(
+            atlassian._page_id(
+                "https://acme.atlassian.net/wiki/spaces/X/pages/2133032963/Title"
+            ),
+            "2133032963",
+        )
+
+    def test_page_id_rejects_garbage(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            atlassian._page_id("not-a-page")
+
+    def test_strip_html_to_text(self):
+        txt = atlassian._strip_html(
+            "<h1>T</h1><p>Hello <b>world</b></p><ul><li>a</li><li>b</li></ul>"
+        )
+        self.assertEqual(txt, "T\nHello world\n- a\n- b")
+
+    @mock.patch.object(atlassian, "out")
+    @mock.patch.object(atlassian, "capi")
+    def test_cmd_page_strips_body_by_default(self, capi, out):
+        capi.return_value = {
+            "id": "1",
+            "title": "Report",
+            "status": "current",
+            "spaceId": "9",
+            "version": {"number": 4},
+            "body": {"storage": {"value": "<p>Hi</p>"}},
+        }
+        atlassian.cmd_page(types.SimpleNamespace(id="1", raw_body=False))
+        # body-format=storage requested on the v2 pages endpoint
+        self.assertEqual(capi.call_args[0][1], "/pages/1")
+        self.assertEqual(capi.call_args[1]["params"], {"body-format": "storage"})
+        result = out.call_args[0][0]
+        self.assertEqual(result["title"], "Report")
+        self.assertEqual(result["body_text"], "Hi")
+        self.assertNotIn("body_storage", result)
+
+    @mock.patch.object(atlassian, "out")
+    @mock.patch.object(atlassian, "capi")
+    def test_cmd_page_raw_body(self, capi, out):
+        capi.return_value = {"id": "1", "body": {"storage": {"value": "<p>Hi</p>"}}}
+        atlassian.cmd_page(types.SimpleNamespace(id="1", raw_body=True))
+        self.assertEqual(out.call_args[0][0]["body_storage"], "<p>Hi</p>")
+
+
 class ParserTests(unittest.TestCase):
     def test_tickets_defaults(self):
         a = atlassian.build_parser().parse_args(["tickets"])
@@ -151,6 +199,18 @@ class ParserTests(unittest.TestCase):
     def test_create_requires_project_and_summary(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             atlassian.build_parser().parse_args(["create", "--summary", "x"])
+
+    def test_page_parses_id_and_raw_body_flag(self):
+        a = atlassian.build_parser().parse_args(["page", "123", "--raw-body"])
+        self.assertEqual(a.id, "123")
+        self.assertTrue(a.raw_body)
+        self.assertEqual(a.fn, atlassian.cmd_page)
+
+    def test_wiki_search_and_spaces_wired(self):
+        a = atlassian.build_parser().parse_args(["wiki-search", "text ~ 'x'"])
+        self.assertEqual(a.fn, atlassian.cmd_wiki_search)
+        b = atlassian.build_parser().parse_args(["spaces"])
+        self.assertEqual(b.fn, atlassian.cmd_spaces)
 
 
 if __name__ == "__main__":

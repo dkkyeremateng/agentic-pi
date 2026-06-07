@@ -1,14 +1,14 @@
 ---
 name: atlassian
-description: Query and mutate Jira (Atlassian Cloud) tickets over its REST API from the shell. Use to list/search tickets (JQL), read ticket detail, create tickets, comment, update fields, transition status, and inspect projects. Keywords - atlassian, jira, ticket, issue, jql, project, sprint, transition, status, assignee.
+description: Query and mutate Atlassian Cloud (Jira + Confluence) over its REST API from the shell. Jira - list/search tickets (JQL), read, create, comment, update, transition, inspect projects. Confluence - read a wiki page by id or URL, search the wiki (CQL), list spaces. Use for ANYTHING on *.atlassian.net. Keywords - atlassian, jira, ticket, issue, jql, project, sprint, transition, confluence, wiki, page, space, cql.
 allowed-tools: Bash
 ---
 
-# Atlassian (Jira) REST CLI
+# Atlassian (Jira + Confluence) REST CLI
 
 ## Purpose
 
-Talk to the [Jira Cloud REST API v3](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) through `atlassian` — a thin, token-efficient Python client (`atlassian.py`, stdlib only). No MCP server, no tool schemas in context: every command makes one REST call and prints JSON to stdout, ready to pipe to `jq`.
+Talk to the [Jira Cloud REST API v3](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) and the [Confluence Cloud REST API v2](https://developer.atlassian.com/cloud/confluence/rest/v2/) through `atlassian` — a thin, token-efficient Python client (`atlassian.py`, stdlib only). No MCP server, no tool schemas in context: every command makes one REST call and prints JSON to stdout, ready to pipe to `jq`. Use it for **anything on `*.atlassian.net`** — Jira tickets and Confluence/wiki pages alike (read a `…/wiki/…/pages/<id>/…` link with `atlassian page <id-or-url>` rather than a browser).
 
 ## Setup
 
@@ -45,6 +45,13 @@ atlassian transitions ENG-123                 # available status moves (id + nam
 atlassian transition ENG-123 "Done"           # move status by name
 atlassian raw GET /issue/ENG-123              # arbitrary REST escape hatch (REST path is /issue)
 atlassian raw POST /issue '<json>'
+
+# ── Confluence (wiki) ──
+atlassian page 2133032963                     # read a page by id (title + readable text)
+atlassian page 'https://acme.atlassian.net/wiki/spaces/X/pages/2133032963/Title'  # …or by URL
+atlassian page 2133032963 --raw-body          # storage HTML instead of stripped text
+atlassian wiki-search 'text ~ "TZ Migration"' # search the wiki with CQL
+atlassian spaces --limit 50                   # list spaces
 ```
 
 ## Notes
@@ -59,6 +66,7 @@ atlassian raw POST /issue '<json>'
 - **Output** — JSON. Reshape with `jq`, e.g. `atlassian tickets --project ENG | jq -r '.tickets[] | "\(.key) \(.fields.summary)"'`.
 - **Errors** — HTTP errors print the response body to stderr and exit non-zero.
 - **Search endpoint** — uses `POST /rest/api/3/search/jql` (token-paged); the old `/rest/api/3/search` was removed by Atlassian.
+- **Confluence** — `page <id-or-url>` reads a wiki page (Confluence REST v2 `/wiki/api/v2/pages/{id}`); it accepts a numeric id or any URL containing `/pages/<id>` and returns `body_text` (HTML stripped) by default, or `body_storage` with `--raw-body`. `wiki-search '<cql>'` uses CQL (v1 `/wiki/rest/api/content/search`); `spaces` lists spaces. Same auth as Jira.
 
 ## Workflow
 

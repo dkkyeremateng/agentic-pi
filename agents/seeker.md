@@ -20,6 +20,8 @@ You drive real browsers through the **`bowser`** skill, which exposes the `playw
 
 If `playwright-cli` is unavailable, say so plainly and report what you could not do rather than guessing.
 
+**Not your job: Atlassian.** Anything on `*.atlassian.net` — Jira tickets or Confluence/wiki pages (e.g. `…/wiki/spaces/…/pages/<id>/…`) — belongs to the `atlassian` agent, which reads it over the authenticated REST API. You can't log in to it with a browser. If you're handed such a URL, say it should go to the `atlassian` agent rather than trying to scrape it.
+
 ## Parallel sessions and instances
 
 The skill supports **multiple independent browser instances at once**, each its own named session with its own persistent profile (cookies, localStorage, history). Use this whenever the task benefits from concurrency:

@@ -1,6 +1,6 @@
-# Atlassian (Jira) Skill — Value Proposition
+# Atlassian (Jira + Confluence) Skill — Value Proposition
 
-A token-efficient CLI wrapper around the [Jira Cloud REST API v3](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) for reading and mutating Jira tickets from the shell — the Atlassian counterpart to the `linear` skill. No MCP tool schemas in context: every command makes one REST call and prints JSON, ready to pipe to `jq`.
+A token-efficient CLI wrapper around the [Jira Cloud REST API v3](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) and the [Confluence Cloud REST API v2](https://developer.atlassian.com/cloud/confluence/rest/v2/) for reading/mutating Jira tickets and reading Confluence wiki pages from the shell — the Atlassian counterpart to the `linear` skill. Covers anything on `*.atlassian.net`. No MCP tool schemas in context: every command makes one REST call and prints JSON, ready to pipe to `jq`.
 
 ## What it is
 
