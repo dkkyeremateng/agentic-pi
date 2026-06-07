@@ -221,6 +221,11 @@ Commands:
 - `/agent-workflow [request]` — pick a team (Select Team dialog), then run the lifecycle (prompts for the request if omitted). Add a `loops=N` token (e.g. `/agent-workflow loops=5 fix the bug`) to override the retry limit for this run.
 - `/agent-model [<agent> <model>]` — change a sub-agent's model **on the fly** for this session only (held in memory, resets on restart). No args lists every agent's effective model (overrides flagged `*`); `/agent-model <agent> <model>` sets one; `/agent-model <agent> reset` clears one; `/agent-model reset` clears all. The `<model>` position tab-completes the available models (from the model registry). A runtime override wins over `PI_AGENT_<NAME>_MODEL`, the `.md` `model:`, and `models.yaml`.
 - `/agent-workflow-clear` — clear the progress widget
+- `/revert` — restore the workspace to the checkpoint taken before the **last `run_agent_workflow` run** (HEAD + a `git stash create` of pre-run uncommitted work, saved to `.agent/checkpoints/latest.json`). Asks to confirm, backs up the current state to a stash first, then `git reset --hard` + re-applies the pre-run changes. Untracked files the run created are left in place. No-op if there's no checkpoint or it isn't a git repo.
+
+Tools & UX:
+- **`ask_user`** (tool, primary session) — the agent asks you a clarifying question and waits: a pick-list (`options`) via the select dialog, or free text. Use it instead of guessing on ambiguity, or to confirm a destructive/outward-facing action. In a non-interactive context (a spawned sub-agent, print/json mode) it returns guidance to proceed with a default rather than hang. Loaded from `extensions/interactive.ts`.
+- **Desktop notifications** (OSC 9) — fire when a workflow/dispatch finishes and when `ask_user` is waiting, so long unattended runs ping you. On by default; `PI_NOTIFY=0` disables. Needs an OSC-9-capable terminal (iTerm2, kitty, WezTerm, Ghostty, …).
 
 ## Config
 

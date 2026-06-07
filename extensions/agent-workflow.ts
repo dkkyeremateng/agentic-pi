@@ -45,7 +45,16 @@ import {
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { execFileSync } from "child_process";
+import { writeFileSync, mkdirSync, readFileSync } from "fs";
 import { secs } from "../utils/workflow-utils";
+import { emitNotification } from "../utils/notify";
+import {
+    type Checkpoint,
+    createCheckpoint,
+    revertCommands,
+    describeCheckpoint,
+} from "../utils/checkpoint";
 import {
     calculateGridLayout,
     renderCardGrid,
@@ -166,6 +175,17 @@ export default function (pi: ExtensionAPI) {
     // each assistant message's usage.cost (the provider already priced it). The
     // footer adds this to the sub-agent phase total so it reflects all spend.
     let primaryCostUsd = 0;
+    // The checkpoint taken before the most recent workflow run (for /revert).
+    let lastCheckpoint: Checkpoint | null = null;
+    // Run a git command in `cwd`, returning trimmed stdout (throws on failure).
+    const git = (cwd: string) => (args: string[]): string =>
+        execFileSync("git", args, {
+            cwd,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+    const checkpointPath = (cwd: string) =>
+        join(cwd, ".agent", "checkpoints", "latest.json");
     let sessionDir = "";
     let currentProc: any = null;
 
@@ -903,6 +923,65 @@ export default function (pi: ExtensionAPI) {
             },
         });
 
+    // ── /revert — restore the workspace to the pre-run checkpoint ──
+    if (active)
+        pi.registerCommand("revert", {
+            description:
+                "Revert the workspace to the checkpoint taken before the last workflow run (current state is backed up to a git stash first)",
+            handler: async (_args: string, ctx: any) => {
+                let cp = lastCheckpoint;
+                if (!cp) {
+                    try {
+                        cp = JSON.parse(
+                            readFileSync(checkpointPath(ctx.cwd), "utf8"),
+                        ) as Checkpoint;
+                    } catch {
+                        cp = null;
+                    }
+                }
+                if (!cp) {
+                    ctx.ui.notify(
+                        "No checkpoint found — run a workflow first.",
+                        "info",
+                    );
+                    return;
+                }
+                const run = git(ctx.cwd);
+                const choice = await ctx.ui.select(
+                    `Revert workspace to ${describeCheckpoint(cp)}? Current state is backed up to a stash first.`,
+                    ["Revert", "Cancel"],
+                );
+                if (choice !== "Revert") {
+                    ctx.ui.notify("Revert cancelled.", "info");
+                    return;
+                }
+                let backup = "";
+                try {
+                    backup = run(["stash", "create"]);
+                } catch {}
+                try {
+                    for (const cmd of revertCommands(cp)) run(cmd);
+                    updateWidget();
+                    ctx.ui.notify(
+                        `Reverted to ${describeCheckpoint(cp)}.` +
+                            (backup
+                                ? ` Previous state backed up — restore with: git stash apply ${backup.slice(0, 12)}`
+                                : "") +
+                            " Any untracked files the run created were left in place.",
+                        "info",
+                    );
+                } catch (e: any) {
+                    ctx.ui.notify(
+                        `Revert failed: ${e?.message || e}.` +
+                            (backup
+                                ? ` Your state is safe (backup ${backup.slice(0, 12)}).`
+                                : ""),
+                        "error",
+                    );
+                }
+            },
+        });
+
     // ── Tool — let the primary agent invoke the workflow ──
 
     if (active)
@@ -940,6 +1019,24 @@ export default function (pi: ExtensionAPI) {
                 st.agents = loadAgents(ctx.cwd);
                 widgetCtx = ctx;
                 st.pipelineRanThisTurn = true; // fold the primary's turn time into the total
+
+                // Snapshot the workspace before the run so /revert can undo it.
+                try {
+                    const cp = createCheckpoint(git(ctx.cwd), request);
+                    if (cp) {
+                        lastCheckpoint = cp;
+                        mkdirSync(dirname(checkpointPath(ctx.cwd)), {
+                            recursive: true,
+                        });
+                        writeFileSync(
+                            checkpointPath(ctx.cwd),
+                            JSON.stringify(cp, null, 2),
+                        );
+                    }
+                } catch {
+                    // best-effort; never block a run on checkpointing
+                }
+
                 if (onUpdate)
                     onUpdate({
                         content: [
@@ -1070,7 +1167,15 @@ export default function (pi: ExtensionAPI) {
             // correct value from runStartedAt; overwriting it with the full turn time
             // (which includes orchestrator reasoning) would inflate the dashboard.
             if (st.pipelineRanThisTurn && st.running) st.runElapsedMs = turnMs;
-            if (st.dispatchedThisTurn || st.pipelineRanThisTurn) updateWidget();
+            if (st.dispatchedThisTurn || st.pipelineRanThisTurn) {
+                updateWidget();
+                // Ping the user when real agent work finishes — these runs are long
+                // and often unattended. Trivial reply-only turns are skipped.
+                const what = st.pipelineRanThisTurn
+                    ? `workflow ${st.lastStatus}`
+                    : "dispatch done";
+                emitNotification(`pi: ${what} (${secs(turnMs)})`);
+            }
         });
 
     // ── Orchestrator System Prompt ─────────────────

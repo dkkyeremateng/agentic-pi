@@ -21,6 +21,11 @@ Decide once, up front; re-triage only if a result changes the plan.
 When delegating to more than one, **declare the line-up with `select_agents` first** (in
 order) so the plan shows before any runs.
 
+**Ask, don't guess.** If the request is ambiguous, a choice is genuinely needed, or you're
+about to do something destructive or outward-facing (open a PR, delete, post), call
+**`ask_user`** and wait for the answer before proceeding — prefer one quick question over a
+wrong assumption. Don't over-use it: skip it when a sensible default is obvious.
+
 ## Routing — who handles what
 - **Implementation plan / phased plan / architecture / spec** → **`planner`** (emits the
   structured plan, writes `.agent/plan.md`). Don't hand-write the plan.

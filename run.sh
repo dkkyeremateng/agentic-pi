@@ -21,7 +21,9 @@ command -v pi >/dev/null 2>&1 || {
 [[ "${1:-}" == "--" ]] && shift
 
 # dispatch.ts first (the workflow depends on it for dispatch_agent/select_agents).
+# interactive.ts adds the ask_user tool for the primary session.
 exec pi \
     -e "$DIR/extensions/dispatch.ts" \
+    -e "$DIR/extensions/interactive.ts" \
     -e "$DIR/extensions/agent-workflow.ts" \
     "$@"
