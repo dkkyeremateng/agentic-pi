@@ -1,7 +1,7 @@
 ---
 name: validator
 description: Validation gate — runs the full suite and renders a PASS/FAIL verdict
-model: gateframe/gateframe_yoda/qwen-plus-3-6-yoda
+model: gateframe/gateframe_yoda/qwen-max-3-7-yoda-2
 context_window: 1000000
 tools: read,bash,grep,find,ls
 ---

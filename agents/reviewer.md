@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Code review of an implementation against its plan — verifies the change matches the plan and acceptance criteria, finds correctness bugs, regressions, missed edge cases, and quality issues, and sends the implementer back to fix them
-model: gateframe/gateframe_yoda/qwen-plus-3-6-yoda
+model: gateframe/gateframe_yoda/qwen-max-3-7-yoda-2
 context_window: 1000000
 tools: read,grep,find,ls
 ---
