@@ -1823,6 +1823,48 @@ describe("handleSpawnEvent", () => {
         assert.equal(state.activity, "Hello");
     });
 
+    it("computes contextPct from the configured window when the provider omits it", () => {
+        const state = mkState();
+        state.configuredContextWindow = 1_000_000;
+        const phase = mkPhase();
+        handleSpawnEvent(
+            { type: "message_end", message: { usage: { input: 250000, output: 0 } } },
+            state,
+            phase,
+            noopPaint,
+        );
+        assert.equal(phase.contextPct, 25); // 250k / 1M
+        assert.equal(phase.tokens?.contextWindow, 1_000_000);
+    });
+
+    it("prefers the provider-reported window over the configured one", () => {
+        const state = mkState();
+        state.configuredContextWindow = 1_000_000;
+        const phase = mkPhase();
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: { usage: { input: 100000, output: 0, contextWindow: 200000 } },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+        assert.equal(phase.contextPct, 50); // 100k / 200k (provider window wins)
+    });
+
+    it("stays 0 when neither provider nor config supplies a window", () => {
+        const state = mkState();
+        const phase = mkPhase();
+        handleSpawnEvent(
+            { type: "message_end", message: { usage: { input: 100000, output: 0 } } },
+            state,
+            phase,
+            noopPaint,
+        );
+        assert.equal(phase.contextPct, 0);
+    });
+
     it("accumulates multiple text_delta events", () => {
         const state = mkState();
         const phase = mkPhase();

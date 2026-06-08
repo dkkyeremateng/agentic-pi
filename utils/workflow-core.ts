@@ -2408,6 +2408,9 @@ export interface SpawnEventState {
     droppedLines: number;
     toolCount: number;
     contextPct: number;
+    // The agent's configured context window (frontmatter / PI_AGENT_<NAME> env).
+    // Used as the bar's denominator when the provider doesn't report one in usage.
+    configuredContextWindow?: number;
     capturedTokens?: TokenUsage;
     cumulativeTokens: {
         input: number;
@@ -2501,10 +2504,13 @@ export function handleSpawnEvent(
                 state.finalError = String(msg.errorMessage);
         }
         if (msg?.usage?.input) {
-            // contextWindow may not be reported by all providers. Do NOT fall
-            // back to max_tokens (that's the max output limit, not the context
-            // window) or a hardcoded value — both produce misleading percentages.
-            const ctxWindow = msg.usage.contextWindow || 0;
+            // contextWindow may not be reported by all providers. Fall back to the
+            // agent's CONFIGURED window (frontmatter / PI_AGENT_<NAME> env) so the
+            // bar still works for providers that omit it; never fall back to
+            // max_tokens (that's the output limit, not the context window) or a
+            // hardcoded value — both produce misleading percentages.
+            const ctxWindow =
+                msg.usage.contextWindow || state.configuredContextWindow || 0;
 
             // input tokens: each message_end in a multi-turn spawn reports the
             // FULL conversation context for that turn, not a delta. Take the
@@ -2682,6 +2688,7 @@ function spawnAgentWithModelFallback(
         droppedLines: 0,
         toolCount: 0,
         contextPct: 0,
+        configuredContextWindow: agentDef.contextWindow || 0,
         cumulativeTokens: {
             input: 0,
             output: 0,
@@ -2923,6 +2930,7 @@ export function spawnAgentWithModel(
         droppedLines: 0,
         toolCount: 0,
         contextPct: 0,
+        configuredContextWindow: agentDef.contextWindow || 0,
         cumulativeTokens: {
             input: 0,
             output: 0,
