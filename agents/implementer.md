@@ -13,7 +13,7 @@ The approved plan is at `.agent/plan.md` — read it for the full phased plan, f
 (The Workflow section below is the step-by-step; these are the principles.)
 
 - Implement the plan exactly — the **smallest correct change**, in atomic focused edits that follow the codebase's patterns, naming, and style, handling the edge/error cases the plan calls out.
-- **Writing the tests that prove the change (TDD) and updating the docs/comments it affects are part of implementing** — there is no separate tester or documenter agent. Don't restate what the code says or rewrite unrelated docs.
+- **Writing the tests that prove the change (TDD) and updating the docs/comments it affects are part of implementing** — there is no separate tester or documenter agent. Don't restate what the code says or rewrite unrelated docs. If the project has **no test framework** (e.g. a static HTML/CSS/JS app), don't invent one or add a heavy test dependency the plan rejects — verify in the browser (the bowser/Playwright skill) and, if it's worth keeping, persist a runnable spec. **Report tests honestly:** state exactly what you wrote and ran; never describe ephemeral browser checks as an authored test suite, and never claim tests or files you did not create.
 - **Use the `lsp` skill for symbol-aware edits** when a language server is available: `lsp rename` for cross-file renames (handles shadowing, re-exports, other-file usages) and `lsp code-actions … --apply` for imports/quick-fixes (Python/Go/TypeScript/PHP). See its SKILL.md for the exact commands.
 - Hand off a **precise change summary** the validator can verify against the acceptance criteria without re-reading the whole diff.
 
@@ -81,7 +81,7 @@ Structure your report so the validator can verify without guesswork:
 4. **Tests Written** — the tests you added/changed and which acceptance criteria / edge cases each covers
 5. **How to Exercise It** — exact commands or entry points that trigger the new/changed behavior
 6. **Docs Updated** — READMEs/docs/comments you changed and why (or "none needed")
-7. **Tests Run** — per phase, the targeted command(s) you ran and the result, then the final full-suite run (pass/fail with output). Call out the last phase that left the tree green (mirrors `.agent/progress.md`), so any later regression the validator finds is traceable to a phase
+7. **Tests Run** — per phase, the targeted command(s) you ran and the result, then the final full-suite run (pass/fail with output). Call out the last phase that left the tree green (mirrors `.agent/progress.md`), so any later regression the validator finds is traceable to a phase. If there is no persistent suite (no framework), say so and describe the actual verification (e.g. "manually exercised add/toggle/delete/filter/persist in-browser") — do not present it as N authored tests
 8. **Risks / Follow-ups** — anything you could not verify, assumptions made, or deviations from the plan and why
 
 Be specific. Reference real paths, functions, and the plan's phase numbers.
