@@ -1028,11 +1028,17 @@ export default function (pi: ExtensionAPI) {
             name: "run_agent_workflow",
             label: "Run Workflow (Team)",
             description:
-                "Run the full plan -> implement -> test -> validate lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself.",
+                "Run the plan -> refine -> implement -> review -> validate -> ship lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself. Pass `team` when the user names one (e.g. 'use the plan-build team'); omit it to run the full default pipeline.",
             parameters: Type.Object({
                 request: Type.String({
                     description: "The bug, feature, or app to deliver",
                 }),
+                team: Type.Optional(
+                    Type.String({
+                        description:
+                            "Optional team name from teams.yaml whose roster defines which pipeline phases run (e.g. when the user says 'use the X team'). Omit to run the full default pipeline (every agent).",
+                    }),
+                ),
                 max_loops: Type.Optional(
                     Type.Number({
                         description: `Max implement/validate retries (default ${DEFAULT_MAX_LOOPS})`,
@@ -1040,9 +1046,10 @@ export default function (pi: ExtensionAPI) {
                 ),
             }),
             async execute(_id, params, signal, onUpdate, ctx) {
-                const { request, max_loops } = params as {
+                const { request, max_loops, team } = params as {
                     request: string;
                     max_loops?: number;
+                    team?: string;
                 };
                 if (st.running) {
                     return {
@@ -1056,6 +1063,27 @@ export default function (pi: ExtensionAPI) {
                     };
                 }
                 st.agents = loadAgents(ctx.cwd);
+                st.teams = loadTeams(ctx.cwd);
+                // Scope the run to a named team when the caller passed one; its
+                // roster IS the pipeline. An unknown name is an error (don't silently
+                // run the full pipeline — that hides the mistake). Omitted => no team,
+                // and runWorkflowCore falls back to the full roster.
+                if (team) {
+                    if (!st.teams[team]) {
+                        return {
+                            content: [
+                                {
+                                    type: "text",
+                                    text: `Unknown team "${team}". Available teams: ${Object.keys(st.teams).join(", ") || "(none defined)"}. Omit team to run the full default pipeline.`,
+                                },
+                            ],
+                            details: undefined,
+                        };
+                    }
+                    st.activeTeamName = team;
+                } else {
+                    st.activeTeamName = "";
+                }
                 widgetCtx = ctx;
                 st.pipelineRanThisTurn = true; // fold the primary's turn time into the total
 

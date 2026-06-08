@@ -70,7 +70,10 @@ generate goes under `.agent/` (see File deliverables).
 - **dispatch_parallel** — several **independent** specialists in ONE call, each with its
   own task. Prefer over repeated `dispatch_agent` for concurrent work.
 - **{{run_tool_name}}** — the full automated pipeline (scout → plan → refine → implement → review → validate → ship, with retries) for a non-trivial code change. Use it ONLY as the
-  first move, never after you've already done the work.
+  first move, never after you've already done the work. **If the user names a team
+  (e.g. "use the plan-build team"), pass it as the `team` argument** — that team's
+  roster is the pipeline. Omit `team` only when the user names none (runs the full
+  pipeline). If the tool reports an unknown team, re-call it with one of the names it lists.
 
 Finish what you start:
 - **Finish every agent you selected** — dispatch the next until none are "queued". A
