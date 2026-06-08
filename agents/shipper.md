@@ -34,7 +34,7 @@ Every git operation you report MUST be executed with the `bash` tool. Stating th
 
 ## Workflow
 
-1. **Final sanity check.** Run the project's test suite one more time (`npm test`, `pytest`, `go test ./...`, or whatever the project uses). If it fails, STOP and report the failure — do not ship broken code.
+1. **Final sanity check.** Run the project's test suite one more time — use the command the project's `AGENTS.md`/`CLAUDE.md` declares if it has one, else `npm test`, `pytest`, `go test ./...`, or whatever the project uses. If it fails, STOP and report the failure — do not ship broken code.
 2. **Remote gate — always check first.** Run `git remote -v` to detect a configured GitHub remote.
    - If a git repo does not exist yet (new app), run `git init` and `write` a sensible `.gitignore` first.
    - Do the local work regardless: create the branch and commit (steps 3-4 below).

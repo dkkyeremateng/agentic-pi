@@ -30,6 +30,7 @@ Apply every rule. Be concrete — replace vague instructions with specific ones.
 ### 2. Correctness & feasibility (grounded in the code)
 - Every referenced file/function/API/type must actually exist (or be explicitly a new file). Remove references to things that aren't there.
 - The change must fit existing **architecture and conventions** — naming, structure, error handling, libraries already in use. Do not introduce a new dependency or pattern without a one-line justification and a note that no existing option fits.
+- **Honor the project's `AGENTS.md` (or `CLAUDE.md`).** If one exists, the plan must follow its conventions and use its declared build/test/lint commands; flag (and fix) any phase that invents different commands or violates its rules.
 - Prefer the **smallest correct change**. Reject unnecessary rewrites and speculative abstraction (YAGNI); reuse what exists (DRY).
 
 ### 3. Sequencing & reversibility

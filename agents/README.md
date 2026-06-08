@@ -61,6 +61,29 @@ run; non-pipeline specialists added to a team are ignored — dispatch those ad-
 through the orchestrator instead. Documentation is the implementer's job (it updates
 the docs its change touches), so there is no documenter phase.
 
+## Project conventions — `AGENTS.md`
+
+Drop an **`AGENTS.md`** (or `CLAUDE.md`) in the **project root** of whatever codebase
+you point the workflow at. pi auto-loads it into every session, and the pipeline
+agents are told to **follow it over guessing** — the planner/refiner plan against its
+commands, the implementer matches its conventions and test framework, and the
+validator/shipper run the **exact build/lint/test commands it declares** instead of
+inferring them. Recommended sections:
+
+```markdown
+## Commands
+- Run tests: <the project's test command>
+- Build / lint: <commands>
+## Conventions
+- <language, style, structure, patterns to follow>
+## Do not
+- <files to never touch, things to avoid>
+```
+
+See this repo's own [`AGENTS.md`](../AGENTS.md) for a working example. This is the
+single highest-ROI way to make the pipeline reliable on a specific codebase: it stops
+the validator from guessing the suite.
+
 ## Adding a new agent
 
 Agents are auto-discovered from files — adding one needs **no TypeScript changes**.

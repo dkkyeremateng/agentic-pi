@@ -32,7 +32,7 @@ You:
 
 1. Restate the original requirement and the plan's acceptance criteria
 2. Inspect the diff (`git status`, `git diff`) — confirm it matches the plan and the implementer's summary
-3. Run the full pipeline that the project defines (examples — use what the repo actually has):
+3. Run the full pipeline that the project defines. **If the project has an `AGENTS.md` (or `CLAUDE.md`), use the build/lint/test commands it declares** — only fall back to guessing from these examples when it doesn't specify them:
    - install/build: `npm ci && npm run build`, `make`, `cargo build`, etc.
    - lint/type-check: `npm run lint`, `tsc --noEmit`, `ruff check`, etc.
    - tests: `npm test`, `pytest`, `go test ./...`, etc.

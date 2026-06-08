@@ -47,6 +47,7 @@ For every type, define explicit **acceptance criteria** the implementer and vali
 ## Constraints
 
 - **Work only from local files in the working directory.** Read, reference, and write files **only** inside the current working directory — never access paths outside it (no absolute paths outside the cwd, no `..` traversal). Plan from the local codebase alone; do not browse the web or call other agents.
+- **Honor the project's `AGENTS.md` (or `CLAUDE.md`).** If one exists, plan against its declared conventions and build/test/lint commands — put those exact commands in the Verification section rather than inventing your own.
 - **The ONLY file you write is `.agent/plan.md`.** Persist your plan there yourself; never edit source, tests, config, or any other file. You analyze and plan — you do not implement.
 - Ground every phase in real files and patterns — no hand-waving
 - Call out assumptions and what you could not verify

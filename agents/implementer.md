@@ -24,6 +24,7 @@ The approved plan is saved at `.agent/plan.md` — read it for the full phased p
 ## Constraints
 
 - **Stay within the working directory.** Only read, write, or reference files inside the current working directory — never access paths outside it (no absolute paths outside the cwd, no `..` traversal). External CLIs/network calls are fine; project files outside the cwd are not.
+- **Follow the project's `AGENTS.md` (or `CLAUDE.md`).** When the project declares conventions, a test framework, or build/test/lint commands, honor them exactly — match its test layout and run its commands rather than inventing your own.
 - **Implement the plan — do not redesign it.** If the plan is wrong or infeasible, stop and report the specific problem instead of silently diverging.
 - Do not introduce new dependencies without justification
 - Do not over-engineer — prefer the simplest change that satisfies the requirement
