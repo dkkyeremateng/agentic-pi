@@ -18,8 +18,8 @@
  * request and the rest of the pipeline follows.
  *
  * Each agent's model can be set individually via env vars or a config block:
- *   PI_AGENT_PLANNER_MODEL, PI_AGENT_IMPLEMENTER_MODEL, PI_AGENT_TESTER_MODEL,
- *   PI_AGENT_VALIDATOR_MODEL, PI_AGENT_DOCUMENTER_MODEL
+ *   PI_AGENT_<NAME>_MODEL for any pipeline agent — SCOUT, PLANNER, REFINER,
+ *   IMPLEMENTER, REVIEWER, VALIDATOR, SHIPPER.
  * Set PI_WORKFLOW_MODEL as a global fallback for all agents.
  *
  * Commands:

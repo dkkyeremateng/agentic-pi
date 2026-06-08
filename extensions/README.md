@@ -267,13 +267,14 @@ Create `.env` next to `.pi/`:
 # .env — workflow model config
 PI_WORKFLOW_MODEL=anthropic/claude-opus-4-8        # global fallback for all agents
 
-# Per-agent model overrides
+# Per-agent model overrides (scout -> planner -> refiner -> implementer -> reviewer -> validator -> shipper)
 PI_AGENT_SCOUT_MODEL=anthropic/claude-haiku-4-5
 PI_AGENT_PLANNER_MODEL=anthropic/claude-opus-4-8
+PI_AGENT_REFINER_MODEL=anthropic/claude-sonnet-4-6
 PI_AGENT_IMPLEMENTER_MODEL=anthropic/claude-sonnet-4-6
 PI_AGENT_REVIEWER_MODEL=anthropic/claude-opus-4-8
-PI_AGENT_TESTER_MODEL=anthropic/claude-haiku-4-5
 PI_AGENT_VALIDATOR_MODEL=anthropic/claude-opus-4-8
+PI_AGENT_SHIPPER_MODEL=anthropic/claude-haiku-4-5
 ```
 
 `export KEY=value` lines and `# comments` are both accepted. Add `.env` to your
@@ -318,11 +319,11 @@ pi -e .pi/extensions/dispatch.ts -e .pi/extensions/agent-workflow.ts
 
 Per-agent models come from either source (env wins over the file):
 
-- **Env vars** — `PI_AGENT_SCOUT_MODEL`, `PI_AGENT_PLANNER_MODEL`,
-  `PI_AGENT_IMPLEMENTER_MODEL`, `PI_AGENT_REVIEWER_MODEL`, `PI_AGENT_TESTER_MODEL`,
-  `PI_AGENT_VALIDATOR_MODEL`. These only work if
-  they're **exported in the shell that launches pi** — if you start pi from an
-  IDE/GUI or forget to `export`, they won't be visible.
+- **Env vars** — `PI_AGENT_<NAME>_MODEL` for any pipeline agent: `PI_AGENT_SCOUT_MODEL`,
+  `PI_AGENT_PLANNER_MODEL`, `PI_AGENT_REFINER_MODEL`, `PI_AGENT_IMPLEMENTER_MODEL`,
+  `PI_AGENT_REVIEWER_MODEL`, `PI_AGENT_VALIDATOR_MODEL`, `PI_AGENT_SHIPPER_MODEL`.
+  These only work if they're **exported in the shell that launches pi** — if you
+  start pi from an IDE/GUI or forget to `export`, they won't be visible.
 - **`.pi/agents/models.yaml`** — a flat `agent: model` file, robust regardless of
   how pi is launched. An optional `default:` covers any unset agent:
 
