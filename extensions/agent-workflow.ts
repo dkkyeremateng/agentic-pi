@@ -593,6 +593,17 @@ export default function (pi: ExtensionAPI) {
         setCurrentProc: (p: any) => {
             currentProc = p;
         },
+        // When a sub-agent's provider doesn't report a context window and the agent
+        // has none configured, fall back to the primary session's window — the one
+        // pi knows and the footer shows — so the card's bar still fills.
+        getFallbackContextWindow: () => {
+            try {
+                const u = widgetCtx?.getContextUsage?.();
+                return (u?.contextWindow || u?.context_window || 0) as number;
+            } catch {
+                return 0;
+            }
+        },
     });
 
     function runAgent(

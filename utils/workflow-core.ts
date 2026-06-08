@@ -1335,6 +1335,7 @@ export function makeSpawnWrapper(opts: {
     agentTimeoutMs: number;
     updateWidget: () => void;
     setCurrentProc: (proc: any) => void;
+    getFallbackContextWindow?: () => number;
 }): (
     agentDef: AgentDef,
     task: string,
@@ -1348,6 +1349,7 @@ export function makeSpawnWrapper(opts: {
         agentTimeoutMs,
         updateWidget,
         setCurrentProc,
+        getFallbackContextWindow,
     } = opts;
     const getSessionDir =
         typeof sessionDirOpt === "function"
@@ -1359,6 +1361,7 @@ export function makeSpawnWrapper(opts: {
             agentTimeoutMs,
             updateWidget,
             setCurrentProc,
+            getFallbackContextWindow,
         };
         const prevToolCount = phase.toolCount;
         const prevDroppedLines = phase.droppedLines;
@@ -2325,6 +2328,10 @@ export interface SpawnConfig {
     agentTimeoutMs: number;
     updateWidget: () => void;
     setCurrentProc: (proc: any) => void;
+    // Last-resort context-window for the bar when the provider doesn't report one
+    // and the agent has none configured — e.g. the primary session's window, which
+    // pi knows. Read at spawn time. Per-agent config (agentDef.contextWindow) wins.
+    getFallbackContextWindow?: () => number;
 }
 
 // Result of a spawned agent subprocess.
@@ -2688,7 +2695,8 @@ function spawnAgentWithModelFallback(
         droppedLines: 0,
         toolCount: 0,
         contextPct: 0,
-        configuredContextWindow: agentDef.contextWindow || 0,
+        configuredContextWindow:
+            agentDef.contextWindow || config.getFallbackContextWindow?.() || 0,
         cumulativeTokens: {
             input: 0,
             output: 0,
@@ -2930,7 +2938,8 @@ export function spawnAgentWithModel(
         droppedLines: 0,
         toolCount: 0,
         contextPct: 0,
-        configuredContextWindow: agentDef.contextWindow || 0,
+        configuredContextWindow:
+            agentDef.contextWindow || config.getFallbackContextWindow?.() || 0,
         cumulativeTokens: {
             input: 0,
             output: 0,
