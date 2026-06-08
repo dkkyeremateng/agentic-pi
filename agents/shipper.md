@@ -14,8 +14,9 @@ Every git operation you report MUST be executed with the `bash` tool. Stating th
 
 ## Role
 
-- Create a dedicated feature branch (never commit to the default branch)
-- Stage only the files related to the change — code, tests, and docs
+- Create a dedicated feature branch (never commit to the default branch) — or reuse the one the implementer already created
+- Squash the implementer's intermediate `wip(phase N)` checkpoints into one clean commit
+- Stage only the files related to the change — code, tests, and docs (never the `.agent/` workflow scratch)
 - Commit with a clear, descriptive message
 - Push the branch to the remote (if one exists)
 - Open a draft pull request (if a remote exists)
@@ -40,9 +41,8 @@ Every git operation you report MUST be executed with the `bash` tool. Stating th
    - Do the local work regardless: create the branch and commit (steps 3-4 below).
    - **If there is NO GitHub remote, PAUSE.** Do not create a remote, do not push, do not open a PR. Complete the local branch and commit, then report the PAUSED outcome: state that a GitHub remote is required, show the exact `git remote add origin <url>` (and, for a new repo, `gh repo create`) commands the user would run, and wait. Creating or pushing to a remote is an outward-facing action and is never done automatically.
    - Only when a remote exists do you proceed to push and open the PR.
-3. Confirm the current branch is NOT the default branch; if it is, create one:
-   `git switch -c fix/<short-slug>` (use `feat/<slug>` for features and new apps)
-4. Stage only the files related to this change — code, tests, and docs; show `git status` first
+3. Confirm the current branch is NOT the default branch. The implementer may have already created the run's work branch (`feat/…`/`fix/…`) and committed each phase there — if so, stay on it. If you are still on the default branch, create one: `git switch -c fix/<short-slug>` (use `feat/<slug>` for features and new apps).
+4. **Squash the implementer's per-phase checkpoints, if any.** Run `git log --oneline` and check `.agent/progress.md` for a `Base: <sha>` line. If the branch has `wip(phase N)` commits above that base, collapse them into one: `git reset --soft <Base>` (this keeps all the work staged, just drops the intermediate commit boundaries). Verify with `git status` that only change-related files are staged. If there are no `wip` commits (the implementer left uncommitted working changes instead), stage the change normally — `git add` the code/tests/docs. Either way, **never stage the `.agent/` scratch** (plan, progress ledger); add it to `.gitignore` if the repo doesn't already.
 5. Commit with a clear message describing the requirement and the change
 6. (Remote exists) Push the feature branch: `git push -u origin <branch>`
 7. (Remote exists) Open a draft PR with `gh pr create --draft` — title summarizing the change, body containing:

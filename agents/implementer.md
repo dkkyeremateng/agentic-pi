@@ -50,15 +50,32 @@ force full table scans that fail at scale:
 - Lead with the most selective indexed columns; ensure the supporting index exists
   for the WHERE/JOIN/ORDER BY columns (add a migration if the plan calls for it).
 
+## Phase checkpoints & resume
+
+Checkpoint each green phase so a bad phase can be rolled back without losing the good ones, and track status so a re-run resumes instead of redoing finished work. Two artifacts, both under the `.agent/` workflow scratch (never shipped): a ledger at `.agent/progress.md`, and — in a git repo — one commit per green phase.
+
+**On startup**
+- If `.agent/progress.md` exists, you are **resuming**. Phases marked `[x]` are already done and green — do NOT rebuild them; re-run their targeted tests once to confirm still-green, then continue from the first `[ ]` phase. If reviewer/validator feedback implicates an earlier phase, revert to it first (see below) and redo from there.
+- Otherwise initialize the ledger: list every plan phase as `[ ] Phase N: <title>`.
+
+**Checkpoints (git repo with at least one commit)**
+- Before phase 1: make sure `.agent/` is gitignored (append `.agent/` to `.gitignore` if absent) so the scratch never lands in a commit. Then make sure you are **not on the default branch** (`main`/`master`); if you are, create the run's work branch once: `git switch -c feat/<short-slug>` (use `fix/<slug>` for bug fixes). Record `Base: <output of git rev-parse HEAD>` at the top of `.agent/progress.md` — this is both the revert floor and the squash base the shipper uses.
+- After a phase goes green, commit exactly that phase: `git add -A && git commit -m "wip(phase N): <title>"`. Then flip its ledger line to `[x] Phase N: <title> — <commit sha> — tests: <the targeted command>`.
+- **To revert a bad phase**, `git reset --hard <sha of the last good phase>` (or the `Base` sha to drop everything) — this cleanly removes that phase's edits AND any files it added — then redo from there. The `wip` commits live entirely above `Base`, so the workflow's own `/revert` still undoes the whole run in one step.
+- These `wip(phase N)` commits are intermediate scaffolding; the **shipper squashes them into one clean commit** at the end, so don't worry about their messages being polished.
+
+If the project is not a git repo, or has no commit yet (brand-new app), skip the commits but still keep the `.agent/progress.md` ledger for status and resume.
+
 ## Workflow
 
-1. Read the plan fully and confirm which files it touches
+1. Read the plan fully and confirm which files it touches. Check for `.agent/progress.md`: if it exists you are resuming — skip phases already marked done and continue from the first incomplete one (see Phase checkpoints & resume). Otherwise initialize the ledger and, in a git repo, create the work branch and record `Base`.
 2. Locate the exact insertion/modification points in the real code
 3. **Implement one phase at a time, in plan order — do not start the next phase until the current one is green.** For each phase:
    - Write the phase's test(s) first (failing), covering its acceptance criteria, edge cases, and any regression
    - Make the smallest change that turns them green, in atomic edits per file
    - Run **that phase's targeted tests** — just the files/cases this phase touches, not the whole suite — plus `lsp diagnostics --changed --errors-only`, and fix every failure before moving on (lsp is quicker than a full build and covers Python/Go/TypeScript/PHP; skip if no server is installed for the language)
    - Each phase must leave the tree green, as the plan's sequencing guarantees. If a phase genuinely only integrates with a later one and cannot stand alone, say so in your report rather than faking a green intermediate
+   - **Checkpoint the green phase** (commit `wip(phase N)` in a git repo) and mark it `[x]` in `.agent/progress.md` before starting the next phase (see Phase checkpoints & resume)
 4. After the final phase, run the **full test suite and linters once** as the end-to-end gate; fix every failure before reporting done (the validator re-runs the full suite independently)
 5. Update the docs/comments the change touches (READMEs, `docs/…`, usage examples), matching the existing style
 6. Re-read your own diff for clarity and consistency
@@ -74,7 +91,7 @@ Structure your report so the validator can verify without guesswork:
 4. **Tests Written** — the tests you added/changed and which acceptance criteria / edge cases each covers
 5. **How to Exercise It** — exact commands or entry points that trigger the new/changed behavior
 6. **Docs Updated** — READMEs/docs/comments you changed and why (or "none needed")
-7. **Tests Run** — per phase, the targeted command(s) you ran and the result, then the final full-suite run (pass/fail with output). Call out the last phase that left the tree green, so any later regression the validator finds is traceable to a phase
+7. **Tests Run** — per phase, the targeted command(s) you ran and the result, then the final full-suite run (pass/fail with output). Call out the last phase that left the tree green (mirrors `.agent/progress.md`), so any later regression the validator finds is traceable to a phase
 8. **Risks / Follow-ups** — anything you could not verify, assumptions made, or deviations from the plan and why
 
 Be specific. Reference real paths, functions, and the plan's phase numbers.

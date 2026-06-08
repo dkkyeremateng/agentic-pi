@@ -353,7 +353,7 @@ export async function runWorkflowCore(
     }
 
     const runArtifacts: RunArtifacts = {};
-    resetPlanFile(cwd);
+    resetRunScratch(cwd);
     const shared = (task: string, phaseAgent: string) => {
         if (!h.config.sharedContext) return task;
         const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
@@ -640,10 +640,18 @@ const textResult = (text: string): ToolResult => ({
 // whether the agent followed the instruction. Best-effort — never fails the run.
 // Remove a stale plan file from a previous run, so capturePlan's "the planner
 // already wrote it" check (existsSync) is reliable for THIS run.
-export function resetPlanFile(cwd: string): void {
-    try {
-        rmSync(join(cwd, ".agent", "plan.md"), { force: true });
-    } catch {}
+// Clear per-run scratch under .agent/ at the start of a workflow run so stale
+// state from a previous run can't leak in: the plan file and the implementer's
+// phase-progress ledger. Without this a leftover progress.md would make the
+// implementer wrongly "resume" a finished run. NOTE: `.agent/checkpoints/` is
+// intentionally left alone — that belongs to the /revert checkpoint system.
+export function resetRunScratch(cwd: string): void {
+    const agent = join(cwd, ".agent");
+    for (const f of ["plan.md", "progress.md"]) {
+        try {
+            rmSync(join(agent, f), { force: true });
+        } catch {}
+    }
 }
 
 export function capturePlan(

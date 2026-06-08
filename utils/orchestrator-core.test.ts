@@ -12,7 +12,7 @@ import {
     selectAgentsCore,
     resolveAgent,
     capturePlan,
-    resetPlanFile,
+    resetRunScratch,
     runWorkflowCore,
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
@@ -2168,13 +2168,25 @@ describe("capturePlan", () => {
     });
 });
 
-describe("resetPlanFile", () => {
-    it("removes a stale plan file (and is a no-op when absent)", () => {
+describe("resetRunScratch", () => {
+    it("removes stale plan and progress ledger (no-op when absent)", () => {
         const cwd = mkdtempSync(join(tmpdir(), "plan-"));
-        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        mkdirSync(join(cwd, ".agent", "checkpoints"), { recursive: true });
         writeFileSync(join(cwd, ".agent", "plan.md"), "old", "utf-8");
-        resetPlanFile(cwd);
+        writeFileSync(join(cwd, ".agent", "progress.md"), "stale", "utf-8");
+        // /revert's checkpoint store must survive a run reset.
+        writeFileSync(
+            join(cwd, ".agent", "checkpoints", "latest.json"),
+            "{}",
+            "utf-8",
+        );
+        resetRunScratch(cwd);
         assert.equal(existsSync(join(cwd, ".agent", "plan.md")), false);
-        resetPlanFile(cwd); // no throw when already gone
+        assert.equal(existsSync(join(cwd, ".agent", "progress.md")), false);
+        assert.equal(
+            existsSync(join(cwd, ".agent", "checkpoints", "latest.json")),
+            true,
+        );
+        resetRunScratch(cwd); // no throw when already gone
     });
 });

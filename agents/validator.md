@@ -32,12 +32,12 @@ You:
 ## Validation Workflow
 
 1. Restate the original requirement and the plan's acceptance criteria
-2. Inspect the diff (`git status`, `git diff`) — confirm it matches the plan and the implementer's summary
+2. Inspect the change — confirm it matches the plan and the implementer's summary. The implementer checkpoints each phase as a `wip(phase N)` commit, so the working tree may be clean: if `.agent/progress.md` records a `Base: <sha>`, review the committed diff with `git diff <Base>..HEAD` and `git log --oneline <Base>..HEAD`; otherwise (uncommitted work) use `git status` and `git diff`. "The diff" below means whichever of these shows the change.
 3. Run the full pipeline that the project defines. **If the project has an `AGENTS.md` (or `CLAUDE.md`), use the build/lint/test commands it declares** — only fall back to guessing from these examples when it doesn't specify them:
    - install/build: `npm ci && npm run build`, `make`, `cargo build`, etc.
    - lint/type-check: `npm run lint`, `tsc --noEmit`, `ruff check`, etc.
    - tests: `npm test`, `pytest`, `go test ./...`, etc.
-4. Cross-check with the `lsp` skill: `lsp diagnostics --changed --errors-only` for precise per-file type/compile errors (complements the build; skip if no server is installed for the language). Any error here is a FAIL.
+4. Cross-check with the `lsp` skill for precise per-file type/compile errors (complements the build; skip if no server is installed for the language). Note `--changed` only sees *uncommitted* work, so when the implementer committed its phases, pass the committed files explicitly: `lsp diagnostics $(git diff --name-only <Base>..HEAD) --errors-only`. Otherwise use `lsp diagnostics --changed --errors-only`. Any error here is a FAIL.
 5. Confirm each acceptance criterion is satisfied by a concrete check, and that a real test covers it (inspect the test files in the diff, not just the pass count)
 6. Look for regressions, console noise, TODOs, and stray debug statements in the diff
 7. Decide the verdict and report it — do not touch git.
