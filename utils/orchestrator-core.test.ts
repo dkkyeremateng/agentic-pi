@@ -767,6 +767,35 @@ describe("dispatchParallelCore", () => {
         assert.equal(started.length, 2);
     });
 
+    it("bounds the combined output across a large batch but keeps every agent", async () => {
+        const names = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"];
+        const agents = new Map<string, AgentDef>();
+        for (const n of names) agents.set(n, mkAgent(n));
+        const host = parallelHost(
+            async (def) => ({
+                output: `[${def.name}] ` + "x".repeat(10000),
+                exitCode: 0,
+            }),
+            agents,
+        );
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchParallelCore(
+            st,
+            host,
+            names.map((n) => ({ agent: n, task: "t" })),
+            undefined,
+            mkCtx(),
+        );
+        const text = (result.content[0] as { text: string }).text;
+        // Unbounded this would be ~8 * 10000 = 80k; the aggregate ceiling holds it
+        // well under that.
+        assert.ok(text.length < 30000, `combined output too large: ${text.length}`);
+        // Every agent is still represented — the batch shares the budget, it
+        // doesn't drop whole results.
+        for (const n of names)
+            assert.ok(text.includes(`[${n}]`), `${n} missing from output`);
+    });
+
     it("reuses select_agents phases instead of duplicating cards", async () => {
         const agents = new Map<string, AgentDef>();
         agents.set("scout", mkAgent("scout"));

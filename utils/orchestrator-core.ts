@@ -21,6 +21,7 @@ import {
     failPhase,
     validatePlan,
     parsePlanPhases,
+    clampOutput,
     contextBundleForPhase,
     buildWorkflowReport,
     scoutTask,
@@ -1184,6 +1185,16 @@ export async function dispatchParallelCore(
     });
     h.ui.updateWidget();
 
+    // Aggregate ceiling: split a fixed total budget across the batch (still capped
+    // per item at the usual 4000) so the combined result returned to the primary
+    // can't overload its context — every agent stays represented rather than
+    // dropping whole results when the batch is large.
+    const DISPATCH_PARALLEL_OUTPUT_MAX = 24000;
+    const perItemBudget = Math.min(
+        4000,
+        Math.floor(DISPATCH_PARALLEL_OUTPUT_MAX / Math.max(1, entries.length)),
+    );
+
     const results = await Promise.all(
         entries.map(async ({ def, task, phase }) => {
             const t0 = Date.now();
@@ -1198,10 +1209,7 @@ export async function dispatchParallelCore(
             phase.status = ok ? "done" : "error";
             phase.elapsed = Date.now() - t0;
             h.ui.updateWidget();
-            const truncated =
-                res.output.length > 4000
-                    ? res.output.slice(0, 4000) + "\n... [truncated]"
-                    : res.output;
+            const truncated = clampOutput(res.output, perItemBudget);
             return { name: def.name, ok, elapsed: phase.elapsed, truncated };
         }),
     );
