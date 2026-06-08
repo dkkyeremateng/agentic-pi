@@ -897,7 +897,7 @@ export function parseAgentFile(filePath: string): AgentDef | null {
             fm[key] = val;
         }
         if (!fm.name) return null;
-        return {
+        const def: AgentDef = {
             name: fm.name,
             description: fm.description || "",
             tools: fm.tools || "read,grep,find,ls",
@@ -919,6 +919,13 @@ export function parseAgentFile(filePath: string): AgentDef | null {
                       .filter(Boolean)
                 : undefined,
         };
+        // Env-level overrides of the frontmatter: PI_AGENT_<NAME>={model, contextWindow}.
+        // (model is still subject to the resolveAgentModel precedence — the more
+        // specific PI_AGENT_<NAME>_MODEL and /agent-model override outrank it.)
+        const envCfg = parseAgentEnvConfig(fm.name);
+        if (envCfg.model) def.model = envCfg.model;
+        if (envCfg.contextWindow) def.contextWindow = envCfg.contextWindow;
+        return def;
     } catch {
         return null;
     }
@@ -929,6 +936,54 @@ export function parseAgentFile(filePath: string): AgentDef | null {
 export function agentModelEnvVar(agentKey: string): string {
     const name = agentKey.toUpperCase().replace(/[-\s]+/g, "_");
     return `PI_AGENT_${name}_MODEL`;
+}
+
+// Combined per-agent config env var: PI_AGENT_<NAME>, an object that can set the
+// model AND the context window in one place, e.g.
+//   PI_AGENT_VALIDATOR={"model":"gateframe_yoda/qwen-max-3-7-yoda-2","contextWindow":1000000}
+// Strict JSON is accepted; so is the loose form with unquoted keys/values
+// ({model: ..., contextWindow: ...}). Unknown fields are ignored. Returns only the
+// recognized fields (empty object when the var is unset or unparseable). These act
+// as env-level overrides of the agent's .md frontmatter; the more-specific
+// PI_AGENT_<NAME>_MODEL and the /agent-model runtime override still win for model.
+export function parseAgentEnvConfig(
+    agentKey: string,
+    env: Record<string, string | undefined> = process.env,
+): { model?: string; contextWindow?: number } {
+    const name = agentKey.toUpperCase().replace(/[-\s]+/g, "_");
+    const raw = env[`PI_AGENT_${name}`];
+    if (!raw || !raw.trim()) return {};
+
+    let obj: Record<string, unknown> = {};
+    try {
+        obj = JSON.parse(raw);
+    } catch {
+        // Lenient parse: strip the outer braces and split key: value pairs.
+        const body = raw.trim().replace(/^\{/, "").replace(/\}$/, "");
+        for (const pair of body.split(",")) {
+            const i = pair.indexOf(":");
+            if (i < 0) continue;
+            const k = pair.slice(0, i).trim().replace(/^["']|["']$/g, "");
+            const v = pair
+                .slice(i + 1)
+                .trim()
+                .replace(/^["']|["']$/g, "");
+            if (k) obj[k] = v;
+        }
+    }
+    if (!obj || typeof obj !== "object") return {};
+
+    const out: { model?: string; contextWindow?: number } = {};
+    const model = obj.model ?? (obj as any).MODEL;
+    if (typeof model === "string" && model.trim()) out.model = model.trim();
+    const cwRaw =
+        (obj as any).contextWindow ??
+        (obj as any).context_window ??
+        (obj as any).contextwindow;
+    const cw =
+        typeof cwRaw === "number" ? cwRaw : parseInt(String(cwRaw ?? ""), 10);
+    if (Number.isFinite(cw) && cw > 0) out.contextWindow = cw;
+    return out;
 }
 
 // Runtime per-agent model overrides, set via /agent-model during a session. In

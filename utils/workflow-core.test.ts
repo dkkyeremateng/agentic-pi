@@ -25,6 +25,7 @@ import {
     sessionLabel,
     resolveAgentModel,
     agentModelEnvVar,
+    parseAgentEnvConfig,
     setModelOverride,
     clearModelOverride,
     clearAllModelOverrides,
@@ -618,6 +619,64 @@ describe("parsePlanPhases", () => {
     it("returns [] when there are no phase headings", () => {
         assert.deepEqual(parsePlanPhases("just some text\n## Context\n"), []);
         assert.deepEqual(parsePlanPhases(""), []);
+    });
+});
+
+describe("parseAgentEnvConfig", () => {
+    const env = (v?: string) =>
+        ({ PI_AGENT_VALIDATOR: v }) as Record<string, string | undefined>;
+
+    it("parses strict JSON (model + contextWindow)", () => {
+        assert.deepEqual(
+            parseAgentEnvConfig(
+                "validator",
+                env('{"model":"x/y","contextWindow":1000000}'),
+            ),
+            { model: "x/y", contextWindow: 1000000 },
+        );
+    });
+
+    it("parses the loose unquoted form", () => {
+        assert.deepEqual(
+            parseAgentEnvConfig(
+                "validator",
+                env("{model: x/y, contextWindow: 1000000}"),
+            ),
+            { model: "x/y", contextWindow: 1000000 },
+        );
+    });
+
+    it("accepts context_window snake_case", () => {
+        assert.deepEqual(
+            parseAgentEnvConfig("validator", env("{model: m, context_window: 500000}")),
+            { model: "m", contextWindow: 500000 },
+        );
+    });
+
+    it("returns only the fields present", () => {
+        assert.deepEqual(parseAgentEnvConfig("validator", env("{model: only}")), {
+            model: "only",
+        });
+        assert.deepEqual(
+            parseAgentEnvConfig("validator", env("{contextWindow: 200000}")),
+            { contextWindow: 200000 },
+        );
+    });
+
+    it("derives the var name from the agent key (hyphens/case)", () => {
+        assert.deepEqual(
+            parseAgentEnvConfig("plan-build", { PI_AGENT_PLAN_BUILD: "{model: pb}" }),
+            { model: "pb" },
+        );
+    });
+
+    it("returns {} when unset or unparseable, and ignores invalid contextWindow", () => {
+        assert.deepEqual(parseAgentEnvConfig("validator", env(undefined)), {});
+        assert.deepEqual(parseAgentEnvConfig("validator", env("not an object")), {});
+        assert.deepEqual(
+            parseAgentEnvConfig("validator", env("{model: m, contextWindow: abc}")),
+            { model: "m" },
+        );
     });
 });
 
