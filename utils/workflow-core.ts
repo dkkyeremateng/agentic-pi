@@ -1860,8 +1860,12 @@ export function refineTask(original: string, recon = ""): string {
     ].join("\n");
 }
 
-export function reviewTask(original: string, implSummary: string): string {
-    return [
+export function reviewTask(
+    original: string,
+    implSummary: string,
+    priorReview = "",
+): string {
+    const lines = [
         "Review the implementation the implementer just produced against the plan.",
         "Read the plan from `.agent/plan.md` and the changed files in the working directory.",
         "Return APPROVED, or REVISE BEFORE MERGE with specific required fixes.",
@@ -1871,7 +1875,16 @@ export function reviewTask(original: string, implSummary: string): string {
         "",
         "Implementer's change summary:",
         implSummary,
-    ].join("\n");
+    ];
+    if (priorReview.trim()) {
+        lines.push(
+            "",
+            "This is a RE-REVIEW — the implementer just addressed your previous round. Verify each finding you raised: drop the ones now fixed, re-raise (with current evidence) only what is still unfixed, and check the fix introduced no new issues. Do not re-derive the whole review from scratch.",
+            "Your previous review:",
+            clampOutput(priorReview, 3000),
+        );
+    }
+    return lines.join("\n");
 }
 
 export function reviewFixTask(

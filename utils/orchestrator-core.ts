@@ -480,6 +480,7 @@ export async function runWorkflowCore(
     // re-reviews, looping up to maxLoops.
     let review = { output: "", ok: true };
     let reviewVerdict: CritiqueVerdict = "unknown";
+    let priorReview = ""; // last round's findings — threaded into a re-review
     if (reviewerP && impl.ok) {
         for (let loop = 1; loop <= maxLoops; loop++) {
             aborted = checkAbort(s, h);
@@ -488,7 +489,7 @@ export async function runWorkflowCore(
             h.ui.updateWidget();
             review = await h.execution.runPhase(
                 reviewerP,
-                shared(reviewTask(request, impl.output), "reviewer"),
+                shared(reviewTask(request, impl.output, priorReview), "reviewer"),
                 cwd,
             );
             if (!review.ok) return fail(s, "Review", review.output);
@@ -512,6 +513,9 @@ export async function runWorkflowCore(
             );
             if (!impl.ok) return fail(s, "Implementing", impl.output);
             runArtifacts.implSummary = `[review fix] ${impl.output}`;
+            // The findings the implementer just addressed — the next review
+            // verifies they're resolved instead of re-reviewing cold.
+            priorReview = review.output;
         }
         runArtifacts.review = review.output;
     }

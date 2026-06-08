@@ -6,6 +6,7 @@ import {
     contextBundleForPhase,
     clampSummary,
     clampOutput,
+    reviewTask,
     parsePlanPhases,
     buildPhaseMap,
     failPhase,
@@ -603,6 +604,30 @@ describe("contextBundleForPhase", () => {
     it("is case-insensitive for agent names", () => {
         const bundle = contextBundleForPhase("PLANNER", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
+    });
+});
+
+describe("reviewTask re-review awareness", () => {
+    it("omits the re-review block on a first review", () => {
+        const t = reviewTask("do X", "I changed a.ts");
+        assert.doesNotMatch(t, /RE-REVIEW/);
+        assert.doesNotMatch(t, /previous review/i);
+        assert.match(t, /I changed a\.ts/);
+    });
+
+    it("includes the prior review (clamped) on a re-review", () => {
+        const prior = "VERDICT: REVISE BEFORE MERGE\nC1: null deref at a.ts:10";
+        const t = reviewTask("do X", "fixed it", prior);
+        assert.match(t, /RE-REVIEW/);
+        assert.match(t, /Your previous review:/);
+        assert.match(t, /null deref at a\.ts:10/);
+    });
+
+    it("clamps a huge prior review", () => {
+        const huge = "VERDICT: REVISE\n" + "x".repeat(40000);
+        const t = reviewTask("do X", "fixed", huge);
+        assert.ok(t.length < 8000, `re-review task too large: ${t.length}`);
+        assert.match(t, /output truncated/);
     });
 });
 
