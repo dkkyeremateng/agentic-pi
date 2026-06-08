@@ -12,6 +12,7 @@ import {
     selectAgentsCore,
     resolveAgent,
     capturePlan,
+    savePlanDraft,
     resetRunScratch,
     initProgressLedger,
     markAllPhasesDone,
@@ -2213,11 +2214,27 @@ describe("capturePlan", () => {
     });
 });
 
+describe("savePlanDraft", () => {
+    it("copies plan.md to plan.draft.md (no-op when there's no plan)", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "draft-"));
+        savePlanDraft(cwd); // no plan yet — must not throw
+        assert.equal(existsSync(join(cwd, ".agent", "plan.draft.md")), false);
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), "# Draft\n## Phase 1", "utf-8");
+        savePlanDraft(cwd);
+        assert.equal(
+            readFileSync(join(cwd, ".agent", "plan.draft.md"), "utf-8"),
+            "# Draft\n## Phase 1",
+        );
+    });
+});
+
 describe("resetRunScratch", () => {
-    it("removes stale plan and progress ledger (no-op when absent)", () => {
+    it("removes stale plan, draft, and progress ledger (no-op when absent)", () => {
         const cwd = mkdtempSync(join(tmpdir(), "plan-"));
         mkdirSync(join(cwd, ".agent", "checkpoints"), { recursive: true });
         writeFileSync(join(cwd, ".agent", "plan.md"), "old", "utf-8");
+        writeFileSync(join(cwd, ".agent", "plan.draft.md"), "olddraft", "utf-8");
         writeFileSync(join(cwd, ".agent", "progress.md"), "stale", "utf-8");
         // /revert's checkpoint store must survive a run reset.
         writeFileSync(
@@ -2227,6 +2244,7 @@ describe("resetRunScratch", () => {
         );
         resetRunScratch(cwd);
         assert.equal(existsSync(join(cwd, ".agent", "plan.md")), false);
+        assert.equal(existsSync(join(cwd, ".agent", "plan.draft.md")), false);
         assert.equal(existsSync(join(cwd, ".agent", "progress.md")), false);
         assert.equal(
             existsSync(join(cwd, ".agent", "checkpoints", "latest.json")),

@@ -44,7 +44,14 @@ import {
     secs,
     isModelFailure,
 } from "./workflow-utils";
-import { writeFileSync, mkdirSync, existsSync, rmSync, readFileSync } from "fs";
+import {
+    writeFileSync,
+    mkdirSync,
+    existsSync,
+    rmSync,
+    readFileSync,
+    copyFileSync,
+} from "fs";
 import { join, dirname } from "path";
 import { fileLink } from "./workflow-widgets";
 import { slugifyBranch } from "./checkpoint";
@@ -426,6 +433,8 @@ export async function runWorkflowCore(
     if (refinerP && planP && plan.ok) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
+        // Keep the planner's draft before the refiner overwrites .agent/plan.md.
+        savePlanDraft(cwd);
         const refine = await h.execution.runPhase(
             refinerP,
             shared(refineTask(request, scoutFindings), "refiner"),
@@ -699,7 +708,7 @@ const textResult = (text: string): ToolResult => ({
 // intentionally left alone — that belongs to the /revert checkpoint system.
 export function resetRunScratch(cwd: string): void {
     const agent = join(cwd, ".agent");
-    for (const f of ["plan.md", "progress.md"]) {
+    for (const f of ["plan.md", "plan.draft.md", "progress.md"]) {
         try {
             rmSync(join(agent, f), { force: true });
         } catch {}
@@ -829,6 +838,18 @@ export function readPlan(cwd: string): string {
     } catch {
         return "";
     }
+}
+
+// Preserve the planner's draft before the refiner overwrites .agent/plan.md with
+// the hardened version, so the pre-refinement plan stays inspectable (and diffable
+// against the refined one). Best-effort; no-op when there's no plan yet.
+export function savePlanDraft(cwd: string): void {
+    try {
+        const src = join(cwd, ".agent", "plan.md");
+        if (existsSync(src)) {
+            copyFileSync(src, join(cwd, ".agent", "plan.draft.md"));
+        }
+    } catch {}
 }
 
 export function capturePlan(
