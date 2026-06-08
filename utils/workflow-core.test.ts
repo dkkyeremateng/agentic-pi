@@ -7,6 +7,7 @@ import {
     clampSummary,
     clampOutput,
     reviewTask,
+    projectSessionHash,
     parsePlanPhases,
     buildPhaseMap,
     failPhase,
@@ -628,6 +629,29 @@ describe("reviewTask re-review awareness", () => {
         const t = reviewTask("do X", "fixed", huge);
         assert.ok(t.length < 8000, `re-review task too large: ${t.length}`);
         assert.match(t, /output truncated/);
+    });
+});
+
+describe("projectSessionHash", () => {
+    it("gives distinct keys to cwds that share a long prefix (the bug)", () => {
+        const a = projectSessionHash(
+            "/Users/teckdroids/Documents/Dev/slf/ai/projects/todo",
+        );
+        const b = projectSessionHash(
+            "/Users/teckdroids/Documents/Dev/slf/ai/projects/todo_app_spec",
+        );
+        assert.notEqual(a, b);
+    });
+
+    it("is stable for the same cwd", () => {
+        const p = "/Users/x/projects/todo";
+        assert.equal(projectSessionHash(p), projectSessionHash(p));
+    });
+
+    it("stays bounded and filesystem-safe even for very deep paths", () => {
+        const h = projectSessionHash("/" + "segment/".repeat(200) + "deep");
+        assert.ok(h.length <= 49, `too long: ${h.length}`);
+        assert.match(h, /^[A-Za-z0-9-]+$/);
     });
 });
 

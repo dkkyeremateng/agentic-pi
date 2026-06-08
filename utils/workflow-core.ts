@@ -11,6 +11,7 @@
 
 import { spawn } from "child_process";
 import { homedir } from "os";
+import { createHash } from "crypto";
 import {
     readFileSync,
     existsSync,
@@ -2578,6 +2579,18 @@ export function computeSpawnResult(
     };
 }
 
+// A collision-free, bounded key for a working directory, used to scope session
+// files per project. A plain sanitized-and-truncated path is NOT safe: two
+// different cwds that share the first N chars (e.g. .../projects/todo and
+// .../projects/todo_app_spec) collapse to the same key, so one project loads the
+// other's session and pi rejects the cwd mismatch. Append a short hash of the FULL
+// path so distinct cwds always get distinct keys, while keeping a readable prefix.
+export function projectSessionHash(cwd: string): string {
+    const safe = cwd.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
+    const hash = createHash("sha1").update(cwd).digest("hex").slice(0, 8);
+    return `${safe.slice(0, 40)}-${hash}`;
+}
+
 // Fallback version of spawnAgentWithModel that uses the main session directory
 // without creating project-specific subdirectories. Used when subdirectory
 // creation fails (e.g., permission issues).
@@ -2593,10 +2606,7 @@ function spawnAgentWithModelFallback(
     const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
 
     // Use the main session directory with project hash in filename
-    const projectHash = cwd
-        .replace(/[^a-zA-Z0-9]/g, "-")
-        .replace(/-+/g, "-")
-        .substring(0, 50);
+    const projectHash = projectSessionHash(cwd);
 
     // Each agent runs in its own per-agent session file (parallel-safe).
     const sessionFile = join(
@@ -2772,10 +2782,7 @@ export function spawnAgentWithModel(
     const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
 
     // Create project-specific subdirectory for better session organization
-    const projectHash = cwd
-        .replace(/[^a-zA-Z0-9]/g, "-")
-        .replace(/-+/g, "-")
-        .substring(0, 50); // Limit length
+    const projectHash = projectSessionHash(cwd);
     const projectSessionDir = join(config.sessionDir, projectHash);
 
     // Ensure the project session directory exists
