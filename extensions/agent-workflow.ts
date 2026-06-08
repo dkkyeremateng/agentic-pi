@@ -302,13 +302,21 @@ export default function (pi: ExtensionAPI) {
         theme: any,
         showContext = true,
     ): string[] {
+        const def = st.agents.get(agentKey.toLowerCase());
+        const model = modelFor(agentKey);
+        // The bar's denominator (shown even when idle, before the agent runs):
+        // the agent's configured window (env/frontmatter), else pi's model registry
+        // (models.json) — so the card shows e.g. /1.0M without a run or .env.
+        const contextWindow =
+            def?.contextWindow ||
+            contextWindowForModel(modelRegistry?.getAll?.(), model);
         return renderRichCard({
             agentKey,
-            def: st.agents.get(agentKey.toLowerCase()),
+            def: def ? { ...def, contextWindow } : def,
             phases: st.phases,
             colWidth,
             theme,
-            model: modelFor(agentKey),
+            model,
             showContext,
         });
     }
