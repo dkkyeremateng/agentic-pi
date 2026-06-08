@@ -46,9 +46,12 @@ To trace code precisely instead of grepping, use the **`lsp`** skill (read-only 
 queries a language server and changes nothing). It covers Python, Go, TypeScript/JS,
 and PHP; positions are 1-based:
 
-- `lsp definition <file> <line> <col>` — where the symbol under the cursor is defined.
+- `lsp definition <file> <line> <col>` — where the symbol under the cursor is defined
+  (you may use `--symbol NAME` instead of the column). Results include source context.
+- `lsp type-definition` / `lsp implementation <file> <line> <col>` — the symbol's type, or its concrete implementations.
 - `lsp references <file> <line> <col>` — every reference to it (map the call sites).
 - `lsp hover <file> <line> <col>` — its type/signature/docs.
+- `lsp symbols <file>` — the symbols defined in a file; `lsp symbols <file> --query NAME` searches the whole workspace.
 
 Prefer this over guessing call sites with `grep` when a language server is available
 for the file; fall back to `grep`/`find` when it isn't.

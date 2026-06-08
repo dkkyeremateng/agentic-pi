@@ -39,13 +39,30 @@ Override a language's server with `LSP_SERVER_<EXT>="cmd args"` (e.g.
 ## Quick Reference
 
 ```bash
+# Diagnostics
 lsp diagnostics src/app.ts                 # errors/warnings for one file
 lsp diagnostics --changed                  # everything changed vs HEAD (+ untracked)
 lsp diagnostics --changed --errors-only    # drop warnings/hints
 lsp diagnostics --changed --fail-on-error  # exit 1 if any error (gate a step)
-lsp definition src/app.ts 42 17            # where the symbol at line 42, col 17 is defined
-lsp references src/app.ts 42 17            # all references to it
-lsp hover src/app.ts 42 17                 # type/signature/docs at that position
+
+# Navigation — give a column, OR --symbol NAME (NAME#N = Nth on the line).
+# definition / type-definition / implementation / references include source context.
+lsp definition src/app.ts 42 17
+lsp definition src/app.ts 42 --symbol foo  # resolve the column from the symbol name
+lsp type-definition src/app.ts 42 17
+lsp implementation src/app.ts 42 17
+lsp references src/app.ts 42 17
+lsp hover src/app.ts 42 17
+
+# Symbols
+lsp symbols src/app.ts                      # symbols defined in the file
+lsp symbols src/app.ts --query Foo          # workspace symbol search (file picks the server)
+
+# Edits — LSP-accurate; prefer over sed/manual for cross-file changes
+lsp rename src/app.ts 42 --symbol foo --new-name bar            # rename everywhere (applies)
+lsp rename src/app.ts 42 --symbol foo --new-name bar --preview  # show edits, don't write
+lsp code-actions src/app.ts 42 17                               # list quick-fixes/refactors
+lsp code-actions src/app.ts 42 17 --apply "Add import"          # apply one (title or index)
 ```
 
 ## Notes
@@ -55,8 +72,15 @@ lsp hover src/app.ts 42 17                 # type/signature/docs at that positio
   indexes); bump `--timeout` (default 15s) for large repos or PHP/Go cold starts.
 - **`--changed`** uses `git diff --name-only HEAD` plus untracked files, limited to
   supported extensions. With no files and no `--changed`, it defaults to `--changed`.
-- **Navigation** needs the cursor on a real symbol; line/col are 1-based. `definition`
-  and `references` return `{file, line, col}`; `hover` returns the server's text.
+- **Project root** is auto-detected from markers (`go.mod`, `tsconfig.json`,
+  `composer.json`, `pyproject.toml`, `.git`, …) — so diagnostics are correct even when
+  you point at a file deep in a monorepo.
+- **Positions** are 1-based; for position commands give a column or `--symbol NAME`
+  (`NAME#N` selects the Nth occurrence on the line). `definition`/`references` results
+  include a few lines of source context.
+- **`rename`** applies edits across all affected files by default (use `--preview` to
+  inspect first); **`code-actions`** lists by default (use `--apply`). Prefer these over
+  text-based renames — they handle shadowing, re-exports, and cross-file usages.
 - **Output** is JSON — reshape with `jq`, e.g.
   `lsp diagnostics --changed | jq -r '.files[].diagnostics[] | "\(.severity) \(.line):\(.col) \(.message)"'`.
 - **Graceful** — a missing server or unsupported extension is reported per file, never a crash.

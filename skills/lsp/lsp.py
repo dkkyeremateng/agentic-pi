@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
-"""lsp.py — minimal Language Server Protocol client (stdlib only).
+"""lsp.py — Language Server Protocol client (stdlib only).
 
-Talks to a language server over stdio (JSON-RPC) to get DIAGNOSTICS (type/compile
-errors) and code NAVIGATION (definition / references / hover) for the project in the
-current working directory. Used by the workflow agents via the `lsp` skill.
+Talks to a language server over stdio (JSON-RPC) for code intelligence: DIAGNOSTICS
+(type/compile errors), NAVIGATION (definition, type_definition, implementation,
+references, hover), SYMBOLS (document + workspace), and EDITS (rename, code_actions).
+Used by the workflow agents via the `lsp` skill.
 
-Servers are auto-detected from the file extension. Install the server yourself; the
-client degrades gracefully (a clear "not installed" note) when one is missing:
+Servers are auto-detected from the file extension and the project root is found from
+root markers (go.mod, tsconfig.json, composer.json, pyproject.toml, …). Install the
+server yourself; the client degrades gracefully when one is missing.
 
-  TypeScript/JS  typescript-language-server --stdio   (.ts .tsx .js .jsx .mts .cts)
+  TypeScript/JS  typescript-language-server --stdio   (.ts .tsx .js .jsx .mjs .cjs .mts .cts)
   Python         pyright-langserver --stdio, or pylsp (.py)
-  Go             gopls                                 (.go)
-  PHP            intelephense --stdio, or phpactor     (.php)
+  Go             gopls serve                          (.go)
+  PHP            intelephense --stdio, or phpactor    (.php)
 
 Override per-extension with env LSP_SERVER_<EXT>="cmd args" (e.g. LSP_SERVER_PY).
-Force one server for every file (used by tests) with LSP_SERVER_CMD="cmd args".
+Force one server for every file (tests) with LSP_SERVER_CMD="cmd args".
 
-CLI positions are 1-based (line and column), matching file:line citations. Output is
-JSON on stdout; pipe to jq. Exit codes: 0 ok; 1 with --fail-on-error when an
-error-severity diagnostic is found; 2 on a usage/internal error.
+CLI positions are 1-based (line and column). For position-based commands you may give
+the column, or `--symbol NAME` (resolve the column from the symbol on that line; use
+NAME#N for the Nth occurrence). Output is JSON on stdout; pipe to jq.
 """
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import queue
@@ -36,25 +39,54 @@ from urllib.parse import urlparse
 from urllib.request import pathname2url, url2pathname
 
 # ── Server registry ─────────────────────────────────────────────────────────────
-# ext -> ordered candidate commands; the first whose binary is on PATH is used.
-SERVERS: dict[str, list[str]] = {
-    "ts": ["typescript-language-server --stdio"],
-    "tsx": ["typescript-language-server --stdio"],
-    "js": ["typescript-language-server --stdio"],
-    "jsx": ["typescript-language-server --stdio"],
-    "mts": ["typescript-language-server --stdio"],
-    "cts": ["typescript-language-server --stdio"],
-    "py": ["pyright-langserver --stdio", "pylsp"],
-    "go": ["gopls"],
-    "php": ["intelephense --stdio", "phpactor language-server"],
+# Each spec: cmd, rootMarkers (project-root detection), initOptions, settings (sent
+# back for workspace/configuration and via didChangeConfiguration).
+_TS = {
+    "cmd": "typescript-language-server --stdio",
+    "rootMarkers": ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
+    "initOptions": {
+        "hostInfo": "pi-lsp",
+        "preferences": {"includeInlayParameterNameHints": "all"},
+    },
+}
+_PYRIGHT = {
+    "cmd": "pyright-langserver --stdio",
+    "rootMarkers": ["pyproject.toml", "setup.cfg", "setup.py", "requirements.txt", "Pipfile", ".git"],
+}
+_PYLSP = {
+    "cmd": "pylsp",
+    "rootMarkers": ["pyproject.toml", "setup.cfg", "setup.py", "requirements.txt", "Pipfile", ".git"],
+}
+_GOPLS = {
+    "cmd": "gopls serve",
+    "rootMarkers": ["go.mod", "go.work", "go.sum", ".git"],
+    "settings": {"gopls": {"staticcheck": True, "analyses": {"unusedparams": True, "shadow": True}, "gofumpt": True}},
+}
+_INTELEPHENSE = {"cmd": "intelephense --stdio", "rootMarkers": ["composer.json", ".git"]}
+_PHPACTOR = {"cmd": "phpactor language-server", "rootMarkers": ["composer.json", ".git"]}
+
+_TS_EXTS = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]
+EXT_SERVERS: dict[str, list[dict]] = {
+    **{e: [_TS] for e in _TS_EXTS},
+    "py": [_PYRIGHT, _PYLSP],
+    "go": [_GOPLS],
+    "php": [_INTELEPHENSE, _PHPACTOR],
 }
 LANGUAGE_ID = {
     "ts": "typescript", "mts": "typescript", "cts": "typescript",
-    "tsx": "typescriptreact", "js": "javascript", "jsx": "javascriptreact",
+    "tsx": "typescriptreact", "js": "javascript", "mjs": "javascript",
+    "cjs": "javascript", "jsx": "javascriptreact",
     "py": "python", "go": "go", "php": "php",
 }
 SEVERITY = {1: "error", 2: "warning", 3: "info", 4: "hint"}
-_TIMEOUT = object()  # sentinel: no message before the deadline
+SYMBOL_KIND = {
+    1: "file", 2: "module", 3: "namespace", 4: "package", 5: "class", 6: "method",
+    7: "property", 8: "field", 9: "constructor", 10: "enum", 11: "interface",
+    12: "function", 13: "variable", 14: "constant", 15: "string", 16: "number",
+    17: "boolean", 18: "array", 19: "object", 20: "key", 21: "null",
+    22: "enum-member", 23: "struct", 24: "event", 25: "operator", 26: "type-parameter",
+}
+_TIMEOUT = object()
 
 
 def die(msg: str) -> "NoReturn":  # type: ignore[name-defined]
@@ -66,18 +98,43 @@ def ext_of(path: str) -> str:
     return os.path.splitext(path)[1].lstrip(".").lower()
 
 
-def resolve_server(path: str) -> str | None:
-    """The server command to use for `path`, or None when none is installed."""
+def resolve_spec(path: str) -> dict | None:
+    """The server spec (dict with cmd/rootMarkers/initOptions/settings) for `path`."""
     forced = os.environ.get("LSP_SERVER_CMD")
     if forced:
-        return forced
+        return {"cmd": forced, "rootMarkers": [], "initOptions": {}, "settings": {}}
     ext = ext_of(path)
     override = os.environ.get(f"LSP_SERVER_{ext.upper()}")
-    candidates = [override] if override else SERVERS.get(ext, [])
-    for cmd in candidates:
-        if cmd and shutil.which(shlex.split(cmd)[0]):
-            return cmd
+    if override:
+        if not shutil.which(shlex.split(override)[0]):
+            return None  # bogus override -> degrade gracefully, don't crash
+        base = (EXT_SERVERS.get(ext) or [{}])[0]
+        return {**base, "cmd": override}
+    for spec in EXT_SERVERS.get(ext, []):
+        if shutil.which(shlex.split(spec["cmd"])[0]):
+            return spec
     return None
+
+
+def find_root(path: str, markers: list[str]) -> str:
+    """Nearest ancestor dir of `path` containing a root marker; cwd as fallback."""
+    cur = os.path.dirname(os.path.abspath(path))
+    markers = list(markers) + [".git"]
+    while True:
+        try:
+            entries = os.listdir(cur)
+        except OSError:
+            entries = []
+        for m in markers:
+            if ("*" in m or "?" in m):
+                if any(fnmatch.fnmatch(n, m) for n in entries):
+                    return cur
+            elif os.path.exists(os.path.join(cur, m)):
+                return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return os.getcwd()
+        cur = parent
 
 
 def path_to_uri(path: str) -> str:
@@ -86,29 +143,97 @@ def path_to_uri(path: str) -> str:
 
 def uri_to_path(uri: str) -> str:
     try:
-        abs_path = url2pathname(urlparse(uri).path)
-        return os.path.relpath(abs_path, os.getcwd())
+        return os.path.relpath(url2pathname(urlparse(uri).path), os.getcwd())
     except Exception:
         return uri
 
 
-def changed_files() -> list[str]:
-    """Files changed vs HEAD plus untracked, limited to supported extensions."""
-    def git(args: list[str]) -> list[str]:
-        try:
-            r = subprocess.run(
-                ["git", *args], capture_output=True, text=True, check=False
-            )
-            return r.stdout.split() if r.returncode == 0 else []
-        except Exception:
-            return []
+def read_lines(path: str) -> list[str]:
+    try:
+        return open(path, "r", encoding="utf-8", errors="replace").read().splitlines()
+    except OSError:
+        return []
 
-    files = git(["diff", "--name-only", "HEAD"]) + git(
-        ["ls-files", "--others", "--exclude-standard"]
-    )
-    return sorted(
-        {f for f in files if ext_of(f) in SERVERS and os.path.isfile(f)}
-    )
+
+def snippet(path: str, line1: int, ctx: int = 1) -> str:
+    lines = read_lines(path)
+    if not lines:
+        return ""
+    i = line1 - 1
+    lo, hi = max(0, i - ctx), min(len(lines), i + ctx + 1)
+    return "\n".join(f"{n + 1}: {lines[n]}" for n in range(lo, hi))
+
+
+def resolve_position(path: str, line1: int, col: int | None, symbol: str | None):
+    """(line, character) 0-based, from an explicit column or a --symbol on the line."""
+    if symbol:
+        name, occ = symbol, 1
+        if "#" in symbol:
+            name, _, n = symbol.rpartition("#")
+            occ = int(n) if n.isdigit() else 1
+        lines = read_lines(path)
+        if line1 - 1 >= len(lines):
+            die(f"line {line1} is past end of {path}")
+        text = lines[line1 - 1]
+        idx = -1
+        for _ in range(occ):
+            idx = text.find(name, idx + 1)
+            if idx < 0:
+                die(f"symbol {symbol!r} not found on {path}:{line1}")
+        return line1 - 1, idx
+    if col is None:
+        die("provide a column, or --symbol")
+    return line1 - 1, col - 1
+
+
+# ── WorkspaceEdit application ────────────────────────────────────────────────────
+def _pos_to_offset(text: str, line: int, char: int) -> int:
+    idx = 0
+    for _ in range(line):
+        nl = text.find("\n", idx)
+        if nl < 0:
+            return len(text)
+        idx = nl + 1
+    return min(len(text), idx + char)
+
+
+def apply_text_edits(text: str, edits: list[dict]) -> str:
+    spans = []
+    for e in edits:
+        s = _pos_to_offset(text, e["range"]["start"]["line"], e["range"]["start"]["character"])
+        en = _pos_to_offset(text, e["range"]["end"]["line"], e["range"]["end"]["character"])
+        spans.append((s, en, e.get("newText", "")))
+    for s, en, nt in sorted(spans, key=lambda x: x[0], reverse=True):
+        text = text[:s] + nt + text[en:]
+    return text
+
+
+def workspace_edit_docs(we: dict) -> list[tuple[str, list]]:
+    """[(uri, edits)] from a WorkspaceEdit (changes or documentChanges)."""
+    if we.get("documentChanges"):
+        return [
+            (dc["textDocument"]["uri"], dc["edits"])
+            for dc in we["documentChanges"]
+            if "textDocument" in dc and "edits" in dc
+        ]
+    return list((we.get("changes") or {}).items())
+
+
+def summarize_edit(we: dict) -> dict:
+    return {uri_to_path(uri): len(edits) for uri, edits in workspace_edit_docs(we)}
+
+
+def apply_workspace_edit(we: dict) -> dict:
+    changed = {}
+    for uri, edits in workspace_edit_docs(we):
+        p = uri_to_path(uri)
+        try:
+            text = open(p, "r", encoding="utf-8").read()
+        except OSError:
+            continue
+        open(p, "w", encoding="utf-8").write(apply_text_edits(text, edits))
+        changed[p] = len(edits)
+    return changed
 
 
 CAPABILITIES = {
@@ -116,33 +241,40 @@ CAPABILITIES = {
         "synchronization": {"didSave": True, "dynamicRegistration": False},
         "publishDiagnostics": {"relatedInformation": True},
         "definition": {"linkSupport": True},
+        "typeDefinition": {"linkSupport": True},
+        "implementation": {"linkSupport": True},
         "references": {},
         "hover": {"contentFormat": ["markdown", "plaintext"]},
+        "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
+        "rename": {"prepareSupport": False},
+        "codeAction": {},
     },
-    "workspace": {"workspaceFolders": True, "configuration": True},
+    "workspace": {
+        "workspaceFolders": True,
+        "configuration": True,
+        "symbol": {},
+        "applyEdit": True,
+    },
     "window": {"workDoneProgress": True},
 }
 
 
 class LSP:
-    """A one-shot client: start a server, query it, shut it down."""
+    """One-shot client: start a server, query it, shut it down."""
 
     def __init__(self, cmd: str):
         self.proc = subprocess.Popen(
             shlex.split(cmd),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             bufsize=0,
         )
         self._id = 0
         self._responses: dict[int, dict] = {}
         self.diagnostics: dict[str, list] = {}
+        self.settings: dict = {}
         self._q: "queue.Queue" = queue.Queue()
-        self._reader = threading.Thread(target=self._read_loop, daemon=True)
-        self._reader.start()
+        threading.Thread(target=self._read_loop, daemon=True).start()
 
-    # ── transport ──
     def _read_loop(self) -> None:
         f = self.proc.stdout
         assert f is not None
@@ -150,7 +282,7 @@ class LSP:
             headers: dict[bytes, bytes] = {}
             line = f.readline()
             if not line:
-                self._q.put(None)  # server closed
+                self._q.put(None)
                 return
             while line not in (b"\r\n", b"\n"):
                 if not line:
@@ -179,11 +311,11 @@ class LSP:
         method = msg.get("method", "")
         if method == "workspace/configuration":
             items = msg.get("params", {}).get("items", [])
-            result = [{} for _ in items]  # empty settings -> server defaults
+            result = [self.settings.get(it.get("section", ""), {}) for it in items]
         elif method == "workspace/applyEdit":
             result = {"applied": False}
         else:
-            result = None  # registerCapability, *_refresh, progress/create, …
+            result = None
         self._send({"jsonrpc": "2.0", "id": msg["id"], "result": result})
 
     def _dispatch(self, msg) -> str | None:
@@ -221,26 +353,24 @@ class LSP:
                 return r.get("result"), r.get("error")
         return None, {"message": f"timeout after {timeout}s waiting for {method}"}
 
-    # ── lifecycle ──
-    def initialize(self, timeout: float = 20.0):
-        root = os.getcwd()
-        result, err = self.request(
-            "initialize",
-            {
-                "processId": os.getpid(),
-                "clientInfo": {"name": "pi-lsp", "version": "1"},
-                "rootUri": path_to_uri(root),
-                "rootPath": root,
-                "workspaceFolders": [
-                    {"uri": path_to_uri(root), "name": os.path.basename(root) or "root"}
-                ],
-                "capabilities": CAPABILITIES,
-            },
-            timeout,
-        )
+    def initialize(self, root_path: str, init_options=None, settings=None, timeout: float = 20.0):
+        self.settings = settings or {}
+        params = {
+            "processId": os.getpid(),
+            "clientInfo": {"name": "pi-lsp", "version": "1"},
+            "rootUri": path_to_uri(root_path),
+            "rootPath": root_path,
+            "workspaceFolders": [{"uri": path_to_uri(root_path), "name": os.path.basename(root_path) or "root"}],
+            "capabilities": CAPABILITIES,
+        }
+        if init_options:
+            params["initializationOptions"] = init_options
+        result, err = self.request("initialize", params, timeout)
         if err:
             return err
         self.notify("initialized", {})
+        if self.settings:
+            self.notify("workspace/didChangeConfiguration", {"settings": self.settings})
         return None
 
     def did_open(self, path: str) -> bool:
@@ -248,30 +378,18 @@ class LSP:
             text = open(path, "r", encoding="utf-8", errors="replace").read()
         except OSError:
             return False
-        self.notify(
-            "textDocument/didOpen",
-            {
-                "textDocument": {
-                    "uri": path_to_uri(path),
-                    "languageId": LANGUAGE_ID.get(ext_of(path), ext_of(path)),
-                    "version": 1,
-                    "text": text,
-                }
-            },
-        )
+        self.notify("textDocument/didOpen", {"textDocument": {
+            "uri": path_to_uri(path),
+            "languageId": LANGUAGE_ID.get(ext_of(path), ext_of(path)),
+            "version": 1, "text": text,
+        }})
         return True
 
     def collect_diagnostics(self, paths: list[str], timeout: float) -> None:
-        uris = []
-        for p in paths:
-            if self.did_open(p):
-                uris.append(path_to_uri(p))
+        uris = [path_to_uri(p) for p in paths if self.did_open(p)]
         deadline = time.time() + timeout
-        settle = 0.6
-        last = 0.0
+        settle, last = 0.6, 0.0
         while time.time() < deadline:
-            # Stop once every opened file has reported and things have gone quiet
-            # (linters publish an empty set first, then the real one a beat later).
             if uris and all(u in self.diagnostics for u in uris):
                 if last and time.time() - last > settle:
                     break
@@ -282,7 +400,7 @@ class LSP:
                 continue
             if self._dispatch(msg) == "closed":
                 break
-            if msg and msg.get("method") == "textDocument/publishDiagnostics":
+            if isinstance(msg, dict) and msg.get("method") == "textDocument/publishDiagnostics":
                 last = time.time()
 
     def shutdown(self) -> None:
@@ -307,37 +425,50 @@ def fmt_diagnostic(d: dict) -> dict:
     s, e = rng.get("start", {}), rng.get("end", {})
     return {
         "severity": SEVERITY.get(d.get("severity", 1), "error"),
-        "line": s.get("line", 0) + 1,
-        "col": s.get("character", 0) + 1,
-        "endLine": e.get("line", 0) + 1,
-        "endCol": e.get("character", 0) + 1,
-        "code": d.get("code"),
-        "source": d.get("source"),
+        "line": s.get("line", 0) + 1, "col": s.get("character", 0) + 1,
+        "endLine": e.get("line", 0) + 1, "endCol": e.get("character", 0) + 1,
+        "code": d.get("code"), "source": d.get("source"),
         "message": d.get("message", "").strip(),
     }
 
 
-def norm_locations(result) -> list[dict]:
+def norm_locations(result, with_context: bool = True) -> list[dict]:
     if not result:
         return []
     items = result if isinstance(result, list) else [result]
     out = []
     for it in items:
         uri = it.get("uri") or it.get("targetUri")
-        rng = (
-            it.get("range")
-            or it.get("targetSelectionRange")
-            or it.get("targetRange")
-            or {}
-        )
+        rng = it.get("range") or it.get("targetSelectionRange") or it.get("targetRange") or {}
         s = rng.get("start", {})
-        out.append(
-            {
-                "file": uri_to_path(uri) if uri else None,
-                "line": s.get("line", 0) + 1,
-                "col": s.get("character", 0) + 1,
-            }
-        )
+        file = uri_to_path(uri) if uri else None
+        line = s.get("line", 0) + 1
+        loc = {"file": file, "line": line, "col": s.get("character", 0) + 1}
+        if with_context and file:
+            ctx = snippet(file, line)
+            if ctx:
+                loc["context"] = ctx
+        out.append(loc)
+    return out
+
+
+def flatten_symbols(syms, container: str = "") -> list[dict]:
+    out = []
+    for s in syms or []:
+        kind = SYMBOL_KIND.get(s.get("kind"), str(s.get("kind")))
+        if "location" in s:  # SymbolInformation (workspace/symbol)
+            loc = s["location"]
+            st = loc.get("range", {}).get("start", {})
+            out.append({"name": s.get("name"), "kind": kind, "file": uri_to_path(loc.get("uri", "")),
+                        "line": st.get("line", 0) + 1, "col": st.get("character", 0) + 1,
+                        "container": s.get("containerName") or container or None})
+        else:  # DocumentSymbol
+            st = (s.get("selectionRange") or s.get("range") or {}).get("start", {})
+            out.append({"name": s.get("name"), "kind": kind,
+                        "line": st.get("line", 0) + 1, "col": st.get("character", 0) + 1,
+                        "container": container or None})
+            if s.get("children"):
+                out += flatten_symbols(s["children"], (container + "." if container else "") + s.get("name", ""))
     return out
 
 
@@ -348,11 +479,19 @@ def hover_text(result) -> str:
     if isinstance(contents, dict):
         return (contents.get("value") or "").strip()
     if isinstance(contents, list):
-        parts = [
-            (c.get("value") if isinstance(c, dict) else str(c)) for c in contents
-        ]
-        return "\n".join(p for p in parts if p).strip()
+        return "\n".join((c.get("value") if isinstance(c, dict) else str(c)) for c in contents if c).strip()
     return str(contents).strip()
+
+
+def changed_files() -> list[str]:
+    def git(args):
+        try:
+            r = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+            return r.stdout.split() if r.returncode == 0 else []
+        except Exception:
+            return []
+    files = git(["diff", "--name-only", "HEAD"]) + git(["ls-files", "--others", "--exclude-standard"])
+    return sorted({f for f in files if ext_of(f) in EXT_SERVERS and os.path.isfile(f)})
 
 
 def out(data) -> None:
@@ -369,38 +508,32 @@ def cmd_diagnostics(a) -> None:
         out({"files": [], "note": "no files (pass paths or use --changed)"})
         return
 
-    # Group files by their resolved server command.
-    groups: dict[str, list[str]] = {}
-    missing: list[dict] = []
+    groups: dict[tuple, dict] = {}
+    results: list[dict] = []
     for f in files:
         if not os.path.isfile(f):
-            missing.append({"file": f, "error": "file not found"})
+            results.append({"file": f, "error": "file not found"})
             continue
-        cmd = resolve_server(f)
-        if not cmd:
+        spec = resolve_spec(f)
+        if not spec:
             ext = ext_of(f)
-            missing.append(
-                {
-                    "file": f,
-                    "error": f"no language server installed for .{ext} "
-                    f"(candidates: {', '.join(SERVERS.get(ext, [])) or 'none'})",
-                }
-            )
+            cands = ", ".join(s["cmd"] for s in EXT_SERVERS.get(ext, [])) or "none"
+            results.append({"file": f, "error": f"no language server installed for .{ext} (candidates: {cands})"})
             continue
-        groups.setdefault(cmd, []).append(f)
+        root = find_root(f, spec.get("rootMarkers", []))
+        groups.setdefault((spec["cmd"], root), {"spec": spec, "root": root, "files": []})["files"].append(f)
 
-    results: list[dict] = list(missing)
     any_error = False
-    for cmd, paths in groups.items():
+    for (cmd, root), g in groups.items():
         client = LSP(cmd)
         try:
-            err = client.initialize()
+            err = client.initialize(root, g["spec"].get("initOptions"), g["spec"].get("settings"))
             if err:
-                for p in paths:
+                for p in g["files"]:
                     results.append({"file": p, "error": f"server init failed: {err.get('message')}"})
                 continue
-            client.collect_diagnostics(paths, a.timeout)
-            for p in paths:
+            client.collect_diagnostics(g["files"], a.timeout)
+            for p in g["files"]:
                 diags = [fmt_diagnostic(d) for d in client.diagnostics.get(path_to_uri(p), [])]
                 if a.errors_only:
                     diags = [d for d in diags if d["severity"] == "error"]
@@ -416,73 +549,184 @@ def cmd_diagnostics(a) -> None:
         sys.exit(1)
 
 
-def _nav(a, method: str, extra_params=None):
-    if not os.path.isfile(a.file):
-        die(f"file not found: {a.file}")
-    cmd = resolve_server(a.file)
-    if not cmd:
-        die(f"no language server installed for .{ext_of(a.file)}")
-    client = LSP(cmd)
+def _on_file(path: str):
+    """Start + initialize a client for `path`, opened. Returns (client, uri)."""
+    if not os.path.isfile(path):
+        die(f"file not found: {path}")
+    spec = resolve_spec(path)
+    if not spec:
+        die(f"no language server installed for .{ext_of(path)}")
+    root = find_root(path, spec.get("rootMarkers", []))
+    client = LSP(spec["cmd"])
+    err = client.initialize(root, spec.get("initOptions"), spec.get("settings"))
+    if err:
+        client.shutdown()
+        die(f"server init failed: {err.get('message')}")
+    client.did_open(path)
+    time.sleep(0.3)  # let the server index the freshly opened doc
+    return client, path_to_uri(path)
+
+
+def _position_request(a, method: str, extra=None):
+    client, uri = _on_file(a.file)
     try:
-        err = client.initialize()
+        line0, char0 = resolve_position(a.file, a.line, a.col, a.symbol)
+        params = {"textDocument": {"uri": uri}, "position": {"line": line0, "character": char0}}
+        if extra:
+            params.update(extra)
+        result, err = client.request(method, params, a.timeout)
         if err:
-            die(f"server init failed: {err.get('message')}")
-        client.did_open(a.file)
-        # Give the server a moment to index the freshly opened doc.
-        time.sleep(0.3)
-        params = {
-            "textDocument": {"uri": path_to_uri(a.file)},
-            "position": {"line": a.line - 1, "character": a.col - 1},
-        }
-        if extra_params:
-            params.update(extra_params)
-        result, rerr = client.request(method, params, a.timeout)
-        if rerr:
-            die(f"{method} failed: {rerr.get('message')}")
+            die(f"{method} failed: {err.get('message')}")
         return result
     finally:
         client.shutdown()
 
 
-def cmd_definition(a) -> None:
-    out({"definitions": norm_locations(_nav(a, "textDocument/definition"))})
+def cmd_definition(a):
+    out({"definitions": norm_locations(_position_request(a, "textDocument/definition"))})
 
 
-def cmd_references(a) -> None:
-    res = _nav(a, "textDocument/references", {"context": {"includeDeclaration": True}})
+def cmd_type_definition(a):
+    out({"typeDefinitions": norm_locations(_position_request(a, "textDocument/typeDefinition"))})
+
+
+def cmd_implementation(a):
+    out({"implementations": norm_locations(_position_request(a, "textDocument/implementation"))})
+
+
+def cmd_references(a):
+    res = _position_request(a, "textDocument/references", {"context": {"includeDeclaration": True}})
     out({"references": norm_locations(res)})
 
 
-def cmd_hover(a) -> None:
-    out({"hover": hover_text(_nav(a, "textDocument/hover"))})
+def cmd_hover(a):
+    out({"hover": hover_text(_position_request(a, "textDocument/hover"))})
+
+
+def cmd_symbols(a):
+    client, uri = _on_file(a.file)
+    try:
+        if a.query:
+            res, err = client.request("workspace/symbol", {"query": a.query}, a.timeout)
+            label = "workspaceSymbols"
+        else:
+            res, err = client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}}, a.timeout)
+            label = "symbols"
+        if err:
+            die(f"symbols failed: {err.get('message')}")
+        out({label: flatten_symbols(res)})
+    finally:
+        client.shutdown()
+
+
+def cmd_code_actions(a):
+    client, uri = _on_file(a.file)
+    try:
+        line0, char0 = resolve_position(a.file, a.line, a.col, a.symbol)
+        rng = {"start": {"line": line0, "character": char0}, "end": {"line": line0, "character": char0}}
+        diags = client.diagnostics.get(uri, [])
+        res, err = client.request(
+            "textDocument/codeAction",
+            {"textDocument": {"uri": uri}, "range": rng, "context": {"diagnostics": diags}},
+            a.timeout,
+        )
+        if err:
+            die(f"code_actions failed: {err.get('message')}")
+        actions = res or []
+        if not a.apply:
+            out({"actions": [{"index": i, "title": ac.get("title"), "kind": ac.get("kind")} for i, ac in enumerate(actions)]})
+            return
+        sel = a.apply
+        chosen = None
+        for i, ac in enumerate(actions):
+            if sel == str(i) or sel.lower() in (ac.get("title", "").lower()):
+                chosen = ac
+                break
+        if chosen is None:
+            die(f"no code action matched {sel!r}; available: {[ac.get('title') for ac in actions]}")
+        if "edit" not in chosen and "command" not in chosen:
+            resolved, rerr = client.request("codeAction/resolve", chosen, a.timeout)
+            if not rerr and resolved:
+                chosen = resolved
+        applied = apply_workspace_edit(chosen["edit"]) if chosen.get("edit") else {}
+        cmd_obj = chosen.get("command") if isinstance(chosen.get("command"), dict) else None
+        if cmd_obj:
+            client.request("workspace/executeCommand",
+                           {"command": cmd_obj.get("command"), "arguments": cmd_obj.get("arguments", [])}, a.timeout)
+        out({"applied": chosen.get("title"), "files": applied})
+    finally:
+        client.shutdown()
+
+
+def cmd_rename(a):
+    client, uri = _on_file(a.file)
+    try:
+        line0, char0 = resolve_position(a.file, a.line, a.col, a.symbol)
+        res, err = client.request(
+            "textDocument/rename",
+            {"textDocument": {"uri": uri}, "position": {"line": line0, "character": char0}, "newName": a.new_name},
+            a.timeout,
+        )
+        if err:
+            die(f"rename failed: {err.get('message')}")
+        we = res or {}
+        if a.preview:
+            out({"preview": summarize_edit(we), "new_name": a.new_name})
+        else:
+            out({"renamed_to": a.new_name, "files": apply_workspace_edit(we)})
+    finally:
+        client.shutdown()
+
+
+def _add_position_args(s, with_apply=False, with_rename=False):
+    s.add_argument("file")
+    s.add_argument("line", type=int, help="1-based line")
+    s.add_argument("col", type=int, nargs="?", help="1-based column (or use --symbol)")
+    s.add_argument("--symbol", help="symbol on the line to resolve the column from (NAME or NAME#N)")
+    s.add_argument("--timeout", type=float, default=15.0)
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="lsp.py",
-        description="Minimal LSP client: diagnostics + navigation (stdlib only).",
+        prog="lsp.py", description="LSP client: diagnostics, navigation, symbols, edits (stdlib only)."
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("diagnostics", help="Type/compile diagnostics for files")
-    s.add_argument("files", nargs="*", help="files to check (default: --changed)")
-    s.add_argument("--changed", action="store_true", help="check files changed vs HEAD + untracked")
-    s.add_argument("--errors-only", action="store_true", help="only severity=error")
-    s.add_argument("--fail-on-error", action="store_true", help="exit 1 if any error")
+    s.add_argument("files", nargs="*")
+    s.add_argument("--changed", action="store_true", help="files changed vs HEAD + untracked")
+    s.add_argument("--errors-only", action="store_true")
+    s.add_argument("--fail-on-error", action="store_true")
     s.add_argument("--timeout", type=float, default=15.0)
     s.set_defaults(fn=cmd_diagnostics)
 
     for name, fn, helptext in (
-        ("definition", cmd_definition, "Go to definition at file:line:col"),
-        ("references", cmd_references, "Find references at file:line:col"),
-        ("hover", cmd_hover, "Hover (type/docs) at file:line:col"),
+        ("definition", cmd_definition, "Go to definition"),
+        ("type-definition", cmd_type_definition, "Go to type definition"),
+        ("implementation", cmd_implementation, "Find implementations"),
+        ("references", cmd_references, "Find references"),
+        ("hover", cmd_hover, "Type/signature/docs"),
     ):
         s = sub.add_parser(name, help=helptext)
-        s.add_argument("file")
-        s.add_argument("line", type=int, help="1-based line")
-        s.add_argument("col", type=int, help="1-based column")
-        s.add_argument("--timeout", type=float, default=15.0)
+        _add_position_args(s)
         s.set_defaults(fn=fn)
+
+    s = sub.add_parser("symbols", help="Document symbols (or workspace search with --query)")
+    s.add_argument("file")
+    s.add_argument("--query", help="workspace symbol search query")
+    s.add_argument("--timeout", type=float, default=15.0)
+    s.set_defaults(fn=cmd_symbols)
+
+    s = sub.add_parser("code-actions", help="List quick-fixes/refactors; --apply to apply one")
+    _add_position_args(s)
+    s.add_argument("--apply", metavar="INDEX|TITLE", help="apply the matching action (default: list)")
+    s.set_defaults(fn=cmd_code_actions)
+
+    s = sub.add_parser("rename", help="Rename a symbol across the codebase")
+    _add_position_args(s)
+    s.add_argument("--new-name", required=True)
+    s.add_argument("--preview", action="store_true", help="show the edits instead of applying")
+    s.set_defaults(fn=cmd_rename)
 
     return p
 

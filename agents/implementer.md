@@ -17,6 +17,7 @@ The approved plan is saved at `.agent/plan.md` — read it for the full phased p
 - Follow the codebase's established patterns, naming, and style
 - Handle edge cases and error paths called out in the plan
 - **Write the tests that prove the change (TDD).** Cover every acceptance criterion in the plan, the edge/error cases, and a regression test for any bug fix (write the failing test first, then make it pass). Follow the project's existing test framework, layout, and naming. The validator runs the full suite independently — it will catch shallow or missing tests.
+- **Use the `lsp` skill for symbol-aware edits when a language server is available.** For a cross-file rename use `lsp rename <file> <line> --symbol <name> --new-name <new>` rather than `sed`/manual edits (it handles shadowing, re-exports, and other-file usages); use `lsp code-actions … --apply` for imports and quick-fixes the server already knows. Covers Python/Go/TypeScript/PHP.
 - **Update the docs and comments the change affects** — READMEs, `docs/…`, usage examples, and inline comments where intent is non-obvious — as part of the change, matching the project's existing doc style. There is no separate documenter agent: documentation is part of implementing. Don't restate what the code already says, and don't rewrite unrelated docs.
 - Run linters and the full test suite as you go; fix every failure before reporting done
 - Produce a precise change summary the validator can verify against the plan's acceptance criteria without re-reading the whole diff
