@@ -20,6 +20,7 @@ import {
     buildPhaseMap,
     failPhase,
     validatePlan,
+    parsePlanPhases,
     contextBundleForPhase,
     buildWorkflowReport,
     scoutTask,
@@ -449,11 +450,12 @@ export async function runWorkflowCore(
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
         // Switch to the run's work branch BEFORE the implementer commits, so its
-        // per-phase commits never land on the default branch. Record the base for
-        // the squash/revert floor. Done once, here — re-runs in the review/validate
-        // fix loops reuse the branch and the ledger.
+        // per-phase commits never land on the default branch. Then seed the progress
+        // ledger from the plan's phases (with the base sha when on git) so phase
+        // status is tracked even without git. Done once, here — re-runs in the
+        // review/validate fix loops reuse the branch and the ledger.
         const wb = h.setup.ensureWorkBranch?.(cwd, request) ?? null;
-        if (wb) writeRunBase(cwd, wb.base);
+        initProgressLedger(cwd, wb?.base ?? "", plan.output);
         impl = await h.execution.runPhase(
             implP,
             shared(implementTask(request, plan.output), "implementer"),
@@ -694,19 +696,31 @@ export function resetRunScratch(cwd: string): void {
     }
 }
 
-// Record the run's base sha (HEAD when the work branch was created) into the
-// implementer's ledger so the implementer (revert), validator (diff range), and
-// shipper (squash) all read one source. Written AFTER resetRunScratch and with
-// no `[x]` phase lines, so the implementer still sees a fresh (non-resume) run.
-export function writeRunBase(cwd: string, base: string): void {
+// Initialize the implementer's progress ledger BEFORE implementation so phase
+// status is tracked WITH OR WITHOUT git: an unchecked entry per plan phase (the
+// implementer only flips [ ] -> [x] as it finishes each), plus a `Base: <sha>`
+// line when on git (the squash/revert floor that the implementer, validator, and
+// shipper all read). Written after resetRunScratch and with no `[x]` lines, so the
+// implementer sees a fresh (non-resume) run. Empty base ⇒ non-git: no Base line,
+// the implementer skips commits but still tracks phase status.
+export function initProgressLedger(
+    cwd: string,
+    base: string,
+    plan: string,
+): void {
     try {
         const file = join(cwd, ".agent", "progress.md");
         mkdirSync(dirname(file), { recursive: true });
-        writeFileSync(
-            file,
-            `# Implementation progress\n\nBase: ${base}\n\n`,
-            "utf-8",
-        );
+        const phases = parsePlanPhases(plan);
+        const lines = ["# Implementation progress", ""];
+        if (base) lines.push(`Base: ${base}`, "");
+        if (phases.length) {
+            for (const p of phases) lines.push(`- [ ] ${p}`);
+        } else {
+            lines.push("- [ ] Implementation");
+        }
+        lines.push("");
+        writeFileSync(file, lines.join("\n"), "utf-8");
     } catch {}
 }
 

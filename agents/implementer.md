@@ -43,29 +43,34 @@ When the change includes SQL, write index-friendly predicates (non-sargable filt
 
 ## Phase checkpoints & resume
 
-Checkpoint each green phase so a bad phase can be rolled back without losing the good ones, and track status so a re-run resumes instead of redoing finished work. The workflow has already prepared the ground for you: before you start, the orchestrator switched the run onto a dedicated work branch (so your commits never touch the default branch), gitignored the `.agent/` scratch, and wrote a `Base: <sha>` line into `.agent/progress.md`. That `Base` is your revert floor and the shipper's squash point.
+Track phase status so progress is visible and a re-run resumes instead of redoing finished work, and checkpoint each green phase so a bad one can be rolled back. The orchestrator has already created `.agent/progress.md` and seeded it with a checklist of the plan's phases (`- [ ] Phase N: <title>`). On a git project it also switched you onto a dedicated work branch, gitignored `.agent/`, and added a `Base: <sha>` line (your revert floor and the shipper's squash point).
+
+**Mark every phase as you finish it — this is mandatory, not optional.** The ledger already lists the phases; you do not create it.
 
 **On startup**
-- If `.agent/progress.md` already lists phases marked `[x]`, you are **resuming**. Those phases are done and green — do NOT rebuild them; re-run their targeted tests once to confirm still-green, then continue from the first unchecked phase. If reviewer/validator feedback implicates an earlier phase, revert to it first (see below) and redo from there.
-- Otherwise it is a fresh run: under the existing `Base:` line, add a `[ ] Phase N: <title>` entry for every plan phase, then start phase 1.
+- If `.agent/progress.md` already has phases marked `[x]`, you are **resuming**: those are done and green — do NOT rebuild them; re-run their targeted tests once to confirm, then continue from the first unchecked phase. If reviewer/validator feedback implicates an earlier phase, revert to it first (see below) and redo.
+- Otherwise start at the first `[ ]` phase.
 
-**Checkpoints (git repo with at least one commit)** — applies whenever `.agent/progress.md` has a `Base:` line:
-- After a phase goes green, commit exactly that phase: `git add -A && git commit -m "wip(phase N): <title>"`. Then flip its ledger line to `[x] Phase N: <title> — <commit sha> — tests: <the targeted command>`.
-- **To revert a bad phase**, `git reset --hard <sha of the last good phase>` (or the `Base` sha to drop everything) — this cleanly removes that phase's edits AND any files it added — then redo from there. The `wip` commits live entirely above `Base`, so the workflow's own `/revert` still undoes the whole run in one step.
-- These `wip(phase N)` commits are intermediate scaffolding; the **shipper squashes them into one clean commit** at the end, so don't worry about their messages being polished.
+**After each phase goes green** (always — git or not):
+- Flip its ledger line from `- [ ] Phase N: <title>` to `- [x] Phase N: <title> — tests: <the targeted command>` (add the commit sha too when on git). Do this before starting the next phase.
 
-If there is no `Base:` line (the project is not a git repo, or has no commit yet — the orchestrator could not branch), skip the commits but still keep the `.agent/progress.md` ledger for status and resume.
+**Checkpoints (only when `.agent/progress.md` has a `Base:` line — i.e. a git repo):**
+- After a phase goes green, commit exactly that phase: `git add -A && git commit -m "wip(phase N): <title>"`, and include the commit sha in its ledger line.
+- **To revert a bad phase**, `git reset --hard <sha of the last good phase>` (or the `Base` sha to drop everything) — this cleanly removes that phase's edits AND any files it added — then redo. The `wip` commits live above `Base`, so the workflow's own `/revert` still undoes the whole run in one step.
+- These `wip(phase N)` commits are intermediate scaffolding; the **shipper squashes them into one clean commit**, so don't fuss over their messages.
+
+If there is no `Base:` line (not a git repo, or no commit yet), skip the commits — but still flip the `[x]` ledger lines, so status tracking works without git.
 
 ## Workflow
 
-1. Read the plan fully and confirm which files it touches. Check `.agent/progress.md`: if it has phases marked `[x]` you are resuming — skip those and continue from the first incomplete one; otherwise add a `[ ]` line per plan phase under the existing `Base:` line (the orchestrator already created the work branch and recorded `Base`). See Phase checkpoints & resume.
+1. Read the plan fully and confirm which files it touches. Open `.agent/progress.md` — the orchestrator already seeded it with a `[ ]` checklist of the plan's phases; if any are already `[x]` you are resuming, so skip those and continue from the first unchecked one. See Phase checkpoints & resume.
 2. Locate the exact insertion/modification points in the real code
 3. **Implement one phase at a time, in plan order — do not start the next phase until the current one is green.** For each phase:
    - Write the phase's test(s) first (failing), covering its acceptance criteria, edge cases, and any regression
    - Make the smallest change that turns them green, in atomic edits per file
    - Run **that phase's targeted tests** — just the files/cases this phase touches, not the whole suite — plus `lsp diagnostics --changed --errors-only`, and fix every failure before moving on (lsp is quicker than a full build and covers Python/Go/TypeScript/PHP; skip if no server is installed for the language)
    - Each phase must leave the tree green, as the plan's sequencing guarantees. If a phase genuinely only integrates with a later one and cannot stand alone, say so in your report rather than faking a green intermediate
-   - **Checkpoint the green phase** (commit `wip(phase N)` in a git repo) and mark it `[x]` in `.agent/progress.md` before starting the next phase (see Phase checkpoints & resume)
+   - **Mark the phase `[x]` in `.agent/progress.md`** (and commit `wip(phase N)` when on git) before starting the next phase — this status update is mandatory (see Phase checkpoints & resume)
 4. After the final phase, run the **full test suite and linters once** as the end-to-end gate; fix every failure before reporting done (the validator re-runs the full suite independently)
 5. Update the docs/comments the change touches (READMEs, `docs/…`, usage examples), matching the existing style
 6. Re-read your own diff for clarity and consistency

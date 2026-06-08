@@ -13,7 +13,7 @@ import {
     resolveAgent,
     capturePlan,
     resetRunScratch,
-    writeRunBase,
+    initProgressLedger,
     planArchiveName,
     archivePlan,
     runWorkflowCore,
@@ -2194,14 +2194,34 @@ describe("resetRunScratch", () => {
     });
 });
 
-describe("writeRunBase", () => {
-    it("writes a progress ledger with the base sha and no completed phases", () => {
-        const cwd = mkdtempSync(join(tmpdir(), "base-"));
-        writeRunBase(cwd, "abc1234");
+describe("initProgressLedger", () => {
+    const plan = "# Plan\n## Phase 1: Skeleton\nbody\n## Phase 2: Polish (TDD)\nbody";
+
+    it("seeds Base + an unchecked entry per plan phase (git run)", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "led-"));
+        initProgressLedger(cwd, "abc1234", plan);
         const body = readFileSync(join(cwd, ".agent", "progress.md"), "utf-8");
         assert.match(body, /Base: abc1234/);
+        assert.match(body, /- \[ \] Phase 1: Skeleton/);
+        assert.match(body, /- \[ \] Phase 2: Polish \(TDD\)/);
         // No `[x]` lines — the implementer must see a fresh (non-resume) run.
         assert.doesNotMatch(body, /\[x\]/);
+    });
+
+    it("tracks phases even without git (no Base line)", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "led-"));
+        initProgressLedger(cwd, "", plan);
+        const body = readFileSync(join(cwd, ".agent", "progress.md"), "utf-8");
+        assert.doesNotMatch(body, /Base:/);
+        assert.match(body, /- \[ \] Phase 1: Skeleton/);
+        assert.match(body, /- \[ \] Phase 2: Polish \(TDD\)/);
+    });
+
+    it("falls back to a single entry when the plan has no phase headings", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "led-"));
+        initProgressLedger(cwd, "", "no phases here");
+        const body = readFileSync(join(cwd, ".agent", "progress.md"), "utf-8");
+        assert.match(body, /- \[ \] Implementation/);
     });
 });
 

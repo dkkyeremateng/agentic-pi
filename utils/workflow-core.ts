@@ -1629,6 +1629,19 @@ export function validatePlan(plan: string): PlanCheck {
     return { ok: missing.length === 0, missing };
 }
 
+// Extract the phase headings ("Phase N: Title") from a plan, in order. Used to
+// seed the implementer's progress ledger so phase status is tracked from the start
+// (the implementer only flips [ ] -> [x]) rather than relying on it to build the
+// list itself.
+export function parsePlanPhases(plan: string): string[] {
+    const out: string[] = [];
+    for (const raw of (plan || "").split(/\r?\n/)) {
+        const m = /^#{1,6}\s+(Phase\s+\d+\b[^\n]*?)\s*$/i.exec(raw);
+        if (m) out.push(m[1].trim());
+    }
+    return out;
+}
+
 // ── Shared run context (curated cross-agent bundle) ──
 // Durable artifacts earlier pipeline phases produced. Prepended to a later
 // agent's task so every agent can build on the others' work without the lossy

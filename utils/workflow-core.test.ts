@@ -5,6 +5,7 @@ import {
     contextBundle,
     contextBundleForPhase,
     clampSummary,
+    parsePlanPhases,
     buildPhaseMap,
     failPhase,
     renderTemplate,
@@ -600,6 +601,22 @@ describe("contextBundleForPhase", () => {
     it("is case-insensitive for agent names", () => {
         const bundle = contextBundleForPhase("PLANNER", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
+    });
+});
+
+describe("parsePlanPhases", () => {
+    it("extracts phase headings in order", () => {
+        const plan =
+            "# Plan\n## Context\ntext\n## Phase 1: Skeleton\nbody\n## Phase 2: Polish (TDD)\nbody\n## Acceptance Criteria\n";
+        assert.deepEqual(parsePlanPhases(plan), [
+            "Phase 1: Skeleton",
+            "Phase 2: Polish (TDD)",
+        ]);
+    });
+
+    it("returns [] when there are no phase headings", () => {
+        assert.deepEqual(parsePlanPhases("just some text\n## Context\n"), []);
+        assert.deepEqual(parsePlanPhases(""), []);
     });
 });
 
