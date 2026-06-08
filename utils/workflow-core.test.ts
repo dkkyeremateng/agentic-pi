@@ -5,6 +5,7 @@ import {
     contextBundle,
     contextBundleForPhase,
     clampSummary,
+    clampOutput,
     parsePlanPhases,
     buildPhaseMap,
     failPhase,
@@ -617,6 +618,31 @@ describe("parsePlanPhases", () => {
     it("returns [] when there are no phase headings", () => {
         assert.deepEqual(parsePlanPhases("just some text\n## Context\n"), []);
         assert.deepEqual(parsePlanPhases(""), []);
+    });
+});
+
+describe("clampOutput", () => {
+    it("passes normal-sized output through untouched", () => {
+        const normal = "VERDICT: PASS\n" + "x".repeat(5000);
+        assert.equal(clampOutput(normal), normal);
+    });
+
+    it("clamps a runaway output but keeps head AND tail", () => {
+        // First-line marker (head) and a trailing marker (tail) both survive.
+        const big =
+            "VERDICT: PASS — leading summary\n" +
+            "m".repeat(40000) +
+            "\nTRAILING-MARKER";
+        const out = clampOutput(big, 1000);
+        assert.ok(out.length < big.length);
+        assert.match(out, /VERDICT: PASS/); // head preserved
+        assert.match(out, /TRAILING-MARKER/); // tail preserved
+        assert.match(out, /output truncated/);
+    });
+
+    it("handles empty/undefined", () => {
+        assert.equal(clampOutput(""), "");
+        assert.equal(clampOutput(undefined as unknown as string), "");
     });
 });
 

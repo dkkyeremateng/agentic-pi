@@ -1739,6 +1739,25 @@ export function clampSummary(text: string, max = 2500): string {
     );
 }
 
+// Safety ceiling on a phase's agent output before it flows downstream — threaded
+// into the next agent's task, stored for the context bundle, or put in the report.
+// Normal outputs are well under this and pass through untouched; a runaway output
+// (e.g. a validator dumping a full test log) is clamped keeping the HEAD and TAIL,
+// so leading structure AND any trailing VERDICT/summary survive — both verdict
+// detection (markers are first-line or last-line) and the next agent stay safe.
+export const PHASE_OUTPUT_MAX = 24000;
+export function clampOutput(text: string, max = PHASE_OUTPUT_MAX): string {
+    const t = text || "";
+    if (t.length <= max) return t;
+    const head = Math.floor(max * 0.7);
+    const tail = max - head;
+    return (
+        t.slice(0, head) +
+        `\n\n... [output truncated — ${t.length - max} chars omitted] ...\n\n` +
+        t.slice(t.length - tail)
+    );
+}
+
 // Optional reconnaissance brief from the scout agent, injected into the planner
 // prompts when a Scout phase ran first.
 function reconBlock(recon: string): string[] {
@@ -2175,7 +2194,10 @@ export async function runPhaseCore(
         );
     }
 
-    return { output: res.output, ok: statusWord === "done" };
+    // Bound the output before it flows into the next phase's task / the context
+    // bundle / the report — a safety ceiling so a verbose agent can't overload the
+    // next. The plan is unaffected: the orchestrator re-reads it from .agent/plan.md.
+    return { output: clampOutput(res.output), ok: statusWord === "done" };
 }
 
 // ── Token tracking ───────────────────────────────
