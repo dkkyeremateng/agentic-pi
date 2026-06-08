@@ -46,3 +46,18 @@ Most commands support `--json` for structured output.  You can use `--jq` to fil
 ```bash
 gh issue list --repo owner/repo --json number,title --jq '.[] | "\(.number): \(.title)"'
 ```
+
+## Reconnaissance (read-only) — scouting a remote repo
+
+Map a GitHub repo you are not checked out in. Read/query commands only — never
+write (no commit, push, PR/issue create, comment, merge). Cite `owner/repo path:line`
+(or the GitHub URL) as evidence, exactly like a local `file:line`.
+
+```bash
+gh repo view owner/repo                                               # description, default branch, languages
+gh api repos/owner/repo/git/trees/<branch>?recursive=1 --jq '.tree[].path'  # full file tree (orient on structure)
+gh api repos/owner/repo/contents/<path> --jq '.content' | base64 -d  # read a file's contents
+gh search code '<query>' --repo owner/repo                           # locate definitions/call sites (remote grep)
+gh pr view <n> --repo owner/repo                                     # a specific PR's metadata
+gh pr diff <n> --repo owner/repo                                     # a specific PR's change
+```
