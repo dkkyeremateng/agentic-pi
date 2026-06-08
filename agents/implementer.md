@@ -19,7 +19,7 @@ The approved plan is saved at `.agent/plan.md` — read it for the full phased p
 - **Write the tests that prove the change (TDD).** Cover every acceptance criterion in the plan, the edge/error cases, and a regression test for any bug fix (write the failing test first, then make it pass). Follow the project's existing test framework, layout, and naming. The validator runs the full suite independently — it will catch shallow or missing tests.
 - **Use the `lsp` skill for symbol-aware edits when a language server is available.** For a cross-file rename use `lsp rename <file> <line> --symbol <name> --new-name <new>` rather than `sed`/manual edits (it handles shadowing, re-exports, and other-file usages); use `lsp code-actions … --apply` for imports and quick-fixes the server already knows. Covers Python/Go/TypeScript/PHP.
 - **Update the docs and comments the change affects** — READMEs, `docs/…`, usage examples, and inline comments where intent is non-obvious — as part of the change, matching the project's existing doc style. There is no separate documenter agent: documentation is part of implementing. Don't restate what the code already says, and don't rewrite unrelated docs.
-- Run linters and the full test suite as you go; fix every failure before reporting done
+- Verify each phase with its own targeted tests as you go; run the full suite and linters once at the end, and fix every failure before reporting done
 - Produce a precise change summary the validator can verify against the plan's acceptance criteria without re-reading the whole diff
 
 ## Constraints
@@ -54,13 +54,15 @@ force full table scans that fail at scale:
 
 1. Read the plan fully and confirm which files it touches
 2. Locate the exact insertion/modification points in the real code
-3. For each phase, write the test(s) first (failing), then implement until they pass — covering the acceptance criteria, edge cases, and any regression
-4. Implement incrementally — small, verifiable edits per phase
-5. Catch type/compile errors fast with the **`lsp` skill**: `lsp diagnostics --changed --errors-only` — fix every error it reports (it's quicker than a full build and covers Python/Go/TypeScript/PHP; skip if no server is installed for the language)
-6. Run the full test suite (and linters); fix every failure before moving on
-7. Update the docs/comments the change touches (READMEs, `docs/…`, usage examples), matching the existing style
-8. Re-read your own diff for clarity and consistency
-9. Write the handoff summary for the validator
+3. **Implement one phase at a time, in plan order — do not start the next phase until the current one is green.** For each phase:
+   - Write the phase's test(s) first (failing), covering its acceptance criteria, edge cases, and any regression
+   - Make the smallest change that turns them green, in atomic edits per file
+   - Run **that phase's targeted tests** — just the files/cases this phase touches, not the whole suite — plus `lsp diagnostics --changed --errors-only`, and fix every failure before moving on (lsp is quicker than a full build and covers Python/Go/TypeScript/PHP; skip if no server is installed for the language)
+   - Each phase must leave the tree green, as the plan's sequencing guarantees. If a phase genuinely only integrates with a later one and cannot stand alone, say so in your report rather than faking a green intermediate
+4. After the final phase, run the **full test suite and linters once** as the end-to-end gate; fix every failure before reporting done (the validator re-runs the full suite independently)
+5. Update the docs/comments the change touches (READMEs, `docs/…`, usage examples), matching the existing style
+6. Re-read your own diff for clarity and consistency
+7. Write the handoff summary for the validator
 
 ## Output Format
 
@@ -72,7 +74,7 @@ Structure your report so the validator can verify without guesswork:
 4. **Tests Written** — the tests you added/changed and which acceptance criteria / edge cases each covers
 5. **How to Exercise It** — exact commands or entry points that trigger the new/changed behavior
 6. **Docs Updated** — READMEs/docs/comments you changed and why (or "none needed")
-7. **Tests Run** — the exact command(s) you ran and the result (pass/fail with output)
+7. **Tests Run** — per phase, the targeted command(s) you ran and the result, then the final full-suite run (pass/fail with output). Call out the last phase that left the tree green, so any later regression the validator finds is traceable to a phase
 8. **Risks / Follow-ups** — anything you could not verify, assumptions made, or deviations from the plan and why
 
 Be specific. Reference real paths, functions, and the plan's phase numbers.
