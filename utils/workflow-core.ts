@@ -1838,7 +1838,7 @@ export function scoutTask(original: string): string {
 export function planTask(original: string, recon = ""): string {
     return [
         "Produce a structured, phased implementation plan.",
-        "Emit the COMPLETE plan as your final message — that is your deliverable; the workflow saves it to `.agent/plan.md` for the downstream agents. Do not emit a summary in place of the plan.",
+        "Emit the COMPLETE plan as your final message — that is your deliverable; the workflow saves it to `.agent/plan.md` for the downstream agents. Do not emit a summary in place of the plan. Start the message at the `# Plan:` heading — no preamble, acknowledgement, or closing remarks; the whole message is the plan.",
         "",
         "Request:",
         original,
@@ -1852,7 +1852,7 @@ export function refineTask(original: string, recon = ""): string {
         "Review and refine the implementation plan before it goes to the implementer.",
         "Read the draft plan from `.agent/plan.md` and VERIFY its load-bearing claims against the actual files (read/grep the real files — every path, every 'exists/missing', every symbol location; the draft and any recon can describe a codebase that isn't there). Then apply your production-grade review rules.",
         "Keep the required structure (## Phase N, Acceptance Criteria, file-level specificity); refine, do not rewrite from scratch.",
-        "Emit the COMPLETE hardened plan as your final message — that is your deliverable; the workflow saves it to `.agent/plan.md` (overwriting the draft) for the downstream agents. Do not emit a summary in place of the plan.",
+        "Emit the COMPLETE hardened plan as your final message — that is your deliverable; the workflow saves it to `.agent/plan.md` (overwriting the draft) for the downstream agents. Do not emit a summary in place of the plan. Start the message at the `# Plan:` heading — no preamble, acknowledgement, or closing remarks; the whole message is the plan.",
         "",
         "Original request:",
         original,

@@ -419,10 +419,11 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!plan.ok) return fail(s, "Planning", plan.output);
-        // The planner's message IS the plan (reliable model output). Persist it to
-        // .agent/plan.md — the file the refiner and downstream agents read. (We do
-        // NOT trust a file the agent may or may not have written: the message is the
-        // source of truth, the file is the derived copy.)
+        // The planner's message IS the plan (reliable model output). Strip any
+        // conversational preamble, then persist it to .agent/plan.md — the file the
+        // refiner and downstream agents read. (We do NOT trust a file the agent may
+        // or may not have written: the message is the source of truth.)
+        plan.output = stripPlanPreamble(plan.output);
         capturePlan(runArtifacts, cwd, plan.output);
     }
 
@@ -441,8 +442,9 @@ export async function runWorkflowCore(
         );
         if (!refine.ok) return fail(s, "Refining", refine.output);
         // The refiner's message is the full hardened plan — it becomes THE plan;
-        // persist it (overwriting the planner's draft on disk).
+        // strip any preamble and persist it (overwriting the planner's draft).
         plan = refine;
+        plan.output = stripPlanPreamble(plan.output);
         capturePlan(runArtifacts, cwd, plan.output);
     }
 
@@ -838,6 +840,17 @@ export function savePlanDraft(cwd: string): void {
             copyFileSync(src, join(cwd, ".agent", "plan.draft.md"));
         }
     } catch {}
+}
+
+// Strip any conversational preamble an agent emitted before the plan proper
+// (e.g. "Confirmed the dir is empty. Here is the plan:" or "Let me apply the
+// rules and produce the plan."), so the stored plan starts at its first markdown
+// heading. Returns the input unchanged when there's no heading (let validation
+// catch a malformed plan) or no preamble.
+export function stripPlanPreamble(plan: string): string {
+    const lines = plan.split("\n");
+    const i = lines.findIndex((l) => /^#{1,6}\s/.test(l));
+    return i > 0 ? lines.slice(i).join("\n").replace(/^\s+/, "") : plan;
 }
 
 // Persist the plan (the planner's or refiner's message) to .agent/plan.md as the

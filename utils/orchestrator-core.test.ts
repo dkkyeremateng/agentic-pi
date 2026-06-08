@@ -12,6 +12,7 @@ import {
     selectAgentsCore,
     resolveAgent,
     capturePlan,
+    stripPlanPreamble,
     savePlanDraft,
     resetRunScratch,
     initProgressLedger,
@@ -2211,6 +2212,27 @@ describe("spawnAgentWithModel (placeholder)", () => {
         //    which exercise the full pipeline including spawn behavior.
         // 4. The pure function tests above (handleSpawnEvent, computeSpawnResult)
         assert.ok(true);
+    });
+});
+
+describe("stripPlanPreamble", () => {
+    it("drops conversational preamble before the first heading", () => {
+        const raw =
+            "Confirmed: the directory is empty. Here is the complete plan:\n\n---\n\n# Plan: Build X\n\n## Phase 1: A";
+        const out = stripPlanPreamble(raw);
+        assert.ok(out.startsWith("# Plan: Build X"));
+        assert.doesNotMatch(out, /Confirmed:/);
+        assert.match(out, /## Phase 1: A/);
+    });
+
+    it("leaves a clean plan unchanged", () => {
+        const clean = "# Plan: Build X\n\n## Phase 1: A";
+        assert.equal(stripPlanPreamble(clean), clean);
+    });
+
+    it("returns input unchanged when there's no heading (let validation catch it)", () => {
+        const summary = "I wrote the plan to .agent/plan.md.";
+        assert.equal(stripPlanPreamble(summary), summary);
     });
 });
 
