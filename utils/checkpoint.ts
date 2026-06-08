@@ -95,8 +95,10 @@ export function isDefaultBranch(run: GitRunner, branch: string): boolean {
 // Ensure the run is on a non-default work branch and report the base sha (HEAD at
 // this point — the squash/revert floor). Creates+switches a fresh `agent/<slug>`
 // branch only when currently on a default branch; otherwise reuses the current
-// branch. Returns null when branching doesn't apply: not a git repo, or a repo
-// with no commits yet (the implementer then just skips per-phase commits).
+// branch. Returns null when branching doesn't apply or fails — not a git repo, a
+// repo with no commits yet, or a default branch we could not switch off — in
+// which case the caller records no Base and the implementer skips per-phase
+// commits (so work never lands on the default branch).
 export function ensureWorkBranch(
     run: GitRunner,
     request: string,
@@ -127,7 +129,11 @@ export function ensureWorkBranch(
             run(["switch", branch]);
             return { branch, base, created: true };
         } catch {
-            return { branch: current, base, created: false };
+            // Could not leave the default branch. Return null rather than the
+            // default branch, so the caller records no Base and the implementer
+            // skips per-phase commits — work stays uncommitted (the shipper
+            // branches at the end) and never lands on the default branch.
+            return null;
         }
     }
 }

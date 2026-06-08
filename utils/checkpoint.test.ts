@@ -271,4 +271,18 @@ describe("ensureWorkBranch", () => {
             ["switch", "agent/retry-0123456"],
         ]);
     });
+
+    it("returns null when it cannot leave the default branch (both switches fail)", () => {
+        const run = (args: string[]): string => {
+            const key = args.join(" ");
+            if (key === "rev-parse --is-inside-work-tree") return "true";
+            if (key === "rev-parse HEAD") return "feedface0000";
+            if (key === "rev-parse --abbrev-ref HEAD") return "main";
+            if (args[0] === "switch") throw new Error("switch blocked");
+            throw new Error(`unexpected git ${key}`);
+        };
+        // Must be null (not the default branch) so no Base is recorded and the
+        // implementer skips commits — work never lands on main.
+        assert.equal(ensureWorkBranch(run, "blocked"), null);
+    });
 });
