@@ -7,6 +7,14 @@ plan-build:
     - validator
     - shipper
 
+soft-plan-build:
+    - scout
+    - planner
+    - refiner
+    - implementer
+    - reviewer
+    - shipper
+
 spec:
     - scout
     - planner
