@@ -567,12 +567,18 @@ export async function runWorkflowCore(
     // ship straight after whatever build work happened. The implementer updates any
     // docs/comments as part of the change, so there is no separate document phase.
     const passed = valP ? verdict === "pass" : true;
+
+    // Archive the final plan to docs/plans/ (opt-in) when implementation
+    // succeeded — independent of the shipper, so projects without git/versioning
+    // (or teams without a ship phase) still get a durable plan record on disk.
+    // When a shipper does run next, it's already there to commit with the change.
+    if (passed && implP) {
+        archivePlan(cwd, request, plan.output, !!h.config.archivePlans);
+    }
+
     if (passed && shipP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
-        // Graduate the final plan into docs/plans/ (opt-in) BEFORE the shipper
-        // runs, so it's committed as part of the change rather than wiped scratch.
-        archivePlan(cwd, request, plan.output, !!h.config.archivePlans);
         ship = await h.execution.runPhase(
             shipP,
             shared(shipTask(request, val.output), "shipper"),
@@ -698,12 +704,14 @@ export function planArchiveName(request: string, now: Date = new Date()): string
     return `${date}-${slugifyBranch(request)}.md`;
 }
 
-// Graduate a shipped run's final plan into the repo at docs/plans/<date>-<slug>.md
-// so it's committed with the change (a permanent, reviewable plan record), instead
-// of being wiped with the .agent scratch. Opt-in: only when `enabled` (the config
-// flag) OR a docs/plans/ directory already exists. Returns the repo-relative path
-// written (for the shipper to stage), or null when skipped. The active
-// .agent/plan.md stays per-run — this never makes a plan cumulative.
+// Save a run's final plan to docs/plans/<date>-<slug>.md as a durable, reviewable
+// record, instead of letting it be wiped with the .agent scratch. Written whether
+// or not a shipper runs — so projects without git/versioning still track their
+// implementation; when a shipper does run, the file is already there to commit
+// with the change. Opt-in: only when `enabled` (the config flag) OR a docs/plans/
+// directory already exists. Returns the repo-relative path written (for the
+// shipper to stage), or null when skipped. The active .agent/plan.md stays
+// per-run — this never makes a plan cumulative.
 export function archivePlan(
     cwd: string,
     request: string,
