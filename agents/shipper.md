@@ -46,7 +46,7 @@ Every git operation you report MUST be executed with the `bash` tool. Stating th
 5. Commit with a clear message describing the requirement and the change
 6. (Remote exists) Push the feature branch: `git push -u origin <branch>`
 7. (Remote exists) Open a draft PR with `gh pr create --draft` — title summarizing the change, body containing:
-   - the original requirement
+   - the original requirement (read `.agent/plan.md` for the requirement, acceptance criteria, and context if you need it for the body — read only, never stage it)
    - root cause (for bugs)
    - what changed (file list, including docs)
    - how it was tested (commands + results)

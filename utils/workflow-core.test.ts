@@ -570,10 +570,10 @@ describe("contextBundleForPhase", () => {
         assert.equal(bundle, "");
     });
 
-    it("shipper gets plan and implSummary, but not recon", () => {
+    it("shipper gets implSummary only — no full plan (or recon) in the bundle", () => {
         const bundle = contextBundleForPhase("shipper", fullArtifacts);
         assert.ok(!bundle.includes("Scout findings"));
-        assert.ok(bundle.includes("The plan"));
+        assert.ok(!bundle.includes("The plan"));
         assert.ok(bundle.includes("Implementation done"));
     });
 

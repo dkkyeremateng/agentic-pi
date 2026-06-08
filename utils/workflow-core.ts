@@ -1700,10 +1700,11 @@ const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     implementer: ["recon"],
     reviewer: [],
     validator: [],
-    // The shipper is the exception: shipTask threads only the validation report,
-    // so plan + implSummary genuinely add context (PR body) and aren't duplicated.
-    // recon is still redundant for it, so drop just that.
-    shipper: ["plan", "implSummary"],
+    // shipTask threads only the validation report, so the implementer's change
+    // summary (for the PR body) is added here. The full plan is NOT — no full plan
+    // belongs in any bundle; the shipper reads .agent/plan.md from disk if it needs
+    // requirement/acceptance context. recon is redundant for it too.
+    shipper: ["implSummary"],
 };
 
 // Selective context bundle: only include artifacts the given phase actually
