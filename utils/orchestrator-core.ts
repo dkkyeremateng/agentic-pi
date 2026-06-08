@@ -43,7 +43,7 @@ import {
     secs,
     isModelFailure,
 } from "./workflow-utils";
-import { writeFileSync, mkdirSync, existsSync, rmSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, rmSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileLink } from "./workflow-widgets";
 import { slugifyBranch } from "./checkpoint";
@@ -570,6 +570,12 @@ export async function runWorkflowCore(
     // docs/comments as part of the change, so there is no separate document phase.
     const passed = valP ? verdict === "pass" : true;
 
+    // On success, reconcile the ledger so every phase reads done even if the
+    // implementer didn't flip them itself — code-guaranteed end-state tracking.
+    if (passed && implP) {
+        markAllPhasesDone(cwd);
+    }
+
     // Archive the final plan to docs/plans/ (opt-in) whenever implementation ran —
     // pass OR fail — so every attempt is tracked, independent of the shipper and of
     // git/versioning. The outcome is stamped into the file so failed attempts are
@@ -724,6 +730,36 @@ export function initProgressLedger(
     } catch {}
 }
 
+// Read the phase-status lines ("- [ ] …" / "- [x] …") from the progress ledger.
+function readPhaseStatus(cwd: string): string[] {
+    const file = join(cwd, ".agent", "progress.md");
+    if (!existsSync(file)) return [];
+    try {
+        return readFileSync(file, "utf-8")
+            .split(/\r?\n/)
+            .filter((l) => /^\s*-\s*\[[ xX]\]/.test(l));
+    } catch {
+        return [];
+    }
+}
+
+// On a successful run, reconcile the progress ledger so every phase reads done:
+// the implementer finished and validation passed, so the phases are objectively
+// complete. Flip any remaining unchecked boxes — guaranteeing correct end-state
+// tracking in CODE even if the implementer didn't mark them itself. Only the
+// checkbox changes, preserving each line's annotations (commit sha, test command).
+export function markAllPhasesDone(cwd: string): void {
+    try {
+        const file = join(cwd, ".agent", "progress.md");
+        if (!existsSync(file)) return;
+        const body = readFileSync(file, "utf-8").replace(
+            /^(\s*-\s*)\[ \]/gm,
+            "$1[x]",
+        );
+        writeFileSync(file, body, "utf-8");
+    } catch {}
+}
+
 // File name for an archived plan: <YYYY-MM-DD>-<slug>.md.
 export function planArchiveName(request: string, now: Date = new Date()): string {
     const date = now.toISOString().slice(0, 10);
@@ -764,8 +800,15 @@ export function archivePlan(
         const header = outcome
             ? `> **Run outcome:** ${outcome} — ${now.toISOString().slice(0, 10)}\n\n`
             : "";
+        // Fold the final phase-completion status into the durable record, so it
+        // captures which phases landed (not just the plan) — the .agent/ ledger is
+        // gitignored scratch wiped each run, this archive is not.
+        const status = readPhaseStatus(cwd);
+        const statusBlock = status.length
+            ? `\n\n## Phase status\n\n${status.join("\n")}\n`
+            : "";
         const rel = join("docs", "plans", name);
-        writeFileSync(join(cwd, rel), header + plan, "utf-8");
+        writeFileSync(join(cwd, rel), header + plan + statusBlock, "utf-8");
         return rel;
     } catch {
         return null;

@@ -14,6 +14,7 @@ import {
     capturePlan,
     resetRunScratch,
     initProgressLedger,
+    markAllPhasesDone,
     planArchiveName,
     archivePlan,
     runWorkflowCore,
@@ -2225,6 +2226,30 @@ describe("initProgressLedger", () => {
     });
 });
 
+describe("markAllPhasesDone", () => {
+    it("flips remaining unchecked phases to done, preserving annotations", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "done-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(
+            join(cwd, ".agent", "progress.md"),
+            "# Implementation progress\n\nBase: abc\n\n- [x] Phase 1: A — sha1 — tests: t1\n- [ ] Phase 2: B\n",
+            "utf-8",
+        );
+        markAllPhasesDone(cwd);
+        const body = readFileSync(join(cwd, ".agent", "progress.md"), "utf-8");
+        assert.doesNotMatch(body, /- \[ \]/);
+        // Already-done line (with its sha/test annotation) is preserved verbatim.
+        assert.match(body, /- \[x\] Phase 1: A — sha1 — tests: t1/);
+        assert.match(body, /- \[x\] Phase 2: B/);
+    });
+
+    it("is a no-op when the ledger is absent", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "done-"));
+        markAllPhasesDone(cwd); // must not throw
+        assert.equal(existsSync(join(cwd, ".agent", "progress.md")), false);
+    });
+});
+
 describe("planArchiveName", () => {
     it("is <YYYY-MM-DD>-<slug>.md", () => {
         const name = planArchiveName(
@@ -2289,5 +2314,20 @@ describe("archivePlan", () => {
     it("skips an empty plan", () => {
         const cwd = mkdtempSync(join(tmpdir(), "arch-"));
         assert.equal(archivePlan(cwd, "x", "   ", true, "passed", now), null);
+    });
+
+    it("folds the ledger's phase status into the durable archive", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "arch-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(
+            join(cwd, ".agent", "progress.md"),
+            "# Implementation progress\n\n- [x] Phase 1: A\n- [ ] Phase 2: B\n",
+            "utf-8",
+        );
+        const rel = archivePlan(cwd, "Task", "# Plan", true, "failed", now);
+        const body = readFileSync(join(cwd, rel as string), "utf-8");
+        assert.match(body, /## Phase status/);
+        assert.match(body, /- \[x\] Phase 1: A/);
+        assert.match(body, /- \[ \] Phase 2: B/); // partial status preserved (failed run)
     });
 });
