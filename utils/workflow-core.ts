@@ -33,10 +33,26 @@ import { fileURLToPath } from "url";
 import {
     secs,
     isModelFailure,
+    isTransientError,
     digest,
     testSignal,
     outcomeLine,
 } from "./workflow-utils";
+
+// Max same-model retries on a TRANSIENT agent error (interrupted stream, dropped
+// connection, 429/503/…). Tunable via PI_AGENT_TRANSIENT_RETRIES (clamped 0..5).
+export function transientRetryLimit(env: NodeJS.ProcessEnv = process.env): number {
+    const n = parseInt(env.PI_AGENT_TRANSIENT_RETRIES ?? "2", 10);
+    if (Number.isNaN(n)) return 2;
+    return Math.max(0, Math.min(5, n));
+}
+
+// Base backoff between transient retries (ms); the Nth retry waits base*N.
+// Tunable via PI_AGENT_TRANSIENT_BACKOFF_MS (default 1000).
+export function transientBackoffMs(env: NodeJS.ProcessEnv = process.env): number {
+    const n = parseInt(env.PI_AGENT_TRANSIENT_BACKOFF_MS ?? "1000", 10);
+    return Number.isNaN(n) ? 1000 : Math.max(0, n);
+}
 
 // ── Config ───────────────────────────────────────
 
@@ -1987,12 +2003,48 @@ export async function runAgentWithFallback(
         ) => void;
     },
 ): Promise<{ output: string; exitCode: number }> {
-    const result = await spawnFn(agentDef, task, phase, cwd, primaryModel);
+    const agentName = displayName(agentDef.name);
+    const maxTransient = transientRetryLimit();
+    const backoffMs = transientBackoffMs();
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    // Run one model, retrying IN PLACE on transient errors (interrupted stream,
+    // dropped connection, 429/503/…) up to maxTransient times with linear backoff.
+    // These are infrastructure hiccups, not model-config or logical failures, so the
+    // same model is retried rather than failing the phase / falling back.
+    const attempt = async (model: string) => {
+        let r = await spawnFn(agentDef, task, phase, cwd, model);
+        for (
+            let tries = 1;
+            tries <= maxTransient &&
+            r.exitCode !== 0 &&
+            isTransientError(r.output) &&
+            !isModelFailure(r.output);
+            tries++
+        ) {
+            const first = (r.output.match(/\[agent error\][^\n]*/) ||
+                r.output.split("\n").filter((l) => l.trim()))[0] || "transient error";
+            phase.note = `⚠ transient error — retry ${tries}/${maxTransient}`;
+            phase.toolCount = 0;
+            phase.contextPct = 0;
+            phase.droppedLines = 0;
+            phase.log += `\n⚠ Transient error (retry ${tries}/${maxTransient}): ${first.slice(0, 200)}\n`;
+            opts.notify?.(
+                `${agentName}: transient error — retrying (${tries}/${maxTransient})…`,
+                "warning",
+            );
+            opts.updateWidget();
+            await sleep(backoffMs * tries); // linear backoff
+            r = await spawnFn(agentDef, task, phase, cwd, model);
+        }
+        return r;
+    };
+
+    const result = await attempt(primaryModel);
 
     // Only model-specific load/run failures trigger a fallback — timeouts,
     // tool failures, and bad output are not retried.
     if (result.exitCode !== 0 && isModelFailure(result.output)) {
-        const agentName = displayName(agentDef.name);
 
         // If the agent is already on the primary agent's model (no distinct
         // fallback), there is nothing to fall back to — tell the user.
@@ -2018,7 +2070,7 @@ export async function runAgentWithFallback(
         );
         opts.updateWidget();
 
-        const retry = await spawnFn(agentDef, task, phase, cwd, fallbackModel);
+        const retry = await attempt(fallbackModel);
         if (retry.exitCode !== 0 && isModelFailure(retry.output)) {
             opts.notify?.(
                 `${agentName}: the fallback model (${fallbackModel}) also failed to load or run.`,

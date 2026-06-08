@@ -230,6 +230,55 @@ export function isModelFailure(output: string): boolean {
     return false;
 }
 
+/**
+ * Detect a TRANSIENT agent failure worth retrying with the SAME model — an
+ * interrupted/incomplete stream, a dropped connection, or a temporary
+ * server/rate-limit response. Distinct from isModelFailure (model misconfig →
+ * fall back to another model) and from logical failures (bad output, test fail →
+ * don't retry). Excludes our own watchdog timeout, which is intentional.
+ */
+export function isTransientError(output: string): boolean {
+    const s = (output || "").toLowerCase();
+    // Our watchdog kill is intentional — never retry it as if it were transient.
+    if (/killed by pi_workflow_agent_timeout/.test(s)) return false;
+
+    // Interrupted / incomplete stream (e.g. "Stream ended without finish_reason").
+    if (/stream ended without finish[_ ]reason/.test(s)) return true;
+    if (/stream (?:ended|closed|disconnected|interrupted|error|reset)/.test(s))
+        return true;
+    if (
+        /premature close|unexpected end of (?:json|stream|input|data)|incomplete (?:response|stream|chunked)/.test(
+            s,
+        )
+    )
+        return true;
+
+    // Dropped connection / socket.
+    if (
+        /connection (?:reset|closed|refused|aborted|error)|socket hang ?up|econnreset|etimedout|enotfound|epipe|econnrefused|eai_again/.test(
+            s,
+        )
+    )
+        return true;
+    if (
+        /fetch failed|network (?:error|timeout)|request timed out|read timed out|timeout exceeded/.test(
+            s,
+        )
+    )
+        return true;
+
+    // Temporary server / rate-limit responses.
+    if (/\b(?:429|503|504|529)\b/.test(s)) return true;
+    if (
+        /rate.?limit|too many requests|overloaded|temporarily unavailable|service unavailable|please try again|try again later/.test(
+            s,
+        )
+    )
+        return true;
+
+    return false;
+}
+
 export function outcomeLine(status: string, passes: number): string {
     switch (status) {
         case "shipped":

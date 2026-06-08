@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
     validatePlan,
@@ -10,6 +10,8 @@ import {
     tokenNote,
     formatCostUsd,
     totalTokens,
+    runAgentWithFallback,
+    transientRetryLimit,
     mkPhase,
     freshPhases,
     dispatchEnv,
@@ -888,5 +890,73 @@ describe("runtime model overrides", () => {
         snap.delete(A);
         assert.equal(getModelOverride(A), "m1");
         clearAllModelOverrides();
+    });
+});
+
+describe("transientRetryLimit", () => {
+    it("defaults to 2 and clamps to 0..5", () => {
+        assert.equal(transientRetryLimit({} as NodeJS.ProcessEnv), 2);
+        assert.equal(transientRetryLimit({ PI_AGENT_TRANSIENT_RETRIES: "0" } as any), 0);
+        assert.equal(transientRetryLimit({ PI_AGENT_TRANSIENT_RETRIES: "9" } as any), 5);
+        assert.equal(transientRetryLimit({ PI_AGENT_TRANSIENT_RETRIES: "x" } as any), 2);
+    });
+});
+
+describe("runAgentWithFallback transient retry", () => {
+    const agent: AgentDef = {
+        name: "tester-agent", description: "", model: "", contextWindow: 0, tools: "",
+    } as AgentDef;
+    const noopOpts = { updateWidget: () => {}, notify: () => {} };
+
+    // Keep tests fast (no real backoff) and isolated (restore env after each).
+    const origBackoff = process.env.PI_AGENT_TRANSIENT_BACKOFF_MS;
+    const origRetries = process.env.PI_AGENT_TRANSIENT_RETRIES;
+    beforeEach(() => {
+        process.env.PI_AGENT_TRANSIENT_BACKOFF_MS = "0";
+    });
+    afterEach(() => {
+        const restore = (k: string, v: string | undefined) =>
+            v === undefined ? delete process.env[k] : (process.env[k] = v);
+        restore("PI_AGENT_TRANSIENT_BACKOFF_MS", origBackoff);
+        restore("PI_AGENT_TRANSIENT_RETRIES", origRetries);
+    });
+
+    it("retries the same model on a transient error, then succeeds", async () => {
+        const models: string[] = [];
+        let n = 0;
+        const spawn = async (_d: any, _t: string, _p: any, _c: string, model: string) => {
+            models.push(model);
+            n++;
+            return n === 1
+                ? { output: "[agent error] Stream ended without finish_reason", exitCode: 1 }
+                : { output: "ok", exitCode: 0 };
+        };
+        const r = await runAgentWithFallback(agent, "t", mkPhase("T", "tester-agent"), "/x", "primary", "fallback", spawn, noopOpts);
+        assert.equal(r.exitCode, 0);
+        assert.equal(n, 2);
+        assert.deepEqual(models, ["primary", "primary"]); // same model retried, no fallback
+    });
+
+    it("does NOT retry a non-transient (logical) failure", async () => {
+        let n = 0;
+        const spawn = async () => {
+            n++;
+            return { output: "VERDICT: FAIL — tests failed", exitCode: 1 };
+        };
+        const r = await runAgentWithFallback(agent, "t", mkPhase("T", "tester-agent"), "/x", "primary", "", spawn, noopOpts);
+        assert.equal(r.exitCode, 1);
+        assert.equal(n, 1); // ran once, no retry
+    });
+
+    it("gives up after the retry limit on a persistent transient error", async () => {
+        process.env.PI_AGENT_TRANSIENT_RETRIES = "2";
+        let n = 0;
+        const spawn = async () => {
+            n++;
+            return { output: "503 Service Unavailable", exitCode: 1 };
+        };
+        const r = await runAgentWithFallback(agent, "t", mkPhase("T", "tester-agent"), "/x", "primary", "", spawn, noopOpts);
+        assert.equal(r.exitCode, 1);
+        assert.equal(n, 3); // initial + 2 retries
     });
 });

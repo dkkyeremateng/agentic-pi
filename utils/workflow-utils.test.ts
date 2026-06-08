@@ -7,6 +7,7 @@ import {
     testSignal,
     outcomeLine,
     isModelFailure,
+    isTransientError,
     isTrivialPing,
 } from "./workflow-utils";
 
@@ -339,6 +340,44 @@ describe("isModelFailure", () => {
 
     it("detects request failed with 502", () => {
         assert.equal(isModelFailure("Request failed with status 502"), true);
+    });
+});
+
+describe("isTransientError", () => {
+    it("detects the reported 'Stream ended without finish_reason'", () => {
+        assert.equal(
+            isTransientError("[agent error] Stream ended without finish_reason"),
+            true,
+        );
+    });
+
+    it("detects dropped connections and socket errors", () => {
+        assert.equal(isTransientError("read ECONNRESET"), true);
+        assert.equal(isTransientError("socket hang up"), true);
+        assert.equal(isTransientError("fetch failed"), true);
+        assert.equal(isTransientError("premature close"), true);
+    });
+
+    it("detects temporary server / rate-limit responses", () => {
+        assert.equal(isTransientError("[agent error] 429 Too Many Requests"), true);
+        assert.equal(isTransientError("503 Service Unavailable"), true);
+        assert.equal(isTransientError("Overloaded, please try again later"), true);
+    });
+
+    it("does NOT treat our watchdog timeout as transient", () => {
+        assert.equal(
+            isTransientError(
+                "[timed out after 5m — killed by PI_WORKFLOW_AGENT_TIMEOUT]",
+            ),
+            false,
+        );
+    });
+
+    it("does NOT treat model-config or logical failures as transient", () => {
+        assert.equal(isTransientError('Error: Model "x" not found'), false);
+        assert.equal(isTransientError("Tool read failed: permission denied"), false);
+        assert.equal(isTransientError("All tests passed"), false);
+        assert.equal(isTransientError(""), false);
     });
 });
 

@@ -232,6 +232,7 @@ Tools & UX:
 
 - **Model** — each agent runs on its **own model**: the agent's `.md` `model:` frontmatter, `PI_AGENT_<NAME>_MODEL`, or a `<name>: <model>` line in `.pi/agents/models.yaml` (env wins). Agents without one fall back to `PI_WORKFLOW_MODEL`, then the current session's model.
 - `PI_WORKFLOW_AGENT_TIMEOUT` — optional watchdog (in minutes). If set, any agent that runs longer is killed and the phase fails with a clear "timed out" note. `0`/unset disables it.
+- `PI_AGENT_TRANSIENT_RETRIES` (default 2, clamped 0–5) / `PI_AGENT_TRANSIENT_BACKOFF_MS` (default 1000) — on a **transient** agent failure (interrupted stream like "Stream ended without finish_reason", dropped connection, 429/503/504/529) the same model is retried with linear backoff before the phase fails. Model-config failures (which fall back to another model), logical failures, and the watchdog timeout are not retried.
 - `run_agent_workflow { request, max_loops }` — `max_loops` overrides the retry limit per call
 
 ### Shared context across phases
