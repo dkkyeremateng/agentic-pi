@@ -285,8 +285,8 @@ export function renderPhaseCardsWithArrows(
 ): string[] {
     const arrowWidth = 5; // " ──▸ "
     const cols = cards.length;
-    const arrowRow = 2; // middle row for arrows
     const cardHeight = cards[0].length;
+    const arrowRow = Math.floor(cardHeight / 2); // vertical center of the card
 
     // Check if we should hide arrows (parallel execution or completed parallel jobs)
     let hideArrows = false;
