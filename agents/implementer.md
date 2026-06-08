@@ -52,23 +52,22 @@ force full table scans that fail at scale:
 
 ## Phase checkpoints & resume
 
-Checkpoint each green phase so a bad phase can be rolled back without losing the good ones, and track status so a re-run resumes instead of redoing finished work. Two artifacts, both under the `.agent/` workflow scratch (never shipped): a ledger at `.agent/progress.md`, and — in a git repo — one commit per green phase.
+Checkpoint each green phase so a bad phase can be rolled back without losing the good ones, and track status so a re-run resumes instead of redoing finished work. The workflow has already prepared the ground for you: before you start, the orchestrator switched the run onto a dedicated work branch (so your commits never touch the default branch), gitignored the `.agent/` scratch, and wrote a `Base: <sha>` line into `.agent/progress.md`. That `Base` is your revert floor and the shipper's squash point.
 
 **On startup**
-- If `.agent/progress.md` exists, you are **resuming**. Phases marked `[x]` are already done and green — do NOT rebuild them; re-run their targeted tests once to confirm still-green, then continue from the first `[ ]` phase. If reviewer/validator feedback implicates an earlier phase, revert to it first (see below) and redo from there.
-- Otherwise initialize the ledger: list every plan phase as `[ ] Phase N: <title>`.
+- If `.agent/progress.md` already lists phases marked `[x]`, you are **resuming**. Those phases are done and green — do NOT rebuild them; re-run their targeted tests once to confirm still-green, then continue from the first unchecked phase. If reviewer/validator feedback implicates an earlier phase, revert to it first (see below) and redo from there.
+- Otherwise it is a fresh run: under the existing `Base:` line, add a `[ ] Phase N: <title>` entry for every plan phase, then start phase 1.
 
-**Checkpoints (git repo with at least one commit)**
-- Before phase 1: make sure `.agent/` is gitignored (append `.agent/` to `.gitignore` if absent) so the scratch never lands in a commit. Then make sure you are **not on the default branch** (`main`/`master`); if you are, create the run's work branch once: `git switch -c feat/<short-slug>` (use `fix/<slug>` for bug fixes). Record `Base: <output of git rev-parse HEAD>` at the top of `.agent/progress.md` — this is both the revert floor and the squash base the shipper uses.
+**Checkpoints (git repo with at least one commit)** — applies whenever `.agent/progress.md` has a `Base:` line:
 - After a phase goes green, commit exactly that phase: `git add -A && git commit -m "wip(phase N): <title>"`. Then flip its ledger line to `[x] Phase N: <title> — <commit sha> — tests: <the targeted command>`.
 - **To revert a bad phase**, `git reset --hard <sha of the last good phase>` (or the `Base` sha to drop everything) — this cleanly removes that phase's edits AND any files it added — then redo from there. The `wip` commits live entirely above `Base`, so the workflow's own `/revert` still undoes the whole run in one step.
 - These `wip(phase N)` commits are intermediate scaffolding; the **shipper squashes them into one clean commit** at the end, so don't worry about their messages being polished.
 
-If the project is not a git repo, or has no commit yet (brand-new app), skip the commits but still keep the `.agent/progress.md` ledger for status and resume.
+If there is no `Base:` line (the project is not a git repo, or has no commit yet — the orchestrator could not branch), skip the commits but still keep the `.agent/progress.md` ledger for status and resume.
 
 ## Workflow
 
-1. Read the plan fully and confirm which files it touches. Check for `.agent/progress.md`: if it exists you are resuming — skip phases already marked done and continue from the first incomplete one (see Phase checkpoints & resume). Otherwise initialize the ledger and, in a git repo, create the work branch and record `Base`.
+1. Read the plan fully and confirm which files it touches. Check `.agent/progress.md`: if it has phases marked `[x]` you are resuming — skip those and continue from the first incomplete one; otherwise add a `[ ]` line per plan phase under the existing `Base:` line (the orchestrator already created the work branch and recorded `Base`). See Phase checkpoints & resume.
 2. Locate the exact insertion/modification points in the real code
 3. **Implement one phase at a time, in plan order — do not start the next phase until the current one is green.** For each phase:
    - Write the phase's test(s) first (failing), covering its acceptance criteria, edge cases, and any regression

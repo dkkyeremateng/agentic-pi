@@ -46,7 +46,7 @@ import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { execFileSync } from "child_process";
-import { writeFileSync, mkdirSync, readFileSync } from "fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
 import { secs } from "../utils/workflow-utils";
 import { emitNotification } from "../utils/notify";
 import {
@@ -54,6 +54,7 @@ import {
     createCheckpoint,
     revertCommands,
     describeCheckpoint,
+    ensureWorkBranch,
 } from "../utils/checkpoint";
 import {
     calculateGridLayout,
@@ -187,6 +188,18 @@ export default function (pi: ExtensionAPI) {
         }).trim();
     const checkpointPath = (cwd: string) =>
         join(cwd, ".agent", "checkpoints", "latest.json");
+    // Append `entry` to the repo's .gitignore if not already present (best-effort).
+    const ensureGitignored = (cwd: string, entry: string) => {
+        try {
+            const file = join(cwd, ".gitignore");
+            const existing = existsSync(file) ? readFileSync(file, "utf8") : "";
+            const lines = existing.split(/\r?\n/).map((l) => l.trim());
+            if (lines.includes(entry) || lines.includes(entry.replace(/\/$/, "")))
+                return;
+            const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
+            writeFileSync(file, `${existing}${prefix}${entry}\n`, "utf8");
+        } catch {}
+    };
     let sessionDir = "";
     let currentProc: any = null;
 
@@ -206,6 +219,18 @@ export default function (pi: ExtensionAPI) {
             setupSessions: (cwd, wipe) => setupSessions(cwd, wipe),
             loadAgents: (cwd) => loadAgents(cwd),
             prepareRun: () => {},
+            ensureWorkBranch: (cwd, request) => {
+                try {
+                    const wb = ensureWorkBranch(git(cwd), request);
+                    if (!wb) return null;
+                    // Keep the .agent/ scratch out of the implementer's commits.
+                    ensureGitignored(cwd, ".agent/");
+                    return { branch: wb.branch, base: wb.base };
+                } catch {
+                    // Best-effort — never block a run on branch setup.
+                    return null;
+                }
+            },
         },
         config: {
             sharedContext: SHARED_CONTEXT,

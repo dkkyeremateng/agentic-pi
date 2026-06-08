@@ -13,6 +13,7 @@ import {
     resolveAgent,
     capturePlan,
     resetRunScratch,
+    writeRunBase,
     runWorkflowCore,
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
@@ -2188,5 +2189,16 @@ describe("resetRunScratch", () => {
             true,
         );
         resetRunScratch(cwd); // no throw when already gone
+    });
+});
+
+describe("writeRunBase", () => {
+    it("writes a progress ledger with the base sha and no completed phases", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "base-"));
+        writeRunBase(cwd, "abc1234");
+        const body = readFileSync(join(cwd, ".agent", "progress.md"), "utf-8");
+        assert.match(body, /Base: abc1234/);
+        // No `[x]` lines — the implementer must see a fresh (non-resume) run.
+        assert.doesNotMatch(body, /\[x\]/);
     });
 });

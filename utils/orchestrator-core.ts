@@ -139,6 +139,14 @@ export interface SetupCallbacks {
     setupSessions: (cwd: string, wipe: boolean) => void;
     loadAgents: (cwd: string) => Map<string, AgentDef>;
     prepareRun: (ctx: any) => void; // capture the model(s) for this run
+    // Switch to the run's work branch before the implementer commits, so per-phase
+    // commits never land on the default branch. Returns the base sha (squash/revert
+    // floor) or null when not applicable (not a git repo / no commits). Git side-
+    // effects live in the extension; the core just decides when to call it.
+    ensureWorkBranch?: (
+        cwd: string,
+        request: string,
+    ) => { branch: string; base: string } | null;
 }
 
 // Configuration flags
@@ -435,6 +443,12 @@ export async function runWorkflowCore(
     if (implP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
+        // Switch to the run's work branch BEFORE the implementer commits, so its
+        // per-phase commits never land on the default branch. Record the base for
+        // the squash/revert floor. Done once, here — re-runs in the review/validate
+        // fix loops reuse the branch and the ledger.
+        const wb = h.setup.ensureWorkBranch?.(cwd, request) ?? null;
+        if (wb) writeRunBase(cwd, wb.base);
         impl = await h.execution.runPhase(
             implP,
             shared(implementTask(request, plan.output), "implementer"),
@@ -652,6 +666,22 @@ export function resetRunScratch(cwd: string): void {
             rmSync(join(agent, f), { force: true });
         } catch {}
     }
+}
+
+// Record the run's base sha (HEAD when the work branch was created) into the
+// implementer's ledger so the implementer (revert), validator (diff range), and
+// shipper (squash) all read one source. Written AFTER resetRunScratch and with
+// no `[x]` phase lines, so the implementer still sees a fresh (non-resume) run.
+export function writeRunBase(cwd: string, base: string): void {
+    try {
+        const file = join(cwd, ".agent", "progress.md");
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(
+            file,
+            `# Implementation progress\n\nBase: ${base}\n\n`,
+            "utf-8",
+        );
+    } catch {}
 }
 
 export function capturePlan(
