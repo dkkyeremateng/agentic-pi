@@ -834,6 +834,28 @@ describe("parseAgentFile aliases", () => {
         const b = parseAgentFile(write("---\nname: y\n---\nb"));
         assert.equal(b?.aliases, undefined);
     });
+
+    it("applies PI_AGENT_<NAME> model/contextWindow when the frontmatter omits them", () => {
+        const f = write("---\nname: validator\ndescription: gate\ntools: read,bash\n---\nbody");
+        process.env.PI_AGENT_VALIDATOR =
+            '{"model":"prov/the-model","contextWindow":1000000}';
+        try {
+            const def = parseAgentFile(f);
+            assert.equal(def?.model, "prov/the-model");
+            assert.equal(def?.contextWindow, 1000000);
+        } finally {
+            delete process.env.PI_AGENT_VALIDATOR;
+        }
+    });
+
+    it("leaves model empty and contextWindow 0 with no frontmatter and no env", () => {
+        delete process.env.PI_AGENT_NOENVAGENT;
+        const def = parseAgentFile(
+            write("---\nname: noenvagent\ndescription: d\ntools: read\n---\nbody"),
+        );
+        assert.equal(def?.model, "");
+        assert.equal(def?.contextWindow, 0);
+    });
 });
 
 describe("subagentExtArgs", () => {

@@ -1,8 +1,6 @@
 ---
 name: implementer
 description: Requirement and bug-fix implementation — applies an approved plan exactly, writes clean code that follows existing patterns AND the tests that prove it (TDD), and hands off a precise change summary
-model: gateframe/gateframe_yoda/qwen-max-3-7-yoda-2
-context_window: 1000000
 tools: read,write,edit,bash,grep,find,ls
 ---
 

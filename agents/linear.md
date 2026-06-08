@@ -1,8 +1,6 @@
 ---
 name: linear
 description: Linear issue tracking and triage — list, search, read, create, comment on, and update issues via the linear (GraphQL) skill. Use for backlog queries, issue creation, status/assignee/priority changes, and workspace lookups. Reports concise, sourced results without changing the codebase
-model: gateframe/gateframe_yoda/qwen-max-3-7-yoda-2
-context_window: 1000000
 tools: bash,read,write,grep,find,ls
 ---
 

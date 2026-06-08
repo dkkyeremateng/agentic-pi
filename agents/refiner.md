@@ -2,8 +2,6 @@
 name: refiner
 aliases: plan-reviewer,spec-reviewer,plan-review
 description: Plan review and hardening — reviews and refines the planner's spec/implementation plan before implementation, applying production-grade rules (completeness, edge cases, security, testability, sequencing) and rewriting a hardened plan. Reports the refined plan with risks and assumptions
-model: gateframe/gateframe_yoda/qwen-max-3-7-yoda-2
-context_window: 1000000
 tools: read,write,grep,find,ls
 ---
 

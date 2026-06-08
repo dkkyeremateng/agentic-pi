@@ -1,8 +1,6 @@
 ---
 name: scout
 description: Fast codebase reconnaissance — maps structure, conventions, and key entry points, then reports concise findings without changing anything. Works on the local codebase and, via the `github` skill (`gh`), on a remote GitHub repo
-model: gateframe/gateframe_yoda/qwen-max-3-7-yoda-2
-context_window: 1000000
 tools: read,grep,find,ls,bash
 ---
 

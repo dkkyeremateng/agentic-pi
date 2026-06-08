@@ -95,13 +95,15 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
    ---
    name: <name>                     # the dispatch id
    description: <what it does / when to use it>   # the orchestrator matches on this
-   model:                           # blank = primary/session model
-   context_window:                  # e.g. 1000000 (drives the context-usage bar)
    tools: read,write,grep,find,ls   # add dispatch_agent,dispatch_parallel if it delegates
    aliases: foo,bar                 # optional
    ---
    <system prompt / instructions>
    ```
+
+   The model and context window are NOT in the frontmatter — set them per agent via
+   the `PI_AGENT_<NAME>` env var (see step 3). (A `model:`/`context_window:` in the
+   frontmatter is still honored as a fallback if you prefer to pin it there.)
 
    It is loaded on the next run, listed in the orchestrator's **Available Agents**,
    and dispatchable by name (`dispatch_agent agent="<name>"`) immediately.
@@ -121,9 +123,12 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
      ad-hoc (e.g. `seeker`); it is not run via a team — adding it to a team roster
      has no effect, since only pipeline roles execute.
 
-3. Per-agent model: set `PI_AGENT_<NAME>_MODEL=...`, add a `<name>: <model>` line to
-   `.pi/agents/models.yaml`, or set the agent's `.md` `model:` frontmatter. Agents
-   without one fall back to `PI_WORKFLOW_MODEL` / the session model.
+3. Per-agent model + context window: set `PI_AGENT_<NAME>={"model":"…","contextWindow":…}`
+   (the recommended single-source form; loose unquoted JSON also parses). The
+   model-only shorthand `PI_AGENT_<NAME>_MODEL=…` and a `<name>: <model>` line in
+   `.pi/agents/models.yaml` still work too. Agents without any of these fall back to
+   `PI_WORKFLOW_MODEL` / the session model (and show no context-bar denominator
+   until live usage arrives).
 
 **The only change that needs TypeScript** is introducing a brand-new *linear
 pipeline phase* — a new step woven into `scout → … → ship` with its own
