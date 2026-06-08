@@ -494,7 +494,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         // ── Pipeline view (full run_agent_workflow) ───────────
-        const arrowWidth = 5; // " ──▸ "
+        const arrowWidth = 3; // "-->" (must match renderPhaseCardsWithArrows)
         const cols = st.phases.length;
         // Cap at MAX_CARD_WIDTH so running cards match the idle grid instead of
         // stretching to fill — left-aligned, connected by arrows. The 14 floor
