@@ -1,4 +1,4 @@
-full:
+plan-build:
     - scout
     - planner
     - refiner
@@ -12,24 +12,8 @@ spec:
     - planner
     - refiner
 
-plan-build:
-    - planner
-    - refiner
+build:
     - implementer
     - reviewer
-    - validator
-
-# Like plan-build, but a scout runs first and shares one codebase recon with the
-# planner, refiner, and implementer — so they don't each re-read the codebase.
-plan-build-scout:
-    - scout
-    - planner
-    - refiner
-    - implementer
-    - reviewer
-    - validator
-
-building:
-    - implementer
     - validator
     - shipper
