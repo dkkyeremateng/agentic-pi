@@ -2218,19 +2218,43 @@ describe("planArchiveName", () => {
 describe("archivePlan", () => {
     const now = new Date("2026-06-08T10:00:00Z");
 
-    it("writes the plan when enabled and returns the repo-relative path", () => {
+    it("writes the plan with an outcome header and returns the repo-relative path", () => {
         const cwd = mkdtempSync(join(tmpdir(), "arch-"));
-        const rel = archivePlan(cwd, "Fix the bug", "# Plan\nbody", true, now);
-        assert.equal(rel, join("docs", "plans", "2026-06-08-fix-the-bug.md"));
-        assert.equal(
-            readFileSync(join(cwd, rel as string), "utf-8"),
+        const rel = archivePlan(
+            cwd,
+            "Fix the bug",
             "# Plan\nbody",
+            true,
+            "passed",
+            now,
         );
+        assert.equal(rel, join("docs", "plans", "2026-06-08-fix-the-bug.md"));
+        const body = readFileSync(join(cwd, rel as string), "utf-8");
+        assert.match(body, /Run outcome:\*\* passed — 2026-06-08/);
+        assert.match(body, /# Plan\nbody$/);
+    });
+
+    it("records failed attempts (outcome stamped in the file)", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "arch-"));
+        const rel = archivePlan(cwd, "Bad idea", "# Plan", true, "failed", now);
+        const body = readFileSync(join(cwd, rel as string), "utf-8");
+        assert.match(body, /Run outcome:\*\* failed/);
+    });
+
+    it("does not overwrite a prior attempt — uniquifies the name", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "arch-"));
+        const a = archivePlan(cwd, "Same task", "# attempt 1", true, "failed", now);
+        const b = archivePlan(cwd, "Same task", "# attempt 2", true, "passed", now);
+        assert.equal(a, join("docs", "plans", "2026-06-08-same-task.md"));
+        assert.equal(b, join("docs", "plans", "2026-06-08-same-task-2.md"));
+        // The earlier (failed) record survives.
+        assert.match(readFileSync(join(cwd, a as string), "utf-8"), /attempt 1/);
+        assert.match(readFileSync(join(cwd, b as string), "utf-8"), /attempt 2/);
     });
 
     it("skips (returns null) when disabled and no docs/plans dir exists", () => {
         const cwd = mkdtempSync(join(tmpdir(), "arch-"));
-        const rel = archivePlan(cwd, "Fix the bug", "# Plan", false, now);
+        const rel = archivePlan(cwd, "Fix the bug", "# Plan", false, "passed", now);
         assert.equal(rel, null);
         assert.equal(existsSync(join(cwd, "docs", "plans")), false);
     });
@@ -2238,12 +2262,12 @@ describe("archivePlan", () => {
     it("auto-enables when a docs/plans dir already exists, even if disabled", () => {
         const cwd = mkdtempSync(join(tmpdir(), "arch-"));
         mkdirSync(join(cwd, "docs", "plans"), { recursive: true });
-        const rel = archivePlan(cwd, "Fix the bug", "# Plan", false, now);
+        const rel = archivePlan(cwd, "Fix the bug", "# Plan", false, "passed", now);
         assert.equal(rel, join("docs", "plans", "2026-06-08-fix-the-bug.md"));
     });
 
     it("skips an empty plan", () => {
         const cwd = mkdtempSync(join(tmpdir(), "arch-"));
-        assert.equal(archivePlan(cwd, "x", "   ", true, now), null);
+        assert.equal(archivePlan(cwd, "x", "   ", true, "passed", now), null);
     });
 });

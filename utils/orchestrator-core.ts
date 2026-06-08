@@ -568,12 +568,24 @@ export async function runWorkflowCore(
     // docs/comments as part of the change, so there is no separate document phase.
     const passed = valP ? verdict === "pass" : true;
 
-    // Archive the final plan to docs/plans/ (opt-in) when implementation
-    // succeeded — independent of the shipper, so projects without git/versioning
-    // (or teams without a ship phase) still get a durable plan record on disk.
-    // When a shipper does run next, it's already there to commit with the change.
-    if (passed && implP) {
-        archivePlan(cwd, request, plan.output, !!h.config.archivePlans);
+    // Archive the final plan to docs/plans/ (opt-in) whenever implementation ran —
+    // pass OR fail — so every attempt is tracked, independent of the shipper and of
+    // git/versioning. The outcome is stamped into the file so failed attempts are
+    // distinguishable; on success with a shipper, the file is already there to
+    // commit with the change.
+    if (implP) {
+        const outcome = passed
+            ? "passed"
+            : verdict === "fail"
+              ? "failed"
+              : "needs-review";
+        archivePlan(
+            cwd,
+            request,
+            plan.output,
+            !!h.config.archivePlans,
+            outcome,
+        );
     }
 
     if (passed && shipP) {
@@ -706,17 +718,21 @@ export function planArchiveName(request: string, now: Date = new Date()): string
 
 // Save a run's final plan to docs/plans/<date>-<slug>.md as a durable, reviewable
 // record, instead of letting it be wiped with the .agent scratch. Written whether
-// or not a shipper runs — so projects without git/versioning still track their
-// implementation; when a shipper does run, the file is already there to commit
-// with the change. Opt-in: only when `enabled` (the config flag) OR a docs/plans/
-// directory already exists. Returns the repo-relative path written (for the
-// shipper to stage), or null when skipped. The active .agent/plan.md stays
-// per-run — this never makes a plan cumulative.
+// or not a shipper runs, and for failed attempts as well as successful ones — so
+// projects without git/versioning track every attempt; when a shipper does run on
+// success, the file is already there to commit with the change. The `outcome`
+// (passed/failed/needs-review) is stamped at the top so failures are
+// distinguishable, and the file name is uniquified so a later attempt never
+// overwrites an earlier one's record. Opt-in: only when `enabled` (the config
+// flag) OR a docs/plans/ directory already exists. Returns the repo-relative path
+// written (for the shipper to stage), or null when skipped. The active
+// .agent/plan.md stays per-run — this never makes a plan cumulative.
 export function archivePlan(
     cwd: string,
     request: string,
     plan: string,
     enabled: boolean,
+    outcome: string = "",
     now: Date = new Date(),
 ): string | null {
     const dir = join(cwd, "docs", "plans");
@@ -724,8 +740,18 @@ export function archivePlan(
     if (!plan.trim()) return null;
     try {
         mkdirSync(dir, { recursive: true });
-        const rel = join("docs", "plans", planArchiveName(request, now));
-        writeFileSync(join(cwd, rel), plan, "utf-8");
+        // Never overwrite a prior attempt — uniquify so every run's record (failed
+        // or successful) is preserved for tracking.
+        const baseName = planArchiveName(request, now);
+        let name = baseName;
+        for (let n = 2; existsSync(join(dir, name)); n++) {
+            name = baseName.replace(/\.md$/, `-${n}.md`);
+        }
+        const header = outcome
+            ? `> **Run outcome:** ${outcome} — ${now.toISOString().slice(0, 10)}\n\n`
+            : "";
+        const rel = join("docs", "plans", name);
+        writeFileSync(join(cwd, rel), header + plan, "utf-8");
         return rel;
     } catch {
         return null;
