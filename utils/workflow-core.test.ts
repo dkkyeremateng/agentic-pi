@@ -23,6 +23,8 @@ import {
     renderWorkflowFooter,
     parseAgentFile,
     subagentExtArgs,
+    shouldApproveProjectForSpawn,
+    spawnSessionName,
     loadSkills,
     sessionLabel,
     resolveAgentModel,
@@ -961,6 +963,80 @@ describe("subagentExtArgs", () => {
             if (saved === undefined) delete process.env.PI_CONFINE_CWD;
             else process.env.PI_CONFINE_CWD = saved;
         }
+    });
+});
+
+describe("spawnSessionName", () => {
+    it("combines the project basename and agent name", () => {
+        assert.equal(
+            spawnSessionName("/home/me/projects/todo", "implementer"),
+            "todo · implementer",
+        );
+    });
+    it("falls back to 'pi' when the cwd has no basename", () => {
+        assert.equal(spawnSessionName("/", "scout"), "pi · scout");
+    });
+});
+
+describe("shouldApproveProjectForSpawn", () => {
+    let dir: string;
+    let cwd: string;
+    let savedAgentDir: string | undefined;
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), "trust-"));
+        cwd = mkdtempSync(join(tmpdir(), "proj-"));
+        savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+        savedEnv = process.env.PI_WORKFLOW_APPROVE_PROJECT;
+        process.env.PI_CODING_AGENT_DIR = dir;
+        delete process.env.PI_WORKFLOW_APPROVE_PROJECT;
+    });
+    afterEach(() => {
+        if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+        if (savedEnv === undefined) delete process.env.PI_WORKFLOW_APPROVE_PROJECT;
+        else process.env.PI_WORKFLOW_APPROVE_PROJECT = savedEnv;
+    });
+
+    const writeTrust = (obj: Record<string, unknown>) =>
+        writeFileSync(join(dir, "trust.json"), JSON.stringify(obj));
+    // The store is keyed by the canonical (realpath'd) cwd.
+    const keyFor = (p: string) => {
+        try {
+            return require("node:fs").realpathSync(p);
+        } catch {
+            return p;
+        }
+    };
+
+    it("is false when no trust.json exists", () => {
+        assert.equal(shouldApproveProjectForSpawn(cwd), false);
+    });
+    it("approves when the saved decision is exactly true", () => {
+        writeTrust({ [keyFor(cwd)]: true });
+        assert.equal(shouldApproveProjectForSpawn(cwd), true);
+    });
+    it("does not approve a declined (false) project", () => {
+        writeTrust({ [keyFor(cwd)]: false });
+        assert.equal(shouldApproveProjectForSpawn(cwd), false);
+    });
+    it("does not approve when the cwd has no saved decision", () => {
+        writeTrust({ "/some/other/path": true });
+        assert.equal(shouldApproveProjectForSpawn(cwd), false);
+    });
+    it("PI_WORKFLOW_APPROVE_PROJECT=1 forces approval without a store", () => {
+        process.env.PI_WORKFLOW_APPROVE_PROJECT = "1";
+        assert.equal(shouldApproveProjectForSpawn(cwd), true);
+    });
+    it("PI_WORKFLOW_APPROVE_PROJECT=0 forces off even when trusted", () => {
+        writeTrust({ [keyFor(cwd)]: true });
+        process.env.PI_WORKFLOW_APPROVE_PROJECT = "0";
+        assert.equal(shouldApproveProjectForSpawn(cwd), false);
+    });
+    it("survives a corrupt trust.json", () => {
+        writeFileSync(join(dir, "trust.json"), "{ not json");
+        assert.equal(shouldApproveProjectForSpawn(cwd), false);
     });
 });
 

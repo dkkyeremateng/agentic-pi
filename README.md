@@ -51,6 +51,12 @@ list. Highlights:
 - `LINEAR_API_KEY` — for the linear skill.
 - `ATLASSIAN_SITE` / `ATLASSIAN_EMAIL` / `ATLASSIAN_API_TOKEN` — for the atlassian (Jira) skill.
 
+**Project trust (pi >= 0.79):** run `/trust` once in your project so the headless
+sub-agents inherit the repo's project-local inputs (`AGENTS.md`/`CLAUDE.md`, `.pi`
+settings/skills). Without a saved trust decision, headless pi silently ignores
+those, so the workflow auto-passes `--approve` to spawns only when the project is
+trusted. Override with `PI_WORKFLOW_APPROVE_PROJECT=1`/`0` (see `example.env`).
+
 ## Develop
 
 `pi` isn't a node dependency of this repo, so type-checking/tests link the

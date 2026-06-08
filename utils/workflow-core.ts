@@ -22,6 +22,7 @@ import {
     openSync,
     readSync,
     closeSync,
+    realpathSync,
 } from "fs";
 import {
     join,
@@ -78,6 +79,14 @@ export function sessionLabel(
         request.length > 48 ? request.slice(0, 47).trimEnd() + "…" : request;
     const mid = team && team.toLowerCase() !== "none" ? ` · ${team}` : "";
     return `${prefix}${mid} · ${req}`;
+}
+
+// Display name for a spawned sub-agent's session (pi >= 0.78 `--name`). Without it
+// the saved session shows only an opaque hash in pi's resume/session list; with it
+// a failed phase is identifiable after the fact, e.g. "todo · implementer".
+export function spawnSessionName(cwd: string, agentName: string): string {
+    const proj = basename(cwd) || "pi";
+    return `${proj} · ${agentName}`;
 }
 
 // Appended to EVERY spawned agent's system prompt so any agent answers a trivial
@@ -2381,6 +2390,47 @@ export function dispatchEnv(agentName: string): Record<string, string> {
     };
 }
 
+// Whether a spawned (headless) sub-agent should be told to trust the project's
+// local inputs (AGENTS.md/CLAUDE.md, .pi settings/resources/skills) via --approve.
+//
+// Background (pi >= 0.79): non-interactive modes (-p / --mode json) never show a
+// trust prompt and, without a SAVED trust decision, silently IGNORE project-local
+// inputs unless --approve is passed. Our sub-agents run --mode json -p, so without
+// this they would stop honoring the repo's conventions and nobody would notice.
+//
+// We mirror pi's own resolution: the trust store is ~/.pi/agent/trust.json (or
+// $PI_CODING_AGENT_DIR), keyed by the canonical cwd — realpathSync(resolve(cwd)),
+// falling back to resolve(cwd) when the path can't be realpath'd. We approve iff:
+//   - PI_WORKFLOW_APPROVE_PROJECT=1 (force on, e.g. session-only trust), OR
+//   - the saved decision for this cwd is exactly `true`.
+// PI_WORKFLOW_APPROVE_PROJECT=0 forces it off regardless. A saved `false`
+// (declined) or absent decision is respected by NOT approving.
+export function shouldApproveProjectForSpawn(cwd: string): boolean {
+    const env = process.env.PI_WORKFLOW_APPROVE_PROJECT;
+    if (env === "0") return false;
+    if (env === "1") return true;
+    const expand = (p: string) =>
+        p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+    const agentDir = process.env.PI_CODING_AGENT_DIR
+        ? expand(process.env.PI_CODING_AGENT_DIR)
+        : join(homedir(), ".pi", "agent");
+    const trustPath = join(agentDir, "trust.json");
+    if (!existsSync(trustPath)) return false;
+    let key: string;
+    const resolved = resolvePath(cwd);
+    try {
+        key = realpathSync(resolved);
+    } catch {
+        key = resolved;
+    }
+    try {
+        const data = JSON.parse(readFileSync(trustPath, "utf-8"));
+        return data && typeof data === "object" && data[key] === true;
+    } catch {
+        return false;
+    }
+}
+
 // Extensions to load (-e) into a spawned sub-agent's process. Sub-agents are
 // spawned without -e, so they only auto-discover extensions; these must be passed
 // explicitly. Resolved relative to this file (<repo>/utils → <repo>/extensions/).
@@ -2695,6 +2745,9 @@ function spawnAgentWithModelFallback(
         agentDef.systemPrompt + TRIVIAL_PING_RULE,
         "--session",
         sessionFile,
+        "--name",
+        spawnSessionName(cwd, agentDef.name),
+        ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
         ...subagentExtArgs(agentDef.tools),
     ];
 
@@ -2923,6 +2976,9 @@ export function spawnAgentWithModel(
         agentDef.systemPrompt + TRIVIAL_PING_RULE,
         "--session",
         sessionFile,
+        "--name",
+        spawnSessionName(cwd, agentDef.name),
+        ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
         ...subagentExtArgs(agentDef.tools),
     ];
     // Only pass --model if the string looks valid (non-empty, no whitespace).

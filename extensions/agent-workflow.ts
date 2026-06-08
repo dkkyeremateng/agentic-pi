@@ -475,6 +475,11 @@ export default function (pi: ExtensionAPI) {
     const WIDGET_MIN_INTERVAL_MS = 80;
 
     function updateWidget() {
+        // No interactive surface (print `-p` / JSON mode → hasUI false) means the
+        // widget would never paint anyway — bail before scheduling the coalescing
+        // timer so headless runs don't churn setTimeout per stream event. setWidget
+        // works in both TUI and RPC, so hasUI (not mode==="tui") is the right gate.
+        if (!widgetCtx?.hasUI) return;
         const now = Date.now();
         const since = now - lastWidgetRender;
         if (since >= WIDGET_MIN_INTERVAL_MS) {
@@ -1412,7 +1417,7 @@ export default function (pi: ExtensionAPI) {
             `Workflow Team: ${present.length}/${REQUIRED_AGENTS.length} agents`,
         );
 
-        if (loadedExplicitly()) {
+        if (ctx.hasUI && loadedExplicitly()) {
             const flow = REQUIRED_AGENTS.map(
                 (a) => a.charAt(0).toUpperCase() + a.slice(1),
             ).join(" → ");
