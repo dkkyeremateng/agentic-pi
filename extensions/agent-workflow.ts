@@ -151,6 +151,11 @@ const AGENT_TIMEOUT_MS =
 // already thread. Set PI_AGENT_WORKFLOW_SHARED_CONTEXT=0 to disable — each agent then
 // sees only what its own task prompt carries, matching the pre-port behaviour.
 const SHARED_CONTEXT = process.env.PI_AGENT_WORKFLOW_SHARED_CONTEXT !== "0";
+// Opt-in: archive each shipped run's final plan to docs/plans/<date>-<slug>.md so
+// it's committed with the change (a permanent, reviewable plan record). Off by
+// default; also auto-enabled when a docs/plans/ directory already exists (checked
+// per-run in the core). Set PI_WORKFLOW_ARCHIVE_PLANS=1 to force it on.
+const ARCHIVE_PLANS = process.env.PI_WORKFLOW_ARCHIVE_PLANS === "1";
 // Cap dispatches per orchestrator turn so a weak model can't loop forever.
 const MAX_DISPATCHES_PER_TURN = Math.max(
     1,
@@ -234,6 +239,7 @@ export default function (pi: ExtensionAPI) {
         },
         config: {
             sharedContext: SHARED_CONTEXT,
+            archivePlans: ARCHIVE_PLANS,
             maxDispatchesPerTurn: MAX_DISPATCHES_PER_TURN,
             minDispatchOutputChars: MIN_DISPATCH_OUTPUT_CHARS,
         },

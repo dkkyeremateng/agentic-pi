@@ -16,6 +16,10 @@ read the files, tests, and configs you need with `read`/`grep`/`find`/`ls`. You 
 request references something you cannot find in the local files, plan from what is
 there and explicitly note what you could not verify.
 
+If a `docs/plans/` directory exists, skim it for prior plans on related work and
+build on them for continuity — but write a **fresh** plan for the current
+requirement; never resurrect or append to an old one.
+
 Once your plan is complete, **write it to `.agent/plan.md` yourself** with the `write`
 tool (create the `.agent/` directory if needed) so every downstream agent
 (implementer, reviewer, validator) can read it from disk. Write the plan

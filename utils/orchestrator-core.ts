@@ -45,6 +45,7 @@ import {
 import { writeFileSync, mkdirSync, existsSync, rmSync } from "fs";
 import { join, dirname } from "path";
 import { fileLink } from "./workflow-widgets";
+import { slugifyBranch } from "./checkpoint";
 
 // The mutable run/session state shared between the orchestration here and the
 // extension's widget/footer/hooks. Created by the extension; mutated by both.
@@ -154,6 +155,10 @@ export interface OrchestratorConfig {
     sharedContext: boolean; // apply the curated context bundle
     maxDispatchesPerTurn: number;
     minDispatchOutputChars: number;
+    // Archive each shipped run's final plan to docs/plans/ (committed with the
+    // change). Also auto-enabled when a docs/plans/ dir already exists. Optional
+    // (defaults to false) so existing host fakes need not set it.
+    archivePlans?: boolean;
 }
 
 export interface OrchestratorHost {
@@ -565,6 +570,9 @@ export async function runWorkflowCore(
     if (passed && shipP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
+        // Graduate the final plan into docs/plans/ (opt-in) BEFORE the shipper
+        // runs, so it's committed as part of the change rather than wiped scratch.
+        archivePlan(cwd, request, plan.output, !!h.config.archivePlans);
         ship = await h.execution.runPhase(
             shipP,
             shared(shipTask(request, val.output), "shipper"),
@@ -682,6 +690,38 @@ export function writeRunBase(cwd: string, base: string): void {
             "utf-8",
         );
     } catch {}
+}
+
+// File name for an archived plan: <YYYY-MM-DD>-<slug>.md.
+export function planArchiveName(request: string, now: Date = new Date()): string {
+    const date = now.toISOString().slice(0, 10);
+    return `${date}-${slugifyBranch(request)}.md`;
+}
+
+// Graduate a shipped run's final plan into the repo at docs/plans/<date>-<slug>.md
+// so it's committed with the change (a permanent, reviewable plan record), instead
+// of being wiped with the .agent scratch. Opt-in: only when `enabled` (the config
+// flag) OR a docs/plans/ directory already exists. Returns the repo-relative path
+// written (for the shipper to stage), or null when skipped. The active
+// .agent/plan.md stays per-run — this never makes a plan cumulative.
+export function archivePlan(
+    cwd: string,
+    request: string,
+    plan: string,
+    enabled: boolean,
+    now: Date = new Date(),
+): string | null {
+    const dir = join(cwd, "docs", "plans");
+    if (!enabled && !existsSync(dir)) return null;
+    if (!plan.trim()) return null;
+    try {
+        mkdirSync(dir, { recursive: true });
+        const rel = join("docs", "plans", planArchiveName(request, now));
+        writeFileSync(join(cwd, rel), plan, "utf-8");
+        return rel;
+    } catch {
+        return null;
+    }
 }
 
 export function capturePlan(

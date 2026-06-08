@@ -14,6 +14,8 @@ import {
     capturePlan,
     resetRunScratch,
     writeRunBase,
+    planArchiveName,
+    archivePlan,
     runWorkflowCore,
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
@@ -2200,5 +2202,48 @@ describe("writeRunBase", () => {
         assert.match(body, /Base: abc1234/);
         // No `[x]` lines — the implementer must see a fresh (non-resume) run.
         assert.doesNotMatch(body, /\[x\]/);
+    });
+});
+
+describe("planArchiveName", () => {
+    it("is <YYYY-MM-DD>-<slug>.md", () => {
+        const name = planArchiveName(
+            "Add the Login Page!",
+            new Date("2026-06-08T10:00:00Z"),
+        );
+        assert.equal(name, "2026-06-08-add-the-login-page.md");
+    });
+});
+
+describe("archivePlan", () => {
+    const now = new Date("2026-06-08T10:00:00Z");
+
+    it("writes the plan when enabled and returns the repo-relative path", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "arch-"));
+        const rel = archivePlan(cwd, "Fix the bug", "# Plan\nbody", true, now);
+        assert.equal(rel, join("docs", "plans", "2026-06-08-fix-the-bug.md"));
+        assert.equal(
+            readFileSync(join(cwd, rel as string), "utf-8"),
+            "# Plan\nbody",
+        );
+    });
+
+    it("skips (returns null) when disabled and no docs/plans dir exists", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "arch-"));
+        const rel = archivePlan(cwd, "Fix the bug", "# Plan", false, now);
+        assert.equal(rel, null);
+        assert.equal(existsSync(join(cwd, "docs", "plans")), false);
+    });
+
+    it("auto-enables when a docs/plans dir already exists, even if disabled", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "arch-"));
+        mkdirSync(join(cwd, "docs", "plans"), { recursive: true });
+        const rel = archivePlan(cwd, "Fix the bug", "# Plan", false, now);
+        assert.equal(rel, join("docs", "plans", "2026-06-08-fix-the-bug.md"));
+    });
+
+    it("skips an empty plan", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "arch-"));
+        assert.equal(archivePlan(cwd, "x", "   ", true, now), null);
     });
 });
