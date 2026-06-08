@@ -92,13 +92,38 @@ export function isDefaultBranch(run: GitRunner, branch: string): boolean {
     }
 }
 
-// Ensure the run is on a non-default work branch and report the base sha (HEAD at
-// this point — the squash/revert floor). Creates+switches a fresh `agent/<slug>`
-// branch only when currently on a default branch; otherwise reuses the current
-// branch. Returns null when branching doesn't apply or fails — not a git repo, a
-// repo with no commits yet, or a default branch we could not switch off — in
-// which case the caller records no Base and the implementer skips per-phase
-// commits (so work never lands on the default branch).
+// A branch this workflow created for a prior run (see ensureWorkBranch's naming).
+export function isAgentBranch(branch: string): boolean {
+    return branch.startsWith("agent/");
+}
+
+// The repo's default branch name: origin/HEAD if set, else whichever of
+// main/master actually exists, else "" (unknown).
+export function defaultBranchName(run: GitRunner): string {
+    try {
+        const head = run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+        const def = head.replace(/^origin\//, "").trim();
+        if (def) return def;
+    } catch {}
+    for (const cand of ["main", "master"]) {
+        try {
+            if (run(["rev-parse", "--verify", "--quiet", cand]).trim()) return cand;
+        } catch {}
+    }
+    return "";
+}
+
+// Ensure the run is on a fresh work branch and report the base sha (HEAD at this
+// point — the squash/revert floor). Behavior by current branch:
+//   - default branch (main/master/origin HEAD) → create+switch agent/<slug>-<sha>
+//   - a PRIOR agent branch (agent/…)           → switch back to the default
+//        branch, then branch fresh — so a new requirement never stacks onto the
+//        finished run's branch (which, with its commits/PR, is left intact)
+//   - the user's own non-default branch        → reuse it (don't disturb it)
+// Returns null when branching doesn't apply or fails — not a git repo, a repo
+// with no commits yet, or a default branch we could not switch off — in which
+// case the caller records no Base and the implementer skips per-phase commits
+// (so work never lands on the default branch).
 export function ensureWorkBranch(
     run: GitRunner,
     request: string,
@@ -111,14 +136,31 @@ export function ensureWorkBranch(
             return "";
         }
     };
-    const base = safe(["rev-parse", "HEAD"]);
-    if (!base) return null; // no commits yet — nothing to branch from
+    if (!safe(["rev-parse", "HEAD"])) return null; // no commits yet — nothing to branch from
 
     const current = safe(["rev-parse", "--abbrev-ref", "HEAD"]);
     if (current && !isDefaultBranch(run, current)) {
-        return { branch: current, base, created: false }; // already off the default
+        // Off the default branch already. If it's the user's own branch, respect
+        // it and build there. If it's a PRIOR agent run's branch, don't stack a
+        // new requirement onto it — switch back to the default branch and start
+        // fresh (the old branch, its commits, and any PR are left intact).
+        if (!isAgentBranch(current)) {
+            return { branch: current, base: safe(["rev-parse", "HEAD"]), created: false };
+        }
+        const def = defaultBranchName(run);
+        if (!def) {
+            return { branch: current, base: safe(["rev-parse", "HEAD"]), created: false };
+        }
+        try {
+            run(["switch", def]);
+            // now on the default branch — fall through to branch fresh from it
+        } catch {
+            return { branch: current, base: safe(["rev-parse", "HEAD"]), created: false };
+        }
     }
 
+    const base = safe(["rev-parse", "HEAD"]);
+    if (!base) return null;
     const branch = `agent/${slugifyBranch(request)}-${base.slice(0, 7)}`;
     try {
         run(["switch", "-c", branch]);

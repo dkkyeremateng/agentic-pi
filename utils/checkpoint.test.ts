@@ -7,6 +7,8 @@ import {
     describeCheckpoint,
     slugifyBranch,
     isDefaultBranch,
+    isAgentBranch,
+    defaultBranchName,
     ensureWorkBranch,
     type Checkpoint,
 } from "./checkpoint";
@@ -188,6 +190,58 @@ describe("isDefaultBranch", () => {
     });
 });
 
+describe("isAgentBranch", () => {
+    it("matches branches this workflow creates", () => {
+        assert.equal(isAgentBranch("agent/fix-thing-abc1234"), true);
+        assert.equal(isAgentBranch("feat/user-thing"), false);
+        assert.equal(isAgentBranch("main"), false);
+    });
+});
+
+describe("defaultBranchName", () => {
+    it("prefers origin/HEAD", () => {
+        const run = fakeRunner({
+            "symbolic-ref --short refs/remotes/origin/HEAD": "origin/trunk",
+        });
+        assert.equal(defaultBranchName(run), "trunk");
+    });
+    it("falls back to main when it exists", () => {
+        const run = fakeRunner({
+            "symbolic-ref --short refs/remotes/origin/HEAD": () => {
+                throw new Error("no remote");
+            },
+            "rev-parse --verify --quiet main": "abc123",
+        });
+        assert.equal(defaultBranchName(run), "main");
+    });
+    it("falls back to master when main is absent", () => {
+        const run = fakeRunner({
+            "symbolic-ref --short refs/remotes/origin/HEAD": () => {
+                throw new Error("no remote");
+            },
+            "rev-parse --verify --quiet main": () => {
+                throw new Error("no main");
+            },
+            "rev-parse --verify --quiet master": "def456",
+        });
+        assert.equal(defaultBranchName(run), "master");
+    });
+    it("returns empty string when nothing matches", () => {
+        const run = fakeRunner({
+            "symbolic-ref --short refs/remotes/origin/HEAD": () => {
+                throw new Error("no remote");
+            },
+            "rev-parse --verify --quiet main": () => {
+                throw new Error("x");
+            },
+            "rev-parse --verify --quiet master": () => {
+                throw new Error("x");
+            },
+        });
+        assert.equal(defaultBranchName(run), "");
+    });
+});
+
 describe("ensureWorkBranch", () => {
     it("creates agent/<slug>-<sha> when on the default branch", () => {
         const switched: string[][] = [];
@@ -213,7 +267,7 @@ describe("ensureWorkBranch", () => {
         ]);
     });
 
-    it("reuses the current branch when already off the default", () => {
+    it("reuses the user's own non-default branch (doesn't yank them onto main)", () => {
         const run = fakeRunner({
             "rev-parse --is-inside-work-tree": "true",
             "rev-parse HEAD": "deadbeefcafe",
@@ -225,6 +279,42 @@ describe("ensureWorkBranch", () => {
             base: "deadbeefcafe",
             created: false,
         });
+    });
+
+    it("leaves a prior agent branch and branches fresh from the default", () => {
+        let branch = "agent/old-aaaaaaa";
+        const heads: Record<string, string> = {
+            "agent/old-aaaaaaa": "aaaaaaa0000",
+            main: "bbbbbbb1111",
+        };
+        const created: string[] = [];
+        const run = (args: string[]): string => {
+            const key = args.join(" ");
+            if (key === "rev-parse --is-inside-work-tree") return "true";
+            if (key === "rev-parse HEAD") return heads[branch];
+            if (key === "rev-parse --abbrev-ref HEAD") return branch;
+            if (key === "symbolic-ref --short refs/remotes/origin/HEAD")
+                return "origin/main";
+            if (args[0] === "switch" && args[1] === "-c") {
+                branch = args[2];
+                heads[branch] = heads["main"]; // fresh branch sits on main's tip
+                created.push(args[2]);
+                return "";
+            }
+            if (args[0] === "switch") {
+                branch = args[1];
+                return "";
+            }
+            throw new Error(`unexpected git ${key}`);
+        };
+        const wb = ensureWorkBranch(run, "new feature");
+        // Base is main's tip, NOT the old branch's — the new work starts clean.
+        assert.deepEqual(wb, {
+            branch: "agent/new-feature-bbbbbbb",
+            base: "bbbbbbb1111",
+            created: true,
+        });
+        assert.equal(branch, "agent/new-feature-bbbbbbb"); // ended on the fresh branch
     });
 
     it("returns null when not a git repo", () => {
