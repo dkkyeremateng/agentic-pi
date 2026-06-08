@@ -61,6 +61,7 @@ import {
     renderPhaseCardsWithArrows,
     renderEmptyAgentMessage,
     renderRichCard,
+    MAX_CARD_WIDTH,
 } from "../utils/workflow-widgets";
 import {
     REQUIRED_AGENTS,
@@ -495,9 +496,12 @@ export default function (pi: ExtensionAPI) {
         // ── Pipeline view (full run_agent_workflow) ───────────
         const arrowWidth = 5; // " ──▸ "
         const cols = st.phases.length;
-        const colWidth = Math.max(
-            14,
-            Math.floor((width - arrowWidth * (cols - 1)) / cols),
+        // Cap at MAX_CARD_WIDTH so running cards match the idle grid instead of
+        // stretching to fill — left-aligned, connected by arrows. The 14 floor
+        // keeps the single (non-wrapping) arrow row fitting when phases are many.
+        const colWidth = Math.min(
+            MAX_CARD_WIDTH,
+            Math.max(14, Math.floor((width - arrowWidth * (cols - 1)) / cols)),
         );
         const cards = st.phases.map((p) => renderAgentCard(p.agent, colWidth, theme));
         const lines: string[] = [];
@@ -526,7 +530,11 @@ export default function (pi: ExtensionAPI) {
     function renderWidgetNow() {
         if (!widgetCtx || !widgetCtx.hasUI) return; // no chrome without a UI
         const theme = widgetCtx.ui.theme;
-        const width = process.stdout.columns || 80;
+        // Reserve 2 columns: pi wraps each widget line in Text(line, 1, 0) (a +1
+        // left pad), so a row built to the full terminal width would overflow by one
+        // column and wrap — shattering the card borders. Build to columns-2 so the
+        // widest row plus the pad still fits with a column to spare.
+        const width = Math.max(20, (process.stdout.columns || 80) - 2);
         const lines = buildWidgetLines(width, theme);
         // Use the component (factory) overload, not the string[] one: pi hard-caps
         // string[] widgets at MAX_WIDGET_LINES (10) with "(widget truncated)", which
