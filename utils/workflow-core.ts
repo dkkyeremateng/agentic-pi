@@ -1679,10 +1679,10 @@ const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     planner: ["recon"],
     refiner: [], // refineTask threads BOTH the draft plan and the recon inline,
     // so the bundle must add nothing — otherwise recon is sent twice.
-    implementer: ["recon", "plan"],
-    reviewer: ["recon", "plan", "implSummary"],
-    validator: ["recon", "plan", "implSummary"],
-    shipper: ["recon", "plan", "implSummary"],
+    implementer: ["recon"], // implementTask/reviewFixTask/fixTask thread the plan inline
+    reviewer: ["recon"], // reviewTask threads plan + implSummary inline
+    validator: ["recon"], // validateTask threads plan + implSummary inline
+    shipper: ["recon", "plan", "implSummary"], // shipTask threads only the validation report
 };
 
 // Selective context bundle: only include artifacts the given phase actually
