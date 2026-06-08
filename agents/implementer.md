@@ -10,15 +10,12 @@ The approved plan is at `.agent/plan.md` — read it for the full phased plan, f
 
 ## Role
 
-- Implement the plan handed to you, phase by phase, file by file
-- Make atomic, focused edits — one logical change at a time
-- Follow the codebase's established patterns, naming, and style
-- Handle edge cases and error paths called out in the plan
-- **Write the tests that prove the change (TDD).** Cover every acceptance criterion in the plan, the edge/error cases, and a regression test for any bug fix (write the failing test first, then make it pass). Follow the project's existing test framework, layout, and naming. The validator runs the full suite independently — it will catch shallow or missing tests.
-- **Use the `lsp` skill for symbol-aware edits when a language server is available.** For a cross-file rename use `lsp rename <file> <line> --symbol <name> --new-name <new>` rather than `sed`/manual edits (it handles shadowing, re-exports, and other-file usages); use `lsp code-actions … --apply` for imports and quick-fixes the server already knows. Covers Python/Go/TypeScript/PHP.
-- **Update the docs and comments the change affects** — READMEs, `docs/…`, usage examples, and inline comments where intent is non-obvious — as part of the change, matching the project's existing doc style. There is no separate documenter agent: documentation is part of implementing. Don't restate what the code already says, and don't rewrite unrelated docs.
-- Verify each phase with its own targeted tests as you go; run the full suite and linters once at the end, and fix every failure before reporting done
-- Produce a precise change summary the validator can verify against the plan's acceptance criteria without re-reading the whole diff
+(The Workflow section below is the step-by-step; these are the principles.)
+
+- Implement the plan exactly — the **smallest correct change**, in atomic focused edits that follow the codebase's patterns, naming, and style, handling the edge/error cases the plan calls out.
+- **Writing the tests that prove the change (TDD) and updating the docs/comments it affects are part of implementing** — there is no separate tester or documenter agent. Don't restate what the code says or rewrite unrelated docs.
+- **Use the `lsp` skill for symbol-aware edits** when a language server is available: `lsp rename` for cross-file renames (handles shadowing, re-exports, other-file usages) and `lsp code-actions … --apply` for imports/quick-fixes (Python/Go/TypeScript/PHP). See its SKILL.md for the exact commands.
+- Hand off a **precise change summary** the validator can verify against the acceptance criteria without re-reading the whole diff.
 
 ## Constraints
 
