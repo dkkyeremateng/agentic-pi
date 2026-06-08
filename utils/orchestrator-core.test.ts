@@ -1305,17 +1305,15 @@ Build feature X according to the requirements.
                 prepareRun: () => {},
             },
             execution: {
-                // The planner and refiner write the plan to .agent/plan.md (as the
-                // real agents do) and emit only a short message — no plan in output.
+                // The planner and refiner emit the full plan as their message; the
+                // orchestrator persists it to .agent/plan.md for downstream agents.
                 runPhase: async (phase, task) => {
                     order.push(phase.agent);
                     if (phase.agent === "planner") {
-                        writeFileSync(planFile, draftPlan, "utf-8");
-                        return { output: "planned", ok: true };
+                        return { output: draftPlan, ok: true };
                     }
                     if (phase.agent === "refiner") {
-                        writeFileSync(planFile, refinedPlan, "utf-8");
-                        return { output: "refined", ok: true };
+                        return { output: refinedPlan, ok: true };
                     }
                     if (phase.agent === "implementer") {
                         implementerSawPlan = task;
@@ -1629,6 +1627,12 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
             execution: {
                 runPhase: async (phase) => {
                     runPhaseCalls.push(phase.agent);
+                    if (phase.agent === "planner")
+                        return {
+                            output:
+                                "## Phase 1: Do it\n## Acceptance Criteria\n- works\n## Critical Files\n- a.ts",
+                            ok: true,
+                        };
                     return { output: `${phase.agent} output`, ok: true };
                 },
             },
@@ -1645,6 +1649,28 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
         assert.ok(st.running === false);
         assert.ok(runPhaseCalls.includes("planner"));
         assert.ok(!runPhaseCalls.includes("implementer"));
+    });
+
+    it("rejects a malformed plan even with no implementer (planner emitted a summary)", async () => {
+        const agents = mkSpecAgentSet();
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                // The planner emitted a summary, not a plan — must fail loudly.
+                runPhase: async () => ({
+                    output: "I wrote the plan to .agent/plan.md.",
+                    ok: true,
+                }),
+            },
+        });
+        const st = mkStateWithAgents(agents, specTeam);
+        const result = await runWorkflowCore(st, host, "Design Y", 3, mkCtx());
+        assert.equal(result.status, "error");
+        assert.match(result.report, /missing required structure/i);
     });
 
     it("exits early on planner failure", async () => {
@@ -2189,7 +2215,7 @@ describe("spawnAgentWithModel (placeholder)", () => {
 });
 
 describe("capturePlan", () => {
-    it("records the artifact and writes .agent/plan.md as a fallback when absent", () => {
+    it("records the artifact and writes .agent/plan.md when absent", () => {
         const cwd = mkdtempSync(join(tmpdir(), "plan-"));
         const artifacts: any = {};
         capturePlan(artifacts, cwd, "# Plan\n## Phase 1");
@@ -2200,16 +2226,16 @@ describe("capturePlan", () => {
         );
     });
 
-    it("does NOT clobber an existing plan file (the planner's version)", () => {
+    it("overwrites .agent/plan.md (the message is the source of truth)", () => {
         const cwd = mkdtempSync(join(tmpdir(), "plan-"));
         mkdirSync(join(cwd, ".agent"), { recursive: true });
-        writeFileSync(join(cwd, ".agent", "plan.md"), "DOCUMENTER VERSION", "utf-8");
+        writeFileSync(join(cwd, ".agent", "plan.md"), "STALE", "utf-8");
         const artifacts: any = {};
-        capturePlan(artifacts, cwd, "RAW PLANNER OUTPUT");
-        assert.equal(artifacts.plan, "RAW PLANNER OUTPUT"); // artifact still recorded
+        capturePlan(artifacts, cwd, "# Plan\n## Phase 1");
+        assert.equal(artifacts.plan, "# Plan\n## Phase 1");
         assert.equal(
             readFileSync(join(cwd, ".agent", "plan.md"), "utf-8"),
-            "DOCUMENTER VERSION", // file untouched
+            "# Plan\n## Phase 1", // overwritten with the canonical message
         );
     });
 });

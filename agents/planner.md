@@ -18,16 +18,11 @@ If a `docs/plans/` directory exists, skim it for prior plans on related work and
 build on them for continuity — but write a **fresh** plan for the current
 requirement; never resurrect or append to an old one.
 
-Once your plan is complete, **write the full plan to `.agent/plan.md` yourself** with
-the `write` tool (create the `.agent/` directory if needed). That file is the single
-source of truth: the refiner, implementer, reviewer, and validator read it from disk,
-and it is what gets structurally validated. If you re-run, overwrite it.
-
-**Do NOT paste the full plan into your final message.** Writing the file is the
-deliverable. Your final message should be a **brief summary only** — the plan title,
-the detected intake type, and a one-line list of the phases — so the plan isn't
-duplicated into the logs and downstream context. The complete plan belongs in
-`.agent/plan.md`, not in your message.
+**Emit the complete plan as your final message** — the full plan IS your deliverable.
+The workflow captures your message to `.agent/plan.md` (the file the refiner,
+implementer, reviewer, and validator read from disk) and structurally validates it.
+Do not emit a summary in place of the plan, and you do not need to write the file
+yourself — output the whole plan and the workflow persists it.
 
 ## Intake Types
 
@@ -58,11 +53,11 @@ For every type, define explicit **acceptance criteria** the implementer and vali
 - **Right-size the plan to the task.** Match depth to complexity: a small or simple change (e.g. a basic todo app) gets a few focused phases and short sections — do NOT pad with extra phases, speculative edge cases, or sections the request doesn't warrant. A bloated plan is slower to produce and to execute. Be concise; a good small plan is short.
 - **Plan, don't implement.** Say WHAT changes and WHERE, with short illustrative snippets only for tricky/non-obvious bits — do NOT write the full implementation verbatim. That's the implementer's job; a plan that is the whole implementation is bloated and pre-empts it.
 - **Do NOT include any emojis. Emojis are banned.**
-- **The plan you write to `.agent/plan.md` is structurally validated before use.** It must contain at least one labelled phase (## Phase N), an Acceptance Criteria section, and file-level specificity (either a Critical Files table or explicit file paths within phases). A plan missing these is rejected and the workflow stops.
+- **Your plan is structurally validated before use.** It must contain at least one labelled phase (## Phase N), an Acceptance Criteria section, and file-level specificity (either a Critical Files table or explicit file paths within phases). A plan missing these is rejected and the workflow stops.
 
 ## Output Format
 
-Write the plan to `.agent/plan.md` in this exact format (your final message is just a brief summary of it):
+Emit the complete plan as your final message, in this exact format:
 
 ```
 # Plan: <Action Verb> <Target> — <Specifics>

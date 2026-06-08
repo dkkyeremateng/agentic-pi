@@ -419,11 +419,10 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!plan.ok) return fail(s, "Planning", plan.output);
-        // The plan lives in .agent/plan.md (the planner writes it there) — that file
-        // is the source of truth downstream agents read. Prefer it; fall back to the
-        // message if the planner only emitted it. capturePlan then records the
-        // canonical content and persists the fallback so the file always exists.
-        plan.output = readPlan(cwd) || plan.output;
+        // The planner's message IS the plan (reliable model output). Persist it to
+        // .agent/plan.md — the file the refiner and downstream agents read. (We do
+        // NOT trust a file the agent may or may not have written: the message is the
+        // source of truth, the file is the derived copy.)
         capturePlan(runArtifacts, cwd, plan.output);
     }
 
@@ -441,23 +440,24 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!refine.ok) return fail(s, "Refining", refine.output);
-        // The refiner overwrote .agent/plan.md with the hardened plan — read it back
-        // as the canonical plan (it only emits a summary, not the full plan).
+        // The refiner's message is the full hardened plan — it becomes THE plan;
+        // persist it (overwriting the planner's draft on disk).
         plan = refine;
-        plan.output = readPlan(cwd) || plan.output;
         capturePlan(runArtifacts, cwd, plan.output);
     }
 
-    // Enforce plan structure on the FINAL plan (post-refine), only when an
-    // implementer will consume it.
-    if (planP && implP) {
+    // Enforce plan structure on the FINAL plan (post-refine) whenever a planner
+    // ran — the plan is the deliverable for a plan-only team (spec) too, and a
+    // malformed plan (e.g. the agent emitted a summary instead of a plan) must
+    // fail loudly rather than ship as garbage.
+    if (planP) {
         const planCheck = validatePlan(plan.output);
         if (!planCheck.ok) {
             s.running = false;
             s.lastStatus = "error";
             return {
                 status: "error",
-                report: `Plan is missing required structure. The plan lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe implementer cannot act reliably on this plan. Re-run with a more specific request, or check that the planner/refiner agent definitions are complete.`,
+                report: `Plan is missing required structure. The plan lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe plan is unusable (the planner/refiner may have emitted a summary instead of the full plan). Re-run with a more specific request, or check that the planner/refiner agent definitions are complete.`,
             };
         }
     }
@@ -828,18 +828,6 @@ export function archivePlan(
     }
 }
 
-// Read the plan the planner/refiner wrote to .agent/plan.md. The file is the
-// single source of truth: downstream agents read it directly (so it isn't threaded
-// through every task) and the orchestrator reads it here for validation, the
-// progress ledger, the archive, and the report. Returns "" when absent.
-export function readPlan(cwd: string): string {
-    try {
-        return readFileSync(join(cwd, ".agent", "plan.md"), "utf-8");
-    } catch {
-        return "";
-    }
-}
-
 // Preserve the planner's draft before the refiner overwrites .agent/plan.md with
 // the hardened version, so the pre-refinement plan stays inspectable (and diffable
 // against the refined one). Best-effort; no-op when there's no plan yet.
@@ -852,6 +840,10 @@ export function savePlanDraft(cwd: string): void {
     } catch {}
 }
 
+// Persist the plan (the planner's or refiner's message) to .agent/plan.md as the
+// canonical copy downstream agents read, and record it as the run artifact. Always
+// overwrites: the agent's message is the source of truth, so this is the single
+// place the file is written (the agent need not write it itself).
 export function capturePlan(
     runArtifacts: RunArtifacts,
     cwd: string,
@@ -860,13 +852,8 @@ export function capturePlan(
     runArtifacts.plan = plan;
     try {
         const file = join(cwd, ".agent", "plan.md");
-        // The planner writes .agent/plan.md itself. Only write here as a FALLBACK —
-        // when no plan file was written this run — so the planner's version is never
-        // clobbered.
-        if (!existsSync(file)) {
-            mkdirSync(dirname(file), { recursive: true });
-            writeFileSync(file, plan, "utf-8");
-        }
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, plan, "utf-8");
     } catch {}
 }
 

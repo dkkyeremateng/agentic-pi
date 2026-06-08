@@ -1837,7 +1837,7 @@ export function scoutTask(original: string): string {
 export function planTask(original: string, recon = ""): string {
     return [
         "Produce a structured, phased implementation plan.",
-        "After producing it, write the plan VERBATIM to `.agent/plan.md` yourself with the write tool (create the .agent/ directory if needed) AND emit the full plan as your final message.",
+        "Emit the COMPLETE plan as your final message — that is your deliverable; the workflow saves it to `.agent/plan.md` for the downstream agents. Do not emit a summary in place of the plan.",
         "",
         "Request:",
         original,
@@ -1849,9 +1849,9 @@ export function planTask(original: string, recon = ""): string {
 export function refineTask(original: string, recon = ""): string {
     return [
         "Review and refine the implementation plan before it goes to the implementer.",
-        "Read the draft plan from `.agent/plan.md`, ground every change in the actual codebase (read/grep the real files it references), then apply your production-grade review rules and write the HARDENED plan VERBATIM back to `.agent/plan.md`, overwriting it.",
+        "Read the draft plan from `.agent/plan.md` and VERIFY its load-bearing claims against the actual files (read/grep the real files — every path, every 'exists/missing', every symbol location; the draft and any recon can describe a codebase that isn't there). Then apply your production-grade review rules.",
         "Keep the required structure (## Phase N, Acceptance Criteria, file-level specificity); refine, do not rewrite from scratch.",
-        "Emit only a brief summary of the substantive changes you made as your final message — the hardened plan lives in `.agent/plan.md`, not in your message.",
+        "Emit the COMPLETE hardened plan as your final message — that is your deliverable; the workflow saves it to `.agent/plan.md` (overwriting the draft) for the downstream agents. Do not emit a summary in place of the plan.",
         "",
         "Original request:",
         original,
