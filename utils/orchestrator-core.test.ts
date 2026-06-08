@@ -1256,9 +1256,12 @@ Build feature X according to the requirements.
         assert.ok(!runPhaseCalls.includes("tester"), "no tester phase");
     });
 
-    it("runs the refiner between planner and implementer, threading the hardened plan", async () => {
+    it("runs the refiner between planner and implementer; the hardened plan on disk is the source of truth", async () => {
         const agents = mkFullAgentSet();
         agents.set("refiner", mkAgent("refiner"));
+        const cwd = mkdtempSync(join(tmpdir(), "refine-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        const planFile = join(cwd, ".agent", "plan.md");
         const draftPlan =
             "## Phase 1: Draft\nDraft.\n\n## Acceptance Criteria\n- works\n\n## Critical Files\n- a.ts";
         const refinedPlan =
@@ -1272,12 +1275,18 @@ Build feature X according to the requirements.
                 prepareRun: () => {},
             },
             execution: {
+                // The planner and refiner write the plan to .agent/plan.md (as the
+                // real agents do) and emit only a short message — no plan in output.
                 runPhase: async (phase, task) => {
                     order.push(phase.agent);
-                    if (phase.agent === "planner")
-                        return { output: draftPlan, ok: true };
-                    if (phase.agent === "refiner")
-                        return { output: refinedPlan, ok: true };
+                    if (phase.agent === "planner") {
+                        writeFileSync(planFile, draftPlan, "utf-8");
+                        return { output: "planned", ok: true };
+                    }
+                    if (phase.agent === "refiner") {
+                        writeFileSync(planFile, refinedPlan, "utf-8");
+                        return { output: "refined", ok: true };
+                    }
                     if (phase.agent === "implementer") {
                         implementerSawPlan = task;
                         return { output: "impl output", ok: true };
@@ -1296,13 +1305,9 @@ Build feature X according to the requirements.
             },
         });
         const st = mkStateWithAgents(agents);
-        const result = await runWorkflowCore(
-            st,
-            host,
-            "Build feature X",
-            3,
-            mkCtx(),
-        );
+        const result = await runWorkflowCore(st, host, "Build feature X", 3, {
+            cwd,
+        });
         assert.equal(result.status, "shipped");
         // Order: planner -> refiner -> implementer
         assert.ok(
@@ -1313,14 +1318,21 @@ Build feature X according to the requirements.
             order.indexOf("refiner") < order.indexOf("implementer"),
             "refiner before implementer",
         );
-        // The implementer received the REFINED plan, not the draft.
+        // The plan is read from disk, NOT threaded into the implementer's task.
         assert.ok(
-            implementerSawPlan.includes("REFINED"),
-            "implementer got the hardened plan",
+            !implementerSawPlan.includes("REFINED"),
+            "plan is not threaded into the implementer task",
         );
         assert.ok(
             !implementerSawPlan.includes("Phase 1: Draft"),
-            "implementer did not get the draft plan",
+            "draft is not threaded either",
+        );
+        // The hardened plan is the canonical source of truth on disk.
+        const onDisk = readFileSync(planFile, "utf-8");
+        assert.ok(onDisk.includes("REFINED"), "refiner's hardened plan persisted");
+        assert.ok(
+            !onDisk.includes("Phase 1: Draft"),
+            "draft was overwritten by the refiner",
         );
     });
 

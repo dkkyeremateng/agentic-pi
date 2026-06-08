@@ -411,6 +411,11 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!plan.ok) return fail(s, "Planning", plan.output);
+        // The plan lives in .agent/plan.md (the planner writes it there) — that file
+        // is the source of truth downstream agents read. Prefer it; fall back to the
+        // message if the planner only emitted it. capturePlan then records the
+        // canonical content and persists the fallback so the file always exists.
+        plan.output = readPlan(cwd) || plan.output;
         capturePlan(runArtifacts, cwd, plan.output);
     }
 
@@ -422,11 +427,14 @@ export async function runWorkflowCore(
         if (aborted) return aborted;
         const refine = await h.execution.runPhase(
             refinerP,
-            shared(refineTask(request, plan.output, scoutFindings), "refiner"),
+            shared(refineTask(request, scoutFindings), "refiner"),
             cwd,
         );
         if (!refine.ok) return fail(s, "Refining", refine.output);
+        // The refiner overwrote .agent/plan.md with the hardened plan — read it back
+        // as the canonical plan (it only emits a summary, not the full plan).
         plan = refine;
+        plan.output = readPlan(cwd) || plan.output;
         capturePlan(runArtifacts, cwd, plan.output);
     }
 
@@ -458,7 +466,7 @@ export async function runWorkflowCore(
         initProgressLedger(cwd, wb?.base ?? "", plan.output);
         impl = await h.execution.runPhase(
             implP,
-            shared(implementTask(request, plan.output), "implementer"),
+            shared(implementTask(request), "implementer"),
             cwd,
         );
         if (!impl.ok) return fail(s, "Implementing", impl.output);
@@ -479,10 +487,7 @@ export async function runWorkflowCore(
             h.ui.updateWidget();
             review = await h.execution.runPhase(
                 reviewerP,
-                shared(
-                    reviewTask(request, plan.output, impl.output),
-                    "reviewer",
-                ),
+                shared(reviewTask(request, impl.output), "reviewer"),
                 cwd,
             );
             if (!review.ok) return fail(s, "Review", review.output);
@@ -499,12 +504,7 @@ export async function runWorkflowCore(
             impl = await h.execution.runPhase(
                 implP,
                 shared(
-                    reviewFixTask(
-                        request,
-                        plan.output,
-                        review.output,
-                        impl.output,
-                    ),
+                    reviewFixTask(request, review.output, impl.output),
                     "implementer",
                 ),
                 cwd,
@@ -534,10 +534,7 @@ export async function runWorkflowCore(
             h.ui.updateWidget();
             val = await h.execution.runPhase(
                 valP,
-                shared(
-                    validateTask(request, plan.output, impl.output),
-                    "validator",
-                ),
+                shared(validateTask(request, impl.output), "validator"),
                 cwd,
             );
             if (!val.ok) return fail(s, "Validation", val.output);
@@ -554,7 +551,9 @@ export async function runWorkflowCore(
             impl = await h.execution.runPhase(
                 implP,
                 shared(
-                    fixTask(request, plan.output, impl.output, val.output),
+                    // feedback = validator findings (val.output); prevSummary = the
+                    // previous implementer summary (impl.output).
+                    fixTask(request, val.output, impl.output),
                     "implementer",
                 ),
                 cwd,
@@ -812,6 +811,18 @@ export function archivePlan(
         return rel;
     } catch {
         return null;
+    }
+}
+
+// Read the plan the planner/refiner wrote to .agent/plan.md. The file is the
+// single source of truth: downstream agents read it directly (so it isn't threaded
+// through every task) and the orchestrator reads it here for validation, the
+// progress ledger, the archive, and the report. Returns "" when absent.
+export function readPlan(cwd: string): string {
+    try {
+        return readFileSync(join(cwd, ".agent", "plan.md"), "utf-8");
+    } catch {
+        return "";
     }
 }
 

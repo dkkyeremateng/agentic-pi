@@ -545,17 +545,17 @@ describe("contextBundleForPhase", () => {
         assert.ok(!bundle.includes("Implementation"));
     });
 
-    it("refiner gets an empty bundle (refineTask threads both the draft plan and recon inline)", () => {
+    it("refiner gets an empty bundle (reads the plan from disk; recon threaded inline by refineTask)", () => {
         const bundle = contextBundleForPhase("refiner", fullArtifacts);
-        // refineTask already carries the plan AND the recon, so the bundle must
-        // add nothing — otherwise the recon brief is duplicated.
+        // The refiner reads .agent/plan.md directly and refineTask threads the
+        // recon, so the bundle must add nothing — otherwise recon is duplicated.
         assert.equal(bundle, "");
     });
 
     it("implementer gets recon (it writes code across the codebase), not plan/review", () => {
         const bundle = contextBundleForPhase("implementer", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
-        assert.ok(!bundle.includes("The plan")); // threaded inline by implementTask
+        assert.ok(!bundle.includes("The plan")); // read from .agent/plan.md by the implementer
         assert.ok(!bundle.includes("Review feedback"));
         assert.ok(!bundle.includes("Implementation done"));
     });

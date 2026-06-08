@@ -20,15 +20,16 @@ If a `docs/plans/` directory exists, skim it for prior plans on related work and
 build on them for continuity — but write a **fresh** plan for the current
 requirement; never resurrect or append to an old one.
 
-Once your plan is complete, **write it to `.agent/plan.md` yourself** with the `write`
-tool (create the `.agent/` directory if needed) so every downstream agent
-(implementer, reviewer, validator) can read it from disk. Write the plan
-**verbatim** — the same content you emit as your message.
+Once your plan is complete, **write the full plan to `.agent/plan.md` yourself** with
+the `write` tool (create the `.agent/` directory if needed). That file is the single
+source of truth: the refiner, implementer, reviewer, and validator read it from disk,
+and it is what gets structurally validated. If you re-run, overwrite it.
 
-Writing the file is **in addition to** your normal output, not a replacement: you
-must STILL emit the complete plan as your final message (it is structurally
-validated and threaded to the implementer). If you re-run, overwrite
-`.agent/plan.md` with the new version.
+**Do NOT paste the full plan into your final message.** Writing the file is the
+deliverable. Your final message should be a **brief summary only** — the plan title,
+the detected intake type, and a one-line list of the phases — so the plan isn't
+duplicated into the logs and downstream context. The complete plan belongs in
+`.agent/plan.md`, not in your message.
 
 ## Intake Types
 
@@ -56,11 +57,11 @@ For every type, define explicit **acceptance criteria** the implementer and vali
 - Ground every phase in real files and patterns — no hand-waving
 - Call out assumptions and what you could not verify
 - **Do NOT include any emojis. Emojis are banned.**
-- **Your output will be structurally validated before use.** The plan must contain at least one labelled phase (## Phase N), an Acceptance Criteria section, and file-level specificity (either a Critical Files table or explicit file paths within phases). Plans missing these sections will be rejected and the workflow will stop.
+- **The plan you write to `.agent/plan.md` is structurally validated before use.** It must contain at least one labelled phase (## Phase N), an Acceptance Criteria section, and file-level specificity (either a Critical Files table or explicit file paths within phases). A plan missing these is rejected and the workflow stops.
 
 ## Output Format
 
-Produce a structured plan following this exact format:
+Write the plan to `.agent/plan.md` in this exact format (your final message is just a brief summary of it):
 
 ```
 # Plan: <Action Verb> <Target> — <Specifics>

@@ -1771,38 +1771,28 @@ export function planTask(original: string, recon = ""): string {
     ].join("\n");
 }
 
-export function refineTask(original: string, plan: string, recon = ""): string {
+export function refineTask(original: string, recon = ""): string {
     return [
-        "Review and refine the implementation plan below before it goes to the implementer.",
-        "The draft plan is included inline below — do not re-read `.agent/plan.md`; ground every change in the actual codebase (read/grep the real files it references).",
-        "Apply your production-grade review rules, then write the HARDENED plan VERBATIM to `.agent/plan.md` (overwriting it) AND emit the full refined plan as your final message.",
+        "Review and refine the implementation plan before it goes to the implementer.",
+        "Read the draft plan from `.agent/plan.md`, ground every change in the actual codebase (read/grep the real files it references), then apply your production-grade review rules and write the HARDENED plan VERBATIM back to `.agent/plan.md`, overwriting it.",
         "Keep the required structure (## Phase N, Acceptance Criteria, file-level specificity); refine, do not rewrite from scratch.",
+        "Emit only a brief summary of the substantive changes you made as your final message — the hardened plan lives in `.agent/plan.md`, not in your message.",
         "",
         "Original request:",
         original,
-        "",
-        "Draft plan from the planner:",
-        plan,
         "",
         ...reconBlock(recon),
     ].join("\n");
 }
 
-export function reviewTask(
-    original: string,
-    plan: string,
-    implSummary: string,
-): string {
+export function reviewTask(original: string, implSummary: string): string {
     return [
         "Review the implementation the implementer just produced against the plan.",
-        "Read the changed files in the working directory. The plan is included below — no need to re-read `.agent/plan.md`.",
+        "Read the plan from `.agent/plan.md` and the changed files in the working directory.",
         "Return APPROVED, or REVISE BEFORE MERGE with specific required fixes.",
         "",
         "Original request:",
         original,
-        "",
-        "Plan:",
-        plan,
         "",
         "Implementer's change summary:",
         implSummary,
@@ -1811,18 +1801,15 @@ export function reviewTask(
 
 export function reviewFixTask(
     original: string,
-    plan: string,
     review: string,
     prevSummary: string,
 ): string {
     return [
         "The reviewer REQUESTED CHANGES to your implementation. Address exactly the issues raised — do not start over.",
+        "The approved plan is in `.agent/plan.md`.",
         "",
         "Original request:",
         original,
-        "",
-        "Plan:",
-        plan,
         "",
         "Your previous change summary (truncated if long — full detail is in your per-phase commits and `.agent/progress.md`):",
         clampSummary(prevSummary),
@@ -1832,32 +1819,26 @@ export function reviewFixTask(
     ].join("\n");
 }
 
-export function implementTask(original: string, plan: string): string {
+export function implementTask(original: string): string {
     return [
-        "Implement the following approved plan.",
+        "Implement the approved plan in `.agent/plan.md` — read it for the phases, file list, and acceptance criteria.",
         "",
         "Original request:",
         original,
-        "",
-        "Plan:",
-        plan,
     ].join("\n");
 }
 
 export function fixTask(
     original: string,
-    plan: string,
     feedback: string,
     prevSummary: string,
 ): string {
     return [
         "The validator REJECTED the previous attempt. Fix exactly the issues raised.",
+        "The approved plan is in `.agent/plan.md`.",
         "",
         "Original request:",
         original,
-        "",
-        "Plan:",
-        plan,
         "",
         "Your previous change summary (truncated if long — full detail is in your per-phase commits and `.agent/progress.md`):",
         clampSummary(prevSummary),
@@ -1867,22 +1848,16 @@ export function fixTask(
     ].join("\n");
 }
 
-export function validateTask(
-    original: string,
-    plan: string,
-    implSummary: string,
-): string {
+export function validateTask(original: string, implSummary: string): string {
     return [
         "Validate the completed work as the independent gate. RUN the full test suite",
         "yourself (including the tests the implementer wrote) and confirm EVERY",
         "acceptance criterion in the plan holds. Return VERDICT: PASS, or VERDICT: FAIL",
         "with the specific failures the implementer must fix.",
+        "Read the plan (and its acceptance criteria) from `.agent/plan.md`.",
         "",
         "Original requirement:",
         original,
-        "",
-        "Plan (with the acceptance criteria to confirm):",
-        plan,
         "",
         "Implementer's change summary (lists the code AND tests it wrote):",
         implSummary,
