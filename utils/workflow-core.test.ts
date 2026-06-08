@@ -4,6 +4,7 @@ import {
     validatePlan,
     contextBundle,
     contextBundleForPhase,
+    clampSummary,
     buildPhaseMap,
     failPhase,
     renderTemplate,
@@ -550,9 +551,12 @@ describe("contextBundleForPhase", () => {
         assert.equal(bundle, "");
     });
 
-    it("implementer gets an empty bundle (plan inline; recon redundant via the plan)", () => {
+    it("implementer gets recon (it writes code across the codebase), not plan/review", () => {
         const bundle = contextBundleForPhase("implementer", fullArtifacts);
-        assert.equal(bundle, "");
+        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(!bundle.includes("The plan")); // threaded inline by implementTask
+        assert.ok(!bundle.includes("Review feedback"));
+        assert.ok(!bundle.includes("Implementation done"));
     });
 
     it("reviewer gets an empty bundle (plan + implSummary inline; recon redundant)", () => {
@@ -596,6 +600,31 @@ describe("contextBundleForPhase", () => {
     it("is case-insensitive for agent names", () => {
         const bundle = contextBundleForPhase("PLANNER", fullArtifacts);
         assert.ok(bundle.includes("Scout findings"));
+    });
+});
+
+describe("clampSummary", () => {
+    it("returns a short summary unchanged (trimmed)", () => {
+        assert.equal(clampSummary("  short summary  "), "short summary");
+    });
+
+    it("head-truncates a long summary and points to the durable record", () => {
+        const long = "A".repeat(5000);
+        const out = clampSummary(long, 2500);
+        assert.ok(out.startsWith("A".repeat(2500)));
+        assert.ok(out.length < long.length);
+        assert.match(out, /truncated/);
+        assert.match(out, /per-phase commits and `\.agent\/progress\.md`/);
+    });
+
+    it("keeps text exactly at the cap intact (no truncation note)", () => {
+        const exact = "B".repeat(2500);
+        assert.equal(clampSummary(exact, 2500), exact);
+    });
+
+    it("handles empty/undefined input", () => {
+        assert.equal(clampSummary(""), "");
+        assert.equal(clampSummary(undefined as unknown as string), "");
     });
 });
 

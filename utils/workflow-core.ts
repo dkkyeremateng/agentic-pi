@@ -1679,10 +1679,12 @@ const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     planner: ["recon"],
     refiner: [], // refineTask threads BOTH the draft plan and the recon inline,
     // so the bundle must add nothing — otherwise recon is sent twice.
-    // The plan distills the recon, and these agents read real code themselves, so
-    // recon in the bundle is redundant — drop it. (Plan/implSummary are already
-    // threaded inline by each task builder, hence absent here too.)
-    implementer: [],
+    // The plan distills the recon and these agents read real code themselves, so
+    // recon is largely redundant. Keep it for the implementer — it writes code
+    // across the codebase and genuinely uses the scout's map — but drop it for the
+    // reviewer/validator, which work against the plan + diff + tests. (Plan and
+    // implSummary are threaded inline by each task builder, hence absent here.)
+    implementer: ["recon"],
     reviewer: [],
     validator: [],
     // The shipper is the exception: shipTask threads only the validation report,
@@ -1709,6 +1711,19 @@ export function contextBundleForPhase(
 }
 
 // ── Prompt templates ─────────────────────────────
+
+// Bound a prior change summary threaded into a retry task. Kept whole when small
+// (the common case — no loss), head-truncated only when long. Head-truncation
+// preserves the report's leading sections (Requirement, Files Changed, Key
+// Changes, Tests), with a pointer to the full record for the rest.
+export function clampSummary(text: string, max = 2500): string {
+    const t = (text || "").trim();
+    if (t.length <= max) return t;
+    return (
+        t.slice(0, max) +
+        "\n\n… [truncated — full detail in the per-phase commits and `.agent/progress.md`]"
+    );
+}
 
 // Optional reconnaissance brief from the scout agent, injected into the planner
 // prompts when a Scout phase ran first.
@@ -1796,8 +1811,8 @@ export function reviewFixTask(
         "Plan:",
         plan,
         "",
-        "Gist of your previous change (full detail is in your per-phase commits and `.agent/progress.md`):",
-        digest(prevSummary, 600),
+        "Your previous change summary (truncated if long — full detail is in your per-phase commits and `.agent/progress.md`):",
+        clampSummary(prevSummary),
         "",
         "Reviewer findings to address:",
         review,
@@ -1831,8 +1846,8 @@ export function fixTask(
         "Plan:",
         plan,
         "",
-        "Gist of your previous change (full detail is in your per-phase commits and `.agent/progress.md`):",
-        digest(prevSummary, 600),
+        "Your previous change summary (truncated if long — full detail is in your per-phase commits and `.agent/progress.md`):",
+        clampSummary(prevSummary),
         "",
         "Validator findings to address:",
         feedback,
