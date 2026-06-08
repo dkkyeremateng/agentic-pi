@@ -1679,10 +1679,16 @@ const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     planner: ["recon"],
     refiner: [], // refineTask threads BOTH the draft plan and the recon inline,
     // so the bundle must add nothing — otherwise recon is sent twice.
-    implementer: ["recon"], // implementTask/reviewFixTask/fixTask thread the plan inline
-    reviewer: ["recon"], // reviewTask threads plan + implSummary inline
-    validator: ["recon"], // validateTask threads plan + implSummary inline
-    shipper: ["recon", "plan", "implSummary"], // shipTask threads only the validation report
+    // The plan distills the recon, and these agents read real code themselves, so
+    // recon in the bundle is redundant — drop it. (Plan/implSummary are already
+    // threaded inline by each task builder, hence absent here too.)
+    implementer: [],
+    reviewer: [],
+    validator: [],
+    // The shipper is the exception: shipTask threads only the validation report,
+    // so plan + implSummary genuinely add context (PR body) and aren't duplicated.
+    // recon is still redundant for it, so drop just that.
+    shipper: ["plan", "implSummary"],
 };
 
 // Selective context bundle: only include artifacts the given phase actually
@@ -1761,7 +1767,7 @@ export function reviewTask(
 ): string {
     return [
         "Review the implementation the implementer just produced against the plan.",
-        "Read the changed files in the working directory and the plan at `.agent/plan.md`.",
+        "Read the changed files in the working directory. The plan is included below — no need to re-read `.agent/plan.md`.",
         "Return APPROVED, or REVISE BEFORE MERGE with specific required fixes.",
         "",
         "Original request:",
@@ -1790,8 +1796,8 @@ export function reviewFixTask(
         "Plan:",
         plan,
         "",
-        "Your previous change summary:",
-        prevSummary,
+        "Gist of your previous change (full detail is in your per-phase commits and `.agent/progress.md`):",
+        digest(prevSummary, 600),
         "",
         "Reviewer findings to address:",
         review,
@@ -1825,8 +1831,8 @@ export function fixTask(
         "Plan:",
         plan,
         "",
-        "Your previous change summary:",
-        prevSummary,
+        "Gist of your previous change (full detail is in your per-phase commits and `.agent/progress.md`):",
+        digest(prevSummary, 600),
         "",
         "Validator findings to address:",
         feedback,

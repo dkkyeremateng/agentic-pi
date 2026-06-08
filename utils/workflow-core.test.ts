@@ -550,33 +550,24 @@ describe("contextBundleForPhase", () => {
         assert.equal(bundle, "");
     });
 
-    it("implementer gets only recon (implementTask/fixTask thread the plan inline)", () => {
+    it("implementer gets an empty bundle (plan inline; recon redundant via the plan)", () => {
         const bundle = contextBundleForPhase("implementer", fullArtifacts);
-        assert.ok(bundle.includes("Scout findings"));
-        assert.ok(!bundle.includes("The plan"));
-        assert.ok(!bundle.includes("Review feedback"));
-        assert.ok(!bundle.includes("Implementation done"));
+        assert.equal(bundle, "");
     });
 
-    it("reviewer gets only recon (reviewTask threads plan + implSummary inline)", () => {
+    it("reviewer gets an empty bundle (plan + implSummary inline; recon redundant)", () => {
         const bundle = contextBundleForPhase("reviewer", fullArtifacts);
-        assert.ok(bundle.includes("Scout findings"));
-        assert.ok(!bundle.includes("The plan"));
-        assert.ok(!bundle.includes("Implementation done"));
-        assert.ok(!bundle.includes("Review feedback"));
+        assert.equal(bundle, "");
     });
 
-    it("validator gets only recon (validateTask threads plan + implSummary inline)", () => {
+    it("validator gets an empty bundle (plan + implSummary inline; recon redundant)", () => {
         const bundle = contextBundleForPhase("validator", fullArtifacts);
-        assert.ok(bundle.includes("Scout findings"));
-        assert.ok(!bundle.includes("The plan"));
-        assert.ok(!bundle.includes("Implementation done"));
-        assert.ok(!bundle.includes("Review feedback"));
+        assert.equal(bundle, "");
     });
 
-    it("shipper gets recon, plan, and implSummary", () => {
+    it("shipper gets plan and implSummary, but not recon", () => {
         const bundle = contextBundleForPhase("shipper", fullArtifacts);
-        assert.ok(bundle.includes("Scout findings"));
+        assert.ok(!bundle.includes("Scout findings"));
         assert.ok(bundle.includes("The plan"));
         assert.ok(bundle.includes("Implementation done"));
     });
