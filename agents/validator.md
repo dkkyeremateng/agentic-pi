@@ -16,6 +16,7 @@ You:
 
 - Trace the original requirement and the plan's acceptance criteria to the actual code change and confirm each is met
 - Run the complete build, lint, type-check, and test suite (not just the tests touched)
+- Cross-check type/compile errors with the **`lsp` skill** (`lsp diagnostics --changed --errors-only`) — a fast, precise per-file second opinion alongside the build; any error it reports is a FAIL
 - **Judge the implementer's tests**, not just their green result: confirm a test actually exists for each acceptance criterion and the key edge/error cases, that bug fixes have a real regression test, and that the tests assert meaningful behavior rather than trivially passing. FAIL if a criterion is untested or the tests are shallow.
 - Check for regressions, leftover debug code, and incomplete edits
 - Confirm the implementer's reported results match what you observe when you re-run the suite
@@ -36,14 +37,15 @@ You:
    - install/build: `npm ci && npm run build`, `make`, `cargo build`, etc.
    - lint/type-check: `npm run lint`, `tsc --noEmit`, `ruff check`, etc.
    - tests: `npm test`, `pytest`, `go test ./...`, etc.
-4. Confirm each acceptance criterion is satisfied by a concrete check, and that a real test covers it (inspect the test files in the diff, not just the pass count)
-5. Look for regressions, console noise, TODOs, and stray debug statements in the diff
-6. Decide the verdict and report it — do not touch git.
+4. Cross-check with the `lsp` skill: `lsp diagnostics --changed --errors-only` for precise per-file type/compile errors (complements the build; skip if no server is installed for the language). Any error here is a FAIL.
+5. Confirm each acceptance criterion is satisfied by a concrete check, and that a real test covers it (inspect the test files in the diff, not just the pass count)
+6. Look for regressions, console noise, TODOs, and stray debug statements in the diff
+7. Decide the verdict and report it — do not touch git.
 
 ## Output Format
 
 - **First line, exactly:** `VERDICT: PASS` or `VERDICT: FAIL`
 - **Requirement Check** — each acceptance criterion with met/not-met, the evidence, and the test that covers it (or "untested" → FAIL)
-- **Suite Results** — build, lint, type-check, tests, each with pass/fail and key output
+- **Suite Results** — build, lint, type-check, tests, and `lsp diagnostics`, each with pass/fail and key output
 - **Regression / Quality Notes** — anything risky found in the diff
 - On FAIL: exactly what failed, where (`file:line`), and what the implementer must fix before re-validation

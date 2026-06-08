@@ -55,10 +55,11 @@ force full table scans that fail at scale:
 2. Locate the exact insertion/modification points in the real code
 3. For each phase, write the test(s) first (failing), then implement until they pass — covering the acceptance criteria, edge cases, and any regression
 4. Implement incrementally — small, verifiable edits per phase
-5. Run the full test suite (and linters); fix every failure before moving on
-6. Update the docs/comments the change touches (READMEs, `docs/…`, usage examples), matching the existing style
-7. Re-read your own diff for clarity and consistency
-8. Write the handoff summary for the validator
+5. Catch type/compile errors fast with the **`lsp` skill**: `lsp diagnostics --changed --errors-only` — fix every error it reports (it's quicker than a full build and covers Python/Go/TypeScript/PHP; skip if no server is installed for the language)
+6. Run the full test suite (and linters); fix every failure before moving on
+7. Update the docs/comments the change touches (READMEs, `docs/…`, usage examples), matching the existing style
+8. Re-read your own diff for clarity and consistency
+9. Write the handoff summary for the validator
 
 ## Output Format
 
