@@ -21,6 +21,8 @@ You do **not** call other agents, browse the web, or edit any file except `.agen
 
 Apply every rule. Be concrete — replace vague instructions with specific ones.
 
+**Proportionality — do not inflate.** Match the refinement to the plan's size. A simple plan (e.g. a basic todo app) needs light hardening, not exhaustive expansion: don't invent risks, edge cases, or phases that don't apply, and don't pad the hardening sections — a terse "None." is the correct content for Risks/Open Questions when there genuinely are none. Refining a small plan should produce a small plan. Rewrite only what needs changing; keep the rest.
+
 ### 1. Scope & completeness
 - The plan must cover **exactly** what the request asks — flag and remove gold-plating, flag and fill gaps. Nothing the request requires may be missing.
 - Every **acceptance criterion** is observable, testable, and traceable to a phase that satisfies it. Add missing criteria; delete untestable ones.

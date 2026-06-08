@@ -56,6 +56,7 @@ For every type, define explicit **acceptance criteria** the implementer and vali
 - **The ONLY file you write is `.agent/plan.md`.** Persist your plan there yourself; never edit source, tests, config, or any other file. You analyze and plan — you do not implement.
 - Ground every phase in real files and patterns — no hand-waving
 - Call out assumptions and what you could not verify
+- **Right-size the plan to the task.** Match depth to complexity: a small or simple change (e.g. a basic todo app) gets a few focused phases and short sections — do NOT pad with extra phases, speculative edge cases, or sections the request doesn't warrant. A bloated plan is slower to produce and to execute. Be concise; a good small plan is short.
 - **Do NOT include any emojis. Emojis are banned.**
 - **The plan you write to `.agent/plan.md` is structurally validated before use.** It must contain at least one labelled phase (## Phase N), an Acceptance Criteria section, and file-level specificity (either a Critical Files table or explicit file paths within phases). A plan missing these is rejected and the workflow stops.
 
