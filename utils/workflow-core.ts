@@ -1677,7 +1677,8 @@ export function contextBundle(a: RunArtifacts): string {
 const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     scout: ["recon"],
     planner: ["recon"],
-    refiner: ["recon"], // the draft plan is threaded in the refine task itself
+    refiner: [], // refineTask threads BOTH the draft plan and the recon inline,
+    // so the bundle must add nothing — otherwise recon is sent twice.
     implementer: ["recon", "plan"],
     reviewer: ["recon", "plan", "implSummary"],
     validator: ["recon", "plan", "implSummary"],
@@ -1739,7 +1740,7 @@ export function planTask(original: string, recon = ""): string {
 export function refineTask(original: string, plan: string, recon = ""): string {
     return [
         "Review and refine the implementation plan below before it goes to the implementer.",
-        "Read the plan at `.agent/plan.md` and ground every change in the actual codebase.",
+        "The draft plan is included inline below — do not re-read `.agent/plan.md`; ground every change in the actual codebase (read/grep the real files it references).",
         "Apply your production-grade review rules, then write the HARDENED plan VERBATIM to `.agent/plan.md` (overwriting it) AND emit the full refined plan as your final message.",
         "Keep the required structure (## Phase N, Acceptance Criteria, file-level specificity); refine, do not rewrite from scratch.",
         "",

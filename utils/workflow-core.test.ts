@@ -543,11 +543,11 @@ describe("contextBundleForPhase", () => {
         assert.ok(!bundle.includes("Implementation"));
     });
 
-    it("refiner gets only recon (the draft plan is in its task, not the bundle)", () => {
+    it("refiner gets an empty bundle (refineTask threads both the draft plan and recon inline)", () => {
         const bundle = contextBundleForPhase("refiner", fullArtifacts);
-        assert.ok(bundle.includes("Scout findings"));
-        assert.ok(!bundle.includes("The plan"));
-        assert.ok(!bundle.includes("Implementation"));
+        // refineTask already carries the plan AND the recon, so the bundle must
+        // add nothing — otherwise the recon brief is duplicated.
+        assert.equal(bundle, "");
     });
 
     it("implementer gets recon and plan (not the review)", () => {
