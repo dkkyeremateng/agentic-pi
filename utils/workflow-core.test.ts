@@ -27,6 +27,7 @@ import {
     sessionLabel,
     resolveAgentModel,
     agentModelEnvVar,
+    contextWindowForModel,
     parseAgentEnvConfig,
     setModelOverride,
     clearModelOverride,
@@ -668,6 +669,35 @@ describe("parsePlanPhases", () => {
     it("returns [] when there are no phase headings", () => {
         assert.deepEqual(parsePlanPhases("just some text\n## Context\n"), []);
         assert.deepEqual(parsePlanPhases(""), []);
+    });
+});
+
+describe("contextWindowForModel", () => {
+    const models = [
+        { id: "gateframe_yoda/qwen-max-3-7-yoda-2", provider: "gateframe", contextWindow: 1000000 },
+        { id: "gpt-5-nano", provider: "gateframe_bot", contextWindow: 400000 },
+        { id: "no-window", provider: "x" },
+    ];
+
+    it("matches the bare registry id (env-style model string)", () => {
+        assert.equal(
+            contextWindowForModel(models, "gateframe_yoda/qwen-max-3-7-yoda-2"),
+            1000000,
+        );
+    });
+
+    it("matches the full provider/id form (.md-style model string)", () => {
+        assert.equal(
+            contextWindowForModel(models, "gateframe_bot/gpt-5-nano"),
+            400000,
+        );
+    });
+
+    it("returns 0 for unknown model, missing window, or empty input", () => {
+        assert.equal(contextWindowForModel(models, "who/knows"), 0);
+        assert.equal(contextWindowForModel(models, "x/no-window"), 0);
+        assert.equal(contextWindowForModel(undefined, "anything"), 0);
+        assert.equal(contextWindowForModel(models, ""), 0);
     });
 });
 

@@ -98,6 +98,7 @@ import {
     allTeamAgents,
     makeSpawnWrapper,
     resolveAgentModel,
+    contextWindowForModel,
     setModelOverride,
     clearModelOverride,
     clearAllModelOverrides,
@@ -593,16 +594,24 @@ export default function (pi: ExtensionAPI) {
         setCurrentProc: (p: any) => {
             currentProc = p;
         },
-        // When a sub-agent's provider doesn't report a context window and the agent
-        // has none configured, fall back to the primary session's window — the one
-        // pi knows and the footer shows — so the card's bar still fills.
-        getFallbackContextWindow: () => {
+        // When a sub-agent's provider doesn't report a context window in usage
+        // (e.g. gateframe's supportsUsageInStreaming:false) and the agent has none
+        // configured, derive it: first look the model up in pi's registry
+        // (models.json carries contextWindow per model — precise per model), then
+        // fall back to the primary session's window (what the footer shows).
+        getFallbackContextWindow: (model: string) => {
+            try {
+                const fromRegistry = contextWindowForModel(
+                    modelRegistry?.getAll?.(),
+                    model,
+                );
+                if (fromRegistry > 0) return fromRegistry;
+            } catch {}
             try {
                 const u = widgetCtx?.getContextUsage?.();
                 return (u?.contextWindow || u?.context_window || 0) as number;
-            } catch {
-                return 0;
-            }
+            } catch {}
+            return 0;
         },
     });
 

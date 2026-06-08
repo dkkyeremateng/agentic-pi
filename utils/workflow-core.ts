@@ -932,6 +932,28 @@ export function parseAgentFile(filePath: string): AgentDef | null {
     }
 }
 
+// Look up a model's context window from pi's model registry entries (models.json
+// carries `contextWindow` per model). Matches the configured model string against
+// either the bare registry id (e.g. "gateframe_yoda/qwen-max-3-7-yoda-2") or the
+// full "provider/id" form. Returns 0 when not found. This lets a sub-agent's card
+// show the right window straight from pi's config — no per-agent contextWindow
+// needed — which matters for providers with supportsUsageInStreaming:false (their
+// streamed usage omits the window).
+export function contextWindowForModel(
+    models:
+        | { id: string; provider: string; contextWindow?: number }[]
+        | undefined,
+    model: string,
+): number {
+    if (!models || !model) return 0;
+    const m = models.find(
+        (x) => x.id === model || `${x.provider}/${x.id}` === model,
+    );
+    return m && typeof m.contextWindow === "number" && m.contextWindow > 0
+        ? m.contextWindow
+        : 0;
+}
+
 // Derive the per-agent model env var name from an agent key.
 // e.g. "seeker" → "PI_AGENT_SEEKER_MODEL", "plan-build" → "PI_AGENT_PLAN_BUILD_MODEL"
 export function agentModelEnvVar(agentKey: string): string {
@@ -1335,7 +1357,7 @@ export function makeSpawnWrapper(opts: {
     agentTimeoutMs: number;
     updateWidget: () => void;
     setCurrentProc: (proc: any) => void;
-    getFallbackContextWindow?: () => number;
+    getFallbackContextWindow?: (model: string) => number;
 }): (
     agentDef: AgentDef,
     task: string,
@@ -2328,10 +2350,12 @@ export interface SpawnConfig {
     agentTimeoutMs: number;
     updateWidget: () => void;
     setCurrentProc: (proc: any) => void;
-    // Last-resort context-window for the bar when the provider doesn't report one
-    // and the agent has none configured — e.g. the primary session's window, which
-    // pi knows. Read at spawn time. Per-agent config (agentDef.contextWindow) wins.
-    getFallbackContextWindow?: () => number;
+    // Context window for the bar when the provider doesn't report one in usage
+    // (e.g. supportsUsageInStreaming:false) and the agent has none configured.
+    // Given the resolved model, returns its window — e.g. a pi model-registry
+    // lookup, falling back to the primary session's window. Per-agent config
+    // (agentDef.contextWindow) still wins.
+    getFallbackContextWindow?: (model: string) => number;
 }
 
 // Result of a spawned agent subprocess.
@@ -2696,7 +2720,9 @@ function spawnAgentWithModelFallback(
         toolCount: 0,
         contextPct: 0,
         configuredContextWindow:
-            agentDef.contextWindow || config.getFallbackContextWindow?.() || 0,
+            agentDef.contextWindow ||
+            config.getFallbackContextWindow?.(model) ||
+            0,
         cumulativeTokens: {
             input: 0,
             output: 0,
@@ -2939,7 +2965,9 @@ export function spawnAgentWithModel(
         toolCount: 0,
         contextPct: 0,
         configuredContextWindow:
-            agentDef.contextWindow || config.getFallbackContextWindow?.() || 0,
+            agentDef.contextWindow ||
+            config.getFallbackContextWindow?.(model) ||
+            0,
         cumulativeTokens: {
             input: 0,
             output: 0,
