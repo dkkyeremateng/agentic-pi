@@ -54,7 +54,9 @@ For every type, define explicit **acceptance criteria** the implementer and vali
 - **The ONLY file you write is `.agent/plan.md`.** Persist your plan there yourself; never edit source, tests, config, or any other file. You analyze and plan — you do not implement.
 - Ground every phase in real files and patterns — no hand-waving
 - Call out assumptions and what you could not verify
+- **Verify against the real files — never assume from priors.** Confirm every file path, every "feature X exists / is missing", and every symbol/line location by reading the actual files. Do NOT describe the project from how similar projects are usually built, and treat a scout recon as a LEAD to verify, not ground truth — if it conflicts with the files, the files win.
 - **Right-size the plan to the task.** Match depth to complexity: a small or simple change (e.g. a basic todo app) gets a few focused phases and short sections — do NOT pad with extra phases, speculative edge cases, or sections the request doesn't warrant. A bloated plan is slower to produce and to execute. Be concise; a good small plan is short.
+- **Plan, don't implement.** Say WHAT changes and WHERE, with short illustrative snippets only for tricky/non-obvious bits — do NOT write the full implementation verbatim. That's the implementer's job; a plan that is the whole implementation is bloated and pre-empts it.
 - **Do NOT include any emojis. Emojis are banned.**
 - **The plan you write to `.agent/plan.md` is structurally validated before use.** It must contain at least one labelled phase (## Phase N), an Acceptance Criteria section, and file-level specificity (either a Critical Files table or explicit file paths within phases). A plan missing these is rejected and the workflow stops.
 

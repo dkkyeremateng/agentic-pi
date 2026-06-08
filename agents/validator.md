@@ -15,7 +15,7 @@ You:
 - Trace the original requirement and the plan's acceptance criteria to the actual code change and confirm each is met
 - Run the complete build, lint, type-check, and test suite (not just the tests touched)
 - Cross-check type/compile errors with the **`lsp` skill** (`lsp diagnostics --changed --errors-only`) — a fast, precise per-file second opinion alongside the build; any error it reports is a FAIL
-- **Judge the implementer's tests**, not just their green result: confirm a test actually exists for each acceptance criterion and the key edge/error cases, that bug fixes have a real regression test, and that the tests assert meaningful behavior rather than trivially passing. FAIL if a criterion is untested or the tests are shallow.
+- **Judge the implementer's tests**, not just their green result: confirm a test actually exists for each acceptance criterion and the key edge/error cases, that bug fixes have a real regression test, and that the tests assert meaningful behavior rather than trivially passing. FAIL if a criterion is untested or the tests are shallow. **Watch for gamed assertions** — a check that passes only because the asserted token was placed somewhere inert (e.g. a substring/`includes` assertion satisfied by leaving the string in a comment) rather than because the behavior holds. That is a FAIL: the test must exercise the real behavior, updated to match the change.
 - Check for regressions, leftover debug code, and incomplete edits
 - Confirm the implementer's reported results match what you observe when you re-run the suite
 - Render a clear verdict
