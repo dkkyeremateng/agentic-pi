@@ -1706,6 +1706,164 @@ describe("runWorkflowCore (spec-shaped teams)", () => {
     });
 });
 
+// ── runWorkflowCore — resume / planner-less (build) team ──
+
+describe("runWorkflowCore (resume / build team)", () => {
+    function buildTeam(): Map<string, AgentDef> {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer", "validator", "shipper"])
+            agents.set(n, mkAgent(n));
+        return agents;
+    }
+    const shipMock = (phase: PhaseState) => {
+        if (phase.agent === "reviewer") return { output: "APPROVED", ok: true };
+        if (phase.agent === "validator")
+            return { output: "VERDICT: PASS", ok: true };
+        if (phase.agent === "shipper")
+            return {
+                output: "SHIP: SHIPPED\nhttps://github.com/t/pull/1",
+                ok: true,
+            };
+        return { output: `${phase.agent} output`, ok: true };
+    };
+
+    it("resumes from an existing plan.md without a planner (no scratch wipe)", async () => {
+        const agents = buildTeam();
+        const cwd = mkdtempSync(join(tmpdir(), "resume-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        const planText =
+            "## Phase 1: Resumed work\nRESUMED PLAN BODY.\n\n## Acceptance Criteria\n- ok\n\n## Critical Files\n- a.ts";
+        writeFileSync(join(cwd, ".agent", "plan.md"), planText, "utf-8");
+
+        let implSawPlan = "";
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "implementer") {
+                        // The plan must survive into the implementer phase (not wiped).
+                        implSawPlan = readFileSync(
+                            join(cwd, ".agent", "plan.md"),
+                            "utf-8",
+                        );
+                        return { output: "impl output", ok: true };
+                    }
+                    return shipMock(phase);
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Continue X", 3, { cwd });
+
+        assert.equal(result.status, "shipped");
+        assert.ok(
+            implSawPlan.includes("RESUMED PLAN BODY"),
+            "the existing plan.md was preserved into the implementer phase",
+        );
+    });
+
+    it("keeps the existing progress ledger on resume (does not re-seed to all-unchecked)", async () => {
+        const agents = buildTeam();
+        const cwd = mkdtempSync(join(tmpdir(), "resume-ledger-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(
+            join(cwd, ".agent", "plan.md"),
+            "## Phase 1: A\nx\n## Phase 2: B\ny\n\n## Acceptance Criteria\n- ok\n\n## Critical Files\n- a.ts",
+            "utf-8",
+        );
+        writeFileSync(
+            join(cwd, ".agent", "progress.md"),
+            "# Implementation progress\n\nBase: abc123\n\n- [x] Phase 1: A\n- [ ] Phase 2: B\n",
+            "utf-8",
+        );
+
+        let ledgerAtImpl = "";
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "implementer") {
+                        ledgerAtImpl = readFileSync(
+                            join(cwd, ".agent", "progress.md"),
+                            "utf-8",
+                        );
+                        return { output: "impl output", ok: true };
+                    }
+                    return shipMock(phase);
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Continue X", 3, { cwd });
+
+        assert.equal(result.status, "shipped");
+        // Phase 1 stays done and the original Base is intact — the ledger was NOT
+        // re-seeded by initProgressLedger.
+        assert.ok(
+            ledgerAtImpl.includes("[x] Phase 1: A"),
+            "completed phase preserved on resume",
+        );
+        assert.ok(
+            ledgerAtImpl.includes("Base: abc123"),
+            "original squash base preserved on resume",
+        );
+    });
+
+    it("errors clearly when a planner-less team has no plan to build from", async () => {
+        const agents = buildTeam();
+        const cwd = mkdtempSync(join(tmpdir(), "resume-noplan-"));
+        const host = mkHost({ setup: { loadAgents: () => agents } });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Continue X", 3, { cwd });
+
+        assert.equal(result.status, "error");
+        assert.ok(
+            result.report.includes("no planner") &&
+                result.report.includes("plan.md"),
+            "error explains there is no planner and no plan on disk",
+        );
+    });
+
+    it("still wipes scratch when a planner IS present (fresh plan, no stale resume)", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["planner", "implementer", "reviewer", "validator", "shipper"])
+            agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "fresh-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        // A stale plan from a previous, different request.
+        writeFileSync(join(cwd, ".agent", "plan.md"), "STALE PLAN", "utf-8");
+
+        let implSawPlan = "";
+        const freshPlan =
+            "## Phase 1: Fresh\nNew plan body.\n\n## Acceptance Criteria\n- ok\n\n## Critical Files\n- a.ts";
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "planner")
+                        return { output: freshPlan, ok: true };
+                    if (phase.agent === "implementer") {
+                        implSawPlan = readFileSync(
+                            join(cwd, ".agent", "plan.md"),
+                            "utf-8",
+                        );
+                        return { output: "impl output", ok: true };
+                    }
+                    return shipMock(phase);
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "New request", 3, { cwd });
+
+        assert.equal(result.status, "shipped");
+        assert.ok(
+            !implSawPlan.includes("STALE PLAN") && implSawPlan.includes("Fresh"),
+            "the stale plan was wiped and replaced by the planner's fresh plan",
+        );
+    });
+});
+
 // ── runWorkflowCore — ping mode ──
 
 describe("runWorkflowCore (ping mode)", () => {

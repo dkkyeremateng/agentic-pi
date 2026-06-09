@@ -20,6 +20,9 @@ spec:
     - planner
     - refiner
 
+# Resumes from an existing .agent/plan.md (e.g. after a `spec` run, or to retry a
+# failed implementation): no planner, so the saved plan is kept and the implementer
+# continues from the first unfinished phase in .agent/progress.md.
 build:
     - implementer
     - reviewer

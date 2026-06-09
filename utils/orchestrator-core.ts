@@ -375,7 +375,6 @@ export async function runWorkflowCore(
     }
 
     const runArtifacts: RunArtifacts = {};
-    resetRunScratch(cwd);
     const shared = (task: string, phaseAgent: string) => {
         if (!h.config.sharedContext) return task;
         const bundle = contextBundleForPhase(phaseAgent, runArtifacts);
@@ -390,6 +389,28 @@ export async function runWorkflowCore(
     const implP = pm.implementer;
     const valP = pm.validator;
     const shipP = pm.shipper;
+
+    // Resume support: a planner-less roster (e.g. the `build` team) CONTINUES from a
+    // plan a previous run already wrote, instead of regenerating it. Detect an
+    // existing plan BEFORE the scratch wipe (which would delete it).
+    const planPath = join(cwd, ".agent", "plan.md");
+    const hasExistingPlan = existsSync(planPath);
+    const resuming = !planP && hasExistingPlan;
+    if (implP && !planP && !hasExistingPlan) {
+        // Nothing to build from: no planner to produce a plan, and none on disk.
+        s.running = false;
+        s.lastStatus = "error";
+        return {
+            status: "error",
+            report:
+                "This team has no planner and there is no .agent/plan.md to build from. " +
+                "Run a team that includes a planner (e.g. plan-build or spec) first, then " +
+                "re-run the build team to resume the implementation from the saved plan.",
+        };
+    }
+    // Wipe per-run scratch EXCEPT when resuming — then keep plan.md and the progress
+    // ledger so the implementer picks up exactly where it stopped.
+    if (!resuming) resetRunScratch(cwd);
 
     let aborted: RunResult | null;
 
@@ -448,6 +469,15 @@ export async function runWorkflowCore(
         capturePlan(runArtifacts, cwd, plan.output);
     }
 
+    // Resuming a planner-less run: no planner produced the plan in-message this run,
+    // so load the persisted plan as THE plan for the implementer/validator and the
+    // ledger seed (it was already validated when first written).
+    if (resuming) {
+        try {
+            plan = { output: readFileSync(planPath, "utf-8"), ok: true };
+        } catch {}
+    }
+
     // Enforce plan structure on the FINAL plan (post-refine) whenever a planner
     // ran — the plan is the deliverable for a plan-only team (spec) too, and a
     // malformed plan (e.g. the agent emitted a summary instead of a plan) must
@@ -475,7 +505,12 @@ export async function runWorkflowCore(
         // status is tracked even without git. Done once, here — re-runs in the
         // review/validate fix loops reuse the branch and the ledger.
         const wb = h.setup.ensureWorkBranch?.(cwd, request) ?? null;
-        initProgressLedger(cwd, wb?.base ?? "", plan.output);
+        // On resume, keep the existing ledger — its [x] phases and Base are how the
+        // implementer knows what's done and where to squash from. Only seed a fresh
+        // (all-unchecked) ledger for a new run, or if resume left no ledger behind.
+        if (!(resuming && existsSync(join(cwd, ".agent", "progress.md")))) {
+            initProgressLedger(cwd, wb?.base ?? "", plan.output);
+        }
         impl = await h.execution.runPhase(
             implP,
             shared(implementTask(request), "implementer"),
