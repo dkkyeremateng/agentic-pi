@@ -39,6 +39,10 @@ Override a language's server with `LSP_SERVER_<EXT>="cmd args"` (e.g.
 ## Quick Reference
 
 ```bash
+# Which servers does this project need, and are they installed? (JSON)
+lsp servers                                # relevant to the cwd's files + ✓/✗ install
+lsp servers --all                          # every known server, not just relevant ones
+
 # Diagnostics
 lsp diagnostics src/app.ts                 # errors/warnings for one file
 lsp diagnostics --changed                  # everything changed vs HEAD (+ untracked)

@@ -62,6 +62,8 @@ import {
     renderPhaseCardsWithArrows,
     renderEmptyAgentMessage,
     renderRichCard,
+    renderLspServers,
+    type LspServerInfo,
     MAX_CARD_WIDTH,
 } from "../utils/workflow-widgets";
 import {
@@ -208,6 +210,41 @@ export default function (pi: ExtensionAPI) {
     };
     let sessionDir = "";
     let currentProc: any = null;
+    // Language servers relevant to the project's files (the idle "LSP Servers"
+    // panel). Detected once per session via the lsp skill; empty until then and
+    // when no source files match a known server.
+    let lspServers: LspServerInfo[] = [];
+    let lspDetected = false;
+
+    // Ask the lsp skill which servers the project's files need and whether each is
+    // installed. Run SYNCHRONOUSLY before the first widget paint: detecting async
+    // and refreshing afterwards grows the widget by a few rows mid-session, and pi's
+    // sticky widget leaves a stale (ghost) frame above the new one. A single paint at
+    // the final height avoids that. Bounded (the scan is shallow) and best-effort —
+    // a missing python3 or skill just leaves the panel empty.
+    const detectLspServers = (cwd: string) => {
+        if (lspDetected) return;
+        lspDetected = true;
+        const lspPy = join(
+            dirname(fileURLToPath(import.meta.url)),
+            "..",
+            "skills",
+            "lsp",
+            "lsp.py",
+        );
+        if (!existsSync(lspPy)) return;
+        try {
+            const stdout = execFileSync("python3", [lspPy, "servers"], {
+                cwd,
+                timeout: 2000,
+                maxBuffer: 1 << 20,
+                stdio: ["ignore", "pipe", "ignore"],
+                encoding: "utf8",
+            });
+            const parsed = JSON.parse(stdout);
+            if (Array.isArray(parsed?.servers)) lspServers = parsed.servers;
+        } catch {}
+    };
 
     // Callbacks + config the shared orchestration delegates back to.
     const host: OrchestratorHost = {
@@ -534,8 +571,19 @@ export default function (pi: ExtensionAPI) {
             // Idle or ad-hoc dispatch: the team grid (selected cards marked once
             // the orchestrator dispatches), with the running agent's live log below.
             const gridLines = renderAgentGrid(width, theme);
-            if (st.dispatchMode) appendLiveLog(gridLines, width, theme);
-            return clampWidget(gridLines, theme);
+            if (st.dispatchMode) {
+                appendLiveLog(gridLines, width, theme);
+                return clampWidget(gridLines, theme);
+            }
+            // Idle roster: the project's LSP servers + install status sit ABOVE the
+            // team grid so they read as project context, not a trailing footnote.
+            // Separate them with a real blank ROW: pi-tui's Text renders nothing for
+            // an empty/whitespace-only line (text.js: `text.trim() === "" -> []`), so
+            // a visible gap needs a non-whitespace char — a zero-width space survives
+            // .trim() yet is invisible.
+            const lsp = renderLspServers(lspServers, theme);
+            const lines = lsp.length ? [...lsp, "\u200b", ...gridLines] : gridLines;
+            return clampWidget(lines, theme);
         }
 
         // ── Pipeline view (full run_agent_workflow) ───────────
@@ -1395,6 +1443,10 @@ export default function (pi: ExtensionAPI) {
             return;
         }
 
+        // Detect the project's language servers BEFORE the first paint (TUI only —
+        // no chrome in print/json) so the dashboard renders once at its final height
+        // with the LSP panel already on top, instead of growing and ghosting.
+        if (ctx.hasUI) detectLspServers(ctx.cwd);
         // Show the idle team dashboard (grid of agents + their models).
         updateWidget();
         (globalThis as any).__piKillWorkflowProc = (): boolean => {

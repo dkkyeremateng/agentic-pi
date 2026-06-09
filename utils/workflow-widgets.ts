@@ -335,3 +335,31 @@ export function renderEmptyAgentMessage(theme: any): string[] {
         ),
     ];
 }
+
+export interface LspServerInfo {
+    server: string;
+    extensions: string[];
+    installed: boolean;
+    candidates?: string[];
+}
+
+// Panel listing the language servers relevant to the project's files, each with an
+// install marker (✓ ready / ○ missing) and the extensions it covers here. Empty []
+// when nothing is relevant, so the caller can skip the section entirely.
+export function renderLspServers(
+    servers: LspServerInfo[],
+    theme: any,
+): string[] {
+    if (!servers || servers.length === 0) return [];
+    const lines: string[] = [theme.fg("accent", theme.bold(" LSP Servers"))];
+    for (const s of servers) {
+        const mark = s.installed
+            ? theme.fg("success", "✓")
+            : theme.fg("dim", "○");
+        const name = theme.fg(s.installed ? "muted" : "dim", s.server);
+        const exts = theme.fg("dim", s.extensions.join(" "));
+        const note = s.installed ? "" : theme.fg("dim", "  not installed");
+        lines.push(` ${mark} ${name}  ${exts}${note}`);
+    }
+    return lines;
+}

@@ -137,6 +137,91 @@ def find_root(path: str, markers: list[str]) -> str:
         cur = parent
 
 
+# ── Project server detection (for `lsp servers`) ─────────────────────────────────
+_SCAN_SKIP = {
+    "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next",
+    "out", "target", "vendor", ".agent", ".pi", ".git",
+}
+
+
+def scan_exts(root: str, max_depth: int = 2) -> set[str]:
+    """Extensions some server handles that are present within `root` (shallow walk).
+
+    Bounded to `max_depth` levels and skips heavy/generated dirs so it stays cheap
+    enough to run at session start. Stops early once every known ext is seen.
+    """
+    found: set[str] = set()
+    root = os.path.abspath(root)
+    base = root.rstrip(os.sep).count(os.sep)
+    for cur, dirs, files in os.walk(root):
+        depth = cur.rstrip(os.sep).count(os.sep) - base
+        dirs[:] = [] if depth >= max_depth else [
+            d for d in dirs if d not in _SCAN_SKIP and not d.startswith(".")
+        ]
+        for f in files:
+            e = ext_of(f)
+            if e in EXT_SERVERS:
+                found.add(e)
+                if len(found) == len(EXT_SERVERS):
+                    return found
+    return found
+
+
+def server_groups() -> list[dict]:
+    """Group extensions that share the same candidate-server list, input order kept."""
+    order: list[tuple] = []
+    groups: dict[tuple, dict] = {}
+    for ext, specs in EXT_SERVERS.items():
+        key = tuple(s["cmd"] for s in specs)
+        if key not in groups:
+            groups[key] = {"exts": [], "specs": specs}
+            order.append(key)
+        groups[key]["exts"].append(ext)
+    return [groups[k] for k in order]
+
+
+def _bin_name(cmd: str) -> str:
+    return os.path.basename(shlex.split(cmd)[0]) if cmd else ""
+
+
+def detect_servers(root: str, show_all: bool = False) -> list[dict]:
+    """Servers relevant to `root` (or all, with show_all) + whether each is installed.
+
+    A group is relevant when the project actually contains a file it handles. For
+    each group we report the installed candidate (honoring an LSP_SERVER_<EXT>
+    override), or fall back to the first candidate's name when none is on PATH.
+    """
+    present = set(EXT_SERVERS) if show_all else scan_exts(root)
+    result: list[dict] = []
+    for g in server_groups():
+        exts, specs = g["exts"], g["specs"]
+        here = sorted(set(exts) & present)
+        if not here:
+            continue
+        override = next(
+            (os.environ.get(f"LSP_SERVER_{e.upper()}") for e in exts
+             if os.environ.get(f"LSP_SERVER_{e.upper()}")),
+            None,
+        )
+        installed_cmd = None
+        if override and shutil.which(shlex.split(override)[0]):
+            installed_cmd = override
+        else:
+            installed_cmd = next(
+                (s["cmd"] for s in specs if shutil.which(shlex.split(s["cmd"])[0])),
+                None,
+            )
+        primary = installed_cmd or (specs[0]["cmd"] if specs else "")
+        result.append({
+            "server": _bin_name(primary),
+            "extensions": ["." + e for e in here],
+            "installed": installed_cmd is not None,
+            "cmd": installed_cmd,
+            "candidates": [_bin_name(s["cmd"]) for s in specs],
+        })
+    return result
+
+
 def path_to_uri(path: str) -> str:
     return "file://" + pathname2url(os.path.abspath(path))
 
@@ -499,6 +584,11 @@ def out(data) -> None:
 
 
 # ── Commands ────────────────────────────────────────────────────────────────────
+def cmd_servers(a) -> None:
+    root = os.path.abspath(a.path or ".")
+    out({"root": root, "servers": detect_servers(root, show_all=a.all)})
+
+
 def cmd_diagnostics(a) -> None:
     files = list(a.files)
     if a.changed or not files:
@@ -691,6 +781,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="lsp.py", description="LSP client: diagnostics, navigation, symbols, edits (stdlib only)."
     )
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("servers", help="Language servers relevant to the project + install status")
+    s.add_argument("path", nargs="?", default=".", help="project root (default: cwd)")
+    s.add_argument("--all", action="store_true", help="list all known servers, not just relevant ones")
+    s.set_defaults(fn=cmd_servers)
 
     s = sub.add_parser("diagnostics", help="Type/compile diagnostics for files")
     s.add_argument("files", nargs="*")

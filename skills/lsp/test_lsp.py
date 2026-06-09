@@ -120,6 +120,37 @@ class HelperTests(unittest.TestCase):
             open(f, "w").close()
             self.assertEqual(lsp.find_root(f, ["nonexistent.marker"]), os.getcwd())
 
+    def test_scan_exts_shallow_and_skips_heavy_dirs(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "app.ts"), "w").close()
+            os.makedirs(os.path.join(d, "node_modules", "pkg"))
+            open(os.path.join(d, "node_modules", "pkg", "x.go"), "w").close()
+            os.makedirs(os.path.join(d, "a", "b", "c"))
+            open(os.path.join(d, "a", "b", "c", "deep.py"), "w").close()
+            found = lsp.scan_exts(d, max_depth=2)
+            self.assertIn("ts", found)        # top-level source seen
+            self.assertNotIn("go", found)     # node_modules pruned
+            self.assertNotIn("py", found)     # below max_depth
+
+    def test_detect_servers_relevant_only_and_install_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "main.go"), "w").close()
+            with mock.patch.object(lsp.shutil, "which",
+                                   lambda b: "/bin/gopls" if b == "gopls" else None):
+                servers = lsp.detect_servers(d)
+            self.assertEqual([s["server"] for s in servers], ["gopls"])
+            self.assertTrue(servers[0]["installed"])
+            self.assertEqual(servers[0]["extensions"], [".go"])
+
+    def test_detect_servers_reports_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "main.go"), "w").close()
+            with mock.patch.object(lsp.shutil, "which", lambda b: None):
+                servers = lsp.detect_servers(d)
+            self.assertEqual(servers[0]["server"], "gopls")  # falls back to candidate name
+            self.assertFalse(servers[0]["installed"])
+            self.assertIsNone(servers[0]["cmd"])
+
     def test_resolve_position_col_and_symbol(self):
         with tempfile.TemporaryDirectory() as d:
             f = os.path.join(d, "s.py")
