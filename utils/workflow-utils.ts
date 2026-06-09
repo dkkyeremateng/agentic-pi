@@ -157,16 +157,18 @@ export function isModelFailure(output: string): boolean {
     // Dead giveaway: pi suggests --list-models when it can't resolve a model.
     if (/--list[- ]models/.test(combined)) return true;
 
-    // HTTP error codes that indicate model endpoint not found
-    // 502 Bad Gateway, 404 Not Found, 400 Bad Request (invalid model)
+    // HTTP error codes that indicate a bad/unknown model or request — 404 Not
+    // Found, 400 Bad Request (invalid model). NOT 502: a Bad Gateway is a transient
+    // upstream/gateway hiccup, handled by isTransientError (retry the same model),
+    // not a model misconfiguration (which would fall back to a different model).
     if (
-        /\b(?:502|404|400)\b[^\n]{0,40}(?:request\s+failed|not\s+found|bad\s+request|error)/.test(
+        /\b(?:404|400)\b[^\n]{0,40}(?:request\s+failed|not\s+found|bad\s+request|error)/.test(
             combined,
         )
     )
         return true;
     if (
-        /(?:request\s+failed|error|failed)[^\n]{0,40}\b(?:502|404|400)\b/.test(
+        /(?:request\s+failed|error|failed)[^\n]{0,40}\b(?:404|400)\b/.test(
             combined,
         )
     )
@@ -267,8 +269,10 @@ export function isTransientError(output: string): boolean {
     )
         return true;
 
-    // Temporary server / rate-limit responses.
-    if (/\b(?:429|503|504|529)\b/.test(s)) return true;
+    // Temporary server / rate-limit / gateway responses. 502 Bad Gateway is a
+    // transient upstream hiccup (common on proxy/router providers), not a model
+    // misconfig — retry the same model rather than falling back.
+    if (/\b(?:429|502|503|504|529)\b/.test(s)) return true;
     if (
         /rate.?limit|too many requests|overloaded|temporarily unavailable|service unavailable|please try again|try again later/.test(
             s,

@@ -320,8 +320,15 @@ describe("isModelFailure", () => {
         );
     });
 
-    it("detects 502 request failed error", () => {
-        assert.equal(isModelFailure("[agent error] 502 Request failed"), true);
+    it("does NOT treat 502 as a model failure (it is transient)", () => {
+        // 502 Bad Gateway is a transient upstream hiccup, not a bad model — it must
+        // fall to the same-model retry path, not the fallback-to-another-model path.
+        assert.equal(isModelFailure("[agent error] 502 Request failed"), false);
+        assert.equal(
+            isModelFailure("[agent error] 502 Request rejected by upstream model."),
+            false,
+        );
+        assert.equal(isModelFailure("Request failed with status 502"), false);
     });
 
     it("detects 404 request failed error", () => {
@@ -336,10 +343,6 @@ describe("isModelFailure", () => {
             isModelFailure("[agent error] 400 Bad request - invalid model"),
             true,
         );
-    });
-
-    it("detects request failed with 502", () => {
-        assert.equal(isModelFailure("Request failed with status 502"), true);
     });
 });
 
@@ -358,10 +361,16 @@ describe("isTransientError", () => {
         assert.equal(isTransientError("premature close"), true);
     });
 
-    it("detects temporary server / rate-limit responses", () => {
+    it("detects temporary server / rate-limit / gateway responses", () => {
         assert.equal(isTransientError("[agent error] 429 Too Many Requests"), true);
         assert.equal(isTransientError("503 Service Unavailable"), true);
         assert.equal(isTransientError("Overloaded, please try again later"), true);
+        // 502 Bad Gateway is the case that broke the todo_app_full run.
+        assert.equal(
+            isTransientError("[agent error] 502 Request rejected by upstream model."),
+            true,
+        );
+        assert.equal(isTransientError("Request failed with status 502"), true);
     });
 
     it("does NOT treat our watchdog timeout as transient", () => {
