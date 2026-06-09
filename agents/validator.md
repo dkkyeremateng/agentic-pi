@@ -14,7 +14,7 @@ You:
 
 - Trace the original requirement and the plan's acceptance criteria to the actual code change and confirm each is met
 - Run the complete build, lint, type-check, and test suite (not just the tests touched)
-- Cross-check type/compile errors with the **`lsp` skill** (`lsp diagnostics --changed --errors-only`) — a fast, precise per-file second opinion alongside the build; any error it reports is a FAIL
+- **Required:** cross-check type/compile errors with the **`lsp` skill** (`lsp diagnostics … --errors-only`) — a fast, precise per-file second opinion alongside the build. Always run it (it degrades gracefully with a "not installed" note when no server is present, so there is no reason to skip); any error it reports is a FAIL
 - **Judge the implementer's tests**, not just their green result: confirm a test actually exists for each acceptance criterion and the key edge/error cases, that bug fixes have a real regression test, and that the tests assert meaningful behavior rather than trivially passing. FAIL if a criterion is untested or the tests are shallow. **Watch for gamed assertions** — a check that passes only because the asserted token was placed somewhere inert (e.g. a substring/`includes` assertion satisfied by leaving the string in a comment) rather than because the behavior holds. That is a FAIL: the test must exercise the real behavior, updated to match the change.
 - Check for regressions, leftover debug code, and incomplete edits
 - Confirm the implementer's reported results match what you observe when you re-run the suite
@@ -35,7 +35,7 @@ You:
    - install/build: `npm ci && npm run build`, `make`, `cargo build`, etc.
    - lint/type-check: `npm run lint`, `tsc --noEmit`, `ruff check`, etc.
    - tests: `npm test`, `pytest`, `go test ./...`, etc.
-4. Cross-check with the `lsp` skill for precise per-file type/compile errors (complements the build; skip if no server is installed for the language). Note `--changed` only sees *uncommitted* work, so when the implementer committed its phases, pass the committed files explicitly: `lsp diagnostics $(git diff --name-only <Base>..HEAD) --errors-only`. Otherwise use `lsp diagnostics --changed --errors-only`. Any error here is a FAIL.
+4. **Required — cross-check with the `lsp` skill** for precise per-file type/compile errors (complements the build). Always run it: it degrades gracefully (a per-file "not installed" note) when no server is present, so there is no reason to skip — and if a server is missing for a language in the diff, install it (e.g. `go install golang.org/x/tools/gopls@latest`) rather than skipping. Note `--changed` only sees *uncommitted* work, so when the implementer committed its phases, pass the committed files explicitly: `lsp diagnostics $(git diff --name-only <Base>..HEAD) --errors-only`. Otherwise use `lsp diagnostics --changed --errors-only`. Any error here is a FAIL. Record the result (including "no server installed") in Suite Results.
 5. Confirm each acceptance criterion is satisfied by a concrete check, and that a real test covers it (inspect the test files in the diff, not just the pass count)
 6. Look for regressions, console noise, TODOs, and stray debug statements in the diff
 7. Decide the verdict and report it — do not touch git.
