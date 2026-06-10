@@ -718,11 +718,28 @@ describe("buildReviewChecklist", () => {
         assert.deepEqual(buildReviewChecklist([phase("reviewer", "pending")]), []);
     });
 
-    it("shows all items unchecked while the reviewer runs", () => {
+    it("shows all items unchecked while the reviewer runs with no markers", () => {
         const items = buildReviewChecklist([phase("reviewer", "running")]);
         assert.equal(items.length, REVIEW_CHECKLIST.length);
         assert.ok(items.every((i) => !i.done));
         assert.equal(items[0].label, "Plan conformance");
+    });
+
+    it("ticks only the reported items live while running (doneLabels)", () => {
+        const items = buildReviewChecklist(
+            [phase("reviewer", "running")],
+            new Set(["Correctness", "Tests"]),
+        );
+        const done = items.filter((i) => i.done).map((i) => i.label);
+        assert.deepEqual(done.sort(), ["Correctness", "Tests"]);
+    });
+
+    it("ignores doneLabels once finished — all items read done", () => {
+        const items = buildReviewChecklist(
+            [phase("reviewer", "done")],
+            new Set(["Correctness"]),
+        );
+        assert.ok(items.every((i) => i.done));
     });
 
     it("checks every item once the reviewer finishes", () => {

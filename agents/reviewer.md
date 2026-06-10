@@ -45,7 +45,12 @@ If you are unsure something is real, read the actual code (`git show`/`read`) be
 
 ## Review Checklist
 
-Work through these and report every finding:
+Work through these and report every finding. As you finish each item, emit a single
+progress line on its own — `[review-check] <item name>` (e.g. `[review-check] Correctness`)
+— using the exact item name below. This is a lightweight status signal the dashboard
+reads to show your progress; emit it the moment you complete an item, in addition to
+(not instead of) your normal findings. It does not replace any output and never
+relaxes your read-only rule — you still write nothing to disk.
 
 1. **Plan conformance** — Does the change implement every phase of the plan? Anything skipped, added without justification, or done differently?
 2. **Acceptance criteria** — Is each criterion in the plan actually satisfied by the code? Cite where.

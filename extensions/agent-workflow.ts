@@ -107,6 +107,7 @@ import {
     getModelOverrides,
     parseProgressLedger,
     buildReviewChecklist,
+    REVIEW_CHECKLIST,
 } from "../utils/workflow-core";
 import {
     newOrchestratorState,
@@ -569,6 +570,22 @@ export default function (pi: ExtensionAPI) {
         return kept;
     }
 
+    // Live review-checklist progress (Option D): the reviewer is read-only, so it
+    // can't tick a ledger — instead it emits a `[review-check] <item>` marker line as
+    // it finishes each check, and we scan its streamed output (phase.log, a rolling
+    // tail) for them. Sticky: once seen, a mark persists here even after it scrolls
+    // out of the capped buffer. Reset between reviewer runs (see buildWidgetLines).
+    const reviewMarks = new Set<string>();
+    function scanReviewMarkers(text: string) {
+        if (!text) return;
+        for (const line of text.match(/\[review-check\][^\n]*/gi) || []) {
+            const low = line.toLowerCase();
+            for (const item of REVIEW_CHECKLIST) {
+                if (low.includes(item.toLowerCase())) reviewMarks.add(item);
+            }
+        }
+    }
+
     // The implementer's phase checklist, read fresh from .agent/progress.md so the
     // dashboard ticks each phase as it's marked done mid-run. Cheap (small file),
     // best-effort. Empty when there's no ledger yet.
@@ -648,18 +665,23 @@ export default function (pi: ExtensionAPI) {
             lines.push(...todos);
         }
         // The reviewer's checklist, shown once the reviewer phase starts \u2014 the items
-        // it works through (Plan conformance, Correctness, Tests, \u2026). The reviewer is
-        // read-only, so this tracks the phase, not per-item progress: a working
-        // indicator while it runs, all checked once it finishes.
-        const reviewItems = buildReviewChecklist(st.phases);
+        // it works through (Plan conformance, Correctness, Tests, \u2026). While it runs,
+        // items tick live from the `[review-check]` markers scanned out of its stream
+        // (best-effort; the panel reconciles to all-checked when the phase finishes).
+        // Scan only while running; reset the sticky set otherwise so a re-review (the
+        // validator loop re-runs the reviewer) starts fresh.
+        const reviewerPhase = st.phases.find((p) => p.agent === "reviewer");
+        if (reviewerPhase?.status === "running") {
+            scanReviewMarkers(reviewerPhase.log || "");
+        } else {
+            reviewMarks.clear();
+        }
+        const reviewItems = buildReviewChecklist(st.phases, reviewMarks);
         if (reviewItems.length) {
-            const reviewerRunning = st.phases.some(
-                (p) => p.agent === "reviewer" && p.status === "running",
-            );
             lines.push("\u200b");
             lines.push(
                 ...renderTodos(reviewItems, theme, {
-                    running: reviewerRunning,
+                    running: reviewerPhase?.status === "running",
                     width,
                     title: " # Review",
                 }),

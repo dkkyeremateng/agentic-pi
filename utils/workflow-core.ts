@@ -1819,11 +1819,21 @@ export const REVIEW_CHECKLIST = [
 ];
 
 // Build the reviewer's checklist items from the run's phases. Empty (panel hidden)
-// until the reviewer phase has started; every item reads done once it finishes
-// (done = the reviewer worked through that check, not that the code passed it).
-export function buildReviewChecklist(phases: PhaseState[]): ProgressItem[] {
+// until the reviewer phase has started. While it runs, items tick live from
+// `doneLabels` — the set of checks the reviewer has reported finishing via its
+// stream markers (best-effort; empty when the model emits none). Once the phase
+// settles, every item reads done (done = the reviewer worked through that check,
+// not that the code passed it), so a non-marking model still ends fully checked.
+export function buildReviewChecklist(
+    phases: PhaseState[],
+    doneLabels?: Iterable<string>,
+): ProgressItem[] {
     const ph = phases.find((p) => p.agent === "reviewer");
     if (!ph || ph.status === "pending") return [];
+    if (ph.status === "running") {
+        const done = new Set(doneLabels ?? []);
+        return REVIEW_CHECKLIST.map((label) => ({ label, done: done.has(label) }));
+    }
     const done = ph.status === "done";
     return REVIEW_CHECKLIST.map((label) => ({ label, done }));
 }
