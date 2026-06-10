@@ -233,14 +233,13 @@ function toggleExpand(row, ev) {
     row.parentNode.insertBefore(panel, row.nextSibling);
 }
 
+// `full` (Single view) rows are expandable; swimlane lane rows are static
+// previews — no caret, no click-to-expand, no scroll.
 function makeRow(ev, full) {
     const { kls, badge, detail } = describe(ev);
     const oneLine = full ? detail : detail.replace(/\s+/g, " ");
     const row = document.createElement("div");
-    row.className = "row expandable" + (full ? "" : " new");
-    const caret = document.createElement("span");
-    caret.className = "caret";
-    caret.textContent = "›";
+    row.className = "row" + (full ? " expandable" : " new");
     const t = document.createElement("span");
     t.className = "t";
     t.textContent = clock(ev.ts);
@@ -251,15 +250,23 @@ function makeRow(ev, full) {
     d.className = "d";
     d.textContent = oneLine;
     if (detail) d.title = detail;
-    row.append(caret, t, b, d);
-    row.addEventListener("click", () => {
-        // Don't toggle when the user is selecting text.
-        const sel = window.getSelection && String(window.getSelection());
-        if (sel) return;
-        caret.textContent = caret.textContent === "›" ? "⌄" : "›";
-        toggleExpand(row, ev);
-    });
-    if (!full) setTimeout(() => row.classList.remove("new"), 600);
+
+    if (full) {
+        const caret = document.createElement("span");
+        caret.className = "caret";
+        caret.textContent = "›";
+        row.append(caret, t, b, d);
+        row.addEventListener("click", () => {
+            // Don't toggle when the user is selecting text.
+            const sel = window.getSelection && String(window.getSelection());
+            if (sel) return;
+            caret.textContent = caret.textContent === "›" ? "⌄" : "›";
+            toggleExpand(row, ev);
+        });
+    } else {
+        row.append(t, b, d);
+        setTimeout(() => row.classList.remove("new"), 600);
+    }
     return row;
 }
 
@@ -416,7 +423,6 @@ function handle(ev) {
     a.lane.feed.appendChild(makeRow(ev, false));
     while (a.lane.feed.childElementCount > FEED_MAX)
         a.lane.feed.removeChild(a.lane.feed.firstChild);
-    a.lane.feed.scrollTop = a.lane.feed.scrollHeight;
     laneMeta(a);
 
     if (a.btn) a.btn.classList.toggle("active", a.rollup.active);
