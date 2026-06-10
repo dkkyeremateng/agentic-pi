@@ -9,6 +9,7 @@ import {
     reviewTask,
     projectSessionHash,
     parsePlanPhases,
+    parseProgressLedger,
     buildPhaseMap,
     failPhase,
     renderTemplate,
@@ -671,6 +672,34 @@ describe("parsePlanPhases", () => {
     it("returns [] when there are no phase headings", () => {
         assert.deepEqual(parsePlanPhases("just some text\n## Context\n"), []);
         assert.deepEqual(parsePlanPhases(""), []);
+    });
+});
+
+describe("parseProgressLedger", () => {
+    it("parses the seeded ledger format, ignoring heading and Base line", () => {
+        const ledger =
+            "# Implementation progress\n\nBase: abc123\n\n- [ ] Phase 1: Skeleton\n- [x] Phase 2: Polish\n";
+        assert.deepEqual(parseProgressLedger(ledger), [
+            { label: "Phase 1: Skeleton", done: false },
+            { label: "Phase 2: Polish", done: true },
+        ]);
+    });
+
+    it("treats [X] (uppercase) as done and keeps order", () => {
+        const out = parseProgressLedger("- [X] A\n- [ ] B\n- [x] C\n");
+        assert.deepEqual(
+            out.map((i) => i.done),
+            [true, false, true],
+        );
+        assert.deepEqual(
+            out.map((i) => i.label),
+            ["A", "B", "C"],
+        );
+    });
+
+    it("returns [] for empty or checkbox-free content", () => {
+        assert.deepEqual(parseProgressLedger(""), []);
+        assert.deepEqual(parseProgressLedger("# Heading\nno boxes here\n"), []);
     });
 });
 

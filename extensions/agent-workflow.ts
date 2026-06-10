@@ -62,6 +62,7 @@ import {
     renderPhaseCardsWithArrows,
     renderEmptyAgentMessage,
     renderRichCard,
+    renderTodos,
     type LspServerInfo,
     MAX_CARD_WIDTH,
 } from "../utils/workflow-widgets";
@@ -104,6 +105,7 @@ import {
     clearModelOverride,
     clearAllModelOverrides,
     getModelOverrides,
+    parseProgressLedger,
 } from "../utils/workflow-core";
 import {
     newOrchestratorState,
@@ -566,6 +568,21 @@ export default function (pi: ExtensionAPI) {
         return kept;
     }
 
+    // The implementer's phase checklist, read fresh from .agent/progress.md so the
+    // dashboard ticks each phase as it's marked done mid-run. Cheap (small file),
+    // best-effort. Empty when there's no ledger yet.
+    function readProgressItems() {
+        try {
+            const cwd = widgetCtx?.cwd;
+            if (!cwd) return [];
+            return parseProgressLedger(
+                readFileSync(join(cwd, ".agent", "progress.md"), "utf8"),
+            );
+        } catch {
+            return [];
+        }
+    }
+
     // Build the dashboard as a plain line array. Returned to pi via the string[]
     // setWidget overload (below) so pi owns the diffing/redraw — re-issuing a
     // custom component each tick made the sticky widget redraw incorrectly
@@ -617,6 +634,18 @@ export default function (pi: ExtensionAPI) {
         );
         lines.push("");
         lines.push(...renderPhaseCardsWithArrows(cards, theme, st.phases));
+        // The implementer's phases as a live todo list — each ticks [ ] -> [x] as it
+        // commits them. Separated by a blank ROW: pi-tui's Text renders nothing for an
+        // empty/whitespace line, so a visible gap needs a zero-width space (survives
+        // .trim() yet is invisible). Omitted until a ledger exists.
+        const todos = renderTodos(readProgressItems(), theme, {
+            running: st.running,
+            width,
+        });
+        if (todos.length) {
+            lines.push("\u200b");
+            lines.push(...todos);
+        }
         appendLiveLog(lines, width, theme);
         return clampWidget(lines, theme);
     }

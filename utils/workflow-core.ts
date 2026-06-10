@@ -1786,6 +1786,24 @@ export function parsePlanPhases(plan: string): string[] {
     return out;
 }
 
+// One entry of the implementer's progress ledger (.agent/progress.md). Feeds the
+// dashboard's live Todos panel as the implementer flips phases [ ] -> [x].
+export interface ProgressItem {
+    label: string;
+    done: boolean;
+}
+
+// Parse the checkbox lines ("- [ ] …" / "- [x] …") out of the progress ledger,
+// in order. Non-checkbox lines (the heading, the `Base:` line, blanks) are ignored.
+export function parseProgressLedger(content: string): ProgressItem[] {
+    const out: ProgressItem[] = [];
+    for (const raw of (content || "").split(/\r?\n/)) {
+        const m = /^\s*-\s*\[([ xX])\]\s*(.+?)\s*$/.exec(raw);
+        if (m) out.push({ done: m[1].toLowerCase() === "x", label: m[2] });
+    }
+    return out;
+}
+
 // ── Shared run context (curated cross-agent bundle) ──
 // Durable artifacts earlier pipeline phases produced. Prepended to a later
 // agent's task so every agent can build on the others' work without the lossy
