@@ -554,13 +554,120 @@ function buildChips() {
 
 function setView(v) {
     view = v;
-    $("v-swimlane").classList.toggle("on", v === "swimlane");
-    $("v-single").classList.toggle("on", v === "single");
-    $("swimlane").classList.toggle("on", v === "swimlane");
-    $("single").classList.toggle("on", v === "single");
+    for (const k of ["swimlane", "single", "race"]) {
+        $("v-" + k).classList.toggle("on", v === k);
+        $(k).classList.toggle("on", v === k);
+    }
     if (v === "single") {
         if (!selected && agents.size) selectAgent(agents.keys().next().value);
         else renderSingle();
+    }
+    if (v === "race") renderRace();
+}
+
+// ── race view (Gantt-style: each agent's span on a shared time axis) ──────────
+function agentWindow(a) {
+    let first = null,
+        last = null;
+    for (const ev of a.events) {
+        if (first === null || ev.ts < first) first = ev.ts;
+        if (last === null || ev.ts > last) last = ev.ts;
+    }
+    return { first, last };
+}
+
+function renderRace() {
+    const cont = $("race-lanes");
+    const list = [...agents.values()].filter((a) => a.events.length);
+    if (!list.length) {
+        cont.innerHTML =
+            '<div id="race-empty">Waiting for events… run a workflow ' +
+            'with <b>PI_OBS=1</b> in this project.</div>';
+        $("race-axis").textContent = "";
+        return;
+    }
+    const now = Date.now();
+    const wins = new Map();
+    let gStart = null,
+        gEnd = null;
+    for (const a of list) {
+        const w = agentWindow(a);
+        const end = a.rollup.active ? now : w.last;
+        wins.set(a.name, { start: w.first, end });
+        if (gStart === null || w.first < gStart) gStart = w.first;
+        if (gEnd === null || end > gEnd) gEnd = end;
+    }
+    const span = Math.max(1, gEnd - gStart);
+
+    // finish order among completed agents
+    const completed = list
+        .filter((a) => !a.rollup.active)
+        .sort((x, y) => wins.get(x.name).end - wins.get(y.name).end);
+    const rank = new Map();
+    completed.forEach((a, i) => rank.set(a.name, i + 1));
+
+    const running = list.filter((a) => a.rollup.active).length;
+    $("race-axis").innerHTML =
+        "elapsed <b>" +
+        fmtDur(span) +
+        "</b> · finished <b>" +
+        completed.length +
+        "</b>/" +
+        list.length +
+        (running ? " · <b>" + running + "</b> running" : "");
+
+    // rows ordered by start time (pipeline order reads top→bottom)
+    const sorted = [...list].sort(
+        (x, y) => wins.get(x.name).start - wins.get(y.name).start,
+    );
+    cont.innerHTML = "";
+    for (const a of sorted) {
+        const w = wins.get(a.name);
+        const left = ((w.start - gStart) / span) * 100;
+        const width = Math.max(0.5, ((w.end - w.start) / span) * 100);
+        const innerSpan = Math.max(1, w.end - w.start);
+
+        const row = document.createElement("div");
+        row.className = "race-row";
+
+        const label = document.createElement("div");
+        label.className = "race-label";
+        label.innerHTML =
+            '<span class="dot"></span><span class="agent"></span>';
+        label.querySelector(".agent").textContent = a.name;
+        if (a.rollup.active) label.querySelector(".dot").classList.add("on");
+        label.style.cursor = "pointer";
+        label.addEventListener("click", () => selectAgent(a.name));
+
+        const track = document.createElement("div");
+        track.className = "race-track";
+        const bar = document.createElement("div");
+        bar.className = "race-bar " + (a.rollup.active ? "active" : "done");
+        bar.style.left = left + "%";
+        bar.style.width = width + "%";
+        for (const ev of a.events) {
+            if (ev.type !== "turn_end") continue;
+            const tk = document.createElement("div");
+            tk.className = "race-tick";
+            tk.style.left = ((ev.ts - w.start) / innerSpan) * 100 + "%";
+            bar.appendChild(tk);
+        }
+        track.appendChild(bar);
+
+        const meta = document.createElement("div");
+        meta.className = "race-meta";
+        const r = rank.get(a.name);
+        meta.innerHTML =
+            fmtDur(w.end - w.start) +
+            " · " +
+            a.rollup.turns +
+            "t · " +
+            (r
+                ? '<span class="rank">#' + r + "</span>"
+                : '<span style="color:var(--ok)">running</span>');
+
+        row.append(label, track, meta);
+        cont.appendChild(row);
     }
 }
 
@@ -630,6 +737,7 @@ function connect() {
 // ── init ─────────────────────────────────────────────────────────────────────
 $("v-swimlane").addEventListener("click", () => setView("swimlane"));
 $("v-single").addEventListener("click", () => setView("single"));
+$("v-race").addEventListener("click", () => setView("race"));
 $("search").addEventListener("input", (e) => {
     search = e.target.value.trim().toLowerCase();
     renderSingle();
@@ -641,4 +749,8 @@ $("resume").addEventListener("click", () => {
 });
 buildChips();
 setInterval(renderHeader, 500);
+// keep active race bars growing toward "now"
+setInterval(() => {
+    if (view === "race") renderRace();
+}, 400);
 connect();

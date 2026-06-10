@@ -463,6 +463,101 @@
                 color: var(--dim);
                 padding: 30px 4px;
             }
+
+            /* race */
+            #race {
+                padding: 18px;
+            }
+            #race-axis {
+                color: var(--dim);
+                margin: 0 0 14px 142px;
+                font-size: 12px;
+            }
+            #race-axis b {
+                color: var(--fg);
+            }
+            .race-row {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 10px;
+            }
+            .race-label {
+                width: 130px;
+                flex: none;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .race-label .agent {
+                font-weight: 600;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .race-label .dot.on {
+                background: var(--ok);
+                box-shadow: 0 0 6px var(--ok);
+            }
+            .race-track {
+                position: relative;
+                flex: 1;
+                height: 22px;
+                background: var(--panel2);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+            }
+            .race-bar {
+                position: absolute;
+                top: -1px;
+                bottom: -1px;
+                border-radius: 6px;
+                min-width: 3px;
+            }
+            .race-bar.done {
+                background: rgba(122, 162, 247, 0.3);
+                border: 1px solid var(--accent);
+            }
+            .race-bar.active {
+                background: linear-gradient(
+                    90deg,
+                    rgba(158, 206, 106, 0.25),
+                    rgba(158, 206, 106, 0.55)
+                );
+                border: 1px solid var(--ok);
+                animation: racepulse 1.2s ease-in-out infinite;
+            }
+            @keyframes racepulse {
+                0%,
+                100% {
+                    opacity: 0.7;
+                }
+                50% {
+                    opacity: 1;
+                }
+            }
+            .race-tick {
+                position: absolute;
+                top: 2px;
+                bottom: 2px;
+                width: 1px;
+                background: rgba(255, 255, 255, 0.4);
+            }
+            .race-meta {
+                width: 160px;
+                flex: none;
+                text-align: right;
+                color: var(--dim);
+                white-space: nowrap;
+            }
+            .race-meta .rank {
+                color: var(--warn);
+                font-weight: 600;
+            }
+            #race-empty {
+                color: var(--dim);
+                padding: 30px 4px;
+            }
         </style>
     </head>
     <body>
@@ -471,6 +566,7 @@
             <div class="toggle">
                 <button id="v-swimlane" class="on">Swimlane</button>
                 <button id="v-single">Single</button>
+                <button id="v-race">Race</button>
             </div>
             <span class="stat">agents <b id="s-agents">0</b></span>
             <span class="stat">events <b id="s-events">0</b></span>
@@ -522,6 +618,15 @@
                     </div>
                     <div id="single-feed"></div>
                     <button id="resume">↓ paused — click to resume live</button>
+                </section>
+                <section id="race" class="view">
+                    <div id="race-axis"></div>
+                    <div id="race-lanes">
+                        <div id="race-empty">
+                            Waiting for events… run a workflow with
+                            <b>PI_OBS=1</b> in this project.
+                        </div>
+                    </div>
                 </section>
             </main>
         </div>
