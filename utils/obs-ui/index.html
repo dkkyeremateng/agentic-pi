@@ -312,16 +312,17 @@
                 padding: 14px 18px 60px;
                 position: relative;
             }
-            .single-head {
+            .single-id {
+                flex: none;
                 display: flex;
                 align-items: center;
-                gap: 10px;
-                margin-bottom: 10px;
+                gap: 8px;
+                margin-right: 4px;
             }
-            .single-head .agent {
+            .single-id .agent {
                 font-size: 15px;
             }
-            .single-head .sub {
+            .single-id .sub {
                 color: var(--dim);
             }
             #statrow {
@@ -492,16 +493,16 @@
                     <div id="lanes"></div>
                 </section>
                 <section id="single" class="view">
-                    <div class="single-head">
-                        <span class="single-dot dot"></span>
-                        <span class="agent" id="single-agent">—</span>
-                        <span class="sub" id="single-sub"></span>
-                    </div>
                     <div id="filters">
                         <input id="search" placeholder="search…" />
                         <span id="chips"></span>
                     </div>
                     <div id="statrow">
+                        <span class="single-id">
+                            <span class="single-dot dot"></span>
+                            <span class="agent" id="single-agent">—</span>
+                            <span class="sub" id="single-sub"></span>
+                        </span>
                         <div id="statbar"></div>
                         <div id="ctxwidget">
                             <span class="ctx-label">CONTEXT</span>
