@@ -125,6 +125,7 @@ function describe(ev) {
                 (tok ? " · " + tok + " tok" : "") +
                 (p.costUsd ? " · " + fmtCost(p.costUsd) : "") +
                 (p.durationMs ? " · " + fmtMs(p.durationMs) : "") +
+                (p.prefillMs ? " · prefill " + fmtMs(p.prefillMs) : "") +
                 (p.tps ? " · " + p.tps + " tok/s" : "") +
                 ctx;
             break;
@@ -210,6 +211,9 @@ function newRollup() {
         costUsd: 0,
         active: false,
         ctxPercent: null,
+        context: null,
+        prefillSum: 0,
+        prefillCount: 0,
         model: "",
     };
 }
@@ -237,8 +241,14 @@ function applyRollup(r, ev) {
             }
             r.turnMs += p.durationMs || 0;
             r.costUsd += p.costUsd || 0;
-            if (p.context && p.context.percent != null)
+            if (p.context && p.context.percent != null) {
                 r.ctxPercent = p.context.percent;
+                r.context = p.context;
+            }
+            if (p.prefillMs) {
+                r.prefillSum += p.prefillMs;
+                r.prefillCount++;
+            }
             if (p.model) r.model = p.model;
             break;
         case "tool_start":
@@ -385,6 +395,7 @@ function renderStatbar() {
     const a = selected && agents.get(selected);
     if (!a) {
         bar.innerHTML = "";
+        renderCtxWidget(null);
         return;
     }
     const r = a.rollup;
@@ -395,8 +406,8 @@ function renderStatbar() {
         if (last === null || ev.ts > last) last = ev.ts;
     }
     const tps = r.turnMs > 0 ? Math.round((r.outTok / r.turnMs) * 1000) : 0;
-    const ctx =
-        r.ctxPercent != null ? Math.round(r.ctxPercent) + "% used" : "—";
+    const prefill =
+        r.prefillCount > 0 ? fmtMs(Math.round(r.prefillSum / r.prefillCount)) : "—";
     const pills = [
         ["events", a.events.length],
         ["duration", fmtDur((last || 0) - (first || 0))],
@@ -404,8 +415,8 @@ function renderStatbar() {
         ["in", fmtTok(r.inTok)],
         ["out", fmtTok(r.outTok)],
         ["cache", fmtTok(r.cacheTok)],
-        ["tok/s", tps],
-        ["context", ctx],
+        ["~tps", tps],
+        ["prefill", prefill],
         ["errors", r.toolErrors + r.errors],
     ];
     bar.innerHTML = "";
@@ -416,6 +427,18 @@ function renderStatbar() {
         el.querySelector("b").textContent = v;
         bar.appendChild(el);
     }
+    renderCtxWidget(r.context);
+}
+
+function renderCtxWidget(ctx) {
+    const used = ctx && ctx.tokens != null ? ctx.tokens : null;
+    const win = ctx && ctx.window ? ctx.window : null;
+    const pct = ctx && ctx.percent != null ? ctx.percent : null;
+    $("ctx-used").textContent = used != null ? fmtTok(used) : "—";
+    $("ctx-win").textContent = win != null ? fmtTok(win) : "—";
+    $("ctx-pct").textContent =
+        pct != null ? Math.max(0, Math.round(100 - pct)) + "%" : "—";
+    $("ctx-fill").style.width = (pct != null ? Math.min(100, pct) : 0) + "%";
 }
 
 // ── chips / search / view toggle ─────────────────────────────────────────────

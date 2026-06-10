@@ -65,6 +65,11 @@ export default function obsLive(pi: any): void {
     let bootEmitted = false;
     let turnStartTs = 0;
     const toolStartTs = new Map<string, number>();
+    // Per-turn timing for prefill (request→response) and generation throughput.
+    let reqSentTs = 0; // before_provider_request
+    let respStartTs = 0; // after_provider_response (≈ first byte / headers)
+    let prefillMs = 0; // respStart − reqSent
+    let genTps = 0; // output tokens / (messageEnd − respStart)
 
     const shortHash = (s: string): string =>
         createHash("sha1").update(s).digest("hex").slice(0, 8);
@@ -146,15 +151,25 @@ export default function obsLive(pi: any): void {
         emit("turn_start", { turnIndex: e?.turnIndex });
     });
 
+    // (d) prefill = request→response latency. before/after_provider_request fire
+    // in all modes (they wrap the HTTP call), so this works for headless
+    // sub-agents too — unlike token-streaming events.
+    pi.on("before_provider_request", async () => {
+        reqSentTs = Date.now();
+    });
+
     pi.on("turn_end", async (e: any, ctx: any) => {
         const usage = usageFrom(e?.message);
         // (d) latency + throughput for this turn.
         const durationMs = turnStartTs ? Date.now() - turnStartTs : 0;
         const out = usage?.output ?? 0;
+        // Prefer true generation throughput (set on message_end); fall back to
+        // turn-duration throughput when the streaming window wasn't observed.
         const tps =
-            durationMs > 0 && out > 0
+            genTps ||
+            (durationMs > 0 && out > 0
                 ? Math.round((out / durationMs) * 1000)
-                : 0;
+                : 0);
         let context: Record<string, unknown> | undefined;
         try {
             const cu = ctx?.getContextUsage?.();
@@ -173,6 +188,7 @@ export default function obsLive(pi: any): void {
             costUsd: usage?.costUsd ?? 0,
             durationMs,
             tps,
+            prefillMs: prefillMs || undefined,
             context,
             model: e?.message?.model ?? e?.message?.responseModel,
             stopReason: e?.message?.stopReason,
@@ -180,13 +196,23 @@ export default function obsLive(pi: any): void {
                 ? e.toolResults.length
                 : 0,
         });
+        // reset per-turn timing so a turn without a provider call doesn't reuse
+        // the previous turn's numbers
+        reqSentTs = respStartTs = prefillMs = genTps = 0;
     });
 
-    // (b) assistant text + thinking content (opt-in via PI_OBS_CONTENT).
     pi.on("message_end", async (e: any) => {
-        if (!contentEnabled()) return;
         const msg = e?.message;
         if (!msg || msg.role !== "assistant") return;
+        // (d) generation throughput: output tokens over the response→done window
+        // (excludes prefill and tool time). Always computed, even without content.
+        if (respStartTs) {
+            const genMs = Date.now() - respStartTs;
+            const out = usageFrom(msg)?.output ?? 0;
+            genTps = genMs > 0 && out > 0 ? Math.round((out / genMs) * 1000) : 0;
+        }
+        // (b) assistant text + thinking content (opt-in via PI_OBS_CONTENT).
+        if (!contentEnabled()) return;
         const { text, thinking } = messageContent(msg, contentMax());
         if (thinking)
             emit("message", { role: "assistant", kind: "thinking", text: thinking });
@@ -216,8 +242,11 @@ export default function obsLive(pi: any): void {
         });
     });
 
-    // (c) Provider/API errors (429, 5xx, etc.) as a first-class error stream.
+    // (d) response received (≈ first byte): prefill = time since request sent.
+    // (c) also surface provider errors here.
     pi.on("after_provider_response", async (e: any) => {
+        respStartTs = Date.now();
+        if (reqSentTs) prefillMs = respStartTs - reqSentTs;
         const status = Number(e?.status);
         if (status >= 400) {
             emit("error", {

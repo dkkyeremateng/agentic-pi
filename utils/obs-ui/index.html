@@ -278,6 +278,54 @@
             .single-head .sub {
                 color: var(--dim);
             }
+            #ctxwidget {
+                margin-left: auto;
+                display: grid;
+                grid-template-columns: auto auto;
+                column-gap: 16px;
+                row-gap: 0;
+                align-items: baseline;
+                background: var(--panel2);
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                padding: 8px 14px 10px;
+                min-width: 220px;
+            }
+            #ctxwidget .ctx-label {
+                grid-row: 1 / span 2;
+                align-self: center;
+                color: var(--dim);
+                font-size: 11px;
+                letter-spacing: 0.08em;
+            }
+            #ctxwidget .ctx-nums {
+                font-size: 15px;
+                font-weight: 600;
+                color: var(--fg);
+            }
+            #ctxwidget .ctx-rem {
+                color: var(--dim);
+                font-size: 12px;
+                text-align: right;
+            }
+            #ctxwidget .ctx-rem b {
+                color: var(--fg);
+                font-weight: 600;
+            }
+            #ctxwidget .ctx-bar {
+                grid-column: 1 / span 2;
+                height: 3px;
+                margin-top: 6px;
+                background: var(--line);
+                border-radius: 2px;
+                overflow: hidden;
+            }
+            #ctxwidget .ctx-bar #ctx-fill {
+                height: 100%;
+                width: 0%;
+                background: var(--ok);
+                transition: width 0.3s ease;
+            }
             #filters {
                 display: flex;
                 flex-wrap: wrap;
@@ -396,6 +444,19 @@
                         <span class="single-dot dot"></span>
                         <span class="agent" id="single-agent">—</span>
                         <span class="sub" id="single-sub"></span>
+                        <div id="ctxwidget">
+                            <span class="ctx-label">CONTEXT</span>
+                            <span class="ctx-nums"
+                                ><b id="ctx-used">—</b> /
+                                <span id="ctx-win">—</span></span
+                            >
+                            <span class="ctx-rem"
+                                ><b id="ctx-pct">—</b> remaining</span
+                            >
+                            <div class="ctx-bar">
+                                <div id="ctx-fill"></div>
+                            </div>
+                        </div>
                     </div>
                     <div id="filters">
                         <input id="search" placeholder="search…" />
