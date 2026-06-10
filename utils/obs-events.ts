@@ -127,8 +127,9 @@ export function resultPreview(result: unknown, max = 160): string {
 }
 
 // Truncate preserving newlines (unlike argPreview, which collapses whitespace).
+// A non-finite or non-positive `max` means "no limit" (return the full string).
 export function capText(s: string, max: number): string {
-    if (s.length <= max) return s;
+    if (!Number.isFinite(max) || max <= 0 || s.length <= max) return s;
     return s.slice(0, max - 1) + "…";
 }
 

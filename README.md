@@ -295,10 +295,14 @@ PI_OBS=1 ./run.sh                      # run the workflow with emission on
 The collector is inert unless `PI_OBS=1`, writes only under the gitignored `.agent/`,
 and never disrupts a run if the sink can't be written.
 
-By default only *structural* events are captured. To also stream the agents'
-**message and thinking text**, set `PI_OBS_CONTENT=1` (separate opt-in, since that
-text can be large and may echo file contents) — each block is capped to
-`PI_OBS_CONTENT_MAX` chars (default 2000). For example: `PI_OBS=1 PI_OBS_CONTENT=1 ./run.sh`.
+Click any event row to expand its full detail — tool calls show the complete
+arguments, tool results the complete output, pretty-printed, with a copy button.
+Tool args/results are captured **in full by default**; set `PI_OBS_TOOL_MAX=<chars>`
+to cap them (e.g. to bound the sink file size).
+
+Agent **message and thinking text** is a separate opt-in (it can echo file
+contents): set `PI_OBS_CONTENT=1`, capped to `PI_OBS_CONTENT_MAX` chars (default
+2000). For example: `PI_OBS=1 PI_OBS_CONTENT=1 ./run.sh`.
 
 ## Develop
 

@@ -25,10 +25,17 @@ import {
     type EventFactory,
 } from "../utils/obs-events";
 
-// Cap for the full args/result captured for the expand-on-click view.
+// Cap (chars) for the full args/result captured for the expand-on-click view.
+// Default is unlimited — tool args/results are the agent's working I/O and we
+// want them whole. Set PI_OBS_TOOL_MAX=<n> to cap (e.g. to bound the sink size).
 function toolMax(): number {
-    const n = parseInt(process.env.PI_OBS_TOOL_MAX ?? "4000", 10);
-    return Number.isNaN(n) ? 4000 : Math.max(0, n);
+    const v = process.env.PI_OBS_TOOL_MAX;
+    if (!v || v === "0" || v.toLowerCase() === "full") return Infinity;
+    const n = parseInt(v, 10);
+    return Number.isNaN(n) ? Infinity : Math.max(0, n);
+}
+function isTruncated(len: number, cap: number): boolean {
+    return Number.isFinite(cap) && cap > 0 && len > cap;
 }
 
 function enabled(): boolean {
@@ -241,7 +248,7 @@ export default function obsLive(pi: any): void {
             toolName: e?.toolName,
             arg: argPreview(e?.args),
             argsText: capText(argsRaw, cap),
-            argsTruncated: argsRaw.length > cap,
+            argsTruncated: isTruncated(argsRaw.length, cap),
         });
     });
 
@@ -259,7 +266,7 @@ export default function obsLive(pi: any): void {
             durationMs,
             result: resultPreview(e?.result),
             resultText: capText(full, cap),
-            resultTruncated: full.length > cap,
+            resultTruncated: isTruncated(full.length, cap),
         });
     });
 

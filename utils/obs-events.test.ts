@@ -72,6 +72,9 @@ test("flattenText preserves full text without collapsing whitespace", () => {
 test("capText truncates with ellipsis, preserves short/newline text", () => {
     assert.equal(capText("hi\nthere", 100), "hi\nthere");
     assert.equal(capText("abcdef", 4), "abc…");
+    // non-positive / non-finite max means no limit (full string)
+    assert.equal(capText("abcdef", 0), "abcdef");
+    assert.equal(capText("abcdef", Infinity), "abcdef");
 });
 
 test("messageContent separates text and thinking blocks, capped", () => {
