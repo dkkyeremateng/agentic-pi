@@ -548,6 +548,12 @@ export async function runWorkflowCore(
             if (aborted) return aborted;
             implP.status = "pending";
             implP.note = "";
+            // Sent back for changes: the prior verdict no longer stands. Reset the
+            // reviewer phase now (not just at the next loop top) so its card and the
+            // live # Review checklist clear while the implementer re-works, instead of
+            // reading a stale "done" / all-checked.
+            reviewerP.status = "pending";
+            reviewerP.note = "";
             h.ui.updateWidget();
             impl = await h.execution.runPhase(
                 implP,
@@ -598,6 +604,10 @@ export async function runWorkflowCore(
             if (aborted) return aborted;
             implP.status = "pending";
             implP.note = "";
+            // Reset the validator phase too so its card doesn't read a stale "done"
+            // while the implementer re-works the FAIL (re-validated next iteration).
+            valP.status = "pending";
+            valP.note = "";
             h.ui.updateWidget();
             impl = await h.execution.runPhase(
                 implP,
