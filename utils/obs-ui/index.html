@@ -324,8 +324,14 @@
             .single-head .sub {
                 color: var(--dim);
             }
+            #statrow {
+                display: flex;
+                align-items: center;
+                gap: 14px;
+                margin-bottom: 12px;
+            }
             #ctxwidget {
-                margin-left: auto;
+                flex: none;
                 display: grid;
                 grid-template-columns: auto auto;
                 column-gap: 16px;
@@ -334,8 +340,8 @@
                 background: var(--panel2);
                 border: 1px solid var(--line);
                 border-radius: 8px;
-                padding: 8px 14px 10px;
-                min-width: 220px;
+                padding: 6px 12px 8px;
+                min-width: 210px;
             }
             #ctxwidget .ctx-label {
                 grid-row: 1 / span 2;
@@ -406,10 +412,10 @@
                 color: var(--accent);
             }
             #statbar {
+                flex: 1;
                 display: flex;
                 flex-wrap: wrap;
                 gap: 8px;
-                margin-bottom: 12px;
             }
             .pill {
                 background: var(--panel2);
@@ -490,6 +496,13 @@
                         <span class="single-dot dot"></span>
                         <span class="agent" id="single-agent">—</span>
                         <span class="sub" id="single-sub"></span>
+                    </div>
+                    <div id="filters">
+                        <input id="search" placeholder="search…" />
+                        <span id="chips"></span>
+                    </div>
+                    <div id="statrow">
+                        <div id="statbar"></div>
                         <div id="ctxwidget">
                             <span class="ctx-label">CONTEXT</span>
                             <span class="ctx-nums"
@@ -504,11 +517,6 @@
                             </div>
                         </div>
                     </div>
-                    <div id="filters">
-                        <input id="search" placeholder="search…" />
-                        <span id="chips"></span>
-                    </div>
-                    <div id="statbar"></div>
                     <div id="single-empty">
                         Pick an agent on the left to inspect its full timeline.
                     </div>

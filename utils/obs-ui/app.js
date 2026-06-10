@@ -273,7 +273,8 @@ function newRollup() {
         tokens: 0,
         inTok: 0,
         outTok: 0,
-        cacheTok: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
         turnMs: 0,
         costUsd: 0,
         active: false,
@@ -303,8 +304,8 @@ function applyRollup(r, ev) {
                 r.tokens += p.tokens.total || 0;
                 r.inTok += p.tokens.input || 0;
                 r.outTok += p.tokens.output || 0;
-                r.cacheTok +=
-                    (p.tokens.cacheRead || 0) + (p.tokens.cacheWrite || 0);
+                r.cacheRead += p.tokens.cacheRead || 0;
+                r.cacheWrite += p.tokens.cacheWrite || 0;
             }
             r.turnMs += p.durationMs || 0;
             r.costUsd += p.costUsd || 0;
@@ -481,7 +482,8 @@ function renderStatbar() {
         ["cost", fmtCost(r.costUsd), "cost"],
         ["in", fmtTok(r.inTok)],
         ["out", fmtTok(r.outTok)],
-        ["cache", fmtTok(r.cacheTok)],
+        ["cache r", fmtTok(r.cacheRead)],
+        ["cache w", fmtTok(r.cacheWrite)],
         ["~tps", tps],
         ["prefill", prefill],
         ["errors", r.toolErrors + r.errors],
