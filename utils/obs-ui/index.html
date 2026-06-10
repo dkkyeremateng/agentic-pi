@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Agent Observability — Live</title>
+        <style>
+            :root {
+                --bg: #14141b;
+                --panel: #1b1b26;
+                --panel2: #22222f;
+                --line: #2c2c3a;
+                --fg: #c8c8d4;
+                --dim: #7a7a8c;
+                --accent: #7aa2f7;
+                --ok: #9ece6a;
+                --warn: #e0af68;
+                --err: #f7768e;
+                --tool: #7dcfff;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                background: var(--bg);
+                color: var(--fg);
+                font:
+                    13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas,
+                    monospace;
+            }
+            header {
+                display: flex;
+                align-items: baseline;
+                gap: 18px;
+                flex-wrap: wrap;
+                padding: 12px 18px;
+                border-bottom: 1px solid var(--line);
+                background: var(--panel);
+                position: sticky;
+                top: 0;
+                z-index: 2;
+            }
+            header h1 {
+                font-size: 14px;
+                margin: 0;
+                letter-spacing: 0.04em;
+                color: var(--fg);
+            }
+            .stat {
+                color: var(--dim);
+            }
+            .stat b {
+                color: var(--fg);
+                font-weight: 600;
+            }
+            #conn {
+                margin-left: auto;
+                color: var(--err);
+            }
+            #conn.up {
+                color: var(--ok);
+            }
+            #lanes {
+                display: grid;
+                grid-template-columns: repeat(
+                    auto-fill,
+                    minmax(320px, 1fr)
+                );
+                gap: 12px;
+                padding: 16px 18px;
+            }
+            .lane {
+                background: var(--panel);
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+            .lane.active {
+                border-color: var(--accent);
+            }
+            .lane-head {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px 12px;
+                background: var(--panel2);
+                border-bottom: 1px solid var(--line);
+            }
+            .dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: var(--dim);
+                flex: none;
+            }
+            .lane.active .dot {
+                background: var(--ok);
+                box-shadow: 0 0 6px var(--ok);
+            }
+            .agent {
+                font-weight: 600;
+                color: var(--fg);
+            }
+            .lane-meta {
+                margin-left: auto;
+                color: var(--dim);
+                font-size: 12px;
+            }
+            .feed {
+                padding: 6px 0;
+                max-height: 320px;
+                overflow-y: auto;
+            }
+            .row {
+                display: flex;
+                gap: 8px;
+                padding: 2px 12px;
+                white-space: nowrap;
+            }
+            .row .t {
+                color: var(--dim);
+                flex: none;
+            }
+            .row .k {
+                flex: none;
+                width: 64px;
+            }
+            .row .d {
+                color: var(--fg);
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .k.tool {
+                color: var(--tool);
+            }
+            .k.turn {
+                color: var(--accent);
+            }
+            .k.err {
+                color: var(--err);
+            }
+            .k.sys {
+                color: var(--warn);
+            }
+            .new {
+                animation: flash 0.6s ease-out;
+            }
+            @keyframes flash {
+                from {
+                    background: rgba(122, 162, 247, 0.18);
+                }
+                to {
+                    background: transparent;
+                }
+            }
+            #empty {
+                padding: 40px 18px;
+                color: var(--dim);
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>AGENT OBSERVABILITY</h1>
+            <span class="stat">agents <b id="s-agents">0</b></span>
+            <span class="stat">events <b id="s-events">0</b></span>
+            <span class="stat">tokens <b id="s-tokens">0</b></span>
+            <span class="stat">cost <b id="s-cost">$0.00</b></span>
+            <span class="stat">tok/s <b id="s-tps">0</b></span>
+            <span class="stat">errors <b id="s-errors">0</b></span>
+            <span class="stat">elapsed <b id="s-elapsed">0s</b></span>
+            <span id="conn">connecting…</span>
+        </header>
+        <div id="empty">
+            Waiting for events… run a workflow with
+            <b>PI_OBS=1</b> in this project.
+        </div>
+        <div id="lanes"></div>
+        <script src="/app.js"></script>
+    </body>
+</html>

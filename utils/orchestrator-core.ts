@@ -24,6 +24,7 @@ import {
     clampOutput,
     contextBundleForPhase,
     buildWorkflowReport,
+    buildWorkflowMetrics,
     scoutTask,
     planTask,
     refineTask,
@@ -722,6 +723,30 @@ export async function runWorkflowCore(
     });
 
     writeReport(h, cwd, report);
+
+    // Structured sibling of the report for the observability analyzer.
+    const metrics = buildWorkflowMetrics({
+        request,
+        status,
+        verdict,
+        passes,
+        maxLoops,
+        passed,
+        prUrl,
+        team: s.activeTeamName || undefined,
+        startedAt: s.runStartedAt,
+        endedAt: Date.now(),
+        totals: {
+            runElapsedMs: s.runElapsedMs,
+            totalToolCalls: s.totalToolCalls,
+            totalTokens: s.totalTokens,
+            totalDroppedLines: s.totalDroppedLines,
+            totalCostUsd: s.totalCostUsd,
+        },
+        phases: [scoutP, planP, refinerP, implP, reviewerP, valP, shipP],
+    });
+    writeMetrics(h, cwd, metrics);
+
     h.ui.publishLogs();
     return { status, report };
 }
@@ -734,6 +759,28 @@ function writeReport(h: OrchestratorHost, cwd: string, report: string): void {
             `Could not write workflow-report.md: ${e.message}`,
             "warning",
         );
+    }
+}
+
+// Writes the structured run metrics under .agent/: metrics.json (latest run,
+// overwritten) plus an append-only metrics.jsonl (one line per run, for trends).
+function writeMetrics(
+    h: OrchestratorHost,
+    cwd: string,
+    metrics: ReturnType<typeof buildWorkflowMetrics>,
+): void {
+    try {
+        const dir = join(cwd, ".agent");
+        mkdirSync(dir, { recursive: true });
+        const line = JSON.stringify(metrics);
+        writeFileSync(join(dir, "metrics.json"), line + "\n", "utf-8");
+        const log = join(dir, "metrics.jsonl");
+        writeFileSync(log, line + "\n", {
+            encoding: "utf-8",
+            flag: "a",
+        });
+    } catch (e: any) {
+        h.ui.notify(`Could not write .agent/metrics.json: ${e.message}`, "warning");
     }
 }
 

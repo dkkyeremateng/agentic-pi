@@ -1621,7 +1621,7 @@ export function formatContextUsage(opts: {
 // The final markdown report is identical between both extensions, so it lives
 // here. tokenNote/digest/testSignal/outcomeLine are resolved from this module.
 
-interface ReportTotals {
+export interface ReportTotals {
     runElapsedMs: number;
     totalToolCalls: number;
     totalTokens: {
@@ -1755,6 +1755,148 @@ export function buildWorkflowReport(o: {
             : []),
         ...(o.shipP ? [`### Ship`, ``, truncatePhaseOutput(o.ship), ``] : []),
     ].join("\n");
+}
+
+// ── Structured run metrics (machine-readable sibling of the report) ─────────
+// buildWorkflowReport emits human markdown; this emits the same run as JSON so
+// the observability analyzer (utils/obs-cli.ts) has a precise, single-run record
+// instead of re-parsing the markdown. Same call site, same inputs.
+
+export interface PhaseMetrics {
+    label: string;
+    agent: string;
+    status: string;
+    elapsedMs: number;
+    attempt: number;
+    toolCount: number;
+    modelFallback: boolean;
+    activeModel?: string;
+    droppedLines: number;
+    tokens?: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        total: number;
+        costUsd?: number;
+    };
+}
+
+export interface WorkflowMetrics {
+    schema: number; // bump on shape changes
+    startedAt?: string; // ISO
+    endedAt: string; // ISO
+    request: string;
+    team?: string;
+    status: string; // raw terminal status (e.g. "paused-no-remote")
+    shipOutcome: "shipped" | "paused" | "failed" | "unknown";
+    verdict: string;
+    passes: number; // attempts used
+    maxLoops: number;
+    passed: boolean;
+    prUrl: string;
+    totals: {
+        wallclockMs: number;
+        toolCalls: number;
+        droppedLines: number;
+        costUsd?: number;
+        tokens: {
+            input: number;
+            output: number;
+            cacheRead: number;
+            cacheWrite: number;
+            total: number;
+        };
+    };
+    phases: PhaseMetrics[];
+}
+
+function phaseMetrics(p: PhaseState): PhaseMetrics {
+    const t = p.tokens;
+    const cacheRead = t?.cacheRead || 0;
+    const cacheWrite = t?.cacheWrite || 0;
+    return {
+        label: p.label,
+        agent: p.agent,
+        status: p.status,
+        elapsedMs: p.elapsed,
+        attempt: p.attempt,
+        toolCount: p.toolCount,
+        modelFallback: p.modelFallback,
+        activeModel: p.activeModel,
+        droppedLines: p.droppedLines,
+        tokens: t
+            ? {
+                  input: t.input,
+                  output: t.output,
+                  cacheRead,
+                  cacheWrite,
+                  total: t.input + t.output + cacheRead + cacheWrite,
+                  costUsd: t.costUsd,
+              }
+            : undefined,
+    };
+}
+
+function shipOutcomeFromStatus(
+    status: string,
+    prUrl: string,
+): WorkflowMetrics["shipOutcome"] {
+    if (prUrl || /shipped/i.test(status)) return "shipped";
+    if (/paus/i.test(status)) return "paused";
+    if (/fail|block|abort/i.test(status)) return "failed";
+    return "unknown";
+}
+
+export function buildWorkflowMetrics(o: {
+    request: string;
+    status: string;
+    verdict: string;
+    passes: number;
+    maxLoops: number;
+    passed: boolean;
+    prUrl: string;
+    team?: string;
+    startedAt?: number;
+    endedAt?: number;
+    totals: ReportTotals;
+    phases: (PhaseState | null)[];
+}): WorkflowMetrics {
+    const tt = o.totals.totalTokens;
+    const cacheRead = tt.cacheRead || 0;
+    const cacheWrite = tt.cacheWrite || 0;
+    return {
+        schema: 1,
+        startedAt: o.startedAt
+            ? new Date(o.startedAt).toISOString()
+            : undefined,
+        endedAt: new Date(o.endedAt ?? Date.now()).toISOString(),
+        request: o.request,
+        team: o.team || undefined,
+        status: o.status,
+        shipOutcome: shipOutcomeFromStatus(o.status, o.prUrl),
+        verdict: o.verdict,
+        passes: o.passes,
+        maxLoops: o.maxLoops,
+        passed: o.passed,
+        prUrl: o.prUrl,
+        totals: {
+            wallclockMs: o.totals.runElapsedMs,
+            toolCalls: o.totals.totalToolCalls,
+            droppedLines: o.totals.totalDroppedLines,
+            costUsd: o.totals.totalCostUsd,
+            tokens: {
+                input: tt.input,
+                output: tt.output,
+                cacheRead,
+                cacheWrite,
+                total: tt.input + tt.output + cacheRead + cacheWrite,
+            },
+        },
+        phases: o.phases
+            .filter((p): p is PhaseState => !!p)
+            .map(phaseMetrics),
+    };
 }
 
 // ── Plan structural validation ───────────────────
@@ -2507,11 +2649,15 @@ export function dispatchEnv(agentName: string): Record<string, string> {
     const depth = parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
     const ancestry = process.env.PI_DISPATCH_ANCESTRY || "";
     const name = agentName.toLowerCase();
-    return {
+    const env: Record<string, string> = {
         PI_SUBAGENT: "1",
         PI_DISPATCH_DEPTH: String(depth + 1),
         PI_DISPATCH_ANCESTRY: ancestry ? `${ancestry}>${name}` : name,
     };
+    // Label this sub-agent's observability lane (obs-live.ts reads it).
+    if (process.env.PI_OBS === "1" || process.env.PI_OBS === "true")
+        env.PI_OBS_AGENT = name;
+    return env;
 }
 
 // Whether a spawned (headless) sub-agent should be told to trust the project's
@@ -2602,6 +2748,11 @@ export function subagentExtArgs(tools: string): string[] {
     // keep full access by not loading it.
     const t = tools || "";
     if (/\bbash\b/.test(t) && !/\b(write|edit)\b/.test(t)) add("readonly-guard.ts");
+    // Live observability: when PI_OBS=1, every sub-agent emits ObsEvents to the
+    // shared sink so the dashboard shows the whole pipeline. PI_OBS_AGENT (set on
+    // the spawn env) labels which agent's lane the events land in.
+    if (process.env.PI_OBS === "1" || process.env.PI_OBS === "true")
+        add("obs-live.ts");
     return args;
 }
 

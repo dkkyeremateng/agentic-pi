@@ -14,6 +14,7 @@ import {
     REVIEW_CHECKLIST,
     inferWorkflowTeam,
     buildPhaseMap,
+    buildWorkflowMetrics,
     failPhase,
     renderTemplate,
     tokenNote,
@@ -1428,5 +1429,123 @@ describe("runAgentWithFallback transient retry", () => {
         const r = await runAgentWithFallback(agent, "t", mkPhase("T", "tester-agent"), "/x", "primary", "", spawn, noopOpts);
         assert.equal(r.exitCode, 1);
         assert.equal(n, 3); // initial + 2 retries
+    });
+});
+
+// ── buildWorkflowMetrics ─────────────────────────
+
+describe("buildWorkflowMetrics", () => {
+    it("emits a structured single-run record from phase states + totals", () => {
+        const scout = mkPhase("Scout", "scout");
+        scout.status = "done";
+        scout.elapsed = 19_000;
+        scout.toolCount = 2;
+        scout.tokens = {
+            input: 8000,
+            output: 1000,
+            cacheRead: 2000,
+            cacheWrite: 0,
+            contextWindow: 200000,
+            costUsd: 0.022,
+        };
+        const impl = mkPhase("Implementer", "implementer");
+        impl.status = "done";
+        impl.elapsed = 378_000;
+        impl.attempt = 2;
+        impl.tokens = {
+            input: 40000,
+            output: 20000,
+            cacheRead: 412700,
+            cacheWrite: 0,
+            contextWindow: 200000,
+            costUsd: 0.397,
+        };
+
+        const m = buildWorkflowMetrics({
+            request: "build a todo app",
+            status: "paused-no-remote",
+            verdict: "pass",
+            passes: 1,
+            maxLoops: 3,
+            passed: true,
+            prUrl: "",
+            team: "build",
+            startedAt: Date.parse("2026-06-10T19:25:00.000Z"),
+            endedAt: Date.parse("2026-06-10T19:35:38.000Z"),
+            totals: {
+                runElapsedMs: 638_000,
+                totalToolCalls: 53,
+                totalTokens: {
+                    input: 47677,
+                    output: 24308,
+                    cacheRead: 518993,
+                    cacheWrite: 0,
+                },
+                totalDroppedLines: 0,
+                totalCostUsd: 0.643,
+            },
+            phases: [scout, null, null, impl, null, null, null],
+        });
+
+        assert.equal(m.schema, 1);
+        assert.equal(m.team, "build");
+        assert.equal(m.shipOutcome, "paused");
+        assert.equal(m.passes, 1);
+        assert.equal(m.maxLoops, 3);
+        assert.equal(m.startedAt, "2026-06-10T19:25:00.000Z");
+        assert.equal(m.totals.wallclockMs, 638_000);
+        assert.equal(m.totals.toolCalls, 53);
+        assert.equal(m.totals.tokens.total, 47677 + 24308 + 518993);
+        assert.equal(m.totals.costUsd, 0.643);
+        // nulls are dropped; order preserved
+        assert.equal(m.phases.length, 2);
+        assert.equal(m.phases[0].label, "Scout");
+        assert.equal(m.phases[1].label, "Implementer");
+        assert.equal(m.phases[1].attempt, 2);
+        assert.equal(m.phases[1].tokens?.total, 40000 + 20000 + 412700);
+        assert.equal(m.phases[1].tokens?.costUsd, 0.397);
+    });
+
+    it("maps ship outcome from status and prUrl", () => {
+        const base = {
+            request: "x",
+            verdict: "pass",
+            passes: 1,
+            maxLoops: 3,
+            passed: true,
+            totals: {
+                runElapsedMs: 0,
+                totalToolCalls: 0,
+                totalTokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                totalDroppedLines: 0,
+            },
+            phases: [],
+        };
+        assert.equal(
+            buildWorkflowMetrics({ ...base, status: "shipped", prUrl: "" })
+                .shipOutcome,
+            "shipped",
+        );
+        assert.equal(
+            buildWorkflowMetrics({
+                ...base,
+                status: "done",
+                prUrl: "https://github.com/o/r/pull/1",
+            }).shipOutcome,
+            "shipped",
+        );
+        assert.equal(
+            buildWorkflowMetrics({
+                ...base,
+                status: "failed-after-retries",
+                prUrl: "",
+            }).shipOutcome,
+            "failed",
+        );
+        assert.equal(
+            buildWorkflowMetrics({ ...base, status: "done", prUrl: "" })
+                .shipOutcome,
+            "unknown",
+        );
     });
 });

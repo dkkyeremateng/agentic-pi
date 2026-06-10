@@ -8,6 +8,8 @@
     "typecheck": "tsc --noEmit",
     "pretest": "bash scripts/link-pi-types.sh",
     "test": "tsx --test utils/*.test.ts",
+    "metrics": "tsx utils/obs-cli.ts",
+    "obs:server": "tsx utils/obs-server.ts",
     "test:linear": "python3 -m unittest discover -s skills/linear -p 'test_*.py'",
     "test:atlassian": "python3 -m unittest discover -s skills/atlassian -p 'test_*.py'"
   },

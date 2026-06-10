@@ -260,6 +260,41 @@ summarizer model) live in pi's global config at
 `~/.pi/agent/context-prune/settings.json` — **not** this folder's `.env`. Inside pi,
 `/pruner` views or changes them and `/pruner stats` shows how much it has reclaimed.
 
+## Observability
+
+Two layers measure what a run actually costs, where it spends time, and where it
+stalls — the *trifecta* (cost / tokens / speed) plus pipeline facts (per-phase
+breakdown, retries, ship outcome, context-prune savings).
+
+**Offline analyzer (always available).** Every run writes a structured
+`.agent/metrics.json` (latest) and appends `.agent/metrics.jsonl` (one line per run);
+the analyzer also reads `workflow-report.md` and the per-agent pi session logs.
+
+```bash
+npm run metrics -- <project>          # single-run report (trifecta + per-phase + detail)
+npm run metrics -- --all <root>       # cross-run trends across projects
+npm run metrics -- <project> --json   # machine-readable
+```
+
+Trends include cost/run, validator pass rate, retry rate, slowest/costliest phase, and a
+per-project rollup. The `metrics` skill wraps the same CLI for the agent to call.
+
+**Live dashboard (opt-in, `PI_OBS=1`).** With observability on, the orchestrator and
+every sub-agent append canonical events to `<cwd>/.agent/obs/events.jsonl`: a one-time
+**boot snapshot** (selected tools, loaded skills, context files + hashes, system-prompt
+size/hash), then turns, tool calls (with **execution latency**), tokens, cost, **per-turn
+throughput (tok/s)**, model changes, compaction, and **provider errors**. A
+dependency-free Node server tails that file and streams it to a browser dashboard over
+SSE — one live lane per agent, so you watch the whole pipeline in real time.
+
+```bash
+npm run obs:server -- <project>       # starts http://127.0.0.1:7616 (tails the sink)
+PI_OBS=1 ./run.sh                      # run the workflow with emission on
+```
+
+The collector is inert unless `PI_OBS=1`, writes only under the gitignored `.agent/`,
+and never disrupts a run if the sink can't be written.
+
 ## Develop
 
 `pi` isn't a node dependency of this repo, so type-checking/tests link the
