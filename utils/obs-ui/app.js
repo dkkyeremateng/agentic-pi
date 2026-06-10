@@ -565,110 +565,138 @@ function setView(v) {
     if (v === "race") renderRace();
 }
 
-// ── race view (Gantt-style: each agent's span on a shared time axis) ──────────
-function agentWindow(a) {
-    let first = null,
-        last = null;
+// ── race view (turn-normalized: lanes share a turn-index axis; each turn's
+// events render as arrows in that turn's cell — so you see who reached which
+// step and what they did there) ──────────────────────────────────────────────
+
+// Bucket an agent's events by their turn index. Events before the first turn
+// (session_start, boot, …) go to a "setup" bucket (-1).
+function bucketByTurn(a) {
+    let cur = -1;
+    const setup = [];
+    const turns = new Map();
+    let maxTurn = -1;
     for (const ev of a.events) {
-        if (first === null || ev.ts < first) first = ev.ts;
-        if (last === null || ev.ts > last) last = ev.ts;
+        const idx = ev.payload && ev.payload.turnIndex;
+        let ti;
+        if (ev.type === "turn_start") {
+            cur = idx != null ? idx : cur + 1;
+            ti = cur;
+        } else if (ev.type === "turn_end") {
+            ti = idx != null ? idx : cur;
+        } else {
+            ti = cur;
+        }
+        if (ti < 0) {
+            setup.push(ev);
+            continue;
+        }
+        if (!turns.has(ti)) turns.set(ti, []);
+        turns.get(ti).push(ev);
+        if (ti > maxTurn) maxTurn = ti;
     }
-    return { first, last };
+    return { setup, turns, maxTurn, turnsReached: turns.size };
+}
+
+function arrowTitle(ev) {
+    const { badge, detail } = describe(ev);
+    const d = detail.split("\n")[0];
+    return clock(ev.ts) + "  " + badge + (d ? " · " + d : "");
 }
 
 function renderRace() {
-    const cont = $("race-lanes");
+    const grid = $("race-grid");
     const list = [...agents.values()].filter((a) => a.events.length);
     if (!list.length) {
-        cont.innerHTML =
-            '<div id="race-empty">Waiting for events… run a workflow ' +
-            'with <b>PI_OBS=1</b> in this project.</div>';
+        $("race-empty").style.display = "block";
+        grid.innerHTML = "";
         $("race-axis").textContent = "";
         return;
     }
-    const now = Date.now();
-    const wins = new Map();
-    let gStart = null,
-        gEnd = null;
+    $("race-empty").style.display = "none";
+
+    const buckets = new Map();
+    let maxTurn = -1;
+    let anySetup = false;
     for (const a of list) {
-        const w = agentWindow(a);
-        const end = a.rollup.active ? now : w.last;
-        wins.set(a.name, { start: w.first, end });
-        if (gStart === null || w.first < gStart) gStart = w.first;
-        if (gEnd === null || end > gEnd) gEnd = end;
+        const b = bucketByTurn(a);
+        buckets.set(a.name, b);
+        if (b.maxTurn > maxTurn) maxTurn = b.maxTurn;
+        if (b.setup.length) anySetup = true;
     }
-    const span = Math.max(1, gEnd - gStart);
+    const cols = [];
+    if (anySetup) cols.push(-1);
+    for (let i = 0; i <= maxTurn; i++) cols.push(i);
 
-    // finish order among completed agents
-    const completed = list
-        .filter((a) => !a.rollup.active)
-        .sort((x, y) => wins.get(x.name).end - wins.get(y.name).end);
-    const rank = new Map();
-    completed.forEach((a, i) => rank.set(a.name, i + 1));
-
+    const leader = list.reduce(
+        (m, a) =>
+            buckets.get(a.name).turnsReached > (m ? buckets.get(m.name).turnsReached : -1)
+                ? a
+                : m,
+        null,
+    );
     const running = list.filter((a) => a.rollup.active).length;
     $("race-axis").innerHTML =
-        "elapsed <b>" +
-        fmtDur(span) +
-        "</b> · finished <b>" +
-        completed.length +
-        "</b>/" +
+        "turns <b>0–" +
+        Math.max(0, maxTurn) +
+        "</b> · agents <b>" +
         list.length +
+        "</b>" +
+        (leader ? " · leader <b>" + leader.name + "</b>" : "") +
         (running ? " · <b>" + running + "</b> running" : "");
 
-    // rows ordered by start time (pipeline order reads top→bottom)
+    // stable lane order: by first event time (pipeline order)
     const sorted = [...list].sort(
-        (x, y) => wins.get(x.name).start - wins.get(y.name).start,
+        (x, y) => (x.events[0]?.ts || 0) - (y.events[0]?.ts || 0),
     );
-    cont.innerHTML = "";
-    for (const a of sorted) {
-        const w = wins.get(a.name);
-        const left = ((w.start - gStart) / span) * 100;
-        const width = Math.max(0.5, ((w.end - w.start) / span) * 100);
-        const innerSpan = Math.max(1, w.end - w.start);
 
-        const row = document.createElement("div");
-        row.className = "race-row";
+    const sl = grid.scrollLeft; // preserve horizontal scroll across re-render
+    grid.style.gridTemplateColumns = `160px repeat(${cols.length}, 112px)`;
+    grid.innerHTML = "";
 
-        const label = document.createElement("div");
-        label.className = "race-label";
-        label.innerHTML =
-            '<span class="dot"></span><span class="agent"></span>';
-        label.querySelector(".agent").textContent = a.name;
-        if (a.rollup.active) label.querySelector(".dot").classList.add("on");
-        label.style.cursor = "pointer";
-        label.addEventListener("click", () => selectAgent(a.name));
-
-        const track = document.createElement("div");
-        track.className = "race-track";
-        const bar = document.createElement("div");
-        bar.className = "race-bar " + (a.rollup.active ? "active" : "done");
-        bar.style.left = left + "%";
-        bar.style.width = width + "%";
-        for (const ev of a.events) {
-            if (ev.type !== "turn_end") continue;
-            const tk = document.createElement("div");
-            tk.className = "race-tick";
-            tk.style.left = ((ev.ts - w.start) / innerSpan) * 100 + "%";
-            bar.appendChild(tk);
-        }
-        track.appendChild(bar);
-
-        const meta = document.createElement("div");
-        meta.className = "race-meta";
-        const r = rank.get(a.name);
-        meta.innerHTML =
-            fmtDur(w.end - w.start) +
-            " · " +
-            a.rollup.turns +
-            "t · " +
-            (r
-                ? '<span class="rank">#' + r + "</span>"
-                : '<span style="color:var(--ok)">running</span>');
-
-        row.append(label, track, meta);
-        cont.appendChild(row);
+    const corner = document.createElement("div");
+    corner.className = "race-cell rc-corner rc-sticky";
+    corner.textContent = "agent";
+    grid.appendChild(corner);
+    for (const c of cols) {
+        const h = document.createElement("div");
+        h.className = "race-cell rc-head";
+        h.textContent = c === -1 ? "setup" : "turn " + c;
+        grid.appendChild(h);
     }
+
+    for (const a of sorted) {
+        const b = buckets.get(a.name);
+        const lab = document.createElement("div");
+        lab.className = "race-cell rc-label rc-sticky";
+        const dot = document.createElement("span");
+        dot.className = "dot" + (a.rollup.active ? " on" : "");
+        const nm = document.createElement("span");
+        nm.textContent = a.name;
+        const sub = document.createElement("span");
+        sub.className = "sub";
+        sub.textContent = b.turnsReached + "t";
+        lab.append(dot, nm, sub);
+        lab.addEventListener("click", () => selectAgent(a.name));
+        grid.appendChild(lab);
+
+        for (const c of cols) {
+            const cell = document.createElement("div");
+            cell.className = "race-cell rc-turn";
+            const evs = c === -1 ? b.setup : b.turns.get(c) || [];
+            if (!evs.length) cell.classList.add("empty");
+            for (const ev of evs) {
+                const { kls } = describe(ev);
+                const m = document.createElement("span");
+                m.className = "rc-arrow " + kls;
+                m.textContent = "▸";
+                m.title = arrowTitle(ev);
+                cell.appendChild(m);
+            }
+            grid.appendChild(cell);
+        }
+    }
+    grid.scrollLeft = sl;
 }
 
 // ── header ───────────────────────────────────────────────────────────────────

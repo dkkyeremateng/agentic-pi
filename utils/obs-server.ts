@@ -138,6 +138,10 @@ const server = createServer((req, res) => {
         serveStatic(res, join(UI_DIR, "app.js"));
         return;
     }
+    if (url === "/favicon.ico") {
+        res.writeHead(204).end();
+        return;
+    }
     if (url === "/summary") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(store.summary()));
