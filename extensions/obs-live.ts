@@ -146,7 +146,7 @@ export default function obsLive(pi: any): void {
         emit("turn_start", { turnIndex: e?.turnIndex });
     });
 
-    pi.on("turn_end", async (e: any) => {
+    pi.on("turn_end", async (e: any, ctx: any) => {
         const usage = usageFrom(e?.message);
         // (d) latency + throughput for this turn.
         const durationMs = turnStartTs ? Date.now() - turnStartTs : 0;
@@ -155,12 +155,25 @@ export default function obsLive(pi: any): void {
             durationMs > 0 && out > 0
                 ? Math.round((out / durationMs) * 1000)
                 : 0;
+        let context: Record<string, unknown> | undefined;
+        try {
+            const cu = ctx?.getContextUsage?.();
+            if (cu)
+                context = {
+                    tokens: cu.tokens,
+                    window: cu.contextWindow,
+                    percent: cu.percent,
+                };
+        } catch {
+            /* ignore */
+        }
         emit("turn_end", {
             turnIndex: e?.turnIndex,
             tokens: usage,
             costUsd: usage?.costUsd ?? 0,
             durationMs,
             tps,
+            context,
             model: e?.message?.model ?? e?.message?.responseModel,
             stopReason: e?.message?.stopReason,
             toolResults: Array.isArray(e?.toolResults)

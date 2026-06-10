@@ -17,6 +17,7 @@
                 --warn: #e0af68;
                 --err: #f7768e;
                 --tool: #7dcfff;
+                --magenta: #bb9af7;
             }
             * {
                 box-sizing: border-box;
@@ -31,21 +32,39 @@
             }
             header {
                 display: flex;
-                align-items: baseline;
-                gap: 18px;
+                align-items: center;
+                gap: 16px;
                 flex-wrap: wrap;
-                padding: 12px 18px;
+                padding: 10px 16px;
                 border-bottom: 1px solid var(--line);
                 background: var(--panel);
                 position: sticky;
                 top: 0;
-                z-index: 2;
+                z-index: 3;
             }
             header h1 {
                 font-size: 14px;
                 margin: 0;
                 letter-spacing: 0.04em;
-                color: var(--fg);
+            }
+            .toggle {
+                display: flex;
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                overflow: hidden;
+            }
+            .toggle button {
+                background: transparent;
+                color: var(--dim);
+                border: 0;
+                padding: 4px 14px;
+                font: inherit;
+                cursor: pointer;
+            }
+            .toggle button.on {
+                background: var(--accent);
+                color: #0d0d14;
+                font-weight: 600;
             }
             .stat {
                 color: var(--dim);
@@ -61,14 +80,70 @@
             #conn.up {
                 color: var(--ok);
             }
+            #layout {
+                display: flex;
+                align-items: stretch;
+                min-height: calc(100vh - 44px);
+            }
+            #sidebar {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                padding: 12px 8px;
+                border-right: 1px solid var(--line);
+                background: var(--panel);
+            }
+            .sbtn {
+                width: 34px;
+                height: 34px;
+                border-radius: 7px;
+                border: 1px solid var(--line);
+                background: var(--panel2);
+                color: var(--dim);
+                font: inherit;
+                font-weight: 600;
+                cursor: pointer;
+                position: relative;
+            }
+            .sbtn:hover {
+                color: var(--fg);
+                border-color: var(--accent);
+            }
+            .sbtn.on {
+                color: #0d0d14;
+                background: var(--accent);
+                border-color: var(--accent);
+            }
+            .sbtn .live-dot {
+                position: absolute;
+                top: 3px;
+                right: 3px;
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                background: var(--ok);
+                display: none;
+            }
+            .sbtn.active .live-dot {
+                display: block;
+            }
+            main {
+                flex: 1;
+                min-width: 0;
+            }
+            .view {
+                display: none;
+            }
+            .view.on {
+                display: block;
+            }
+
+            /* swimlane */
             #lanes {
                 display: grid;
-                grid-template-columns: repeat(
-                    auto-fill,
-                    minmax(320px, 1fr)
-                );
+                grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
                 gap: 12px;
-                padding: 16px 18px;
+                padding: 16px;
             }
             .lane {
                 background: var(--panel);
@@ -88,6 +163,7 @@
                 padding: 8px 12px;
                 background: var(--panel2);
                 border-bottom: 1px solid var(--line);
+                cursor: pointer;
             }
             .dot {
                 width: 8px;
@@ -96,24 +172,27 @@
                 background: var(--dim);
                 flex: none;
             }
-            .lane.active .dot {
+            .lane.active .dot,
+            .single-dot.active {
                 background: var(--ok);
                 box-shadow: 0 0 6px var(--ok);
             }
             .agent {
                 font-weight: 600;
-                color: var(--fg);
             }
             .lane-meta {
                 margin-left: auto;
                 color: var(--dim);
                 font-size: 12px;
+                text-align: right;
             }
             .feed {
                 padding: 6px 0;
-                max-height: 320px;
+                max-height: 340px;
                 overflow-y: auto;
             }
+
+            /* rows (shared) */
             .row {
                 display: flex;
                 gap: 8px;
@@ -124,34 +203,45 @@
                 color: var(--dim);
                 flex: none;
             }
-            .row .k {
+            .badge {
                 flex: none;
-                width: 64px;
+                padding: 0 6px;
+                border-radius: 4px;
+                font-size: 11px;
+                line-height: 18px;
+                background: var(--panel2);
+                color: var(--dim);
+            }
+            .badge.tool {
+                color: var(--tool);
+            }
+            .badge.result {
+                color: var(--tool);
+            }
+            .badge.turn {
+                color: var(--accent);
+            }
+            .badge.err {
+                color: var(--err);
+            }
+            .badge.sys {
+                color: var(--warn);
+            }
+            .badge.say {
+                color: var(--ok);
+            }
+            .badge.think {
+                color: var(--magenta);
+            }
+            .badge.user {
+                color: var(--fg);
             }
             .row .d {
                 color: var(--fg);
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
-            .k.tool {
-                color: var(--tool);
-            }
-            .k.turn {
-                color: var(--accent);
-            }
-            .k.err {
-                color: var(--err);
-            }
-            .k.sys {
-                color: var(--warn);
-            }
-            .k.say {
-                color: var(--ok);
-            }
-            .k.think {
-                color: var(--dim);
-            }
-            .row .k.think + .d {
+            .badge.think ~ .d {
                 color: var(--dim);
                 font-style: italic;
             }
@@ -160,7 +250,7 @@
             }
             @keyframes flash {
                 from {
-                    background: rgba(122, 162, 247, 0.18);
+                    background: rgba(122, 162, 247, 0.16);
                 }
                 to {
                     background: transparent;
@@ -170,11 +260,118 @@
                 padding: 40px 18px;
                 color: var(--dim);
             }
+
+            /* single */
+            #single {
+                padding: 14px 18px 60px;
+                position: relative;
+            }
+            .single-head {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 10px;
+            }
+            .single-head .agent {
+                font-size: 15px;
+            }
+            .single-head .sub {
+                color: var(--dim);
+            }
+            #filters {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+                align-items: center;
+                margin-bottom: 10px;
+            }
+            #search {
+                background: var(--panel2);
+                border: 1px solid var(--line);
+                color: var(--fg);
+                border-radius: 6px;
+                padding: 4px 10px;
+                font: inherit;
+                width: 220px;
+            }
+            .chip {
+                border: 1px solid var(--line);
+                background: var(--panel);
+                color: var(--dim);
+                border-radius: 999px;
+                padding: 2px 10px;
+                font-size: 12px;
+                cursor: pointer;
+            }
+            .chip.on {
+                color: var(--fg);
+                border-color: var(--accent);
+                background: rgba(122, 162, 247, 0.12);
+            }
+            .chip.act {
+                color: var(--accent);
+            }
+            #statbar {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-bottom: 12px;
+            }
+            .pill {
+                background: var(--panel2);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 3px 9px;
+                color: var(--dim);
+            }
+            .pill b {
+                color: var(--fg);
+                font-weight: 600;
+            }
+            .pill.cost b {
+                color: var(--ok);
+            }
+            #single-feed .row {
+                white-space: normal;
+                border-bottom: 1px solid rgba(44, 44, 58, 0.5);
+                padding: 4px 6px;
+            }
+            #single-feed .row .d {
+                white-space: pre-wrap;
+                word-break: break-word;
+            }
+            #resume {
+                position: fixed;
+                bottom: 16px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: var(--accent);
+                color: #0d0d14;
+                border: 0;
+                border-radius: 999px;
+                padding: 6px 16px;
+                font: inherit;
+                font-weight: 600;
+                cursor: pointer;
+                display: none;
+                z-index: 4;
+            }
+            #resume.show {
+                display: block;
+            }
+            #single-empty {
+                color: var(--dim);
+                padding: 30px 4px;
+            }
         </style>
     </head>
     <body>
         <header>
             <h1>AGENT OBSERVABILITY</h1>
+            <div class="toggle">
+                <button id="v-swimlane" class="on">Swimlane</button>
+                <button id="v-single">Single</button>
+            </div>
             <span class="stat">agents <b id="s-agents">0</b></span>
             <span class="stat">events <b id="s-events">0</b></span>
             <span class="stat">tokens <b id="s-tokens">0</b></span>
@@ -184,11 +381,35 @@
             <span class="stat">elapsed <b id="s-elapsed">0s</b></span>
             <span id="conn">connecting…</span>
         </header>
-        <div id="empty">
-            Waiting for events… run a workflow with
-            <b>PI_OBS=1</b> in this project.
+        <div id="layout">
+            <aside id="sidebar"></aside>
+            <main>
+                <section id="swimlane" class="view on">
+                    <div id="empty">
+                        Waiting for events… run a workflow with
+                        <b>PI_OBS=1</b> in this project.
+                    </div>
+                    <div id="lanes"></div>
+                </section>
+                <section id="single" class="view">
+                    <div class="single-head">
+                        <span class="single-dot dot"></span>
+                        <span class="agent" id="single-agent">—</span>
+                        <span class="sub" id="single-sub"></span>
+                    </div>
+                    <div id="filters">
+                        <input id="search" placeholder="search…" />
+                        <span id="chips"></span>
+                    </div>
+                    <div id="statbar"></div>
+                    <div id="single-empty">
+                        Pick an agent on the left to inspect its full timeline.
+                    </div>
+                    <div id="single-feed"></div>
+                    <button id="resume">↓ paused — click to resume live</button>
+                </section>
+            </main>
         </div>
-        <div id="lanes"></div>
         <script src="/app.js"></script>
     </body>
 </html>
