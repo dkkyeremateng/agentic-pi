@@ -19,10 +19,17 @@ import {
     usageFrom,
     argPreview,
     resultPreview,
+    flattenText,
     messageContent,
     capText,
     type EventFactory,
 } from "../utils/obs-events";
+
+// Cap for the full args/result captured for the expand-on-click view.
+function toolMax(): number {
+    const n = parseInt(process.env.PI_OBS_TOOL_MAX ?? "4000", 10);
+    return Number.isNaN(n) ? 4000 : Math.max(0, n);
+}
 
 function enabled(): boolean {
     return process.env.PI_OBS === "1" || process.env.PI_OBS === "true";
@@ -221,10 +228,20 @@ export default function obsLive(pi: any): void {
 
     pi.on("tool_execution_start", async (e: any) => {
         if (e?.toolCallId) toolStartTs.set(e.toolCallId, Date.now());
+        // Full args (pretty JSON, capped) power the expand-on-click view.
+        let argsRaw = "";
+        try {
+            argsRaw = JSON.stringify(e?.args ?? {}, null, 2);
+        } catch {
+            argsRaw = String(e?.args ?? "");
+        }
+        const cap = toolMax();
         emit("tool_start", {
             toolCallId: e?.toolCallId,
             toolName: e?.toolName,
             arg: argPreview(e?.args),
+            argsText: capText(argsRaw, cap),
+            argsTruncated: argsRaw.length > cap,
         });
     });
 
@@ -233,12 +250,16 @@ export default function obsLive(pi: any): void {
         const started = e?.toolCallId ? toolStartTs.get(e.toolCallId) : undefined;
         const durationMs = started ? Date.now() - started : 0;
         if (e?.toolCallId) toolStartTs.delete(e.toolCallId);
+        const full = flattenText(e?.result);
+        const cap = toolMax();
         emit("tool_end", {
             toolCallId: e?.toolCallId,
             toolName: e?.toolName,
             isError: !!e?.isError,
             durationMs,
             result: resultPreview(e?.result),
+            resultText: capText(full, cap),
+            resultTruncated: full.length > cap,
         });
     });
 

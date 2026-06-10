@@ -82,6 +82,30 @@ export function argPreview(args: unknown, max = 120): string {
     return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
+// Flatten a tool result (string, text-block array, {text}, or arbitrary object)
+// to its full text WITHOUT collapsing whitespace — for the expand-on-click view.
+export function flattenText(value: unknown): string {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    if (Array.isArray(value))
+        return value
+            .map((b) =>
+                typeof b === "string"
+                    ? b
+                    : b && typeof b === "object" && typeof (b as any).text === "string"
+                      ? (b as any).text
+                      : "",
+            )
+            .join("");
+    if (typeof value === "object" && typeof (value as any).text === "string")
+        return (value as any).text;
+    try {
+        return JSON.stringify(value, null, 2);
+    } catch {
+        return String(value);
+    }
+}
+
 // Short preview of a tool result for the timeline.
 export function resultPreview(result: unknown, max = 160): string {
     let s: string;

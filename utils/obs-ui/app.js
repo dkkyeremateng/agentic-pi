@@ -176,11 +176,71 @@ function describe(ev) {
     return { kls, badge, detail };
 }
 
+// The full, expand-on-click detail for an event (complete tool args/result,
+// message text, boot snapshot, or the whole payload as a fallback).
+function fullDetail(ev) {
+    const p = ev.payload || {};
+    switch (ev.type) {
+        case "tool_start":
+            return (
+                (p.argsText || p.arg || "(no args)") +
+                (p.argsTruncated ? "\n\n… (args truncated)" : "")
+            );
+        case "tool_end":
+            return (
+                (p.resultText || p.result || "(no result)") +
+                (p.resultTruncated ? "\n\n… (result truncated)" : "")
+            );
+        case "message":
+            return p.text || "";
+        case "boot":
+            return JSON.stringify(
+                {
+                    tools: p.tools,
+                    skills: p.skills,
+                    contextFiles: p.contextFiles,
+                    promptChars: p.promptChars,
+                    promptHash: p.promptHash,
+                },
+                null,
+                2,
+            );
+        default:
+            return JSON.stringify(p, null, 2);
+    }
+}
+
+function toggleExpand(row, ev) {
+    const next = row.nextSibling;
+    if (next && next.classList && next.classList.contains("xpanel")) {
+        next.remove();
+        return;
+    }
+    const panel = document.createElement("div");
+    panel.className = "xpanel";
+    const pre = document.createElement("pre");
+    pre.textContent = fullDetail(ev);
+    const copy = document.createElement("button");
+    copy.className = "copy";
+    copy.textContent = "copy";
+    copy.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (navigator.clipboard) navigator.clipboard.writeText(pre.textContent);
+        copy.textContent = "copied";
+        setTimeout(() => (copy.textContent = "copy"), 1000);
+    });
+    panel.append(copy, pre);
+    row.parentNode.insertBefore(panel, row.nextSibling);
+}
+
 function makeRow(ev, full) {
     const { kls, badge, detail } = describe(ev);
     const oneLine = full ? detail : detail.replace(/\s+/g, " ");
     const row = document.createElement("div");
-    row.className = "row" + (full ? "" : " new");
+    row.className = "row expandable" + (full ? "" : " new");
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    caret.textContent = "›";
     const t = document.createElement("span");
     t.className = "t";
     t.textContent = clock(ev.ts);
@@ -191,7 +251,14 @@ function makeRow(ev, full) {
     d.className = "d";
     d.textContent = oneLine;
     if (detail) d.title = detail;
-    row.append(t, b, d);
+    row.append(caret, t, b, d);
+    row.addEventListener("click", () => {
+        // Don't toggle when the user is selecting text.
+        const sel = window.getSelection && String(window.getSelection());
+        if (sel) return;
+        caret.textContent = caret.textContent === "›" ? "⌄" : "›";
+        toggleExpand(row, ev);
+    });
     if (!full) setTimeout(() => row.classList.remove("new"), 600);
     return row;
 }

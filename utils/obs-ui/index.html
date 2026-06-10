@@ -245,6 +245,52 @@
                 color: var(--dim);
                 font-style: italic;
             }
+            .row.expandable {
+                cursor: pointer;
+            }
+            .row.expandable:hover {
+                background: rgba(255, 255, 255, 0.03);
+            }
+            .row .caret {
+                color: var(--dim);
+                flex: none;
+                width: 10px;
+            }
+            .xpanel {
+                position: relative;
+                background: #0f0f17;
+                border: 1px solid var(--line);
+                border-left: 2px solid var(--accent);
+                border-radius: 4px;
+                margin: 2px 12px 6px;
+            }
+            .xpanel pre {
+                margin: 0;
+                padding: 10px 12px;
+                max-height: 380px;
+                overflow: auto;
+                white-space: pre-wrap;
+                word-break: break-word;
+                color: var(--fg);
+                font-size: 12px;
+            }
+            .xpanel .copy {
+                position: absolute;
+                top: 6px;
+                right: 6px;
+                background: var(--panel2);
+                border: 1px solid var(--line);
+                color: var(--dim);
+                border-radius: 4px;
+                padding: 2px 8px;
+                font: inherit;
+                font-size: 11px;
+                cursor: pointer;
+            }
+            .xpanel .copy:hover {
+                color: var(--fg);
+                border-color: var(--accent);
+            }
             .new {
                 animation: flash 0.6s ease-out;
             }

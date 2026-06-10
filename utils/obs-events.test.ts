@@ -6,6 +6,7 @@ import {
     usageFrom,
     argPreview,
     resultPreview,
+    flattenText,
     messageContent,
     capText,
     serializeEvent,
@@ -56,6 +57,16 @@ test("resultPreview flattens text blocks and trims", () => {
         "hello world",
     );
     assert.ok(resultPreview("y".repeat(300)).endsWith("…"));
+});
+
+test("flattenText preserves full text without collapsing whitespace", () => {
+    assert.equal(flattenText("a\n  b"), "a\n  b");
+    assert.equal(
+        flattenText([{ type: "text", text: "line1\n" }, { type: "text", text: "line2" }]),
+        "line1\nline2",
+    );
+    assert.equal(flattenText({ ok: true }), '{\n  "ok": true\n}');
+    assert.equal(flattenText(null), "");
 });
 
 test("capText truncates with ellipsis, preserves short/newline text", () => {
