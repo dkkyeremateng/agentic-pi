@@ -135,9 +135,14 @@ run a planning team first.)
 
 ### What you'll see
 
-- **Live dashboard** — per-agent cards (status, model, context usage), the pipeline
-  with progress, and an **LSP Servers** panel showing which language servers the
-  project needs and whether they're installed.
+- **Live dashboard** — per-agent cards (status, model, context usage) and the
+  pipeline with progress, plus two live checklists during a run: a **`# Todos`**
+  panel mirroring the implementer's phases as they tick `[ ] → [x]`, and a
+  **`# Review`** panel ticking the reviewer's checklist (Plan conformance,
+  Correctness, Tests, …) as it works.
+- **Footer** — the active model, context usage + cost, run status, and an inline
+  **`LSP:`** segment showing which language servers the project needs and whether
+  they're installed (`✓` ready / `○` missing).
 - **`workflow-report.md`** — the end-of-run report (requirement, files changed,
   suite/diagnostics results, verdict, branch/commits, PR link or next steps).
 - **`.agent/`** scratch — `plan.md` (and `plan.draft.md`), `progress.md` (phase
