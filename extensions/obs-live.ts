@@ -19,11 +19,27 @@ import {
     usageFrom,
     argPreview,
     resultPreview,
+    messageContent,
+    capText,
     type EventFactory,
 } from "../utils/obs-events";
 
 function enabled(): boolean {
     return process.env.PI_OBS === "1" || process.env.PI_OBS === "true";
+}
+
+// (b) Message/thinking CONTENT is opt-in separately from structural events,
+// because it can be large and may echo file contents or secrets. Off unless
+// PI_OBS_CONTENT=1; each block capped to PI_OBS_CONTENT_MAX chars (default 2000).
+function contentEnabled(): boolean {
+    return (
+        process.env.PI_OBS_CONTENT === "1" ||
+        process.env.PI_OBS_CONTENT === "true"
+    );
+}
+function contentMax(): number {
+    const n = parseInt(process.env.PI_OBS_CONTENT_MAX ?? "2000", 10);
+    return Number.isNaN(n) ? 2000 : Math.max(0, n);
 }
 
 function sinkPath(cwd: string): string {
@@ -116,6 +132,13 @@ export default function obsLive(pi: any): void {
             promptChars: sys.length,
             promptHash: sys ? shortHash(sys) : undefined,
         });
+        // (b) the user's prompt, when content capture is on.
+        if (contentEnabled() && typeof e?.prompt === "string" && e.prompt.trim())
+            emit("message", {
+                role: "user",
+                kind: "user",
+                text: capText(e.prompt.trim(), contentMax()),
+            });
     });
 
     pi.on("turn_start", async (e: any) => {
@@ -144,6 +167,17 @@ export default function obsLive(pi: any): void {
                 ? e.toolResults.length
                 : 0,
         });
+    });
+
+    // (b) assistant text + thinking content (opt-in via PI_OBS_CONTENT).
+    pi.on("message_end", async (e: any) => {
+        if (!contentEnabled()) return;
+        const msg = e?.message;
+        if (!msg || msg.role !== "assistant") return;
+        const { text, thinking } = messageContent(msg, contentMax());
+        if (thinking)
+            emit("message", { role: "assistant", kind: "thinking", text: thinking });
+        if (text) emit("message", { role: "assistant", kind: "assistant", text });
     });
 
     pi.on("tool_execution_start", async (e: any) => {

@@ -6,6 +6,8 @@ import {
     usageFrom,
     argPreview,
     resultPreview,
+    messageContent,
+    capText,
     serializeEvent,
     parseEventLine,
 } from "./obs-events";
@@ -54,6 +56,32 @@ test("resultPreview flattens text blocks and trims", () => {
         "hello world",
     );
     assert.ok(resultPreview("y".repeat(300)).endsWith("…"));
+});
+
+test("capText truncates with ellipsis, preserves short/newline text", () => {
+    assert.equal(capText("hi\nthere", 100), "hi\nthere");
+    assert.equal(capText("abcdef", 4), "abc…");
+});
+
+test("messageContent separates text and thinking blocks, capped", () => {
+    const m = {
+        role: "assistant",
+        content: [
+            { type: "thinking", thinking: "let me reason about this" },
+            { type: "text", text: "Here is the answer." },
+            { type: "toolCall", id: "t1", name: "read" },
+        ],
+    };
+    const c = messageContent(m, 1000);
+    assert.equal(c.text, "Here is the answer.");
+    assert.equal(c.thinking, "let me reason about this");
+
+    const capped = messageContent(
+        { role: "assistant", content: [{ type: "text", text: "x".repeat(50) }] },
+        10,
+    );
+    assert.equal(capped.text.length, 10);
+    assert.equal(messageContent({}).text, "");
 });
 
 test("serialize/parse round-trips, parse rejects malformed", () => {

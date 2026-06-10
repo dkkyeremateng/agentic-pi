@@ -99,6 +99,19 @@ function rowFor(ev) {
             detail =
                 (p.source ? p.source + " " : "") + (p.message || p.status || "");
             break;
+        case "message":
+            if (p.kind === "thinking") {
+                kls = "think";
+                key = "think";
+            } else if (p.kind === "user") {
+                kls = "sys";
+                key = "user";
+            } else {
+                kls = "say";
+                key = "say";
+            }
+            detail = (p.text || "").replace(/\s+/g, " ");
+            break;
         case "session_end":
             key = "end";
             detail = p.reason || "";
@@ -154,7 +167,9 @@ function rowFor(ev) {
         '"></span><span class="d"></span>';
     row.querySelector(".t").textContent = clock(ev.ts);
     row.querySelector(".k").textContent = key;
-    row.querySelector(".d").textContent = detail;
+    const d = row.querySelector(".d");
+    d.textContent = detail;
+    if (detail) d.title = detail; // full text on hover (rows are single-line)
     setTimeout(() => row.classList.remove("new"), 600);
     return row;
 }

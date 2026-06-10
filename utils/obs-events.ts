@@ -102,6 +102,34 @@ export function resultPreview(result: unknown, max = 160): string {
     return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
+// Truncate preserving newlines (unlike argPreview, which collapses whitespace).
+export function capText(s: string, max: number): string {
+    if (s.length <= max) return s;
+    return s.slice(0, max - 1) + "…";
+}
+
+// Extract the assistant's text and thinking from a message's content blocks
+// (text: {type:"text",text}, thinking: {type:"thinking",thinking}). Each is
+// length-capped. Returns empty strings when absent.
+export function messageContent(
+    message: any,
+    max = 2000,
+): { text: string; thinking: string } {
+    const c = message?.content;
+    let text = "";
+    let thinking = "";
+    if (typeof c === "string") text = c;
+    else if (Array.isArray(c)) {
+        for (const b of c) {
+            if (!b || typeof b !== "object") continue;
+            if (b.type === "text" && typeof b.text === "string") text += b.text;
+            else if (b.type === "thinking" && typeof b.thinking === "string")
+                thinking += b.thinking;
+        }
+    }
+    return { text: capText(text.trim(), max), thinking: capText(thinking.trim(), max) };
+}
+
 // ── per-session event factory (pure-ish: only Date.now for default ts) ───────
 
 export interface EventFactory {
