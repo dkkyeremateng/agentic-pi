@@ -92,6 +92,17 @@ Finish what you start:
 - **Stop when done** — end with a short summary + files written. Don't chain
   `{{run_tool_name}}` onto finished work.
 
+## Keep your context lean — tag milestones
+When you finish a discrete unit of work — a `{{run_tool_name}}` run completes, a
+dispatched agent (or `dispatch_parallel` batch) returns its result, or you deliver a
+findings/spec file — call **`context_tag`** with a short, unique name (e.g.
+`shipped-auth`, `recon-done`). It is a bookmark, not a repo change: it lets the
+session prune the now-stale verbose tool output it just consumed (workflow reports,
+dispatch dumps, large file reads), so a long multi-task session stays well under the
+context window. Pruned originals stay retrievable, so tag freely — but tag at task
+**boundaries**, once per finished unit (not mid-task), which keeps prompt caching
+efficient. Skip it for trivial one-shot answers.
+
 ## File deliverables
 **Everything you generate goes under `.agent/` in the cwd** — findings →
 `.agent/findings/<slug>.md`, specs → `.agent/specs/<slug>.md`, other scratch → under
