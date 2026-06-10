@@ -62,7 +62,6 @@ import {
     renderPhaseCardsWithArrows,
     renderEmptyAgentMessage,
     renderRichCard,
-    renderLspServers,
     type LspServerInfo,
     MAX_CARD_WIDTH,
 } from "../utils/workflow-widgets";
@@ -580,17 +579,10 @@ export default function (pi: ExtensionAPI) {
                 appendLiveLog(gridLines, width, theme);
                 return clampWidget(gridLines, theme);
             }
-            // Idle roster: the project's LSP servers + install status sit ABOVE the
-            // team grid so they read as project context, not a trailing footnote.
-            // Separate them with a real blank ROW: pi-tui's Text renders nothing for
-            // an empty/whitespace-only line (text.js: `text.trim() === "" -> []`), so
-            // a visible gap needs a non-whitespace char — a zero-width space survives
-            // .trim() yet is invisible.
-            const lsp = renderLspServers(lspServers, theme);
-            const lines = lsp.length
-                ? [...lsp, "\u200b", ...gridLines]
-                : gridLines;
-            return clampWidget(lines, theme);
+            // The project's LSP servers + install status now live inline in the
+            // footer (always visible, including during runs), not as a panel above
+            // the grid.
+            return clampWidget(gridLines, theme);
         }
 
         // ── Pipeline view (full run_agent_workflow) ───────────
@@ -1542,6 +1534,7 @@ export default function (pi: ExtensionAPI) {
                         theme,
                         selfName: "agent-workflow",
                         model: primaryFull,
+                        lspServers,
                         running: st.running,
                         lastStatus: st.lastStatus,
                         iteration: st.iteration,

@@ -562,9 +562,14 @@ export function renderWorkflowFooter(opts: {
     // USD cost of the primary (orchestrator) session itself, folded into the
     // footer total alongside the sub-agent phase costs. Optional (defaults to 0).
     primaryCostUsd?: number;
+    // Project language servers, shown inline as `LSP: ✓ <server> <exts> …` between
+    // the model and the agent name. Typed structurally (not LspServerInfo) to avoid
+    // a workflow-core ↔ workflow-widgets import cycle. Omitted when empty; clipped so
+    // it can never crowd out the cost/context readout on the right.
+    lspServers?: { server: string; extensions: string[]; installed: boolean }[];
     contextUsage: () => any;
     visibleWidth: (s: string) => number;
-    truncateToWidth: (s: string, w: number) => string;
+    truncateToWidth: (s: string, w: number, ellipsis?: string) => string;
 }): string[] {
     const {
         width,
@@ -580,6 +585,7 @@ export function renderWorkflowFooter(opts: {
         dispatchElapsedMs,
         runElapsedMs,
         primaryCostUsd = 0,
+        lspServers = [],
         contextUsage,
         visibleWidth,
         truncateToWidth,
@@ -670,8 +676,8 @@ export function renderWorkflowFooter(opts: {
               ? `${lastStatus} · ${secs(runElapsedMs)} total`
               : lastStatus;
 
-    const left =
-        theme.fg("dim", ` ◆ ${model}`) +
+    const modelPart = theme.fg("dim", ` ◆ ${model}`);
+    const namePart =
         theme.fg("muted", " · ") +
         theme.fg("accent", selfName) +
         theme.fg("dim", " ") +
@@ -684,6 +690,54 @@ export function renderWorkflowFooter(opts: {
         phases.reduce((sum, p) => sum + (p.tokens?.costUsd || 0), 0);
     const costStr = theme.fg("muted", `${formatCostUsd(totalCostUsd)} · `);
     const right = costStr + theme.fg("dim", `[${bar}] ${pctStr} `);
+
+    // Inline LSP segment, between the model and the agent name. Built plain first so
+    // we can budget/clip by visible width, then colored. Dropped entirely when there
+    // are no relevant servers, or when there isn't room for it after the model, name,
+    // and cost/context — so it never cannibalizes the right side.
+    let lspPart = "";
+    if (lspServers.length) {
+        const sepRaw = " · ";
+        const lspRaw =
+            "LSP: " +
+            lspServers
+                .map(
+                    (s) =>
+                        `${s.installed ? "✓" : "○"} ${s.server}${s.extensions.length ? "  " + s.extensions.join(" ") : ""}`,
+                )
+                .join("  ");
+        const budget =
+            width -
+            visibleWidth(modelPart) -
+            visibleWidth(namePart) -
+            visibleWidth(right) -
+            sepRaw.length;
+        if (budget >= 8) {
+            const sep = theme.fg("muted", sepRaw);
+            if (lspRaw.length <= budget) {
+                // Fits: render with the success/dim marks colored per server.
+                const marks = lspServers
+                    .map(
+                        (s) =>
+                            (s.installed
+                                ? theme.fg("success", "✓")
+                                : theme.fg("dim", "○")) +
+                            " " +
+                            theme.fg("dim", s.server) +
+                            (s.extensions.length
+                                ? "  " + theme.fg("dim", s.extensions.join(" "))
+                                : ""),
+                    )
+                    .join("  ");
+                lspPart = sep + theme.fg("muted", "LSP: ") + marks;
+            } else {
+                // Crowded: clip the plain string with an ellipsis, all dim.
+                lspPart = sep + theme.fg("dim", truncateToWidth(lspRaw, budget, "…"));
+            }
+        }
+    }
+
+    const left = modelPart + lspPart + namePart;
     const pad = " ".repeat(
         Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
     );
