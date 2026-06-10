@@ -188,12 +188,14 @@ export default function (pi: ExtensionAPI) {
     // The checkpoint taken before the most recent workflow run (for /revert).
     let lastCheckpoint: Checkpoint | null = null;
     // Run a git command in `cwd`, returning trimmed stdout (throws on failure).
-    const git = (cwd: string) => (args: string[]): string =>
-        execFileSync("git", args, {
-            cwd,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
+    const git =
+        (cwd: string) =>
+        (args: string[]): string =>
+            execFileSync("git", args, {
+                cwd,
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "ignore"],
+            }).trim();
     const checkpointPath = (cwd: string) =>
         join(cwd, ".agent", "checkpoints", "latest.json");
     // Append `entry` to the repo's .gitignore if not already present (best-effort).
@@ -202,7 +204,10 @@ export default function (pi: ExtensionAPI) {
             const file = join(cwd, ".gitignore");
             const existing = existsSync(file) ? readFileSync(file, "utf8") : "";
             const lines = existing.split(/\r?\n/).map((l) => l.trim());
-            if (lines.includes(entry) || lines.includes(entry.replace(/\/$/, "")))
+            if (
+                lines.includes(entry) ||
+                lines.includes(entry.replace(/\/$/, ""))
+            )
                 return;
             const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
             writeFileSync(file, `${existing}${prefix}${entry}\n`, "utf8");
@@ -582,7 +587,9 @@ export default function (pi: ExtensionAPI) {
             // a visible gap needs a non-whitespace char — a zero-width space survives
             // .trim() yet is invisible.
             const lsp = renderLspServers(lspServers, theme);
-            const lines = lsp.length ? [...lsp, "\u200b", ...gridLines] : gridLines;
+            const lines = lsp.length
+                ? [...lsp, "\u200b", ...gridLines]
+                : gridLines;
             return clampWidget(lines, theme);
         }
 
@@ -596,7 +603,9 @@ export default function (pi: ExtensionAPI) {
             MAX_CARD_WIDTH,
             Math.max(14, Math.floor((width - arrowWidth * (cols - 1)) / cols)),
         );
-        const cards = st.phases.map((p) => renderAgentCard(p.agent, colWidth, theme));
+        const cards = st.phases.map((p) =>
+            renderAgentCard(p.agent, colWidth, theme),
+        );
         const lines: string[] = [];
         const passInfo =
             st.iteration > 1
@@ -889,7 +898,11 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 pi.setSessionName?.(
-                    sessionLabel("agent-workflow", st.activeTeamName, finalRequest),
+                    sessionLabel(
+                        "agent-workflow",
+                        st.activeTeamName,
+                        finalRequest,
+                    ),
                 );
                 await runFullWorkflowCommand(
                     st,
@@ -958,7 +971,10 @@ export default function (pi: ExtensionAPI) {
                 // Let "reset" also complete in the model slot (clears the override).
                 const opts = "reset".startsWith(q) ? ["reset", ...ids] : ids;
                 if (opts.length === 0) return null;
-                return opts.map((id) => ({ value: `${first} ${id}`, label: id }));
+                return opts.map((id) => ({
+                    value: `${first} ${id}`,
+                    label: id,
+                }));
             },
             handler: async (args, ctx) => {
                 widgetCtx = ctx;
@@ -1286,7 +1302,11 @@ export default function (pi: ExtensionAPI) {
         pi.on("message_end", async (event: any) => {
             const msg = event?.message;
             const total = msg?.usage?.cost?.total;
-            if (msg?.role === "assistant" && typeof total === "number" && total > 0) {
+            if (
+                msg?.role === "assistant" &&
+                typeof total === "number" &&
+                total > 0
+            ) {
                 primaryCostUsd += total;
                 updateWidget(); // refresh the footer with the new total
             }
@@ -1371,7 +1391,10 @@ export default function (pi: ExtensionAPI) {
             // routes via the explicit Routing section of the prompt; this is the roster
             // reference, so it stays terse (no full description, no per-agent tools).
             const agentCatalog = dispatchableDefs
-                .map((def) => `- \`${def.name}\` — ${terse(def.description, 110)}`)
+                .map(
+                    (def) =>
+                        `- \`${def.name}\` — ${terse(def.description, 110)}`,
+                )
                 .join("\n");
 
             const teamMembers = dispatchableDefs
@@ -1382,7 +1405,10 @@ export default function (pi: ExtensionAPI) {
             const skills = loadSkills(_ctx.cwd);
             const skillCatalog = skills.length
                 ? skills
-                      .map((s) => `- **${s.name}** — ${terse(s.description, 140)}`)
+                      .map(
+                          (s) =>
+                              `- **${s.name}** — ${terse(s.description, 140)}`,
+                      )
                       .join("\n")
                 : "(none)";
 
@@ -1482,12 +1508,11 @@ export default function (pi: ExtensionAPI) {
                 );
             } else {
                 ctx.ui.notify(
-                    `Workflow Team\n` +
-                        `Teams:\n${teamsBlock()}\n\n` +
+                    `Workflow Teams:\n${teamsBlock()}\n\n` +
                         `/agent-workflow [request]   Pick a team (Select Team), then run the lifecycle\n` +
-                        `/agent-workflow-clear       Clear the progress widget\n` +
+                        `/agent-workflow-clear       Clear the progress widget\n\n` +
                         `run_agent_workflow          Tool — the agent can launch the workflow for non-trivial tasks\n` +
-                        `dispatch_agent          Tool — dispatch task(s) to any loaded agent(s) outside the pipeline`,
+                        `dispatch_agent              Tool — dispatch task(s) to any loaded agent(s) outside the pipeline`,
                     "info",
                 );
                 // The per-agent model list is already visible on the dashboard cards
