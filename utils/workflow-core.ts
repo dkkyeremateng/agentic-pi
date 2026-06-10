@@ -1349,6 +1349,24 @@ export async function chooseTeam(
     return teamNames[options.indexOf(choice)];
 }
 
+// Infer a team from the request text when the caller named none. Today it only
+// recognizes "build / implement an existing plan" intent — a build/implement verb
+// AND a reference to "the plan" / "implementation plan" (e.g. "build the
+// implementation plan", "implement the plan") — and maps it to the planner-less
+// `build` team, which resumes from the saved .agent/plan.md instead of re-planning.
+// "build a plan" / "create an implementation plan" do NOT match (that's planning,
+// not building from one). Returns "" when nothing matches or the team isn't defined.
+export function inferWorkflowTeam(
+    request: string,
+    teams: Record<string, string[]>,
+): string {
+    const r = (request || "").toLowerCase();
+    const hasBuildVerb = /\b(build|implement(?:s|ing|ed)?)\b/.test(r);
+    const refsExistingPlan = /\b(implementation plan|the plan)\b/.test(r);
+    if (hasBuildVerb && refsExistingPlan && teams["build"]) return "build";
+    return "";
+}
+
 // ── Sessions & report publishing ─────────────────
 
 // Default TTL for orphaned session files: 7 days. Files older than this are

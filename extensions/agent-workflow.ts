@@ -89,6 +89,7 @@ import {
     renderWorkflowFooter,
     teamsBlock as teamsBlockCore,
     chooseTeam as chooseTeamCore,
+    inferWorkflowTeam,
     loadedExplicitly as loadedExplicitlyCore,
     isActiveWorkflow as isActiveWorkflowCore,
     loadAgents as loadAgentsCore,
@@ -937,9 +938,17 @@ export default function (pi: ExtensionAPI) {
                 // the picker does. The team is deactivated once the job finishes
                 // (below), so each run starts from a clean "no team" state.
                 let request: string;
+                const inferredTeam = namedTeam
+                    ? ""
+                    : inferWorkflowTeam(rawArgs, st.teams);
                 if (namedTeam) {
                     activateTeam(namedTeam);
                     request = rawArgs.slice(firstTok.length).trim();
+                } else if (inferredTeam) {
+                    // "build/implement the (implementation) plan" → the build team,
+                    // no picker: it resumes from the saved .agent/plan.md.
+                    activateTeam(inferredTeam);
+                    request = rawArgs;
                 } else {
                     const picked = await chooseTeam(ctx);
                     if (picked === null) return; // user cancelled the picker
@@ -1248,7 +1257,9 @@ export default function (pi: ExtensionAPI) {
                     }
                     st.activeTeamName = team;
                 } else {
-                    st.activeTeamName = "";
+                    // No explicit team: infer "build/implement the plan" intent from
+                    // the request (→ build team); otherwise "" runs the full pipeline.
+                    st.activeTeamName = inferWorkflowTeam(request, st.teams);
                 }
                 widgetCtx = ctx;
                 st.pipelineRanThisTurn = true; // fold the primary's turn time into the total

@@ -12,6 +12,7 @@ import {
     parseProgressLedger,
     buildReviewChecklist,
     REVIEW_CHECKLIST,
+    inferWorkflowTeam,
     buildPhaseMap,
     failPhase,
     renderTemplate,
@@ -702,6 +703,41 @@ describe("parseProgressLedger", () => {
     it("returns [] for empty or checkbox-free content", () => {
         assert.deepEqual(parseProgressLedger(""), []);
         assert.deepEqual(parseProgressLedger("# Heading\nno boxes here\n"), []);
+    });
+});
+
+describe("inferWorkflowTeam", () => {
+    const teams = { build: ["implementer"], spec: ["planner"] };
+
+    it("maps build/implement-the-plan phrasings to the build team", () => {
+        for (const req of [
+            "build the implementation plan",
+            "implement the plan",
+            "implement the implementation plan",
+            "build the plan",
+            "please build the implementation plan for the dashboard",
+        ]) {
+            assert.equal(inferWorkflowTeam(req, teams), "build", req);
+        }
+    });
+
+    it("does not match from-scratch or planning requests", () => {
+        for (const req of [
+            "build me a todo app",
+            "create an implementation plan",
+            "build a plan for the API",
+            "add a dark mode toggle",
+            "",
+        ]) {
+            assert.equal(inferWorkflowTeam(req, teams), "", req);
+        }
+    });
+
+    it("returns '' when the build team isn't defined", () => {
+        assert.equal(
+            inferWorkflowTeam("implement the plan", { spec: ["planner"] }),
+            "",
+        );
     });
 });
 
