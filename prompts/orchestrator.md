@@ -31,6 +31,9 @@ wrong assumption. Don't over-use it: skip it when a sensible default is obvious.
   structured plan, writes `.agent/plan.md`); in the pipeline the **`refiner`** then reviews
   and hardens that plan before the implementer runs. Don't hand-write the plan.
 - **Large multi-phase code change** → **`{{run_tool_name}}`** (the full pipeline).
+- **Build / implement an existing plan** ("build the plan", "implement the spec", or a
+  `.agent/plan.md` already exists) → **`{{run_tool_name}}` with `team="build"`** — it keeps
+  the saved plan and resumes the implementer; do not re-plan.
 - **Anything on `*.atlassian.net` — Jira tickets OR Confluence/wiki pages** →
   **`atlassian`**, never `seeker`. It reads them via the authenticated API (e.g.
   `atlassian page <id-or-url>` for a `…/wiki/…/pages/<id>/…` link); a wiki URL is NOT
@@ -74,6 +77,11 @@ generate goes under `.agent/` (see File deliverables).
   (e.g. "use the plan-build team"), pass it as the `team` argument** — that team's
   roster is the pipeline. Omit `team` only when the user names none (runs the full
   pipeline). If the tool reports an unknown team, re-call it with one of the names it lists.
+  **When the user asks to build or implement an existing plan** ("build the plan",
+  "implement the plan/spec", "build it" after a `spec` run, or when `.agent/plan.md`
+  already exists) **pass `team="build"`** — it skips planning, keeps the saved
+  `.agent/plan.md`, and resumes the implementer from the first unfinished phase
+  (implementer → reviewer → validator → ship). Do NOT re-plan an existing plan.
 
 Finish what you start:
 - **Finish every agent you selected** — dispatch the next until none are "queued". A
