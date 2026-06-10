@@ -346,13 +346,15 @@ export function renderEmptyAgentMessage(theme: any): string[] {
 export function renderTodos(
     items: { label: string; done: boolean }[],
     theme: any,
-    opts: { running?: boolean; width?: number } = {},
+    opts: { running?: boolean; width?: number; title?: string } = {},
 ): string[] {
     if (!items || items.length === 0) return [];
     const max = Math.max(10, (opts.width ?? 80) - 6);
     const clip = (s: string) => (s.length > max ? s.slice(0, max - 1) + "…" : s);
     const firstPending = items.findIndex((i) => !i.done);
-    const lines: string[] = [theme.fg("accent", theme.bold(" # Todos"))];
+    const lines: string[] = [
+        theme.fg("accent", theme.bold(opts.title ?? " # Todos")),
+    ];
     items.forEach((it, idx) => {
         const inProgress = !!opts.running && !it.done && idx === firstPending;
         const mark = it.done ? "[x]" : inProgress ? "[•]" : "[ ]";

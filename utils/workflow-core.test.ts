@@ -10,6 +10,8 @@ import {
     projectSessionHash,
     parsePlanPhases,
     parseProgressLedger,
+    buildReviewChecklist,
+    REVIEW_CHECKLIST,
     buildPhaseMap,
     failPhase,
     renderTemplate,
@@ -700,6 +702,32 @@ describe("parseProgressLedger", () => {
     it("returns [] for empty or checkbox-free content", () => {
         assert.deepEqual(parseProgressLedger(""), []);
         assert.deepEqual(parseProgressLedger("# Heading\nno boxes here\n"), []);
+    });
+});
+
+describe("buildReviewChecklist", () => {
+    const phase = (agent: string, status: PhaseState["status"]) => {
+        const p = testPhase(agent);
+        p.status = status;
+        return p;
+    };
+
+    it("is hidden until the reviewer phase exists or starts", () => {
+        assert.deepEqual(buildReviewChecklist([]), []);
+        assert.deepEqual(buildReviewChecklist([phase("implementer", "running")]), []);
+        assert.deepEqual(buildReviewChecklist([phase("reviewer", "pending")]), []);
+    });
+
+    it("shows all items unchecked while the reviewer runs", () => {
+        const items = buildReviewChecklist([phase("reviewer", "running")]);
+        assert.equal(items.length, REVIEW_CHECKLIST.length);
+        assert.ok(items.every((i) => !i.done));
+        assert.equal(items[0].label, "Plan conformance");
+    });
+
+    it("checks every item once the reviewer finishes", () => {
+        const items = buildReviewChecklist([phase("reviewer", "done")]);
+        assert.ok(items.length > 0 && items.every((i) => i.done));
     });
 });
 

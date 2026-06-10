@@ -106,6 +106,7 @@ import {
     clearAllModelOverrides,
     getModelOverrides,
     parseProgressLedger,
+    buildReviewChecklist,
 } from "../utils/workflow-core";
 import {
     newOrchestratorState,
@@ -645,6 +646,24 @@ export default function (pi: ExtensionAPI) {
         if (todos.length) {
             lines.push("\u200b");
             lines.push(...todos);
+        }
+        // The reviewer's checklist, shown once the reviewer phase starts \u2014 the items
+        // it works through (Plan conformance, Correctness, Tests, \u2026). The reviewer is
+        // read-only, so this tracks the phase, not per-item progress: a working
+        // indicator while it runs, all checked once it finishes.
+        const reviewItems = buildReviewChecklist(st.phases);
+        if (reviewItems.length) {
+            const reviewerRunning = st.phases.some(
+                (p) => p.agent === "reviewer" && p.status === "running",
+            );
+            lines.push("\u200b");
+            lines.push(
+                ...renderTodos(reviewItems, theme, {
+                    running: reviewerRunning,
+                    width,
+                    title: " # Review",
+                }),
+            );
         }
         appendLiveLog(lines, width, theme);
         return clampWidget(lines, theme);

@@ -66,4 +66,10 @@ describe("renderTodos", () => {
         assert.ok(out[1].includes("…"));
         assert.ok(out[1].length < 200);
     });
+
+    it("uses a custom title when given (e.g. the reviewer's # Review)", () => {
+        const out = renderTodos(items, theme, { title: " # Review" });
+        assert.match(out[0], /# Review/);
+        assert.ok(!out[0].includes("# Todos"));
+    });
 });

@@ -1804,6 +1804,30 @@ export function parseProgressLedger(content: string): ProgressItem[] {
     return out;
 }
 
+// The reviewer's fixed review checklist, shown as a live panel while the reviewer
+// phase runs. Mirror of the "## Review Checklist" in agents/reviewer.md — keep in
+// sync. The reviewer is read-only (no .agent ledger to tick per item), so the panel
+// reflects phase status: working while it runs, all checked once it finishes.
+export const REVIEW_CHECKLIST = [
+    "Plan conformance",
+    "Acceptance criteria",
+    "Correctness",
+    "Completeness",
+    "Regressions",
+    "Error handling",
+    "Tests",
+];
+
+// Build the reviewer's checklist items from the run's phases. Empty (panel hidden)
+// until the reviewer phase has started; every item reads done once it finishes
+// (done = the reviewer worked through that check, not that the code passed it).
+export function buildReviewChecklist(phases: PhaseState[]): ProgressItem[] {
+    const ph = phases.find((p) => p.agent === "reviewer");
+    if (!ph || ph.status === "pending") return [];
+    const done = ph.status === "done";
+    return REVIEW_CHECKLIST.map((label) => ({ label, done }));
+}
+
 // ── Shared run context (curated cross-agent bundle) ──
 // Durable artifacts earlier pipeline phases produced. Prepended to a later
 // agent's task so every agent can build on the others' work without the lossy
