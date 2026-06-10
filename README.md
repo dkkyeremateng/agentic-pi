@@ -55,6 +55,17 @@ downstream agents, so it is never re-threaded through the context.
 - Optional per-language tools you want the agents to use: language servers for
   `lsp` (pyright, gopls, typescript-language-server, intelephense), `gh` for
   GitHub, Playwright browsers for `bowser`.
+- **Context-pruning packages (recommended)** — two third-party `pi` packages power
+  the [context management](#context-management) below. Install once; they register
+  in pi's global config and load automatically (including in sub-agents):
+
+  ```bash
+  pi install npm:pi-context        # provides the context_tag tool
+  pi install npm:pi-context-prune  # prunes stale tool output on each tag
+  ```
+
+  Without them the agents' `context_tag` milestone calls are inert — the workflow
+  still runs, relying only on pi's built-in compaction.
 
 ## Quick start
 
@@ -211,7 +222,38 @@ with `PI_WORKFLOW_APPROVE_PROJECT=1` (force on, e.g. session-only trust) or `=0`
   *Resuming a build*) and the shipper squashes the wips into clean commits.
 - **`/revert`** — restore the pre-run state if you don't like the result.
 - **Context bounding** — agent outputs and shared context are clamped so a long
-  run can't blow the context window.
+  run can't blow the context window (see *Context management* for the pruning layer
+  on top).
+
+## Context management
+
+Long runs are kept inside the model's context window by two complementary layers:
+
+1. **pi's built-in compaction** (always on, no setup) — as a session nears the
+   window, pi summarizes the older messages and keeps the most recent. The coarse
+   safety net.
+2. **pi-context-prune** (the third-party package from *Prerequisites*) — precise,
+   lossless, **cache-aware** pruning of *verbose tool output* (file reads, command
+   output, sub-agent dumps) once it has been used. Originals stay retrievable via the
+   `context_tree_query` tool, and the session file on disk is never modified.
+
+This config drives the second layer in **`on-context-tag`** mode: a prune flushes
+when an agent calls **`context_tag`** (from the `pi-context` package). The agents tag
+at natural milestones, so each flush reclaims a batch of now-stale output with a
+single cache-friendly rewrite:
+
+- the **implementer** tags after each completed phase (alongside the
+  `.agent/progress.md` update), so a phase's reads/commands are pruned before the
+  next phase — keeping a long implement run well under the window;
+- the **orchestrator** tags at task boundaries — a `run_agent_workflow` run, a
+  dispatch, or a delivered file completes — to keep a long multi-task session lean.
+
+Because both `pi-context` and `pi-context-prune` are registered in pi's global config
+(`packages` in `~/.pi/agent/settings.json`), they load in **every** pi process,
+including the spawned sub-agents. Pruning settings (enable/disable, trigger mode,
+summarizer model) live in pi's global config at
+`~/.pi/agent/context-prune/settings.json` — **not** this folder's `.env`. Inside pi,
+`/pruner` views or changes them and `/pruner stats` shows how much it has reclaimed.
 
 ## Develop
 
