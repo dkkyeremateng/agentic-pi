@@ -86,12 +86,17 @@
                 min-height: calc(100vh - 44px);
             }
             #sidebar {
+                border-right: 1px solid var(--line);
+                background: var(--panel);
+                flex: none;
+            }
+            #sbtns {
+                position: sticky;
+                top: 48px; /* sits just below the sticky header */
                 display: flex;
                 flex-direction: column;
                 gap: 6px;
                 padding: 12px 8px;
-                border-right: 1px solid var(--line);
-                background: var(--panel);
             }
             .sbtn {
                 width: 34px;
@@ -477,7 +482,7 @@
             <span id="conn">connecting…</span>
         </header>
         <div id="layout">
-            <aside id="sidebar"></aside>
+            <aside id="sidebar"><div id="sbtns"></div></aside>
             <main>
                 <section id="swimlane" class="view on">
                     <div id="empty">

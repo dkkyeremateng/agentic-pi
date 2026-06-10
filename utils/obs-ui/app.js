@@ -364,7 +364,7 @@ function ensureSidebarBtn(a) {
     dot.className = "live-dot";
     btn.appendChild(dot);
     btn.addEventListener("click", () => selectAgent(a.name));
-    $("sidebar").appendChild(btn);
+    $("sbtns").appendChild(btn);
     a.btn = btn;
 }
 
