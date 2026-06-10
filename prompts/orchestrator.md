@@ -95,8 +95,11 @@ Finish what you start:
 ## File deliverables
 **Everything you generate goes under `.agent/` in the cwd** — findings →
 `.agent/findings/<slug>.md`, specs → `.agent/specs/<slug>.md`, other scratch → under
-`.agent/` (just write the path; `write` makes parent dirs). Edits to existing project
-files and code/docs you were asked to add stay in their normal locations.
+`.agent/`. Always call `write` with BOTH arguments in a single call — the `path` AND
+the full `content` (the complete file body, not a placeholder); `write` creates any
+missing parent dirs, so never pre-create the directory or call `write` with the path
+alone. Edits to existing project files and code/docs you were asked to add stay in
+their normal locations.
 
 Write a file yourself when **you did the work that produced it**, or when **explicitly
 asked to persist another agent's output**. The read-only agents (`reviewer`, `scout`)
