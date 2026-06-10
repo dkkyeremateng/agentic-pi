@@ -237,7 +237,9 @@ function toggleExpand(row, ev) {
 // previews — no caret, no click-to-expand, no scroll.
 function makeRow(ev, full) {
     const { kls, badge, detail } = describe(ev);
-    const oneLine = full ? detail : detail.replace(/\s+/g, " ");
+    // The row shows only the first line; the full (multi-line) content lives in
+    // the expand panel (Single view) and the title tooltip.
+    const oneLine = detail.split("\n")[0];
     const row = document.createElement("div");
     row.className = "row" + (full ? " expandable" : " new");
     const t = document.createElement("span");
