@@ -2595,12 +2595,13 @@ export function subagentExtArgs(tools: string): string[] {
     }
     if (/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))
         add("dispatch.ts");
-    // gh-guard.ts confines an agent to READ-ONLY `gh` commands. Loaded for agents
-    // that can run bash but cannot write files (scout, reviewer, validator): they
-    // query GitHub but must never mutate remote state. Agents that may write (e.g.
-    // the shipper, which opens PRs) keep full `gh` access by not loading it.
+    // readonly-guard.ts keeps a read-only agent read-only: it blocks mutating `gh`
+    // and `git` commands. Loaded for agents that can run bash but cannot write files
+    // (scout, reviewer, validator) — they query GitHub and inspect the repo but must
+    // never mutate state. Agents that may write (e.g. the shipper, which opens PRs)
+    // keep full access by not loading it.
     const t = tools || "";
-    if (/\bbash\b/.test(t) && !/\b(write|edit)\b/.test(t)) add("gh-guard.ts");
+    if (/\bbash\b/.test(t) && !/\b(write|edit)\b/.test(t)) add("readonly-guard.ts");
     return args;
 }
 
