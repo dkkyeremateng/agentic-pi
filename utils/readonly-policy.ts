@@ -38,9 +38,10 @@ export function ghArgsReadOnly(rest: string[]): boolean {
 // Classify the tokens AFTER `git`. Unlike gh this is a DENYLIST: read-only agents
 // lean heavily on git reads (diff/log/show/status/rev-parse/blame/ls-files), so the
 // default is allow and only known mutating subcommands are blocked. A few are
-// context-sensitive (remote, config, stash) — their list/show/get forms are reads.
-// LIMITATION: local-only branch/tag mutations are NOT blocked (their read forms take
-// positional args, so a clean allow/deny split isn't possible) — low-harm and
+// context-sensitive (remote, config, stash, branch, tag) — their list/show/get forms
+// are reads. LIMITATION: branch/tag are blocked only by their unambiguous
+// destructive/create FLAGS; a bare-positional create (e.g. `git branch foo`) is left
+// alone, since it collides with read flags' positional args — low-harm, local, and
 // prompt-backstopped, like raw bash.
 export function gitArgsReadOnly(rest: string[]): boolean {
     const i = gitSubcommandIndex(rest);
@@ -52,6 +53,11 @@ export function gitArgsReadOnly(rest: string[]): boolean {
     if (GIT_ALWAYS_MUTATING.has(sub)) return false;
     if (sub === "stash") return firstWord === "list" || firstWord === "show";
     if (sub === "remote") return !GIT_REMOTE_MUTATING.has(firstWord);
+    // branch/tag: block the unambiguous destructive/create FLAG forms; leave read
+    // flags (--contains, -a/-r/-l, --merged, --points-at, …) and a bare-positional
+    // create — which collides with read flags' positional args — alone.
+    if (sub === "branch") return !hasAnyFlag(args, GIT_BRANCH_MUTATING_FLAGS);
+    if (sub === "tag") return !hasAnyFlag(args, GIT_TAG_MUTATING_FLAGS);
     if (sub === "config") {
         const joined = args.join(" ");
         if (
@@ -99,6 +105,19 @@ const GIT_REMOTE_MUTATING = new Set([
     "prune", "update",
 ]);
 
+// `git branch`/`git tag` flags that unambiguously create, delete, move, force, or
+// re-point a ref. The list/inspection flags (-a, -r, -l, -v, --contains,
+// --merged, --points-at, …) are absent, so reads pass.
+const GIT_BRANCH_MUTATING_FLAGS = new Set([
+    "-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy",
+    "-f", "--force", "-u", "--set-upstream-to", "--unset-upstream",
+    "--edit-description",
+]);
+const GIT_TAG_MUTATING_FLAGS = new Set([
+    "-d", "--delete", "-a", "--annotate", "-s", "--sign", "-m", "--message",
+    "-F", "--file", "-f", "--force", "-u", "--local-user", "--create-reflog",
+]);
+
 // git global options that consume the following token as their value, so the
 // subcommand scanner can skip past them (e.g. `git -C <path> log`).
 const GIT_GLOBAL_VALUE_FLAGS = new Set([
@@ -140,6 +159,11 @@ function segments(cmd: string): string[] {
         .split(/[|&;\n`(){}]+/)
         .map((s) => s.trim())
         .filter(Boolean);
+}
+
+// True if any token is one of `flags` (matching `--flag` and `--flag=value`).
+function hasAnyFlag(args: string[], flags: Set<string>): boolean {
+    return args.some((a) => a.startsWith("-") && flags.has(a.split("=")[0]));
 }
 
 // Drop leading `VAR=value` env assignments, returning the command's tokens.
