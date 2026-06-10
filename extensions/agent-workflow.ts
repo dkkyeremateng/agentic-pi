@@ -601,6 +601,32 @@ export default function (pi: ExtensionAPI) {
         }
     }
 
+    // The reviewer's checklist panel ("# Review"), shown whenever a reviewer phase is
+    // running or done — in both the full pipeline AND an ad-hoc dispatch of the
+    // reviewer. While it runs, items tick live from the `[review-check]` markers
+    // scanned out of its stream (best-effort; reconciles to all-checked once the phase
+    // finishes). Scanned only while running; the sticky set is reset otherwise so a
+    // re-review starts fresh. Returns [] (with no leading blank) when there's nothing
+    // to show, so the caller can splice it unconditionally.
+    function reviewPanelLines(width: number, theme: any): string[] {
+        const reviewerPhase = st.phases.find((p) => p.agent === "reviewer");
+        if (reviewerPhase?.status === "running") {
+            scanReviewMarkers(reviewerPhase.log || "");
+        } else {
+            reviewMarks.clear();
+        }
+        const reviewItems = buildReviewChecklist(st.phases, reviewMarks);
+        if (!reviewItems.length) return [];
+        return [
+            "\u200b",
+            ...renderTodos(reviewItems, theme, {
+                running: reviewerPhase?.status === "running",
+                width,
+                title: " # Review",
+            }),
+        ];
+    }
+
     // Build the dashboard as a plain line array. Returned to pi via the string[]
     // setWidget overload (below) so pi owns the diffing/redraw — re-issuing a
     // custom component each tick made the sticky widget redraw incorrectly
@@ -611,6 +637,8 @@ export default function (pi: ExtensionAPI) {
             // the orchestrator dispatches), with the running agent's live log below.
             const gridLines = renderAgentGrid(width, theme);
             if (st.dispatchMode) {
+                // An ad-hoc dispatch of the reviewer still gets its checklist panel.
+                gridLines.push(...reviewPanelLines(width, theme));
                 appendLiveLog(gridLines, width, theme);
                 return clampWidget(gridLines, theme);
             }
@@ -664,29 +692,8 @@ export default function (pi: ExtensionAPI) {
             lines.push("\u200b");
             lines.push(...todos);
         }
-        // The reviewer's checklist, shown once the reviewer phase starts \u2014 the items
-        // it works through (Plan conformance, Correctness, Tests, \u2026). While it runs,
-        // items tick live from the `[review-check]` markers scanned out of its stream
-        // (best-effort; the panel reconciles to all-checked when the phase finishes).
-        // Scan only while running; reset the sticky set otherwise so a re-review (the
-        // validator loop re-runs the reviewer) starts fresh.
-        const reviewerPhase = st.phases.find((p) => p.agent === "reviewer");
-        if (reviewerPhase?.status === "running") {
-            scanReviewMarkers(reviewerPhase.log || "");
-        } else {
-            reviewMarks.clear();
-        }
-        const reviewItems = buildReviewChecklist(st.phases, reviewMarks);
-        if (reviewItems.length) {
-            lines.push("\u200b");
-            lines.push(
-                ...renderTodos(reviewItems, theme, {
-                    running: reviewerPhase?.status === "running",
-                    width,
-                    title: " # Review",
-                }),
-            );
-        }
+        // The reviewer's checklist panel (also shown in ad-hoc dispatch above).
+        lines.push(...reviewPanelLines(width, theme));
         appendLiveLog(lines, width, theme);
         return clampWidget(lines, theme);
     }
