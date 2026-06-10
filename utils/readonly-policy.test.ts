@@ -86,6 +86,7 @@ describe("gitArgsReadOnly", () => {
             ["branch", "-a"],
             ["branch", "--contains", "abc123"], // read flag w/ positional
             ["branch", "--merged"],
+            ["branch", "--sort", "committerdate"], // flag w/ next-token value
             ["tag", "-l", "v*"],
             ["tag", "--contains", "abc123"],
             ["-C", "/repo", "log", "--oneline"], // global -C <path> then read
@@ -125,15 +126,13 @@ describe("gitArgsReadOnly", () => {
             ["tag", "-d", "v1"],
             ["tag", "-a", "v1", "-m", "release"],
             ["tag", "-f", "v1"],
+            ["branch", "newbranch"], // bare-positional create
+            ["branch", "newbranch", "origin/main"], // create from start-point
+            ["tag", "v1.2.3"], // lightweight tag create
             ["-C", "/repo", "push"], // global flag then a mutator
         ]) {
             assert.equal(gitArgsReadOnly(args), false, args.join(" "));
         }
-    });
-
-    it("leaves a bare-positional branch/tag create alone (documented gap)", () => {
-        assert.equal(gitArgsReadOnly(["branch", "newbranch"]), true);
-        assert.equal(gitArgsReadOnly(["tag", "v1.2.3"]), true);
     });
 });
 

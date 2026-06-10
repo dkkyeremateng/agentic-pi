@@ -38,11 +38,9 @@ export function ghArgsReadOnly(rest: string[]): boolean {
 // Classify the tokens AFTER `git`. Unlike gh this is a DENYLIST: read-only agents
 // lean heavily on git reads (diff/log/show/status/rev-parse/blame/ls-files), so the
 // default is allow and only known mutating subcommands are blocked. A few are
-// context-sensitive (remote, config, stash, branch, tag) — their list/show/get forms
-// are reads. LIMITATION: branch/tag are blocked only by their unambiguous
-// destructive/create FLAGS; a bare-positional create (e.g. `git branch foo`) is left
-// alone, since it collides with read flags' positional args — low-harm, local, and
-// prompt-backstopped, like raw bash.
+// context-sensitive (remote, config, stash, branch, tag) — their list/show/get/
+// inspection forms are reads, while creates/deletes/moves (including a bare-positional
+// `git branch <name>` / `git tag <name>` create) are blocked.
 export function gitArgsReadOnly(rest: string[]): boolean {
     const i = gitSubcommandIndex(rest);
     if (i === -1) return true; // bare `git` / only global flags
@@ -53,11 +51,8 @@ export function gitArgsReadOnly(rest: string[]): boolean {
     if (GIT_ALWAYS_MUTATING.has(sub)) return false;
     if (sub === "stash") return firstWord === "list" || firstWord === "show";
     if (sub === "remote") return !GIT_REMOTE_MUTATING.has(firstWord);
-    // branch/tag: block the unambiguous destructive/create FLAG forms; leave read
-    // flags (--contains, -a/-r/-l, --merged, --points-at, …) and a bare-positional
-    // create — which collides with read flags' positional args — alone.
-    if (sub === "branch") return !hasAnyFlag(args, GIT_BRANCH_MUTATING_FLAGS);
-    if (sub === "tag") return !hasAnyFlag(args, GIT_TAG_MUTATING_FLAGS);
+    if (sub === "branch") return gitRefCmdReadOnly(args, GIT_BRANCH_MUTATING_FLAGS);
+    if (sub === "tag") return gitRefCmdReadOnly(args, GIT_TAG_MUTATING_FLAGS);
     if (sub === "config") {
         const joined = args.join(" ");
         if (
@@ -164,6 +159,17 @@ function segments(cmd: string): string[] {
 // True if any token is one of `flags` (matching `--flag` and `--flag=value`).
 function hasAnyFlag(args: string[], flags: Set<string>): boolean {
     return args.some((a) => a.startsWith("-") && flags.has(a.split("=")[0]));
+}
+
+// Read-only check for `git branch`/`git tag`. A destructive/create FLAG blocks. A
+// plain create takes NO flags (`git branch <name> [start]`, `git tag <name>`), so any
+// other flag means list/inspection mode (`--contains <sha>`, `-l <pat>`, `--sort
+// <key>`, …) and reads. With no flags, a positional is a new ref name → create →
+// block; none is a bare list → allow.
+function gitRefCmdReadOnly(args: string[], mutatingFlags: Set<string>): boolean {
+    if (hasAnyFlag(args, mutatingFlags)) return false;
+    if (args.some((a) => a.startsWith("-"))) return true;
+    return args.length === 0; // no flags + a positional ref name = create → block
 }
 
 // Drop leading `VAR=value` env assignments, returning the command's tokens.
