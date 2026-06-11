@@ -524,7 +524,96 @@
             #race-tracks {
                 display: flex;
                 flex-direction: column;
-                gap: 12px;
+                gap: 18px;
+            }
+            /* project tier (shown only with "all projects" + >1 project) */
+            .race-project {
+                display: flex;
+                flex-direction: column;
+                gap: 14px;
+            }
+            .race-project-head {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 7px 10px;
+                background: var(--panel2);
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                cursor: pointer;
+                user-select: none;
+            }
+            .race-project-head:hover {
+                border-color: var(--accent);
+            }
+            .race-project-head .pnm {
+                font-weight: 700;
+                letter-spacing: 0.04em;
+            }
+            .race-project-head .pmeta {
+                margin-left: auto;
+                color: var(--dim);
+                font-size: 11px;
+            }
+            .race-project-head .pmeta b {
+                color: var(--fg);
+                font-weight: 600;
+            }
+            /* indent the agent groups nested under a project */
+            .race-project > .race-group {
+                margin-left: 16px;
+            }
+            /* one group per agent; its instances (parallel/sequential) stack inside */
+            .race-group {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            .race-group-head {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 4px 4px 6px;
+                border-bottom: 1px solid var(--line);
+            }
+            .race-group-head.clickable {
+                cursor: pointer;
+                user-select: none;
+            }
+            .race-group-head.clickable:hover {
+                background: rgba(255, 255, 255, 0.03);
+                border-radius: 6px;
+            }
+            .race-group-head .gcaret {
+                color: var(--dim);
+                font-size: 11px;
+                width: 12px;
+                flex: none;
+            }
+            .race-group-head .nm {
+                font-weight: 600;
+                letter-spacing: 0.03em;
+            }
+            .race-group-head .ghint {
+                color: var(--accent);
+                font-size: 11px;
+            }
+            .race-group-head .gcount {
+                font-size: 11px;
+                color: var(--accent);
+                border: 1px solid var(--accent);
+                border-radius: 999px;
+                padding: 0 7px;
+                line-height: 16px;
+            }
+            .race-group-head .gmeta {
+                margin-left: auto;
+                color: var(--dim);
+                font-size: 11px;
+            }
+            .race-group-head .gmeta b {
+                color: var(--fg);
+                font-weight: 600;
             }
             .race-track {
                 display: flex;
