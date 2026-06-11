@@ -20,6 +20,9 @@ only `.env` config — no code edits.
   written run report.
 - **Sub-agent dispatch** — `dispatch_agent` / `dispatch_parallel` for ad-hoc
   delegation to any agent, in any session.
+- **Observability** — an offline metrics analyzer (per-run reports + cross-project
+  trends) and an opt-in live dashboard (`PI_OBS=1`) with Swimlane / Single / Race
+  views that span every pi instance you're running.
 - **Skills** — LSP diagnostics & navigation (Python/Go/TS/PHP), Playwright browser
   automation, Linear and Jira CLIs, GitHub, and commit helpers.
 - **Per-agent models** — point each agent at a different model via `.env`; mix a
@@ -71,7 +74,7 @@ downstream agents, so it is never re-threaded through the context.
 
 ```bash
 cp example.env .env          # then fill in your models / API keys
-./run.sh                     # launches dispatch.ts + agent-workflow.ts
+./run.sh                     # loads dispatch + interactive + agent-workflow extensions
 ```
 
 `run.sh` loads the extensions resolved relative to itself, so you never edit pi's
@@ -146,7 +149,8 @@ run a planning team first.)
 - **`workflow-report.md`** — the end-of-run report (requirement, files changed,
   suite/diagnostics results, verdict, branch/commits, PR link or next steps).
 - **`.agent/`** scratch — `plan.md` (and `plan.draft.md`), `progress.md` (phase
-  ledger), `checkpoints/` (for `/revert`), `screenshots/` (browser QA). Gitignored.
+  ledger), `metrics.json`/`metrics.jsonl` (run metrics for the analyzer),
+  `checkpoints/` (for `/revert`), `screenshots/` (browser QA). Gitignored.
 - **`docs/plans/`** — optional permanent plan archive per run (opt-in; see
   `PI_WORKFLOW_ARCHIVE_PLANS`).
 
@@ -302,17 +306,12 @@ npm run obs:server -- <project>       # …or tail one project's .agent/obs/even
 PI_OBS=1 ./run.sh                      # run the workflow with emission on
 ```
 
-The collector is inert unless `PI_OBS=1`, writes only under the gitignored `.agent/`,
-and never disrupts a run if the sink can't be written.
-
-Click any event row to expand its full detail — tool calls show the complete
-arguments, tool results the complete output, pretty-printed, with a copy button.
-Tool args/results are captured **in full by default**; set `PI_OBS_TOOL_MAX=<chars>`
-to cap them (e.g. to bound the sink file size).
-
+The collector is inert unless `PI_OBS=1` and never disrupts a run if the sink can't
+be written. Tool args/results are captured **in full** so the expand panel shows
+everything; set `PI_OBS_TOOL_MAX=<chars>` to cap them (e.g. to bound the sink size).
 Agent **message and thinking text** is a separate opt-in (it can echo file
-contents): set `PI_OBS_CONTENT=1`, capped to `PI_OBS_CONTENT_MAX` chars (default
-2000). For example: `PI_OBS=1 PI_OBS_CONTENT=1 ./run.sh`.
+contents): `PI_OBS_CONTENT=1`, capped to `PI_OBS_CONTENT_MAX` (default 2000) — e.g.
+`PI_OBS=1 PI_OBS_CONTENT=1 ./run.sh`.
 
 ## Develop
 
@@ -321,11 +320,16 @@ globally-installed pi (the exact version you run) into `node_modules`:
 
 ```bash
 npm run setup:types     # link pi types (auto-runs before typecheck/test)
-npm run typecheck       # tsc --noEmit
-npm test                # unit tests (tsx) — utils/*.test.ts
+npm test                # unit tests (tsx) — utils/*.test.ts — the source of truth
+npm run typecheck       # tsc --noEmit — best-effort; see note below
 npm run test:linear     # Python tests for the linear skill
 npm run test:atlassian  # Python tests for the atlassian skill
 ```
+
+`npm test` is the primary gate. `npm run typecheck` is best-effort: the extensions
+use loose (`any`) handler signatures that don't fully line up with pi's strict type
+defs, so `tsc` reports known mismatches. For a quick per-file syntax/type-strip
+check use `node --experimental-strip-types --check <file>`.
 
 `node_modules` is dev-only and gitignored — it is **not** needed to run.
 
