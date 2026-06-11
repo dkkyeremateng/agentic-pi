@@ -2670,7 +2670,10 @@ export interface SpawnResult {
 // down through the environment. Each hop increments PI_DISPATCH_DEPTH and appends
 // the spawned agent to PI_DISPATCH_ANCESTRY; dispatchAgentCore reads these to bound
 // recursion. PI_SUBAGENT is kept for backward compatibility.
-export function dispatchEnv(agentName: string): Record<string, string> {
+export function dispatchEnv(
+    agentName: string,
+    dispatchId?: string,
+): Record<string, string> {
     const depth = parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
     const ancestry = process.env.PI_DISPATCH_ANCESTRY || "";
     const name = agentName.toLowerCase();
@@ -2682,11 +2685,14 @@ export function dispatchEnv(agentName: string): Record<string, string> {
     // Label this sub-agent's observability lane (obs-live.ts reads it) and carry
     // the trace linkage down: PI_OBS_RUN is the shared trace id (minted by the root
     // orchestrator's collector); PI_OBS_PARENT is THIS process's agent — the one
-    // doing the dispatching — so the child knows who spawned it.
+    // doing the dispatching — so the child knows who spawned it. PI_OBS_DISPATCH_ID
+    // ties the child's events back to the orchestrator's dispatch_* events for this
+    // exact dispatch, so concurrent instances of the same agent stay distinct.
     if (process.env.PI_OBS === "1" || process.env.PI_OBS === "true") {
         env.PI_OBS_AGENT = name;
         if (process.env.PI_OBS_RUN) env.PI_OBS_RUN = process.env.PI_OBS_RUN;
         env.PI_OBS_PARENT = (process.env.PI_OBS_AGENT || "orchestrator").toLowerCase();
+        if (dispatchId) env.PI_OBS_DISPATCH_ID = dispatchId;
     }
     return env;
 }
@@ -3099,7 +3105,7 @@ function spawnAgentWithModelFallback(
     return new Promise((resolve) => {
         const proc = spawn("pi", args, {
             stdio: ["ignore", "pipe", "pipe"],
-            env: { ...process.env, ...dispatchEnv(agentDef.name) },
+            env: { ...process.env, ...dispatchEnv(agentDef.name, phase.dispatchId) },
             cwd,
         });
 
@@ -3329,7 +3335,7 @@ export function spawnAgentWithModel(
     return new Promise((resolve) => {
         const proc = spawn("pi", args, {
             stdio: ["ignore", "pipe", "pipe"],
-            env: { ...process.env, ...dispatchEnv(agentDef.name) },
+            env: { ...process.env, ...dispatchEnv(agentDef.name, phase.dispatchId) },
             cwd,
         });
         config.setCurrentProc(proc);

@@ -870,13 +870,11 @@
             }
             .trace-meta {
                 flex: none;
-                width: 250px;
+                width: 320px;
                 text-align: right;
                 color: var(--dim);
                 font-size: 11px;
                 white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
             }
             .trace-meta b {
                 color: var(--fg);
@@ -1339,6 +1337,20 @@
                 <pre class="insp-json" id="insp-json"></pre>
             </div>
         </div>
-        <script src="/app.js"></script>
+        <!-- Vanilla, no bundler: ordered classic scripts share one global scope,
+             so these modules see each other's functions/state. Load order matters —
+             state first, main (init + wiring) last. -->
+        <script src="/scripts/state.js"></script>
+        <script src="/scripts/format.js"></script>
+        <script src="/scripts/feed.js"></script>
+        <script src="/scripts/rollup.js"></script>
+        <script src="/scripts/lanes.js"></script>
+        <script src="/scripts/single.js"></script>
+        <script src="/scripts/views.js"></script>
+        <script src="/scripts/race.js"></script>
+        <script src="/scripts/trace.js"></script>
+        <script src="/scripts/stats.js"></script>
+        <script src="/scripts/header.js"></script>
+        <script src="/scripts/main.js"></script>
     </body>
 </html>

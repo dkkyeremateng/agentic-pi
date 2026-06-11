@@ -1,0 +1,292 @@
+// ── trace (waterfall) view ───────────────────────────────────────────────────
+// One run = one workflow invocation (shared runId). The orchestrator is the root;
+// each dispatched agent is a child whose `parent` names the agent that spawned it.
+// We render nested spans on a shared time axis, annotated with the orchestrator's
+// dispatch_* outcomes (retries, truncation).
+let traceRun = ""; // "" = follow the latest run; otherwise a pinned runId
+let traceCurrentRun = ""; // the runId actually rendered (for the export buttons)
+
+// Group every runId we've seen (within the active project) with its time bounds.
+function collectRuns() {
+    const runs = new Map();
+    for (const a of lanes.values()) {
+        if (!laneInProject(a)) continue;
+        for (const ev of a.events) {
+            if (!ev.runId) continue;
+            let r = runs.get(ev.runId);
+            if (!r) {
+                r = {
+                    id: ev.runId,
+                    project: a.project,
+                    firstTs: ev.ts,
+                    lastTs: ev.ts,
+                    agents: new Set(),
+                };
+                runs.set(ev.runId, r);
+            }
+            if (ev.ts < r.firstTs) r.firstTs = ev.ts;
+            if (ev.ts > r.lastTs) r.lastTs = ev.ts;
+            r.agents.add(ev.agent);
+        }
+    }
+    return runs;
+}
+
+// Build per-agent span nodes for one run, plus the orchestrator-side dispatch
+// annotations (which arrive on the orchestrator lane but describe a child).
+function buildTraceNodes(runId) {
+    const nodes = new Map(); // sessionId -> node
+    // Dispatch annotations indexed two ways: by dispatchId (precise, binds to the
+    // exact instance) and by agent name (fallback for events lacking a dispatchId).
+    const byId = new Map();
+    const byName = new Map();
+    const recordDispatch = (ev) => {
+        const did = ev.payload && ev.payload.dispatchId;
+        const nm = ev.payload && ev.payload.agent;
+        if (!did && !nm) return;
+        // A dispatchId identifies the exact instance; without one, fall back to the
+        // agent name (legacy events). Never cross the two indexes, or sibling
+        // instances of the same agent would merge into one record.
+        let d = did ? byId.get(did) : byName.get(nm);
+        if (!d) d = { retries: 0, reason: null, status: null, attempts: 1 };
+        if (ev.type === "dispatch_retry") {
+            d.retries++;
+            if (ev.payload.reason) d.reason = ev.payload.reason;
+        } else if (ev.type === "dispatch_end") {
+            d.status = ev.payload.status || d.status;
+            if (ev.payload.reason) d.reason = ev.payload.reason;
+            if (ev.payload.attempts) d.attempts = ev.payload.attempts;
+        }
+        if (did) byId.set(did, d);
+        else byName.set(nm, d);
+    };
+    for (const a of lanes.values()) {
+        if (!laneInProject(a)) continue;
+        for (const ev of a.events) {
+            if (ev.runId !== runId) continue;
+            // dispatch_* events ride on the ORCHESTRATOR lane but describe a child.
+            // Record the annotation, but still let the event extend the emitting
+            // (orchestrator) span so the root bar spans the whole run.
+            if (
+                ev.type === "dispatch_start" ||
+                ev.type === "dispatch_retry" ||
+                ev.type === "dispatch_end"
+            ) {
+                recordDispatch(ev);
+            }
+            // Key nodes by sessionId so parallel/sequential instances of one agent
+            // are separate spans (not merged under the agent name).
+            let n = nodes.get(ev.sessionId);
+            if (!n) {
+                n = {
+                    agent: ev.agent, // bare name; parent links + labels use it
+                    sessionId: ev.sessionId,
+                    dispatchId: null, // this instance's dispatch id (from session_start)
+                    laneKey: a.key,
+                    parent: null, // parent AGENT NAME (resolved to a node in renderTrace)
+                    firstTs: ev.ts,
+                    lastTs: ev.ts,
+                    rollup: newRollup(),
+                    ended: false,
+                };
+                nodes.set(ev.sessionId, n);
+            }
+            if (ev.ts < n.firstTs) n.firstTs = ev.ts;
+            if (ev.ts > n.lastTs) n.lastTs = ev.ts;
+            if (ev.parent && !n.parent) n.parent = ev.parent;
+            if (ev.type === "session_start" && ev.payload && ev.payload.dispatchId)
+                n.dispatchId = ev.payload.dispatchId;
+            if (ev.type === "session_end") n.ended = true;
+            applyRollup(n.rollup, ev);
+        }
+    }
+    // Bind each instance to its dispatch annotation: prefer the precise dispatchId
+    // match, fall back to the agent name (legacy events without a dispatchId).
+    for (const n of nodes.values()) {
+        const d = (n.dispatchId && byId.get(n.dispatchId)) || byName.get(n.agent);
+        if (d) n.dispatch = d;
+    }
+    return nodes;
+}
+
+// Status of a span node: running (active & not ended), error (any error signal),
+// else done.
+function traceStatus(n) {
+    const d = n.dispatch;
+    if (d && d.status === "error") return "error";
+    if (n.rollup.errors > 0 || n.rollup.toolErrors > 0) return "error";
+    if (n.rollup.active && !n.ended) return "running";
+    return "done";
+}
+
+function renderTrace() {
+    const runs = collectRuns();
+    const runList = [...runs.values()].sort((a, b) => b.lastTs - a.lastTs);
+    const sel = $("trace-run");
+
+    if (!runList.length) {
+        $("trace-empty").style.display = "block";
+        $("trace-tree").innerHTML = "";
+        $("trace-axis").textContent = "";
+        sel.innerHTML = "";
+        return;
+    }
+    $("trace-empty").style.display = "none";
+
+    // Run picker — latest first, with a "follow latest" sentinel.
+    sel.innerHTML = "";
+    const latest = document.createElement("option");
+    latest.value = "";
+    latest.textContent = "latest (live)";
+    sel.appendChild(latest);
+    runList.forEach((r, i) => {
+        const o = document.createElement("option");
+        o.value = r.id;
+        const when = new Date(r.firstTs).toTimeString().slice(0, 8);
+        o.textContent =
+            (i === 0 ? "● " : "") +
+            when +
+            " · " +
+            r.agents.size +
+            " agents · " +
+            fmtDur(r.lastTs - r.firstTs);
+        sel.appendChild(o);
+    });
+    sel.value = traceRun && runs.has(traceRun) ? traceRun : "";
+
+    const run = traceRun && runs.get(traceRun) ? runs.get(traceRun) : runList[0];
+    traceCurrentRun = run.id;
+    const nodes = buildTraceNodes(run.id);
+    const t0 = run.firstTs;
+    const span = Math.max(1, run.lastTs - run.firstTs);
+
+    // Per-agent-name index → "agent #n" labels when a name has several instances.
+    const byStart = (arr) => arr.sort((x, y) => x.firstTs - y.firstTs);
+    const nameCount = new Map();
+    for (const n of nodes.values())
+        nameCount.set(n.agent, (nameCount.get(n.agent) || 0) + 1);
+    const nameSeen = new Map();
+    for (const n of byStart([...nodes.values()])) {
+        const i = nameSeen.get(n.agent) || 0;
+        nameSeen.set(n.agent, i + 1);
+        n.label = nameCount.get(n.agent) > 1 ? n.agent + " #" + (i + 1) : n.agent;
+    }
+
+    // Parent linkage: a node's parent is an agent NAME; resolve it to the
+    // representative (earliest) node of that name. childrenOf is keyed by the
+    // parent node's sessionId so parallel same-name parents don't merge.
+    const nodeByAgent = new Map();
+    for (const n of byStart([...nodes.values()]))
+        if (!nodeByAgent.has(n.agent)) nodeByAgent.set(n.agent, n);
+    const childrenOf = new Map();
+    const roots = [];
+    for (const n of nodes.values()) {
+        const p = n.parent && nodeByAgent.get(n.parent);
+        if (p && p !== n) {
+            if (!childrenOf.has(p.sessionId)) childrenOf.set(p.sessionId, []);
+            childrenOf.get(p.sessionId).push(n);
+        } else {
+            roots.push(n);
+        }
+    }
+    byStart(roots);
+    for (const arr of childrenOf.values()) byStart(arr);
+
+    // DFS into a flat, depth-tagged row list.
+    const rows = [];
+    const walk = (n, depth) => {
+        rows.push({ n, depth });
+        for (const c of childrenOf.get(n.sessionId) || []) walk(c, depth + 1);
+    };
+    for (const r of roots) walk(r, 0);
+
+    let running = 0;
+    for (const n of nodes.values())
+        if (traceStatus(n) === "running") running++;
+    $("trace-axis").innerHTML =
+        "<b>" +
+        nodes.size +
+        "</b> agents · span <b>" +
+        fmtDur(span) +
+        "</b>" +
+        (running ? " · <b>" + running + "</b> running" : "");
+
+    const tree = $("trace-tree");
+    tree.innerHTML = "";
+    for (const { n, depth } of rows) {
+        const status = traceStatus(n);
+        const row = document.createElement("div");
+        row.className = "trace-row";
+        row.addEventListener("click", () => selectLane(n.laneKey));
+
+        // label (indented by depth)
+        const label = document.createElement("div");
+        label.className = "trace-label";
+        label.style.paddingLeft = depth * 16 + "px";
+        const dot = document.createElement("span");
+        dot.className = "dot" + (status === "running" ? " on" : "");
+        const nm = document.createElement("span");
+        nm.className = "nm";
+        nm.textContent = n.label;
+        label.append(dot, nm);
+        if (n.rollup.model) {
+            const m = document.createElement("span");
+            m.className = "model";
+            m.textContent = n.rollup.model;
+            m.title = n.rollup.model;
+            label.append(m);
+        }
+
+        // timeline track + positioned span bar
+        const track = document.createElement("div");
+        track.className = "trace-track";
+        const bar = document.createElement("div");
+        bar.className = "trace-span " + status;
+        const left = ((n.firstTs - t0) / span) * 100;
+        const width = Math.max(0.6, ((n.lastTs - n.firstTs) / span) * 100);
+        bar.style.left = Math.max(0, Math.min(100, left)) + "%";
+        bar.style.width = Math.min(100 - left, width) + "%";
+        bar.title =
+            n.label +
+            " · " +
+            fmtDur(n.lastTs - n.firstTs) +
+            " · " +
+            fmtTok(n.rollup.tokens) +
+            " tok · " +
+            fmtCost(n.rollup.costUsd);
+        track.append(bar);
+
+        // right-side metrics + dispatch tags
+        const meta = document.createElement("div");
+        meta.className = "trace-meta";
+        meta.innerHTML =
+            "<b>" +
+            fmtDur(n.lastTs - n.firstTs) +
+            "</b> · " +
+            fmtTok(n.rollup.tokens) +
+            " · " +
+            fmtCost(n.rollup.costUsd) +
+            " · " +
+            n.rollup.toolCalls +
+            "🔧";
+        const d = n.dispatch;
+        if (d && d.retries > 0) {
+            const tag = document.createElement("span");
+            tag.className = "trace-tag retry";
+            tag.textContent = "↻" + d.retries;
+            tag.title = d.retries + " retry(s)";
+            meta.append(tag);
+        }
+        if (d && d.reason === "truncated") {
+            const tag = document.createElement("span");
+            tag.className = "trace-tag trunc";
+            tag.textContent = "truncated";
+            tag.title = "stop reason: length (output-token limit)";
+            meta.append(tag);
+        }
+
+        row.append(label, track, meta);
+        tree.append(row);
+    }
+}
+

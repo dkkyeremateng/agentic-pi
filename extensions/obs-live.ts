@@ -142,6 +142,10 @@ export default function obsLive(pi: any): void {
         emit("session_start", {
             model: ctx?.model?.id,
             pid: process.pid,
+            // The dispatch this process was spawned for — lets the dashboard bind
+            // the orchestrator's dispatch_* annotations to THIS exact instance
+            // (so parallel runs of the same agent stay distinct).
+            dispatchId: process.env.PI_OBS_DISPATCH_ID || undefined,
         });
     });
 

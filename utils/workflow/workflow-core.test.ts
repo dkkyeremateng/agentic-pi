@@ -924,7 +924,15 @@ describe("clampSummary", () => {
 });
 
 describe("dispatchEnv", () => {
-    const KEYS = ["PI_DISPATCH_DEPTH", "PI_DISPATCH_ANCESTRY"];
+    const KEYS = [
+        "PI_DISPATCH_DEPTH",
+        "PI_DISPATCH_ANCESTRY",
+        "PI_OBS",
+        "PI_OBS_RUN",
+        "PI_OBS_AGENT",
+        "PI_OBS_PARENT",
+        "PI_OBS_DISPATCH_ID",
+    ];
     function withEnv(
         vars: Record<string, string | undefined>,
         fn: () => void,
@@ -959,6 +967,40 @@ describe("dispatchEnv", () => {
             const env = dispatchEnv("Scout");
             assert.equal(env.PI_DISPATCH_DEPTH, "2");
             assert.equal(env.PI_DISPATCH_ANCESTRY, "coordinator>scout");
+        });
+    });
+
+    it("omits the obs vars when PI_OBS is off", () => {
+        withEnv({ PI_OBS: undefined }, () => {
+            const env = dispatchEnv("Scout", "scout-123");
+            assert.equal(env.PI_OBS_AGENT, undefined);
+            assert.equal(env.PI_OBS_DISPATCH_ID, undefined);
+        });
+    });
+
+    it("propagates the dispatchId (and run/parent) for obs when PI_OBS=1", () => {
+        withEnv(
+            {
+                PI_OBS: "1",
+                PI_OBS_RUN: "run-xyz",
+                PI_OBS_AGENT: "orchestrator",
+                PI_OBS_DISPATCH_ID: undefined,
+            },
+            () => {
+                const env = dispatchEnv("Seeker", "seeker-1759-abc");
+                assert.equal(env.PI_OBS_AGENT, "seeker");
+                assert.equal(env.PI_OBS_RUN, "run-xyz");
+                assert.equal(env.PI_OBS_PARENT, "orchestrator");
+                assert.equal(env.PI_OBS_DISPATCH_ID, "seeker-1759-abc");
+            },
+        );
+    });
+
+    it("sets no dispatchId when none is given even with obs on", () => {
+        withEnv({ PI_OBS: "1" }, () => {
+            const env = dispatchEnv("Seeker");
+            assert.equal(env.PI_OBS_AGENT, "seeker");
+            assert.equal(env.PI_OBS_DISPATCH_ID, undefined);
         });
     });
 });

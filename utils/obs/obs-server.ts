@@ -155,8 +155,15 @@ const server = createServer((req, res) => {
         serveStatic(res, join(UI_DIR, "index.html"));
         return;
     }
-    if (url === "/app.js") {
-        serveStatic(res, join(UI_DIR, "app.js"));
+    // Dashboard client scripts (vanilla, no bundler) live under obs-ui/scripts/.
+    // Serve only flat *.js names from that dir — no path traversal.
+    if (url.startsWith("/scripts/")) {
+        const name = url.slice("/scripts/".length);
+        if (/^[a-zA-Z0-9_-]+\.js$/.test(name)) {
+            serveStatic(res, join(UI_DIR, "scripts", name));
+        } else {
+            res.writeHead(404).end("not found");
+        }
         return;
     }
     if (url === "/favicon.ico") {
