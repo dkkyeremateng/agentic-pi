@@ -303,7 +303,7 @@ for a per-project sink instead, or point the server at one project with
 ```bash
 ./run.sh                              # pi only
 ./run.sh --obs                        # pi + the dashboard (http://127.0.0.1:7616)
-./run.sh --server                     # the dashboard server only (no pi)
+./run.sh --server                     # the dashboard server only (background; prints a pid to stop)
 ./run.sh --server -- --port 8000      # …server only, on a custom port / project
 # equivalents:
 npm run obs:server                    # same as `./run.sh --server`

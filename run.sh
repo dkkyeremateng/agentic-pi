@@ -7,7 +7,7 @@
 #
 #   ./run.sh                       # pi only
 #   ./run.sh --obs                 # pi + the observability dashboard server
-#   ./run.sh --server              # the dashboard server only (no pi)
+#   ./run.sh --server              # the dashboard server only (background; no pi)
 #   ./run.sh -- <pi args>          # pass extra args straight to pi
 #   ./run.sh --obs -- <pi args>
 #   ./run.sh --server -- <obs-server args>   # e.g. --port 8000, or a project path
@@ -40,8 +40,16 @@ if [[ "$MODE" == "server" ]]; then
         echo "run.sh: the dashboard server needs dev deps — run 'npm install' in $DIR." >&2
         exit 1
     }
-    # Foreground; remaining args (e.g. --port 8000, or a project path) pass through.
-    exec "$TSX" "$DIR/utils/obs-server.ts" --port "$PORT" "$@"
+    # Background + detached so it keeps running and frees the terminal. Remaining
+    # args (e.g. --port 8000, or a project path) pass through.
+    nohup "$TSX" "$DIR/utils/obs-server.ts" --port "$PORT" "$@" \
+        >"$DIR/.obs-server.log" 2>&1 &
+    SP=$!
+    disown 2>/dev/null || true
+    echo "run.sh: observability dashboard → http://127.0.0.1:$PORT" \
+        "(pid $SP, log: $DIR/.obs-server.log)"
+    echo "run.sh: stop it with  kill $SP"
+    exit 0
 fi
 
 # ── pi (and optionally the server) ───────────────────────────────────────────
