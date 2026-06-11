@@ -7,6 +7,8 @@
 #
 #   ./run.sh                       # pi only
 #   ./run.sh --obs                 # pi + the observability dashboard server
+#   ./run.sh --emit                # pi with emission on, but DON'T start a server
+#                                  #   (use when a `--server` is already running)
 #   ./run.sh --server              # the dashboard server only (background; no pi)
 #   ./run.sh -- <pi args>          # pass extra args straight to pi
 #   ./run.sh --obs -- <pi args>
@@ -20,14 +22,15 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PI_OBS_PORT:-7616}"
 TSX="$DIR/node_modules/.bin/tsx"
 
-# Mode: pi (default) | both (pi + server) | server (server only).
-# PI_OBS=1 in the environment is equivalent to passing --obs.
+# Mode: pi (default) | both (pi + server) | emit (pi + emission, no server) |
+# server (server only). PI_OBS=1 in the environment is equivalent to --obs.
 MODE="pi"
 [[ "${PI_OBS:-}" == "1" || "${PI_OBS:-}" == "true" ]] && MODE="both"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --obs) MODE="both"; shift ;;
+        --emit) MODE="emit"; shift ;;
         --server | --obs-only) MODE="server"; shift ;;
         --) shift; break ;;
         *) break ;;
@@ -69,11 +72,13 @@ EXT=(
 # Live observability (Phase 2): the orchestrator and every sub-agent emit
 # ObsEvents to the shared sink (~/.pi/agent/obs/events.jsonl). The obs-live
 # collector is gated on PI_OBS=1; subagentExtArgs injects it into sub-agents too.
+# Both and emit turn on emission; only "both" also starts a dashboard server.
 SERVER_PID=""
-if [[ "$MODE" == "both" ]]; then
+if [[ "$MODE" == "both" || "$MODE" == "emit" ]]; then
     export PI_OBS=1
     EXT+=(-e "$DIR/extensions/obs-live.ts")
-
+fi
+if [[ "$MODE" == "both" ]]; then
     # Start the dashboard server in the background, tailing the shared sink.
     if [[ -x "$TSX" ]]; then
         "$TSX" "$DIR/utils/obs-server.ts" --port "$PORT" \

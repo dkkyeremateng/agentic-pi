@@ -303,12 +303,17 @@ for a per-project sink instead, or point the server at one project with
 ```bash
 ./run.sh                              # pi only
 ./run.sh --obs                        # pi + the dashboard (http://127.0.0.1:7616)
+./run.sh --emit                       # pi with emission ON but no server (use with a running --server)
 ./run.sh --server                     # the dashboard server only (background; prints a pid to stop)
 ./run.sh --server -- --port 8000      # …server only, on a custom port / project
 # equivalents:
 npm run obs:server                    # same as `./run.sh --server`
 PI_OBS=1 ./run.sh                      # same as `./run.sh --obs`
 ```
+
+Run the dashboard once and observe many pi sessions: `./run.sh --server` (start
+it, leave it running), then `./run.sh --emit` for each pi run you want on the
+dashboard. Both default to the same shared sink, so the events show up live.
 
 `./run.sh --obs` starts the dashboard server in the background (port `PI_OBS_PORT`,
 default 7616) and stops it when pi exits; it needs the dev deps (`npm install`).
