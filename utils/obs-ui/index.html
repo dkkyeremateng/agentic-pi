@@ -224,6 +224,10 @@
                 color: var(--dim);
                 flex: none;
             }
+            .row-emoji {
+                flex: none;
+                font-size: 12px;
+            }
             .badge {
                 flex: none;
                 padding: 0 6px;
@@ -560,11 +564,41 @@
             .race-turns {
                 flex: 1;
                 display: flex;
-                gap: 10px;
+                gap: 0;
                 overflow-x: auto;
                 padding: 10px;
-                align-items: stretch;
+                align-items: center;
                 min-width: 0;
+            }
+            .race-conn {
+                flex: none;
+                align-self: center;
+                width: 22px;
+                border-top: 1px solid var(--line);
+                position: relative;
+            }
+            .race-conn::after {
+                content: "›";
+                position: absolute;
+                right: -3px;
+                top: -10px;
+                color: var(--dim);
+                font-size: 13px;
+            }
+            .ev-conn {
+                flex: none;
+                align-self: center;
+                width: 14px;
+                border-top: 1px solid var(--line);
+                position: relative;
+            }
+            .ev-conn::after {
+                content: "›";
+                position: absolute;
+                right: -3px;
+                top: -9px;
+                color: var(--dim);
+                font-size: 12px;
             }
             .race-turn {
                 flex: none;
@@ -617,9 +651,10 @@
             }
             .race-events {
                 display: flex;
-                gap: 8px;
+                gap: 0;
                 padding: 10px;
                 overflow-x: auto;
+                align-items: stretch;
             }
             .race-event {
                 flex: none;
