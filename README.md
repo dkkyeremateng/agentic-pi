@@ -280,15 +280,25 @@ Trends include cost/run, validator pass rate, retry rate, slowest/costliest phas
 per-project rollup. The `metrics` skill wraps the same CLI for the agent to call.
 
 **Live dashboard (opt-in, `PI_OBS=1`).** With observability on, the orchestrator and
-every sub-agent append canonical events to `<cwd>/.agent/obs/events.jsonl`: a one-time
-**boot snapshot** (selected tools, loaded skills, context files + hashes, system-prompt
-size/hash), then turns, tool calls (with **execution latency**), tokens, cost, **per-turn
-throughput (tok/s)**, model changes, compaction, and **provider errors**. A
-dependency-free Node server tails that file and streams it to a browser dashboard over
-SSE — one live lane per agent, so you watch the whole pipeline in real time.
+every sub-agent append canonical events to a shared sink (`~/.pi/agent/obs/events.jsonl`
+by default): a one-time **boot snapshot** (selected tools, loaded skills, context files +
+hashes, system-prompt size/hash), then turns, tool calls (with **execution latency**),
+tokens, cost, **per-turn throughput (tok/s)**, model changes, compaction, and **provider
+errors**. A dependency-free Node server tails that file and streams it to a browser
+dashboard over SSE with three views — **Swimlane** (a live lane per agent), **Single**
+(one agent's full timeline with filters, search, stat bar + context widget, and
+click-to-expand full tool args/results), and **Race** (a turn-normalized grid showing who
+reached which step). Click any event row in Single to see its complete detail.
+
+Because the sink is shared, **multiple pi instances across different projects stream into
+one dashboard** — events carry their `cwd`, so lanes stay separated by project and a
+project filter in the header scopes the views. Set `PI_OBS_SINK=$PWD/.agent/obs/events.jsonl`
+for a per-project sink instead, or point the server at one project with
+`npm run obs:server -- <project>`.
 
 ```bash
-npm run obs:server -- <project>       # starts http://127.0.0.1:7616 (tails the sink)
+npm run obs:server                    # http://127.0.0.1:7616 — tails the shared sink (all instances)
+npm run obs:server -- <project>       # …or tail one project's .agent/obs/events.jsonl
 PI_OBS=1 ./run.sh                      # run the workflow with emission on
 ```
 

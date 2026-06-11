@@ -56,12 +56,15 @@ function contentMax(): number {
     return Number.isNaN(n) ? 2000 : Math.max(0, n);
 }
 
-function sinkPath(cwd: string): string {
+function sinkPath(_cwd: string): string {
     if (process.env.PI_OBS_SINK)
         return resolvePath(
             process.env.PI_OBS_SINK.replace(/^~(?=$|\/)/, homedir()),
         );
-    return join(cwd, ".agent", "obs", "events.jsonl");
+    // Default to a SHARED global sink so every pi instance (across projects)
+    // streams into one dashboard. Events carry cwd, so the UI separates them by
+    // project. Set PI_OBS_SINK=$PWD/.agent/obs/events.jsonl for a per-project sink.
+    return join(homedir(), ".pi", "agent", "obs", "events.jsonl");
 }
 
 // Guard against double-registration if this extension is loaded twice in one

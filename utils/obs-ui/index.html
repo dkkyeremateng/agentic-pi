@@ -66,6 +66,23 @@
                 color: #0d0d14;
                 font-weight: 600;
             }
+            #projfilter {
+                background: var(--panel2);
+                color: var(--fg);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 4px 8px;
+                font: inherit;
+                cursor: pointer;
+            }
+            .proj-tag {
+                color: var(--dim);
+                font-size: 11px;
+                background: var(--panel2);
+                border: 1px solid var(--line);
+                border-radius: 4px;
+                padding: 0 5px;
+            }
             .stat {
                 color: var(--dim);
             }
@@ -575,6 +592,9 @@
                 <button id="v-single">Single</button>
                 <button id="v-race">Race</button>
             </div>
+            <select id="projfilter" title="filter by project">
+                <option value="">all projects</option>
+            </select>
             <span class="stat">agents <b id="s-agents">0</b></span>
             <span class="stat">events <b id="s-events">0</b></span>
             <span class="stat">tokens <b id="s-tokens">0</b></span>

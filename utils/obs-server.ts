@@ -48,8 +48,11 @@ function resolveSink(o: ReturnType<typeof parseArgs>): string {
         return resolvePath(
             process.env.PI_OBS_SINK.replace(/^~(?=$|\/)/, homedir()),
         );
-    const project = resolvePath(o.project ?? process.cwd());
-    return join(project, ".agent", "obs", "events.jsonl");
+    // A positional project path tails just that project; with no args, tail the
+    // shared global sink (all instances). Matches the collector's default.
+    if (o.project)
+        return join(resolvePath(o.project), ".agent", "obs", "events.jsonl");
+    return join(homedir(), ".pi", "agent", "obs", "events.jsonl");
 }
 
 const opts = parseArgs(process.argv.slice(2));
@@ -61,6 +64,20 @@ const clients = new Set<import("http").ServerResponse>();
 
 let offset = 0;
 let leftover = "";
+
+// On startup, don't replay an unbounded historical file (the shared sink grows
+// across runs). Start near the end; the first partial line is discarded by the
+// JSON parse. Recent events still populate the ring buffer.
+const PRIME_TAIL_BYTES = 2 * 1024 * 1024;
+function primeOffset(): void {
+    if (!existsSync(SINK)) return;
+    try {
+        const size = statSync(SINK).size;
+        if (size > PRIME_TAIL_BYTES) offset = size - PRIME_TAIL_BYTES;
+    } catch {
+        /* ignore */
+    }
+}
 
 function ingest(line: string): void {
     const ev = parseEventLine(line);
@@ -179,7 +196,8 @@ setInterval(() => {
     }
 }, 15_000).unref();
 
-readDelta(); // prime from any existing events
+primeOffset(); // bound the startup replay to the file's tail
+readDelta(); // prime from recent events
 setInterval(readDelta, 250).unref();
 
 server.listen(opts.port, "127.0.0.1", () => {
