@@ -718,6 +718,100 @@
             .race-event.err .ev-type {
                 color: var(--err);
             }
+            .race-event {
+                cursor: pointer;
+            }
+            .race-event:hover {
+                border-color: var(--accent);
+            }
+
+            /* event inspector (bottom dock) */
+            #inspector {
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                height: 42vh;
+                background: var(--panel);
+                border-top: 1px solid var(--accent);
+                box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+                display: none;
+                flex-direction: column;
+                z-index: 10;
+            }
+            #inspector.open {
+                display: flex;
+            }
+            .insp-head {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 8px 14px;
+                border-bottom: 1px solid var(--line);
+            }
+            .insp-title {
+                color: var(--dim);
+                font-size: 11px;
+                letter-spacing: 0.08em;
+            }
+            .insp-type {
+                font-weight: 600;
+            }
+            .insp-btn {
+                background: var(--panel2);
+                border: 1px solid var(--line);
+                color: var(--dim);
+                border-radius: 4px;
+                padding: 2px 9px;
+                font: inherit;
+                font-size: 12px;
+                cursor: pointer;
+            }
+            .insp-btn:hover {
+                color: var(--fg);
+                border-color: var(--accent);
+            }
+            #insp-copy {
+                margin-left: auto;
+            }
+            .insp-body {
+                flex: 1;
+                display: flex;
+                min-height: 0;
+            }
+            .insp-left {
+                width: 300px;
+                flex: none;
+                padding: 12px 14px;
+                border-right: 1px solid var(--line);
+                overflow: auto;
+            }
+            .insp-field {
+                display: flex;
+                gap: 10px;
+                margin-bottom: 6px;
+            }
+            .insp-field > span {
+                width: 56px;
+                flex: none;
+                color: var(--dim);
+            }
+            .insp-summary {
+                margin-top: 12px;
+                color: var(--fg);
+                white-space: pre-wrap;
+                word-break: break-word;
+            }
+            .insp-json {
+                flex: 1;
+                margin: 0;
+                padding: 12px 14px;
+                overflow: auto;
+                white-space: pre-wrap;
+                word-break: break-word;
+                font-size: 12px;
+                color: var(--fg);
+            }
         </style>
     </head>
     <body>
@@ -801,6 +895,32 @@
                     <div id="race-tracks"></div>
                 </section>
             </main>
+        </div>
+        <div id="inspector">
+            <div class="insp-head">
+                <span class="insp-title">EVENT INSPECTOR</span>
+                <span class="insp-type" id="insp-type"></span>
+                <button class="insp-btn" id="insp-copy">copy</button>
+                <button class="insp-btn" id="insp-close">close</button>
+            </div>
+            <div class="insp-body">
+                <div class="insp-left">
+                    <div class="insp-field">
+                        <span>agent</span><b id="insp-agent"></b>
+                    </div>
+                    <div class="insp-field">
+                        <span>time</span><b id="insp-time"></b>
+                    </div>
+                    <div class="insp-field">
+                        <span>seq</span><b id="insp-seq"></b>
+                    </div>
+                    <div class="insp-field">
+                        <span>type</span><b id="insp-typ2"></b>
+                    </div>
+                    <div class="insp-summary" id="insp-summary"></div>
+                </div>
+                <pre class="insp-json" id="insp-json"></pre>
+            </div>
         </div>
         <script src="/app.js"></script>
     </body>
