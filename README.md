@@ -301,10 +301,15 @@ for a per-project sink instead, or point the server at one project with
 `npm run obs:server -- <project>`.
 
 ```bash
-npm run obs:server                    # http://127.0.0.1:7616 — tails the shared sink (all instances)
+./run.sh --obs                        # one step: launches pi + the dashboard (http://127.0.0.1:7616)
+# …or run them separately:
+npm run obs:server                    # tail the shared sink (all instances)
 npm run obs:server -- <project>       # …or tail one project's .agent/obs/events.jsonl
-PI_OBS=1 ./run.sh                      # run the workflow with emission on
+PI_OBS=1 ./run.sh                      # pi with emission on (no auto-started server)
 ```
+
+`./run.sh --obs` starts the dashboard server in the background (port `PI_OBS_PORT`,
+default 7616) and stops it when pi exits; it needs the dev deps (`npm install`).
 
 The collector is inert unless `PI_OBS=1` and never disrupts a run if the sink can't
 be written. Tool args/results are captured **in full** so the expand panel shows
