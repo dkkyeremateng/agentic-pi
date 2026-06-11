@@ -38,6 +38,7 @@ const CATS = [
     ["tool", "tool call"],
     ["result", "tool result"],
     ["model", "model"],
+    ["dispatch", "dispatch"],
     ["compaction", "compaction"],
     ["error", "error"],
 ];
@@ -60,6 +61,10 @@ function categoryOf(ev) {
             return "result";
         case "model_change":
             return "model";
+        case "dispatch_start":
+        case "dispatch_retry":
+        case "dispatch_end":
+            return "dispatch";
         case "compaction":
             return "compaction";
         case "error":
@@ -170,6 +175,29 @@ function describe(ev) {
         case "model_change":
             badge = "model";
             detail = p.model || "";
+            break;
+        case "dispatch_start":
+            kls = "dispatch";
+            badge = "dispatch→" + (p.agent || "?");
+            detail =
+                "attempt " + (p.attempt || 1) + (p.task ? " · " + p.task : "");
+            break;
+        case "dispatch_retry":
+            kls = "dispatch";
+            badge = "retry " + (p.agent || "?");
+            detail =
+                "attempt " +
+                (p.attempt || 2) +
+                (p.reason ? " · " + p.reason : "");
+            break;
+        case "dispatch_end":
+            kls = p.status === "error" ? "err" : "dispatch";
+            badge = "dispatch " + (p.status || "done");
+            detail =
+                (p.agent || "?") +
+                (p.reason ? " · " + p.reason : "") +
+                (p.attempts && p.attempts > 1 ? " · " + p.attempts + " tries" : "") +
+                (p.durationMs ? " · " + fmtMs(p.durationMs) : "");
             break;
         case "compaction":
             badge = "compact";
@@ -414,6 +442,8 @@ function applyVisibility() {
     renderHeader();
     if (view === "race") renderRace();
     if (view === "single") renderSingle();
+    if (view === "trace") renderTrace();
+    if (view === "stats") renderStats();
 }
 
 // ── state plumbing ───────────────────────────────────────────────────────────
@@ -538,6 +568,8 @@ function handle(ev) {
         renderStatbar();
     }
     if (view === "race") scheduleRace();
+    if (view === "trace") scheduleTrace();
+    if (view === "stats") scheduleStats();
 }
 
 // Coalesce Race re-renders to one per animation frame under a busy stream.
@@ -549,6 +581,31 @@ function scheduleRace() {
         raceDirty = false;
         if (view === "race") renderRace();
     });
+}
+
+// Coalesce Trace re-renders likewise.
+let traceDirty = false;
+function scheduleTrace() {
+    if (traceDirty) return;
+    traceDirty = true;
+    requestAnimationFrame(() => {
+        traceDirty = false;
+        if (view === "trace") renderTrace();
+    });
+}
+
+// Stats re-renders are heavier; coalesce and throttle to ~1.5s under a busy stream.
+let statsDirty = false;
+let statsLast = 0;
+function scheduleStats() {
+    if (statsDirty) return;
+    statsDirty = true;
+    const wait = Math.max(0, 1500 - (Date.now() - statsLast));
+    setTimeout(() => {
+        statsDirty = false;
+        statsLast = Date.now();
+        if (view === "stats") renderStats();
+    }, wait);
 }
 
 // ── single view ──────────────────────────────────────────────────────────────
@@ -677,7 +734,7 @@ function buildChips() {
 
 function setView(v) {
     view = v;
-    for (const k of ["swimlane", "single", "race"]) {
+    for (const k of ["swimlane", "single", "race", "trace", "stats"]) {
         $("v-" + k).classList.toggle("on", v === k);
         $(k).classList.toggle("on", v === k);
     }
@@ -688,6 +745,8 @@ function setView(v) {
     }
     updateSidebarState();
     if (v === "race") renderRace();
+    if (v === "trace") renderTrace();
+    if (v === "stats") renderStats();
 }
 
 // ── race view (turn-normalized) ──────────────────────────────────────────────
@@ -737,6 +796,12 @@ function emojiFor(ev) {
             return ev.payload && ev.payload.isError ? "❌" : "✅";
         case "model_change":
             return "🔁";
+        case "dispatch_start":
+            return "📤";
+        case "dispatch_retry":
+            return "🔁";
+        case "dispatch_end":
+            return ev.payload && ev.payload.status === "error" ? "❌" : "📥";
         case "compaction":
             return "📦";
         case "error":
@@ -768,6 +833,12 @@ function typeLabel(ev) {
             return "tool result";
         case "model_change":
             return "model";
+        case "dispatch_start":
+            return "dispatch start";
+        case "dispatch_retry":
+            return "dispatch retry";
+        case "dispatch_end":
+            return "dispatch end";
         case "message": {
             const k = ev.payload && ev.payload.kind;
             return k === "thinking"
@@ -1011,6 +1082,571 @@ function renderRace() {
     }
 }
 
+// ── trace (waterfall) view ───────────────────────────────────────────────────
+// One run = one workflow invocation (shared runId). The orchestrator is the root;
+// each dispatched agent is a child whose `parent` names the agent that spawned it.
+// We render nested spans on a shared time axis, annotated with the orchestrator's
+// dispatch_* outcomes (retries, truncation).
+let traceRun = ""; // "" = follow the latest run; otherwise a pinned runId
+let traceCurrentRun = ""; // the runId actually rendered (for the export buttons)
+
+// Group every runId we've seen (within the active project) with its time bounds.
+function collectRuns() {
+    const runs = new Map();
+    for (const a of lanes.values()) {
+        if (!laneInProject(a)) continue;
+        for (const ev of a.events) {
+            if (!ev.runId) continue;
+            let r = runs.get(ev.runId);
+            if (!r) {
+                r = {
+                    id: ev.runId,
+                    project: a.project,
+                    firstTs: ev.ts,
+                    lastTs: ev.ts,
+                    agents: new Set(),
+                };
+                runs.set(ev.runId, r);
+            }
+            if (ev.ts < r.firstTs) r.firstTs = ev.ts;
+            if (ev.ts > r.lastTs) r.lastTs = ev.ts;
+            r.agents.add(ev.agent);
+        }
+    }
+    return runs;
+}
+
+// Build per-agent span nodes for one run, plus the orchestrator-side dispatch
+// annotations (which arrive on the orchestrator lane but describe a child).
+function buildTraceNodes(runId) {
+    const nodes = new Map(); // agent -> node
+    const dispatch = new Map(); // child agent -> { retries, reason, status, attempts }
+    for (const a of lanes.values()) {
+        if (!laneInProject(a)) continue;
+        for (const ev of a.events) {
+            if (ev.runId !== runId) continue;
+            // dispatch_* events ride on the ORCHESTRATOR lane but describe a child.
+            // Route the annotation to the child, but still let the event extend the
+            // emitting (orchestrator) span so the root bar spans the whole run.
+            if (
+                ev.type === "dispatch_start" ||
+                ev.type === "dispatch_retry" ||
+                ev.type === "dispatch_end"
+            ) {
+                const child = ev.payload && ev.payload.agent;
+                if (child) {
+                    const d = dispatch.get(child) || {
+                        retries: 0,
+                        reason: null,
+                        status: null,
+                        attempts: 1,
+                    };
+                    if (ev.type === "dispatch_retry") {
+                        d.retries++;
+                        if (ev.payload.reason) d.reason = ev.payload.reason;
+                    } else if (ev.type === "dispatch_end") {
+                        d.status = ev.payload.status || d.status;
+                        if (ev.payload.reason) d.reason = ev.payload.reason;
+                        if (ev.payload.attempts) d.attempts = ev.payload.attempts;
+                    }
+                    dispatch.set(child, d);
+                }
+            }
+            let n = nodes.get(ev.agent);
+            if (!n) {
+                n = {
+                    agent: ev.agent,
+                    laneKey: a.key,
+                    parent: null,
+                    firstTs: ev.ts,
+                    lastTs: ev.ts,
+                    rollup: newRollup(),
+                    ended: false,
+                };
+                nodes.set(ev.agent, n);
+            }
+            if (ev.ts < n.firstTs) n.firstTs = ev.ts;
+            if (ev.ts > n.lastTs) n.lastTs = ev.ts;
+            if (ev.parent && !n.parent) n.parent = ev.parent;
+            if (ev.type === "session_end") n.ended = true;
+            applyRollup(n.rollup, ev);
+        }
+    }
+    for (const [child, d] of dispatch) {
+        const n = nodes.get(child);
+        if (n) n.dispatch = d;
+    }
+    return nodes;
+}
+
+// Status of a span node: running (active & not ended), error (any error signal),
+// else done.
+function traceStatus(n) {
+    const d = n.dispatch;
+    if (d && d.status === "error") return "error";
+    if (n.rollup.errors > 0 || n.rollup.toolErrors > 0) return "error";
+    if (n.rollup.active && !n.ended) return "running";
+    return "done";
+}
+
+function renderTrace() {
+    const runs = collectRuns();
+    const runList = [...runs.values()].sort((a, b) => b.lastTs - a.lastTs);
+    const sel = $("trace-run");
+
+    if (!runList.length) {
+        $("trace-empty").style.display = "block";
+        $("trace-tree").innerHTML = "";
+        $("trace-axis").textContent = "";
+        sel.innerHTML = "";
+        return;
+    }
+    $("trace-empty").style.display = "none";
+
+    // Run picker — latest first, with a "follow latest" sentinel.
+    sel.innerHTML = "";
+    const latest = document.createElement("option");
+    latest.value = "";
+    latest.textContent = "latest (live)";
+    sel.appendChild(latest);
+    runList.forEach((r, i) => {
+        const o = document.createElement("option");
+        o.value = r.id;
+        const when = new Date(r.firstTs).toTimeString().slice(0, 8);
+        o.textContent =
+            (i === 0 ? "● " : "") +
+            when +
+            " · " +
+            r.agents.size +
+            " agents · " +
+            fmtDur(r.lastTs - r.firstTs);
+        sel.appendChild(o);
+    });
+    sel.value = traceRun && runs.has(traceRun) ? traceRun : "";
+
+    const run = traceRun && runs.get(traceRun) ? runs.get(traceRun) : runList[0];
+    traceCurrentRun = run.id;
+    const nodes = buildTraceNodes(run.id);
+    const t0 = run.firstTs;
+    const span = Math.max(1, run.lastTs - run.firstTs);
+
+    // Adjacency: root = no parent (or a parent not present in this run).
+    const childrenOf = new Map();
+    const roots = [];
+    for (const n of nodes.values()) {
+        if (n.parent && nodes.has(n.parent)) {
+            if (!childrenOf.has(n.parent)) childrenOf.set(n.parent, []);
+            childrenOf.get(n.parent).push(n);
+        } else {
+            roots.push(n);
+        }
+    }
+    const byStart = (arr) => arr.sort((x, y) => x.firstTs - y.firstTs);
+    byStart(roots);
+    for (const arr of childrenOf.values()) byStart(arr);
+
+    // DFS into a flat, depth-tagged row list.
+    const rows = [];
+    const walk = (n, depth) => {
+        rows.push({ n, depth });
+        for (const c of childrenOf.get(n.agent) || []) walk(c, depth + 1);
+    };
+    for (const r of roots) walk(r, 0);
+
+    let running = 0;
+    for (const n of nodes.values())
+        if (traceStatus(n) === "running") running++;
+    $("trace-axis").innerHTML =
+        "<b>" +
+        nodes.size +
+        "</b> agents · span <b>" +
+        fmtDur(span) +
+        "</b>" +
+        (running ? " · <b>" + running + "</b> running" : "");
+
+    const tree = $("trace-tree");
+    tree.innerHTML = "";
+    for (const { n, depth } of rows) {
+        const status = traceStatus(n);
+        const row = document.createElement("div");
+        row.className = "trace-row";
+        row.addEventListener("click", () => selectLane(n.laneKey));
+
+        // label (indented by depth)
+        const label = document.createElement("div");
+        label.className = "trace-label";
+        label.style.paddingLeft = depth * 16 + "px";
+        const dot = document.createElement("span");
+        dot.className = "dot" + (status === "running" ? " on" : "");
+        const nm = document.createElement("span");
+        nm.className = "nm";
+        nm.textContent = n.agent;
+        label.append(dot, nm);
+        if (n.rollup.model) {
+            const m = document.createElement("span");
+            m.className = "model";
+            m.textContent = n.rollup.model;
+            m.title = n.rollup.model;
+            label.append(m);
+        }
+
+        // timeline track + positioned span bar
+        const track = document.createElement("div");
+        track.className = "trace-track";
+        const bar = document.createElement("div");
+        bar.className = "trace-span " + status;
+        const left = ((n.firstTs - t0) / span) * 100;
+        const width = Math.max(0.6, ((n.lastTs - n.firstTs) / span) * 100);
+        bar.style.left = Math.max(0, Math.min(100, left)) + "%";
+        bar.style.width = Math.min(100 - left, width) + "%";
+        bar.title =
+            n.agent +
+            " · " +
+            fmtDur(n.lastTs - n.firstTs) +
+            " · " +
+            fmtTok(n.rollup.tokens) +
+            " tok · " +
+            fmtCost(n.rollup.costUsd);
+        track.append(bar);
+
+        // right-side metrics + dispatch tags
+        const meta = document.createElement("div");
+        meta.className = "trace-meta";
+        meta.innerHTML =
+            "<b>" +
+            fmtDur(n.lastTs - n.firstTs) +
+            "</b> · " +
+            fmtTok(n.rollup.tokens) +
+            " · " +
+            fmtCost(n.rollup.costUsd) +
+            " · " +
+            n.rollup.toolCalls +
+            "🔧";
+        const d = n.dispatch;
+        if (d && d.retries > 0) {
+            const tag = document.createElement("span");
+            tag.className = "trace-tag retry";
+            tag.textContent = "↻" + d.retries;
+            tag.title = d.retries + " retry(s)";
+            meta.append(tag);
+        }
+        if (d && d.reason === "truncated") {
+            const tag = document.createElement("span");
+            tag.className = "trace-tag trunc";
+            tag.textContent = "truncated";
+            tag.title = "stop reason: length (output-token limit)";
+            meta.append(tag);
+        }
+
+        row.append(label, track, meta);
+        tree.append(row);
+    }
+}
+
+// ── stats (analytics) view ───────────────────────────────────────────────────
+// Aggregate metrics computed client-side from the event stream — latency
+// percentiles, per-agent cost/tokens, a tool-duration leaderboard, and cumulative
+// cost over time. Scopes to one run (shared runId) or all runs in the project.
+let statsRun = ""; // "" = all runs; otherwise a pinned runId
+
+function percentile(sorted, p) {
+    if (!sorted.length) return 0;
+    const idx = Math.min(
+        sorted.length - 1,
+        Math.max(0, Math.round((p / 100) * (sorted.length - 1))),
+    );
+    return sorted[idx];
+}
+
+// Walk visible lanes' events (optionally scoped to a runId) into aggregates.
+function collectAnalytics(runId) {
+    const a = {
+        firstTs: null,
+        lastTs: null,
+        agents: new Set(),
+        turns: 0,
+        turnDur: [],
+        prefills: [],
+        outTok: 0,
+        turnMs: 0,
+        tokens: 0,
+        cost: 0,
+        toolCalls: 0,
+        toolErrors: 0,
+        errors: 0,
+        perAgent: new Map(), // agent -> {cost, tokens, turns, tools}
+        perTool: new Map(), // tool -> {calls, totalMs, errors}
+        costSeries: [], // {ts, cost} per turn_end, in time order
+    };
+    for (const lane of lanes.values()) {
+        if (!laneInProject(lane)) continue;
+        for (const ev of lane.events) {
+            if (runId && ev.runId !== runId) continue;
+            if (a.firstTs === null || ev.ts < a.firstTs) a.firstTs = ev.ts;
+            if (a.lastTs === null || ev.ts > a.lastTs) a.lastTs = ev.ts;
+            a.agents.add(lane.agent);
+            const p = ev.payload || {};
+            const ag =
+                a.perAgent.get(lane.agent) ||
+                { cost: 0, tokens: 0, turns: 0, tools: 0 };
+            switch (ev.type) {
+                case "turn_end": {
+                    a.turns++;
+                    ag.turns++;
+                    if (p.durationMs) a.turnDur.push(p.durationMs);
+                    if (p.prefillMs) a.prefills.push(p.prefillMs);
+                    a.turnMs += p.durationMs || 0;
+                    if (p.tokens) {
+                        a.tokens += p.tokens.total || 0;
+                        a.outTok += p.tokens.output || 0;
+                        ag.tokens += p.tokens.total || 0;
+                    }
+                    a.cost += p.costUsd || 0;
+                    ag.cost += p.costUsd || 0;
+                    a.costSeries.push({ ts: ev.ts, cost: p.costUsd || 0 });
+                    break;
+                }
+                case "tool_start": {
+                    a.toolCalls++;
+                    ag.tools++;
+                    break;
+                }
+                case "tool_end": {
+                    const t =
+                        a.perTool.get(p.toolName || "?") ||
+                        { calls: 0, totalMs: 0, errors: 0 };
+                    t.calls++;
+                    t.totalMs += p.durationMs || 0;
+                    if (p.isError) {
+                        t.errors++;
+                        a.toolErrors++;
+                    }
+                    a.perTool.set(p.toolName || "?", t);
+                    break;
+                }
+                case "error":
+                    a.errors++;
+                    break;
+            }
+            a.perAgent.set(lane.agent, ag);
+        }
+    }
+    a.costSeries.sort((x, y) => x.ts - y.ts);
+    return a;
+}
+
+function tile(parent, k, v, cls) {
+    const el = document.createElement("div");
+    el.className = "tile";
+    const kk = document.createElement("div");
+    kk.className = "k";
+    kk.textContent = k;
+    const vv = document.createElement("div");
+    vv.className = "v" + (cls ? " " + cls : "");
+    vv.textContent = v;
+    el.append(kk, vv);
+    parent.append(el);
+}
+
+function renderCostTimeline(series, span0, span1) {
+    const box = $("stats-timeline");
+    box.innerHTML = "";
+    if (series.length < 2) {
+        box.innerHTML = '<span class="stats-muted">not enough turns yet</span>';
+        return;
+    }
+    const t0 = span0,
+        t1 = Math.max(span1, span0 + 1);
+    let cum = 0;
+    const pts = series.map((s) => {
+        cum += s.cost;
+        return { x: ((s.ts - t0) / (t1 - t0)) * 100, y: cum };
+    });
+    const maxY = pts[pts.length - 1].y || 1;
+    const H = 30,
+        W = 100;
+    const sx = (x) => x.toFixed(2);
+    const sy = (y) => (H - (y / maxY) * (H - 2)).toFixed(2);
+    let line = "";
+    for (const pt of pts) line += (line ? " L" : "M") + sx(pt.x) + " " + sy(pt.y);
+    const area =
+        "M0 " +
+        H +
+        " L" +
+        sx(pts[0].x) +
+        " " +
+        H +
+        " " +
+        line.replace(/^M/, "L") +
+        " L" +
+        sx(pts[pts.length - 1].x) +
+        " " +
+        H +
+        " Z";
+    box.innerHTML =
+        '<svg viewBox="0 0 ' +
+        W +
+        " " +
+        H +
+        '" preserveAspectRatio="none">' +
+        '<path d="' +
+        area +
+        '" fill="rgba(122,162,247,0.18)"/>' +
+        '<path d="' +
+        line +
+        '" fill="none" stroke="var(--accent)" stroke-width="0.7" vector-effect="non-scaling-stroke"/>' +
+        "</svg>" +
+        '<div class="stats-muted" style="font-size:11px;margin-top:4px">' +
+        "total " +
+        fmtCost(maxY) +
+        " over " +
+        fmtDur(t1 - t0) +
+        " · " +
+        series.length +
+        " turns</div>";
+}
+
+function renderStats() {
+    const runs = collectRuns();
+    const runList = [...runs.values()].sort((x, y) => y.lastTs - x.lastTs);
+    const sel = $("stats-run");
+    sel.innerHTML = "";
+    const allOpt = document.createElement("option");
+    allOpt.value = "";
+    allOpt.textContent = "all runs";
+    sel.appendChild(allOpt);
+    runList.forEach((r, i) => {
+        const o = document.createElement("option");
+        o.value = r.id;
+        const when = new Date(r.firstTs).toTimeString().slice(0, 8);
+        o.textContent =
+            (i === 0 ? "● " : "") + when + " · " + r.agents.size + " agents";
+        sel.appendChild(o);
+    });
+    sel.value = statsRun && runs.has(statsRun) ? statsRun : "";
+
+    const a = collectAnalytics(statsRun && runs.has(statsRun) ? statsRun : "");
+    const has = a.firstTs !== null && a.agents.size > 0;
+    $("stats-empty").style.display = has ? "none" : "block";
+    $("stats-body").style.display = has ? "" : "none";
+    if (!has) {
+        $("stats-axis").textContent = "";
+        return;
+    }
+
+    const wall = (a.lastTs || 0) - (a.firstTs || 0);
+    $("stats-axis").innerHTML =
+        "<b>" +
+        a.agents.size +
+        "</b> agents · <b>" +
+        a.turns +
+        "</b> turns · wall <b>" +
+        fmtDur(wall) +
+        "</b>";
+
+    // headline tiles
+    const tiles = $("stats-tiles");
+    tiles.innerHTML = "";
+    const avgTps = a.turnMs > 0 ? Math.round((a.outTok / a.turnMs) * 1000) : 0;
+    tile(tiles, "cost", fmtCost(a.cost), "ok");
+    tile(tiles, "tokens", fmtTok(a.tokens));
+    tile(tiles, "turns", a.turns);
+    tile(tiles, "tool calls", a.toolCalls);
+    tile(
+        tiles,
+        "errors",
+        a.errors + a.toolErrors,
+        a.errors + a.toolErrors ? "err" : "",
+    );
+    tile(tiles, "agents", a.agents.size);
+    tile(tiles, "wall clock", fmtDur(wall));
+    tile(tiles, "avg tok/s", avgTps);
+
+    // latency percentiles
+    const dur = a.turnDur.slice().sort((x, y) => x - y);
+    const pre = a.prefills.slice().sort((x, y) => x - y);
+    const lat = $("stats-latency");
+    const latCells = [
+        ["turn p50", fmtMs(percentile(dur, 50)) || "—"],
+        ["turn p90", fmtMs(percentile(dur, 90)) || "—"],
+        ["turn p99", fmtMs(percentile(dur, 99)) || "—"],
+        ["turn max", fmtMs(dur[dur.length - 1]) || "—"],
+        ["prefill p50", pre.length ? fmtMs(percentile(pre, 50)) : "—"],
+        ["gen tok/s", avgTps],
+    ];
+    lat.innerHTML = '<div class="lat-grid"></div>';
+    const latGrid = lat.querySelector(".lat-grid");
+    for (const [k, v] of latCells) {
+        const c = document.createElement("div");
+        c.className = "lat-cell";
+        c.innerHTML =
+            '<div class="lk"></div><div class="lv"></div>';
+        c.querySelector(".lk").textContent = k;
+        c.querySelector(".lv").textContent = v;
+        latGrid.append(c);
+    }
+
+    // per-agent cost/token bars (sorted by cost)
+    const agentBox = $("stats-agents");
+    agentBox.innerHTML = "";
+    const agentRows = [...a.perAgent.entries()].sort(
+        (x, y) => y[1].cost - x[1].cost,
+    );
+    const maxCost = agentRows.reduce((m, [, v]) => Math.max(m, v.cost), 0) || 1;
+    if (!agentRows.length)
+        agentBox.innerHTML = '<span class="stats-muted">no priced turns yet</span>';
+    for (const [name, v] of agentRows) {
+        const row = document.createElement("div");
+        row.className = "bar-row";
+        row.innerHTML =
+            '<span class="nm"></span><span class="bar-track">' +
+            '<span class="bar-fill cost"></span></span>' +
+            '<span class="bv"></span>';
+        row.querySelector(".nm").textContent = name;
+        row.querySelector(".nm").title = name;
+        row.querySelector(".bar-fill").style.width =
+            Math.max(2, (v.cost / maxCost) * 100) + "%";
+        row.querySelector(".bv").innerHTML =
+            "<b>" + fmtCost(v.cost) + "</b> · " + fmtTok(v.tokens);
+        agentBox.append(row);
+    }
+
+    // tool leaderboard (by total time)
+    const toolBox = $("stats-tools");
+    const toolRows = [...a.perTool.entries()]
+        .sort((x, y) => y[1].totalMs - x[1].totalMs)
+        .slice(0, 12);
+    if (!toolRows.length) {
+        toolBox.innerHTML = '<span class="stats-muted">no tool calls yet</span>';
+    } else {
+        let html =
+            '<table class="lead"><thead><tr><th>tool</th>' +
+            '<th class="num">calls</th><th class="num">total</th>' +
+            '<th class="num">avg</th><th class="num">errors</th></tr></thead><tbody>';
+        for (const [name, v] of toolRows) {
+            const avg = v.calls ? v.totalMs / v.calls : 0;
+            html +=
+                '<tr><td class="tool">' +
+                name +
+                '</td><td class="num">' +
+                v.calls +
+                '</td><td class="num">' +
+                (fmtMs(v.totalMs) || "—") +
+                '</td><td class="num">' +
+                (fmtMs(Math.round(avg)) || "—") +
+                '</td><td class="num' +
+                (v.errors ? " err" : "") +
+                '">' +
+                (v.errors || "—") +
+                "</td></tr>";
+        }
+        toolBox.innerHTML = html + "</tbody></table>";
+    }
+
+    // cost over time
+    renderCostTimeline(a.costSeries, a.firstTs, a.lastTs);
+}
+
 // ── header ───────────────────────────────────────────────────────────────────
 // Header totals reflect the selected project (or all projects when none).
 function renderHeader() {
@@ -1086,6 +1722,55 @@ function connect() {
 $("v-swimlane").addEventListener("click", () => setView("swimlane"));
 $("v-single").addEventListener("click", () => setView("single"));
 $("v-race").addEventListener("click", () => setView("race"));
+$("v-trace").addEventListener("click", () => setView("trace"));
+$("trace-run").addEventListener("change", (e) => {
+    traceRun = e.target.value;
+    renderTrace();
+});
+$("v-stats").addEventListener("click", () => setView("stats"));
+$("stats-run").addEventListener("change", (e) => {
+    statsRun = e.target.value;
+    renderStats();
+});
+
+// ── trace export ──────────────────────────────────────────────────────────────
+function downloadBlob(filename, text, mime) {
+    const blob = new Blob([text], { type: mime || "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+        URL.revokeObjectURL(a.href);
+        a.remove();
+    }, 0);
+}
+$("trace-otlp").addEventListener("click", () => {
+    if (!traceCurrentRun) return;
+    // Server-side OTLP conversion (download triggered by Content-Disposition).
+    const a = document.createElement("a");
+    a.href =
+        "/otel?run=" + encodeURIComponent(traceCurrentRun) + "&download=1";
+    a.download = "otel-" + traceCurrentRun + ".json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+});
+$("trace-json").addEventListener("click", () => {
+    if (!traceCurrentRun) return;
+    // Raw events for this run, gathered client-side from the lanes.
+    const evs = [];
+    for (const lane of lanes.values())
+        for (const ev of lane.events)
+            if (ev.runId === traceCurrentRun) evs.push(ev);
+    evs.sort((x, y) => x.ts - y.ts);
+    downloadBlob(
+        "run-" + traceCurrentRun + ".jsonl",
+        evs.map((e) => JSON.stringify(e)).join("\n") + "\n",
+        "application/x-ndjson",
+    );
+});
 $("projfilter").addEventListener("change", (e) => {
     projectFilter = e.target.value;
     try {

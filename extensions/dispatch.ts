@@ -34,15 +34,15 @@ import {
     renderSelectAgentsResult,
     type AgentDef,
     type PhaseState,
-} from "../utils/workflow-core";
+} from "../utils/workflow/workflow-core";
 import {
     newOrchestratorState,
     type OrchestratorHost,
     dispatchAgentCore,
     dispatchParallelCore,
     selectAgentsCore,
-} from "../utils/orchestrator-core";
-import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/dispatch-events";
+} from "../utils/workflow/orchestrator-core";
+import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/workflow/dispatch-events";
 
 // Run before any process.env reads below.
 loadDotEnv(process.cwd());

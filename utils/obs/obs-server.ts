@@ -5,7 +5,7 @@
 // over SSE. Node stdlib only — no deps, no SQLite, no Bun.
 //
 // Usage:
-//   tsx utils/obs-server.ts [projectPath] [--sink <file>] [--port <n>]
+//   tsx utils/obs/obs-server.ts [projectPath] [--sink <file>] [--port <n>]
 //
 //   projectPath  defaults to cwd; sink is <projectPath>/.agent/obs/events.jsonl
 //   --sink       tail an explicit sink file instead
@@ -25,6 +25,7 @@ import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { EventStore, sseFrame, sseComment } from "./obs-server-core";
 import { parseEventLine, type ObsEvent } from "./obs-events";
+import { eventsToOtlp } from "./obs-otel";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UI_DIR = join(HERE, "obs-ui");
@@ -146,7 +147,10 @@ function serveStatic(res: import("http").ServerResponse, file: string): void {
 }
 
 const server = createServer((req, res) => {
-    const url = (req.url ?? "/").split("?")[0];
+    const raw = req.url ?? "/";
+    const qIdx = raw.indexOf("?");
+    const url = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
+    const query = new URLSearchParams(qIdx >= 0 ? raw.slice(qIdx + 1) : "");
     if (url === "/" || url === "/index.html") {
         serveStatic(res, join(UI_DIR, "index.html"));
         return;
@@ -167,6 +171,27 @@ const server = createServer((req, res) => {
     if (url === "/events") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(store.recent()));
+        return;
+    }
+    // OTLP/JSON trace export (OpenTelemetry GenAI conventions). ?run=<id> scopes
+    // to one run; ?download=1 prompts a file download. Pipe this into any
+    // OTel-aware backend, or `curl … > trace.json`.
+    if (url === "/otel") {
+        const runId = query.get("run") || undefined;
+        const otlp = eventsToOtlp(store.recent(), {
+            runId,
+            serviceName: "pi-agent-workflow",
+        });
+        const headers: Record<string, string> = {
+            "content-type": "application/json",
+        };
+        if (query.get("download") === "1") {
+            const tag = runId ? runId : "all-runs";
+            headers["content-disposition"] =
+                `attachment; filename="otel-${tag}.json"`;
+        }
+        res.writeHead(200, headers);
+        res.end(JSON.stringify(otlp));
         return;
     }
     if (url === "/stream") {

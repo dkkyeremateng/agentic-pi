@@ -5,9 +5,9 @@
 // renders the metrics from obs-metrics.ts (which does the pure math).
 //
 // Usage:
-//   tsx utils/obs-cli.ts [projectPath] [--json] [--since ISO] [--until ISO]
-//   tsx utils/obs-cli.ts --session <file.jsonl> [--json]
-//   tsx utils/obs-cli.ts --all [root] [--json] [--since ISO] [--until ISO]
+//   tsx utils/obs/obs-cli.ts [projectPath] [--json] [--since ISO] [--until ISO]
+//   tsx utils/obs/obs-cli.ts --session <file.jsonl> [--json]
+//   tsx utils/obs/obs-cli.ts --all [root] [--json] [--since ISO] [--until ISO]
 //
 //   projectPath  defaults to the current directory. Its session dir is resolved
 //                the same way the workflow spawns sub-agents (projectSessionHash).
@@ -25,7 +25,7 @@ import {
     projectSessionHash,
     parseProgressLedger,
     type WorkflowMetrics,
-} from "./workflow-core";
+} from "../workflow/workflow-core";
 import {
     parseSession,
     aggregateRun,

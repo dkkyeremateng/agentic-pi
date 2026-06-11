@@ -45,6 +45,7 @@ import {
     secs,
     isModelFailure,
 } from "./workflow-utils";
+import { obsEmit } from "../obs/obs-events";
 import {
     writeFileSync,
     mkdirSync,
@@ -990,6 +991,13 @@ async function runAgentWithEmptyRetry(
     phase: PhaseState,
     cwd: string,
 ): Promise<{ output: string; exitCode: number }> {
+    const agentKey = def.name.toLowerCase();
+    obsEmit("dispatch_start", {
+        agent: agentKey,
+        dispatchId: phase.dispatchId,
+        attempt: phase.attempt || 1,
+        task: task.length > 200 ? task.slice(0, 199) + "…" : task,
+    });
     let res = await h.execution.runAgent(def, task, phase, cwd);
     const looksEmpty = () =>
         !isTrivialPing(task) &&
@@ -997,6 +1005,9 @@ async function runAgentWithEmptyRetry(
         res.output.trim().length < h.config.minDispatchOutputChars &&
         phase.toolCount === 0;
     if (looksEmpty()) {
+        // Distinguish a genuine empty result from a model that exhausted its output
+        // budget (stop reason "length") — the dashboard surfaces the difference.
+        const reason = phase.lastStopReason === "length" ? "truncated" : "empty";
         h.ui.notify(
             `${displayName(def.name)} returned nothing — retrying once…`,
             "warning",
@@ -1006,6 +1017,12 @@ async function runAgentWithEmptyRetry(
         phase.contextPct = 0;
         phase.droppedLines = 0;
         phase.lastStopReason = undefined;
+        obsEmit("dispatch_retry", {
+            agent: agentKey,
+            dispatchId: phase.dispatchId,
+            attempt: phase.attempt,
+            reason,
+        });
         h.ui.updateWidget();
         res = await h.execution.runAgent(def, task, phase, cwd);
     }
@@ -1169,6 +1186,20 @@ export async function dispatchAgentCore(
     // truncated before finishing — distinct from a genuinely empty result.
     const truncatedByLength = emptyOutput && phase.lastStopReason === "length";
     const modelFail = !ok && isModelFailure(res.output);
+    obsEmit("dispatch_end", {
+        agent: def.name.toLowerCase(),
+        dispatchId: phase.dispatchId,
+        status: ok ? "done" : "error",
+        durationMs: phase.elapsed,
+        attempts: phase.attempt || 1,
+        reason: truncatedByLength
+            ? "truncated"
+            : emptyOutput
+              ? "empty"
+              : modelFail
+                ? "model-failure"
+                : undefined,
+    });
     const errMsg = !ok
         ? truncatedByLength
             ? ": truncated at the output-token limit (stop reason \"length\")"
@@ -1366,6 +1397,19 @@ export async function dispatchParallelCore(
             const ok = res.exitCode === 0 && !emptyOutput;
             phase.status = ok ? "done" : "error";
             phase.elapsed = Date.now() - t0;
+            obsEmit("dispatch_end", {
+                agent: def.name.toLowerCase(),
+                dispatchId: phase.dispatchId,
+                status: ok ? "done" : "error",
+                durationMs: phase.elapsed,
+                attempts: phase.attempt || 1,
+                reason:
+                    emptyOutput && phase.lastStopReason === "length"
+                        ? "truncated"
+                        : emptyOutput
+                          ? "empty"
+                          : undefined,
+            });
             h.ui.updateWidget();
             const truncated = clampOutput(res.output, perItemBudget);
             return { name: def.name, ok, elapsed: phase.elapsed, truncated };

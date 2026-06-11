@@ -21,7 +21,7 @@ only `.env` config — no code edits.
 - **Sub-agent dispatch** — `dispatch_agent` / `dispatch_parallel` for ad-hoc
   delegation to any agent, in any session.
 - **Observability** — an offline metrics analyzer (per-run reports + cross-project
-  trends) and an opt-in live dashboard (`PI_OBS=1`) with Swimlane / Single / Race
+  trends) and an opt-in live dashboard (`PI_OBS=1`) with Swimlane / Single / Race / Trace / Stats
   views that span every pi instance you're running.
 - **Skills** — LSP diagnostics & navigation (Python/Go/TS/PHP), Playwright browser
   automation, Linear and Jira CLIs, GitHub, and commit helpers.
@@ -289,10 +289,20 @@ by default): a one-time **boot snapshot** (selected tools, loaded skills, contex
 hashes, system-prompt size/hash), then turns, tool calls (with **execution latency**),
 tokens, cost, **per-turn throughput (tok/s)**, model changes, compaction, and **provider
 errors**. A dependency-free Node server tails that file and streams it to a browser
-dashboard over SSE with three views — **Swimlane** (a live lane per agent), **Single**
+dashboard over SSE with five views — **Swimlane** (a live lane per agent), **Single**
 (one agent's full timeline with filters, search, stat bar + context widget, and
-click-to-expand full tool args/results), and **Race** (a turn-normalized grid showing who
-reached which step). Click any event row in Single to see its complete detail.
+click-to-expand full tool args/results), **Race** (a turn-normalized grid showing who
+reached which step), **Trace** (a hierarchical waterfall of one run — the orchestrator
+at the root with each dispatched agent nested beneath on a shared time axis, annotated
+with dispatch retries/truncation), and **Stats** (aggregate analytics: latency
+percentiles, cost/tokens by agent, a tool-duration leaderboard, and cost over time,
+scopable to one run). Click any event row in Single to see its complete detail.
+
+Every event is tagged with a **trace id** (`runId`, shared across the orchestrator and the
+agents it dispatches) and a **parent** (the agent that dispatched it), so a whole workflow
+reads as one trace. The orchestrator also emits **dispatch lifecycle events**
+(`dispatch_start`/`dispatch_retry`/`dispatch_end`) carrying why a sub-agent re-ran
+(empty output, or output-token truncation).
 
 Because the sink is shared, **multiple pi instances across different projects stream into
 one dashboard** — events carry their `cwd`, so lanes stay separated by project and a
@@ -317,6 +327,18 @@ dashboard. Both default to the same shared sink, so the events show up live.
 
 `./run.sh --obs` starts the dashboard server in the background (port `PI_OBS_PORT`,
 default 7616) and stops it when pi exits; it needs the dev deps (`npm install`).
+
+**OpenTelemetry export.** The same sink converts to an OTLP/JSON trace following the
+[OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
+(`invoke_agent` / `chat` / `execute_tool` spans with `gen_ai.*` attributes), so a run can
+feed any OTel-aware backend (Datadog, Phoenix, Langfuse, Honeycomb, …). Use the **Trace**
+view's `⤓ OTLP` / `⤓ JSON` buttons, the server's `/otel?run=<id>` endpoint, or the CLI:
+
+```bash
+tsx utils/obs/obs-export.ts                       # OTLP for every run in the sink → stdout
+tsx utils/obs/obs-export.ts --run <runId> --out trace.json
+curl "http://127.0.0.1:7616/otel?run=<runId>" # OTLP from the running server
+```
 
 The collector is inert unless `PI_OBS=1` and never disrupts a run if the sink can't
 be written. Tool args/results are captured **in full** so the expand panel shows

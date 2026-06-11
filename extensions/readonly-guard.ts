@@ -9,7 +9,7 @@
 // agents that may write (e.g. the shipper, the designated PR-opener) don't load it.
 // See workflow-core.subagentExtArgs.
 //
-// Policy lives in utils/readonly-policy: gh uses a default-deny allowlist; git uses a
+// Policy lives in utils/guards/readonly-policy: gh uses a default-deny allowlist; git uses a
 // denylist (read-only agents lean on git reads, so only known mutators are blocked).
 // LIMITATION: bash isn't reliably parseable, so this catches direct `gh`/`git`
 // invocations, not every shell trick (and not local branch/tag ops) — the agent
@@ -17,7 +17,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
-import { blockedCommands } from "../utils/readonly-policy";
+import { blockedCommands } from "../utils/guards/readonly-policy";
 
 export default function (pi: ExtensionAPI) {
     pi.on("tool_call", (event) => {

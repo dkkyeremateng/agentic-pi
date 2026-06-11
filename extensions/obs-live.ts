@@ -16,6 +16,7 @@ import { createHash } from "crypto";
 import {
     makeFactory,
     serializeEvent,
+    setObsEmit,
     usageFrom,
     argPreview,
     resultPreview,
@@ -23,7 +24,7 @@ import {
     messageContent,
     capText,
     type EventFactory,
-} from "../utils/obs-events";
+} from "../utils/obs/obs-events";
 
 // Cap (chars) for the full args/result captured for the expand-on-click view.
 // Default is unlimited — tool args/results are the agent's working I/O and we
@@ -122,7 +123,22 @@ export default function obsLive(pi: any): void {
         const sessionId = `${agent}-${Date.now().toString(36)}-${Math.random()
             .toString(36)
             .slice(2, 7)}`;
-        factory = makeFactory({ sessionId, agent, cwd });
+        // Trace linkage. A sub-agent inherits PI_OBS_RUN/PI_OBS_PARENT from its
+        // spawn env (set by dispatchEnv). The ROOT orchestrator has neither, so it
+        // mints a runId and writes it back to process.env so every agent it later
+        // dispatches inherits the same trace id.
+        let runId = process.env.PI_OBS_RUN;
+        if (!runId) {
+            runId = `run-${Date.now().toString(36)}-${Math.random()
+                .toString(36)
+                .slice(2, 7)}`;
+            process.env.PI_OBS_RUN = runId;
+        }
+        const parent = process.env.PI_OBS_PARENT || undefined;
+        factory = makeFactory({ sessionId, agent, cwd, runId, parent });
+        // Publish the emit hook so orchestrator-core can append dispatch_* events
+        // through this same factory/sink (no-op in processes without the collector).
+        setObsEmit((type, payload) => emit(type, payload ?? {}));
         emit("session_start", {
             model: ctx?.model?.id,
             pid: process.pid,

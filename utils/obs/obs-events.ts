@@ -7,7 +7,9 @@
 // event payloads into ObsEvent payloads, and (de)serialization. No I/O — the
 // collector extension (extensions/obs-live.ts) does the appending.
 
-export const OBS_SCHEMA = 1;
+// Schema 2 adds runId/parent (trace linkage) and the dispatch_* lifecycle events.
+// Older (v1) lines lack runId/parent and simply don't appear in the trace view.
+export const OBS_SCHEMA = 2;
 
 export type ObsEventType =
     | "session_start"
@@ -21,6 +23,13 @@ export type ObsEventType =
     | "model_change"
     | "compaction"
     | "error"
+    // Orchestrator-side dispatch lifecycle (Tier 1 trace linkage). Emitted by the
+    // ORCHESTRATOR process about a CHILD agent (payload.agent), so the dashboard can
+    // show why a sub-agent re-ran (empty/truncated) without that intel being trapped
+    // in the orchestrator.
+    | "dispatch_start"
+    | "dispatch_retry"
+    | "dispatch_end"
     | "custom";
 
 export interface ObsEvent {
@@ -30,6 +39,12 @@ export interface ObsEvent {
     sessionId: string;
     agent: string; // "orchestrator", "scout", "implementer", ...
     cwd?: string;
+    // Trace linkage (schema 2). runId groups every agent in one workflow invocation
+    // into a single trace; parent is the agent name that dispatched this one (unset
+    // on the root orchestrator). Both ride down through the spawn env (PI_OBS_RUN /
+    // PI_OBS_PARENT) so each sub-agent process tags its own events.
+    runId?: string;
+    parent?: string;
     type: ObsEventType;
     payload: Record<string, unknown>;
 }
@@ -171,6 +186,8 @@ export function makeFactory(opts: {
     sessionId: string;
     agent: string;
     cwd?: string;
+    runId?: string;
+    parent?: string;
     startSeq?: number;
 }): EventFactory {
     let seq = opts.startSeq ?? 0;
@@ -188,9 +205,44 @@ export function makeFactory(opts: {
                 payload,
             };
             if (opts.cwd !== undefined) ev.cwd = opts.cwd;
+            if (opts.runId !== undefined) ev.runId = opts.runId;
+            if (opts.parent !== undefined) ev.parent = opts.parent;
             return ev;
         },
     };
+}
+
+// ── cross-extension emit hook ────────────────────────────────────────────────
+// The collector (obs-live.ts) owns the sink + factory; orchestrator-core.ts needs
+// to emit dispatch_* events from the SAME orchestrator process without knowing any
+// of that. The collector publishes its emit function here; orchestrator-core calls
+// obsEmit(). Anchored on globalThis (not a module-level var) because pi loads each
+// -e extension in its own module graph — a plain export would be a different copy
+// in the collector vs. the importer. No-op when the collector isn't loaded
+// (PI_OBS off), so callers never need to guard.
+
+export type ObsEmit = (
+    type: ObsEventType,
+    payload?: Record<string, unknown>,
+) => void;
+
+const OBS_EMIT_KEY = Symbol.for("pi.obs.emit");
+
+export function setObsEmit(fn: ObsEmit | undefined): void {
+    (globalThis as any)[OBS_EMIT_KEY] = fn;
+}
+
+export function obsEmit(
+    type: ObsEventType,
+    payload?: Record<string, unknown>,
+): void {
+    const fn = (globalThis as any)[OBS_EMIT_KEY] as ObsEmit | undefined;
+    if (!fn) return;
+    try {
+        fn(type, payload);
+    } catch {
+        /* never let observability disrupt the run */
+    }
 }
 
 // ── (de)serialization ────────────────────────────────────────────────────────

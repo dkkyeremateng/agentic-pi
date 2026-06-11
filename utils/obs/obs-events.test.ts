@@ -11,6 +11,8 @@ import {
     capText,
     serializeEvent,
     parseEventLine,
+    setObsEmit,
+    obsEmit,
 } from "./obs-events";
 
 test("makeFactory stamps schema, increments seq, carries identity", () => {
@@ -25,6 +27,42 @@ test("makeFactory stamps schema, increments seq, carries identity", () => {
     assert.equal(a.cwd, "/p");
     assert.equal(b.ts, 2000);
     assert.deepEqual(b.payload, { x: 1 });
+});
+
+test("makeFactory carries runId/parent when given, omits them otherwise", () => {
+    const linked = makeFactory({
+        sessionId: "s1",
+        agent: "scout",
+        runId: "run-abc",
+        parent: "orchestrator",
+    });
+    const ev = linked.next("session_start");
+    assert.equal(ev.runId, "run-abc");
+    assert.equal(ev.parent, "orchestrator");
+
+    const root = makeFactory({ sessionId: "s2", agent: "orchestrator" });
+    const rev = root.next("session_start");
+    assert.equal("runId" in rev, false);
+    assert.equal("parent" in rev, false);
+});
+
+test("obsEmit routes through a published hook and is a no-op once cleared", () => {
+    const seen: { type: string; payload: any }[] = [];
+    setObsEmit((type, payload) => seen.push({ type, payload }));
+    obsEmit("dispatch_start", { agent: "scout", attempt: 1 });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].type, "dispatch_start");
+    assert.deepEqual(seen[0].payload, { agent: "scout", attempt: 1 });
+
+    // A throwing hook must never bubble out of obsEmit.
+    setObsEmit(() => {
+        throw new Error("boom");
+    });
+    assert.doesNotThrow(() => obsEmit("dispatch_end", { agent: "scout" }));
+
+    setObsEmit(undefined);
+    assert.doesNotThrow(() => obsEmit("dispatch_start"));
+    assert.equal(seen.length, 1); // nothing more captured
 });
 
 test("usageFrom normalizes the message usage block", () => {

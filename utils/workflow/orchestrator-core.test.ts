@@ -23,6 +23,7 @@ import {
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
 import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
+import { setObsEmit } from "../obs/obs-events";
 
 // Run with: npx tsx --test orchestrator-core.test.ts
 
@@ -456,6 +457,76 @@ describe("dispatchAgentCore", () => {
             `expected truncation message, got: ${text}`,
         );
         assert.equal(st.phases[0].status, "error");
+    });
+
+    it("emits dispatch_start then dispatch_end through the obs hook", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        const events: { type: string; payload: any }[] = [];
+        setObsEmit((type, payload) => events.push({ type, payload }));
+        try {
+            const host = mkHost({
+                setup: {
+                    loadAgents: () => agents,
+                    setupSessions: () => {},
+                    prepareRun: () => {},
+                },
+                execution: {
+                    runAgent: async () => ({
+                        output: "a real plan with plenty of substantive text",
+                        exitCode: 0,
+                    }),
+                },
+            });
+            const st = mkStateWithAgents(agents);
+            await dispatchAgentCore(st, host, "planner", "plan", undefined, mkCtx());
+        } finally {
+            setObsEmit(undefined);
+        }
+        assert.deepEqual(
+            events.map((e) => e.type),
+            ["dispatch_start", "dispatch_end"],
+        );
+        assert.equal(events[0].payload.agent, "planner");
+        assert.equal(events[1].payload.status, "done");
+    });
+
+    it("emits dispatch_retry with a reason when the first attempt is empty", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        const events: { type: string; payload: any }[] = [];
+        setObsEmit((type, payload) => events.push({ type, payload }));
+        let calls = 0;
+        try {
+            const host = mkHost({
+                setup: {
+                    loadAgents: () => agents,
+                    setupSessions: () => {},
+                    prepareRun: () => {},
+                },
+                execution: {
+                    runAgent: async () => {
+                        calls++;
+                        return calls === 1
+                            ? { output: "   ", exitCode: 0 }
+                            : {
+                                  output: "recovered with a real, substantive result",
+                                  exitCode: 0,
+                              };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents);
+            await dispatchAgentCore(st, host, "scout", "recon", undefined, mkCtx());
+        } finally {
+            setObsEmit(undefined);
+        }
+        assert.deepEqual(
+            events.map((e) => e.type),
+            ["dispatch_start", "dispatch_retry", "dispatch_end"],
+        );
+        assert.equal(events[1].payload.reason, "empty");
+        assert.equal(events[2].payload.status, "done");
     });
 
     it("does not flag tool-driven agents with short output as empty", async () => {

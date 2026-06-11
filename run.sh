@@ -45,7 +45,7 @@ if [[ "$MODE" == "server" ]]; then
     }
     # Background + detached so it keeps running and frees the terminal. Remaining
     # args (e.g. --port 8000, or a project path) pass through.
-    nohup "$TSX" "$DIR/utils/obs-server.ts" --port "$PORT" "$@" \
+    nohup "$TSX" "$DIR/utils/obs/obs-server.ts" --port "$PORT" "$@" \
         >"$DIR/.obs-server.log" 2>&1 &
     SP=$!
     disown 2>/dev/null || true
@@ -81,7 +81,7 @@ fi
 if [[ "$MODE" == "both" ]]; then
     # Start the dashboard server in the background, tailing the shared sink.
     if [[ -x "$TSX" ]]; then
-        "$TSX" "$DIR/utils/obs-server.ts" --port "$PORT" \
+        "$TSX" "$DIR/utils/obs/obs-server.ts" --port "$PORT" \
             >"$DIR/.obs-server.log" 2>&1 &
         SERVER_PID=$!
         # Stop the server when pi exits (normal quit, error, or Ctrl-C).

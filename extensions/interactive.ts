@@ -6,7 +6,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { emitNotification } from "../utils/notify";
+import { emitNotification } from "../utils/shared/notify";
 
 const OTHER = "Other (type my own answer)";
 

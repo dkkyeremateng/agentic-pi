@@ -47,15 +47,15 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { execFileSync } from "child_process";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
-import { secs } from "../utils/workflow-utils";
-import { emitNotification } from "../utils/notify";
+import { secs } from "../utils/workflow/workflow-utils";
+import { emitNotification } from "../utils/shared/notify";
 import {
     type Checkpoint,
     createCheckpoint,
     revertCommands,
     describeCheckpoint,
     ensureWorkBranch,
-} from "../utils/checkpoint";
+} from "../utils/workflow/checkpoint";
 import {
     calculateGridLayout,
     renderCardGrid,
@@ -65,7 +65,7 @@ import {
     renderTodos,
     type LspServerInfo,
     MAX_CARD_WIDTH,
-} from "../utils/workflow-widgets";
+} from "../utils/workflow/workflow-widgets";
 import {
     REQUIRED_AGENTS,
     DEFAULT_MAX_LOOPS,
@@ -109,15 +109,15 @@ import {
     parseProgressLedger,
     buildReviewChecklist,
     REVIEW_CHECKLIST,
-} from "../utils/workflow-core";
+} from "../utils/workflow/workflow-core";
 import {
     newOrchestratorState,
     type OrchestratorHost,
     runWorkflowCore,
     runFullWorkflowCommand,
     resolveAgent,
-} from "../utils/orchestrator-core";
-import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/dispatch-events";
+} from "../utils/workflow/orchestrator-core";
+import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/workflow/dispatch-events";
 
 // Run before any process.env reads below (WORKER_MODEL, …).
 loadDotEnv(process.cwd());

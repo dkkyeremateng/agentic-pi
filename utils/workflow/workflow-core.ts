@@ -41,6 +41,14 @@ import {
     outcomeLine,
 } from "./workflow-utils";
 
+// This module lives in utils/workflow/. The repo layout is
+// <repo>/{utils,extensions,agents,skills,prompts} plus the bundled .env at the
+// root, so resolve those siblings relative to this file: utils/workflow/ → utils/
+// → <repo>. Downstream code joins from UTILS_DIR (e.g. join(UTILS_DIR, "..",
+// "agents")), so this is the single place that encodes where this file sits.
+const UTILS_DIR = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = resolvePath(UTILS_DIR, "..");
+
 // Max same-model retries on a TRANSIENT agent error (interrupted stream, dropped
 // connection, 429/503/…). Tunable via PI_AGENT_TRANSIENT_RETRIES (clamped 0..5).
 export function transientRetryLimit(env: NodeJS.ProcessEnv = process.env): number {
@@ -232,10 +240,10 @@ function isEnvAllowed(key: string): boolean {
 export function loadDotEnv(cwd: string): void {
     // First, load from the config directory (global defaults). The primary
     // location is THIS repo's own root, resolved relative to this source file
-    // (utils/workflow-core.ts -> repo root) so the bundled `.env` is found wherever
+    // (utils/workflow/workflow-core.ts -> repo root) so the bundled `.env` is found wherever
     // the folder is copied — no hardcoded path. `~/.config/pi` and `~/.pi` remain as
     // optional machine-level fallbacks.
-    const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
+    const repoRoot = REPO_ROOT;
     const possibleConfigDirs = [
         repoRoot,
         join(homedir(), ".config", "pi"),
@@ -1163,7 +1171,7 @@ export function loadAgents(
     }
 
     // Then load extension-level agents as fallback
-    const extensionDir = dirname(fileURLToPath(import.meta.url));
+    const extensionDir = UTILS_DIR;
     const agentsDir = join(extensionDir, "..", "agents");
     if (existsSync(agentsDir)) {
         try {
@@ -1232,7 +1240,7 @@ export function loadTeams(
     }
 
     // Fallback to extension-level teams
-    const extensionDir = dirname(fileURLToPath(import.meta.url));
+    const extensionDir = UTILS_DIR;
     const teamsFile = join(extensionDir, "..", "agents", "teams.yaml");
     if (existsSync(teamsFile)) {
         try {
@@ -1285,7 +1293,7 @@ function parseSkillFile(filePath: string, fallbackName: string): SkillDef | null
 // the orchestrator which skills it can use — adding a SKILL.md needs no code change.
 export function loadSkills(cwd: string): SkillDef[] {
     const byName = new Map<string, SkillDef>();
-    const extensionDir = dirname(fileURLToPath(import.meta.url));
+    const extensionDir = UTILS_DIR;
     const dirs = [
         join(cwd, ".claude", "skills"),
         join(cwd, ".pi", "skills"),
@@ -1776,7 +1784,7 @@ export function buildWorkflowReport(o: {
 
 // ── Structured run metrics (machine-readable sibling of the report) ─────────
 // buildWorkflowReport emits human markdown; this emits the same run as JSON so
-// the observability analyzer (utils/obs-cli.ts) has a precise, single-run record
+// the observability analyzer (utils/obs/obs-cli.ts) has a precise, single-run record
 // instead of re-parsing the markdown. Same call site, same inputs.
 
 export interface PhaseMetrics {
@@ -2671,9 +2679,15 @@ export function dispatchEnv(agentName: string): Record<string, string> {
         PI_DISPATCH_DEPTH: String(depth + 1),
         PI_DISPATCH_ANCESTRY: ancestry ? `${ancestry}>${name}` : name,
     };
-    // Label this sub-agent's observability lane (obs-live.ts reads it).
-    if (process.env.PI_OBS === "1" || process.env.PI_OBS === "true")
+    // Label this sub-agent's observability lane (obs-live.ts reads it) and carry
+    // the trace linkage down: PI_OBS_RUN is the shared trace id (minted by the root
+    // orchestrator's collector); PI_OBS_PARENT is THIS process's agent — the one
+    // doing the dispatching — so the child knows who spawned it.
+    if (process.env.PI_OBS === "1" || process.env.PI_OBS === "true") {
         env.PI_OBS_AGENT = name;
+        if (process.env.PI_OBS_RUN) env.PI_OBS_RUN = process.env.PI_OBS_RUN;
+        env.PI_OBS_PARENT = (process.env.PI_OBS_AGENT || "orchestrator").toLowerCase();
+    }
     return env;
 }
 
@@ -2726,11 +2740,7 @@ export function shouldApproveProjectForSpawn(cwd: string): boolean {
 // - dispatch.ts registers dispatch_agent/dispatch_parallel/select_agents, needed
 //   only by agents whose tools include one of them.
 export function subagentExtArgs(tools: string): string[] {
-    const extDir = join(
-        dirname(fileURLToPath(import.meta.url)),
-        "..",
-        "extensions",
-    );
+    const extDir = join(UTILS_DIR, "..", "extensions");
     const args: string[] = [];
     const add = (name: string) => {
         const p = join(extDir, name);
@@ -3450,7 +3460,7 @@ export function loadPromptTemplate(
     if (cwd) candidates.push(join(cwd, ".pi", "prompts", `${name}.md`));
     // Install-level prompts: <ext>/../prompts/<name>.md
     try {
-        const extDir = dirname(fileURLToPath(import.meta.url));
+        const extDir = UTILS_DIR;
         candidates.push(join(extDir, "..", "prompts", `${name}.md`));
     } catch {}
     for (const path of candidates) {
