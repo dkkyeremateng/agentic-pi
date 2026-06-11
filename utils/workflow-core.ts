@@ -1026,23 +1026,19 @@ export function agentModelEnvVar(agentKey: string): string {
 }
 
 // Build the value passed to pi's `--model` from a configured model string.
-// pi's --model is `[provider/]id[:thinking]` and reads the FIRST segment as the
-// provider. Configs here come in three shapes:
-//   - bare id ("qwen-max-3-7-yoda-2")                 → pass through
-//   - single-slash ("anthropic/claude-sonnet-4-6")    → legacy behaviour: treat
-//       the leading segment as a discardable prefix and strip it, so the bare id
-//       resolves under the default provider (kept for backward compatibility)
-//   - two-or-more slashes
-//       ("gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low")   → pass through so pi
-//       honours the chosen provider for a slashed model id
+// pi's --model parses `[provider/]id[:thinking]` and resolves the provider
+// itself, so the configured string is passed through VERBATIM:
+//   - bare id        "qwen-max-3-7-yoda-2[:low]"
+//   - provider/id    "anthropic/claude-opus-4-8[:low]"
+//   - provider/<slashed id>  "gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low"
+// (Earlier code stripped the segment before the first slash, which silently
+// discarded the provider — e.g. anthropic/claude-… resolved under the DEFAULT
+// provider instead of anthropic. That's fixed by not stripping.)
 // Returns null when there's no usable model (empty or contains whitespace).
 export function spawnModelArg(model: string | undefined): string | null {
     const clean = model?.trim();
     if (!clean || /\s/.test(clean)) return null;
-    const slashes = (clean.match(/\//g) || []).length;
-    if (slashes >= 2) return clean; // provider/<slashed id>[:thinking]
-    if (slashes === 1) return clean.slice(clean.indexOf("/") + 1); // strip prefix
-    return clean; // bare id
+    return clean;
 }
 
 // Combined per-agent config env var: PI_AGENT_<NAME>, an object that can set the

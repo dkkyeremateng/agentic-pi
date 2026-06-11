@@ -1562,23 +1562,18 @@ describe("spawnModelArg", () => {
         );
     });
 
-    it("strips the leading segment for a single-slash string (legacy)", () => {
+    it("keeps the provider for a single-slash provider/id string", () => {
         assert.equal(
-            spawnModelArg("gateframe_yoda/qwen-max-3-7-yoda-2"),
-            "qwen-max-3-7-yoda-2",
+            spawnModelArg("anthropic/claude-opus-4-8"),
+            "anthropic/claude-opus-4-8",
         );
         assert.equal(
-            spawnModelArg("gateframe_yoda/qwen-max-3-7-yoda-2:low"),
-            "qwen-max-3-7-yoda-2:low",
+            spawnModelArg("anthropic/claude-fable-5:low"),
+            "anthropic/claude-fable-5:low",
         );
-        assert.equal(spawnModelArg("anthropic/claude-opus"), "claude-opus");
     });
 
     it("keeps the provider for a two-or-more-slash string", () => {
-        assert.equal(
-            spawnModelArg("gfr/gateframe_yoda/qwen-max-3-7-yoda-2:low"),
-            "gfr/gateframe_yoda/qwen-max-3-7-yoda-2:low",
-        );
         assert.equal(
             spawnModelArg("gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low"),
             "gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low",
