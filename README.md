@@ -201,7 +201,7 @@ ones:
 | Variable | Purpose |
 |----------|---------|
 | `PI_WORKFLOW_MODEL` | Global fallback model for all agents. |
-| `PI_AGENT_<NAME>_MODEL` | Per-agent model (e.g. `PI_AGENT_IMPLEMENTER_MODEL`). The context-window for the dashboard comes from pi's model registry. |
+| `PI_AGENT_<NAME>_MODEL` | Per-agent model (e.g. `PI_AGENT_IMPLEMENTER_MODEL`). Accepts pi's `[provider/]id[:thinking]` form — e.g. `gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low` pins a provider and thinking level; a bare `id` or `id:thinking` uses the default provider. (Set thinking lower for recon/review agents to avoid output-token truncation.) The dashboard context-window comes from pi's model registry. |
 | `PI_DISPATCH_MAX_DEPTH` | How deep dispatch may nest (default 1; a cycle guard is always on). |
 | `PI_MAX_DISPATCHES_PER_TURN` | Breadth cap on dispatches per turn. |
 | `PI_AGENT_TRANSIENT_RETRIES` | Same-model retries on transient errors (interrupted stream, dropped connection, 429/502/503/504/529). |

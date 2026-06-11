@@ -15,6 +15,7 @@ import {
     inferWorkflowTeam,
     buildPhaseMap,
     buildWorkflowMetrics,
+    spawnModelArg,
     failPhase,
     renderTemplate,
     tokenNote,
@@ -1547,5 +1548,47 @@ describe("buildWorkflowMetrics", () => {
                 .shipOutcome,
             "unknown",
         );
+    });
+});
+
+// ── spawnModelArg ────────────────────────────────
+
+describe("spawnModelArg", () => {
+    it("passes a bare id (with optional :thinking) through unchanged", () => {
+        assert.equal(spawnModelArg("qwen-max-3-7-yoda-2"), "qwen-max-3-7-yoda-2");
+        assert.equal(
+            spawnModelArg("qwen-max-3-7-yoda-2:low"),
+            "qwen-max-3-7-yoda-2:low",
+        );
+    });
+
+    it("strips the leading segment for a single-slash string (legacy)", () => {
+        assert.equal(
+            spawnModelArg("gateframe_yoda/qwen-max-3-7-yoda-2"),
+            "qwen-max-3-7-yoda-2",
+        );
+        assert.equal(
+            spawnModelArg("gateframe_yoda/qwen-max-3-7-yoda-2:low"),
+            "qwen-max-3-7-yoda-2:low",
+        );
+        assert.equal(spawnModelArg("anthropic/claude-opus"), "claude-opus");
+    });
+
+    it("keeps the provider for a two-or-more-slash string", () => {
+        assert.equal(
+            spawnModelArg("gfr/gateframe_yoda/qwen-max-3-7-yoda-2:low"),
+            "gfr/gateframe_yoda/qwen-max-3-7-yoda-2:low",
+        );
+        assert.equal(
+            spawnModelArg("gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low"),
+            "gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low",
+        );
+    });
+
+    it("returns null for empty or whitespace-containing strings", () => {
+        assert.equal(spawnModelArg(undefined), null);
+        assert.equal(spawnModelArg(""), null);
+        assert.equal(spawnModelArg("   "), null);
+        assert.equal(spawnModelArg("two words"), null);
     });
 });

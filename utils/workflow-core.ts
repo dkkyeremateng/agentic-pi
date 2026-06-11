@@ -1025,6 +1025,26 @@ export function agentModelEnvVar(agentKey: string): string {
     return `PI_AGENT_${name}_MODEL`;
 }
 
+// Build the value passed to pi's `--model` from a configured model string.
+// pi's --model is `[provider/]id[:thinking]` and reads the FIRST segment as the
+// provider. Configs here come in three shapes:
+//   - bare id ("qwen-max-3-7-yoda-2")                 → pass through
+//   - single-slash ("anthropic/claude-sonnet-4-6")    → legacy behaviour: treat
+//       the leading segment as a discardable prefix and strip it, so the bare id
+//       resolves under the default provider (kept for backward compatibility)
+//   - two-or-more slashes
+//       ("gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low")   → pass through so pi
+//       honours the chosen provider for a slashed model id
+// Returns null when there's no usable model (empty or contains whitespace).
+export function spawnModelArg(model: string | undefined): string | null {
+    const clean = model?.trim();
+    if (!clean || /\s/.test(clean)) return null;
+    const slashes = (clean.match(/\//g) || []).length;
+    if (slashes >= 2) return clean; // provider/<slashed id>[:thinking]
+    if (slashes === 1) return clean.slice(clean.indexOf("/") + 1); // strip prefix
+    return clean; // bare id
+}
+
 // Combined per-agent config env var: PI_AGENT_<NAME>, an object that can set the
 // model AND the context window in one place, e.g.
 //   PI_AGENT_VALIDATOR={"model":"gateframe_yoda/qwen-max-3-7-yoda-2","contextWindow":1000000}
@@ -3040,12 +3060,8 @@ function spawnAgentWithModelFallback(
     ];
 
     const cleanModel = model?.trim();
-    if (cleanModel && !/\s/.test(cleanModel)) {
-        const firstSlash = cleanModel.indexOf("/");
-        const modelId =
-            firstSlash > 0 ? cleanModel.slice(firstSlash + 1) : cleanModel;
-        args.push("--model", modelId);
-    }
+    const modelArg = spawnModelArg(model);
+    if (modelArg) args.push("--model", modelArg);
     if (hasSession) args.push("-c");
     args.push(task);
 
@@ -3269,30 +3285,12 @@ export function spawnAgentWithModel(
         ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
         ...subagentExtArgs(agentDef.tools),
     ];
-    // Only pass --model if the string looks valid (non-empty, no whitespace).
-    // If the string contains a slash, it's in provider/model format.
-    // Extract everything after the FIRST slash as the model ID.
-    // e.g., "gate_frame_private/gateframe/mimo-v2.5" -> "gateframe/mimo-v2.5"
-    // e.g., "anthropic/claude-3-opus" -> "claude-3-opus"
-    // e.g., "openai/gpt-4" -> "gpt-4"
+    // Pass --model via spawnModelArg: a two-or-more-slash string keeps its
+    // provider (provider/<slashed id>), a single-slash string drops the leading
+    // prefix (legacy), a bare id passes through.
     const cleanModel = model?.trim();
-    if (cleanModel && !/\s/.test(cleanModel)) {
-        const firstSlash = cleanModel.indexOf("/");
-        let modelId = cleanModel;
-
-        if (firstSlash > 0) {
-            modelId = cleanModel.slice(firstSlash + 1);
-            // Validate the extracted model ID
-            if (!modelId || modelId.trim().length === 0) {
-                console.error(
-                    `[spawnAgentWithModel] Invalid model format: "${cleanModel}" - extracted model ID is empty, using original string`,
-                );
-                modelId = cleanModel;
-            }
-        }
-
-        args.push("--model", modelId);
-    }
+    const modelArg = spawnModelArg(model);
+    if (modelArg) args.push("--model", modelArg);
     if (hasSession) args.push("-c");
     args.push(task);
 
