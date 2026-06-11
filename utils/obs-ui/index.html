@@ -509,109 +509,179 @@
                 color: var(--dim);
                 padding: 30px 4px;
             }
-            #race-grid {
-                display: grid;
-                overflow-x: auto;
+            #race-tracks {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+            .race-track {
+                display: flex;
                 border: 1px solid var(--line);
                 border-radius: 8px;
-                width: 100%;
-            }
-            .race-cell {
-                border-right: 1px solid var(--line);
-                border-bottom: 1px solid var(--line);
-                padding: 6px 8px;
-                min-height: 32px;
-                box-sizing: border-box;
+                background: var(--panel);
                 overflow: hidden;
             }
-            .rc-sticky {
+            .race-track.active {
+                border-color: var(--accent);
+            }
+            .race-agent {
+                flex: none;
+                width: 190px;
+                padding: 10px 12px;
+                border-right: 1px solid var(--line);
+                background: var(--panel2);
                 position: sticky;
                 left: 0;
                 z-index: 1;
-                background: var(--panel);
+                cursor: pointer;
             }
-            .rc-corner {
-                background: var(--panel2);
-                color: var(--dim);
-                font-size: 12px;
-                z-index: 2;
-            }
-            .rc-head {
-                background: var(--panel2);
-                color: var(--dim);
-                font-size: 12px;
-                white-space: nowrap;
-            }
-            .rc-label {
+            .race-agent .top {
                 display: flex;
                 align-items: center;
-                gap: 8px;
-                cursor: pointer;
-                overflow: hidden;
+                gap: 7px;
             }
-            .rc-label-text {
-                display: flex;
-                flex-direction: column;
-                min-width: 0;
-                line-height: 1.25;
-            }
-            .rc-label-top {
-                display: flex;
-                align-items: baseline;
-                gap: 6px;
-            }
-            .rc-label .nm {
+            .race-agent .nm {
                 font-weight: 600;
             }
-            .rc-label .rc-turns {
+            .race-agent .model {
                 color: var(--dim);
                 font-size: 11px;
-            }
-            .rc-label .rc-proj {
-                color: var(--dim);
-                font-size: 11px;
+                margin-top: 2px;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
             }
-            .rc-label .dot.on {
-                background: var(--ok);
-                box-shadow: 0 0 6px var(--ok);
+            .race-agent .meta {
+                color: var(--dim);
+                font-size: 11px;
+                margin-top: 6px;
+                line-height: 1.6;
             }
-            .rc-turn {
+            .race-turns {
+                flex: 1;
                 display: flex;
-                flex-wrap: wrap;
-                gap: 3px;
-                align-items: center;
+                gap: 10px;
+                overflow-x: auto;
+                padding: 10px;
+                align-items: stretch;
+                min-width: 0;
             }
-            .rc-turn.empty {
-                background: rgba(255, 255, 255, 0.015);
+            .race-turn {
+                flex: none;
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                background: var(--bg);
+                display: flex;
+                flex-direction: column;
             }
-            .rc-arrow {
+            .race-turn.collapsed {
+                width: 132px;
+                padding: 9px 10px;
+                cursor: pointer;
+            }
+            .race-turn.collapsed:hover {
+                border-color: var(--accent);
+            }
+            .race-turn.active {
+                min-width: 300px;
+                border-color: var(--accent);
+            }
+            .race-turn-label {
+                color: var(--accent);
+                font-weight: 600;
                 font-size: 12px;
-                line-height: 1;
+                letter-spacing: 0.05em;
             }
-            .rc-arrow.tool,
-            .rc-arrow.result {
+            .race-turn-head {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 8px;
+                padding: 8px 10px;
+            }
+            .race-turn.active .race-turn-head {
+                border-bottom: 1px solid var(--line);
+            }
+            .race-turn-count {
+                color: var(--dim);
+                font-size: 11px;
+            }
+            .race-turn-snippet {
+                color: var(--dim);
+                font-size: 11px;
+                margin-top: 5px;
+                display: -webkit-box;
+                -webkit-line-clamp: 3;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+            }
+            .race-events {
+                display: flex;
+                gap: 8px;
+                padding: 10px;
+                overflow-x: auto;
+            }
+            .race-event {
+                flex: none;
+                width: 158px;
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 6px 8px;
+                background: var(--panel);
+            }
+            .race-event .ev-head {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+            }
+            .race-event .emoji {
+                font-size: 13px;
+            }
+            .race-event .ev-type {
+                font-size: 11px;
+                color: var(--dim);
+            }
+            .race-event .ev-tool {
+                font-size: 10px;
                 color: var(--tool);
+                background: var(--panel2);
+                border: 1px solid var(--line);
+                border-radius: 4px;
+                padding: 0 4px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                max-width: 90px;
             }
-            .rc-arrow.turn {
+            .race-event.err {
+                border-color: var(--err);
+            }
+            .race-event .ev-summary {
+                font-size: 12px;
+                color: var(--fg);
+                margin-top: 4px;
+                display: -webkit-box;
+                -webkit-line-clamp: 3;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+                word-break: break-word;
+            }
+            .race-event .ev-time {
+                color: var(--dim);
+                font-size: 10px;
+                margin-top: 4px;
+            }
+            .race-event.turn .ev-type {
                 color: var(--accent);
             }
-            .rc-arrow.err {
-                color: var(--err);
-            }
-            .rc-arrow.say {
+            .race-event.say .ev-type {
                 color: var(--ok);
             }
-            .rc-arrow.think {
+            .race-event.think .ev-type {
                 color: var(--magenta);
             }
-            .rc-arrow.user {
-                color: var(--fg);
-            }
-            .rc-arrow.sys {
-                color: var(--warn);
+            .race-event.err .ev-type {
+                color: var(--err);
             }
         </style>
     </head>
@@ -693,7 +763,7 @@
                         Waiting for events… run a workflow with
                         <b>PI_OBS=1</b> in this project.
                     </div>
-                    <div id="race-grid"></div>
+                    <div id="race-tracks"></div>
                 </section>
             </main>
         </div>
