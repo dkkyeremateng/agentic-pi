@@ -180,6 +180,20 @@ export default function (pi: ExtensionAPI) {
     const st = newOrchestratorState();
     // Extension-local: live ctx, session dir, subprocess.
     let widgetCtx: any;
+    // The primary session's model, tracked live via the model_select event so
+    // sub-agents that fall back to "the primary's model" follow /model changes.
+    let primaryModel: string | undefined;
+    // Memo for the dashboard widget: pi may re-invoke the widget factory on
+    // every redraw (theme change, resize, frame), so cache the (disk-reading)
+    // built lines and only rebuild when the state generation, theme, or width
+    // changes. updateWidget() bumps widgetGen to force a rebuild.
+    let widgetGen = 0;
+    const widgetMemo: {
+        gen: number;
+        width: number;
+        theme: any;
+        lines: string[];
+    } = { gen: -1, width: -1, theme: null, lines: [] };
     // The model registry lives on the command/event ctx (not the factory `pi`),
     // so capture it whenever a ctx is available for use in getArgumentCompletions
     // (which receives no ctx of its own).
@@ -304,13 +318,19 @@ export default function (pi: ExtensionAPI) {
 
     // ── Team helpers ─────────────────────────────
 
-    function fallbackModel(): string {
-        if (WORKER_MODEL) return WORKER_MODEL;
+    // The primary session's current model as a "provider/id" string. Prefers the
+    // value tracked from model_select (always live), falling back to ctx.model.
+    function primaryModelStr(): string {
+        if (primaryModel) return primaryModel;
         const m = widgetCtx?.model;
         return (
             (m?.provider && m?.id ? `${m.provider}/${m.id}` : m?.id) ||
             "default"
         );
+    }
+    function fallbackModel(): string {
+        if (WORKER_MODEL) return WORKER_MODEL;
+        return primaryModelStr();
     }
     function modelFor(agentKey: string): string {
         return resolveAgentModel(
@@ -701,24 +721,42 @@ export default function (pi: ExtensionAPI) {
 
     function renderWidgetNow() {
         if (!widgetCtx || !widgetCtx.hasUI) return; // no chrome without a UI
-        const theme = widgetCtx.ui.theme;
-        // Reserve 2 columns: pi wraps each widget line in Text(line, 1, 0) (a +1
-        // left pad), so a row built to the full terminal width would overflow by one
-        // column and wrap — shattering the card borders. Build to columns-2 so the
-        // widest row plus the pad still fits with a column to spare.
-        const width = Math.max(20, (process.stdout.columns || 80) - 2);
-        const lines = buildWidgetLines(width, theme);
         // Use the component (factory) overload, not the string[] one: pi hard-caps
         // string[] widgets at MAX_WIDGET_LINES (10) with "(widget truncated)", which
         // would cut the live-log panel. Build the same per-line Container pi uses
         // internally for string[] (so it redraws cleanly in place — no ghosting),
         // but without the 10-line cap. Our own clampWidget already bounds the height
         // to the screen, so this can't push the editor/footer off.
-        widgetCtx.ui.setWidget("agent-workflow", (_tui: any) => {
-            const container = new Container();
-            for (const line of lines) container.addChild(new Text(line, 1, 0));
-            return container;
-        });
+        //
+        // Build the lines INSIDE the factory using the theme (and width) pi passes
+        // in on each (re)render — like the footer — so the cards restyle on /theme
+        // and reflow on resize. Reserve 2 columns: pi wraps each line in
+        // Text(line, 1, 0) (a +1 left pad), so building to columns-2 keeps the
+        // widest row + pad from wrapping and shattering the card borders.
+        widgetGen++; // a state change → rebuild on the next factory call
+        widgetCtx.ui.setWidget(
+            "agent-workflow",
+            (_tui: any, theme?: any) => {
+                const t = theme || widgetCtx.ui.theme;
+                const width = Math.max(20, (process.stdout.columns || 80) - 2);
+                // Rebuild only when state, theme, or width changed; reuse the
+                // cached lines on plain redraws so we don't re-read disk per frame.
+                if (
+                    widgetMemo.gen !== widgetGen ||
+                    widgetMemo.theme !== t ||
+                    widgetMemo.width !== width
+                ) {
+                    widgetMemo.gen = widgetGen;
+                    widgetMemo.theme = t;
+                    widgetMemo.width = width;
+                    widgetMemo.lines = buildWidgetLines(width, t);
+                }
+                const container = new Container();
+                for (const line of widgetMemo.lines)
+                    container.addChild(new Text(line, 1, 0));
+                return container;
+            },
+        );
     }
 
     // ── Run a single agent as a subprocess ───────
@@ -1517,9 +1555,23 @@ export default function (pi: ExtensionAPI) {
             };
         });
 
+    // Track the primary session's model so sub-agents that fall back to it (and
+    // the footer) follow /model changes live, not just the session-start model.
+    pi.on("model_select", async (event: any) => {
+        const m = event?.model;
+        if (m) primaryModel = m.provider && m.id ? `${m.provider}/${m.id}` : m.id;
+        updateWidget();
+    });
+
     pi.on("session_start", async (_event, ctx) => {
         widgetCtx = ctx;
         modelRegistry = (ctx as any).modelRegistry;
+        const sm = ctx.model;
+        primaryModel = sm
+            ? sm.provider && sm.id
+                ? `${sm.provider}/${sm.id}`
+                : sm.id
+            : undefined;
         // /agent-model overrides are session-scoped: drop any carried over by the
         // process-global store so they clear on a fresh start and on /reload (which
         // re-fires session_start), while still persisting across turns within a
@@ -1610,13 +1662,9 @@ export default function (pi: ExtensionAPI) {
                 dispose: () => {},
                 invalidate() {},
                 render(width: number): string[] {
-                    // Primary (orchestrator) agent's model — the full `provider/model`
-                    // pi was loaded with.
-                    const pm = widgetCtx?.model || ctx.model;
-                    const primaryFull =
-                        pm?.provider && pm?.id
-                            ? `${pm.provider}/${pm.id}`
-                            : pm?.id || "default";
+                    // Primary (orchestrator) agent's model — tracked live so it
+                    // follows /model changes.
+                    const primaryFull = primaryModelStr();
                     return renderWorkflowFooter({
                         width,
                         theme,
