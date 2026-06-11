@@ -522,6 +522,7 @@
                 padding: 6px 8px;
                 min-height: 32px;
                 box-sizing: border-box;
+                overflow: hidden;
             }
             .rc-sticky {
                 position: sticky;
@@ -545,14 +546,33 @@
                 display: flex;
                 align-items: center;
                 gap: 8px;
-                font-weight: 600;
                 cursor: pointer;
-                white-space: nowrap;
+                overflow: hidden;
             }
-            .rc-label .sub {
+            .rc-label-text {
+                display: flex;
+                flex-direction: column;
+                min-width: 0;
+                line-height: 1.25;
+            }
+            .rc-label-top {
+                display: flex;
+                align-items: baseline;
+                gap: 6px;
+            }
+            .rc-label .nm {
+                font-weight: 600;
+            }
+            .rc-label .rc-turns {
                 color: var(--dim);
-                font-weight: 400;
-                font-size: 12px;
+                font-size: 11px;
+            }
+            .rc-label .rc-proj {
+                color: var(--dim);
+                font-size: 11px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
             }
             .rc-label .dot.on {
                 background: var(--ok);
