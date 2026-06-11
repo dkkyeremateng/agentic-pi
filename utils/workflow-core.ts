@@ -147,6 +147,7 @@ export interface PhaseState {
     modelFallback: boolean; // true if the phase retried with the fallback model after the primary model failed
     activeModel?: string; // the model the agent is actually running on (set at spawn; reflects fallback)
     tokens?: TokenUsage; // per-phase token usage captured from the agent's message_end event
+    lastStopReason?: string; // stopReason of the last assistant message ("length" = output-token truncation)
 }
 
 // ── Active-workflow detection ────────────────────
@@ -2857,14 +2858,19 @@ export function handleSpawnEvent(
                 : (event.messages || []).find(
                       (m: any) => m.role === "assistant",
                   );
-        if (msg?.role === "assistant" && Array.isArray(msg.content)) {
-            const text = msg.content
-                .filter((c: any) => c?.type === "text")
-                .map((c: any) => c.text || "")
-                .join("");
-            if (text) state.finalText = text;
-            if (msg.stopReason === "error" && msg.errorMessage)
-                state.finalError = String(msg.errorMessage);
+        if (msg?.role === "assistant") {
+            // Track why the last turn ended — "length" means the model hit its
+            // output-token cap and was truncated (often before acting at all).
+            if (msg.stopReason) phase.lastStopReason = msg.stopReason;
+            if (Array.isArray(msg.content)) {
+                const text = msg.content
+                    .filter((c: any) => c?.type === "text")
+                    .map((c: any) => c.text || "")
+                    .join("");
+                if (text) state.finalText = text;
+                if (msg.stopReason === "error" && msg.errorMessage)
+                    state.finalError = String(msg.errorMessage);
+            }
         }
         if (msg?.usage?.input) {
             // contextWindow may not be reported by all providers. Fall back to the

@@ -425,6 +425,39 @@ describe("dispatchAgentCore", () => {
         assert.ok((result.content[0] as { text: string }).text.includes("done"));
     });
 
+    it("reports truncation (stop=length) instead of a generic empty failure", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async (_def, _task, phase) => {
+                    phase.lastStopReason = "length"; // hit the output-token cap
+                    return { output: "", exitCode: 0 };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchAgentCore(
+            st,
+            host,
+            "scout",
+            "recon the repo",
+            undefined,
+            mkCtx(),
+        );
+        const text = (result.content[0] as { text: string }).text;
+        assert.ok(
+            text.includes("TRUNCATED") && text.includes("output-token limit"),
+            `expected truncation message, got: ${text}`,
+        );
+        assert.equal(st.phases[0].status, "error");
+    });
+
     it("does not flag tool-driven agents with short output as empty", async () => {
         const agents = new Map<string, AgentDef>();
         agents.set("seeker", mkAgent("seeker"));

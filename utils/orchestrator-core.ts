@@ -1005,6 +1005,7 @@ async function runAgentWithEmptyRetry(
         phase.toolCount = 0;
         phase.contextPct = 0;
         phase.droppedLines = 0;
+        phase.lastStopReason = undefined;
         h.ui.updateWidget();
         res = await h.execution.runAgent(def, task, phase, cwd);
     }
@@ -1163,10 +1164,15 @@ export async function dispatchAgentCore(
     s.dispatchElapsedMs = Date.now() - s.dispatchStartedAt;
     h.ui.updateWidget();
 
-    // Build error message: show actual output for diagnosis, flag model failures
+    // Build error message: show actual output for diagnosis, flag model failures.
+    // A "length" stop reason means the model hit its output-token cap and was
+    // truncated before finishing — distinct from a genuinely empty result.
+    const truncatedByLength = emptyOutput && phase.lastStopReason === "length";
     const modelFail = !ok && isModelFailure(res.output);
     const errMsg = !ok
-        ? emptyOutput
+        ? truncatedByLength
+            ? ": truncated at the output-token limit (stop reason \"length\")"
+            : emptyOutput
             ? res.output.trim()
                 ? `: ${res.output.trim().slice(0, 120)}${modelFail ? " (model failure)" : ""}`
                 : ": returned no usable output"
@@ -1194,7 +1200,9 @@ export async function dispatchAgentCore(
         .filter((p) => p.status === "pending")
         .map((p) => displayName(p.agent));
     const nextStep = emptyOutput
-        ? `\n\n${def.name} returned almost no output — this dispatch FAILED. It is NOT a result to build on. RE-DISPATCH ${def.name} with a clearer, more specific task. Do NOT skip it, do NOT do its work yourself, and do NOT hand its job to a different agent.`
+        ? truncatedByLength
+            ? `\n\n${def.name} was TRUNCATED at the model's output-token limit (stop reason "length") before it produced a result — it spent its whole output budget (usually on reasoning) without finishing. This is a model/config limit, NOT a bad task: lower ${def.name}'s thinking level or raise its max output tokens, then RE-DISPATCH ${def.name} with the same task. Do NOT do its work yourself or hand it to another agent.`
+            : `\n\n${def.name} returned almost no output — this dispatch FAILED. It is NOT a result to build on. RE-DISPATCH ${def.name} with a clearer, more specific task. Do NOT skip it, do NOT do its work yourself, and do NOT hand its job to a different agent.`
         : remaining.length
           ? `\n\nNOT DONE YET — still queued: ${remaining.join(", ")}. ` +
             `Dispatch the next one (${remaining[0]}) now. Do not stop until every selected agent has run.`
