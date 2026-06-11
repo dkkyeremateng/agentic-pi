@@ -978,6 +978,39 @@ export function resolveAgent(
     return undefined;
 }
 
+// Run a dispatched agent, with ONE automatic retry when it comes back empty —
+// a clean exit (code 0) with no tool calls and ~no output, which is almost
+// always a transient empty completion from the provider rather than a real
+// "did nothing" result. Retrying in-place lets the dispatch self-recover
+// instead of surfacing a failure that depends on the orchestrator to re-dispatch.
+async function runAgentWithEmptyRetry(
+    h: OrchestratorHost,
+    def: AgentDef,
+    task: string,
+    phase: PhaseState,
+    cwd: string,
+): Promise<{ output: string; exitCode: number }> {
+    let res = await h.execution.runAgent(def, task, phase, cwd);
+    const looksEmpty = () =>
+        !isTrivialPing(task) &&
+        res.exitCode === 0 &&
+        res.output.trim().length < h.config.minDispatchOutputChars &&
+        phase.toolCount === 0;
+    if (looksEmpty()) {
+        h.ui.notify(
+            `${displayName(def.name)} returned nothing — retrying once…`,
+            "warning",
+        );
+        phase.attempt = (phase.attempt || 1) + 1;
+        phase.toolCount = 0;
+        phase.contextPct = 0;
+        phase.droppedLines = 0;
+        h.ui.updateWidget();
+        res = await h.execution.runAgent(def, task, phase, cwd);
+    }
+    return res;
+}
+
 // ── dispatch_agent: run one specialist on a focused task ──
 export async function dispatchAgentCore(
     s: OrchestratorState,
@@ -1108,7 +1141,7 @@ export async function dispatchAgentCore(
     phase.status = "running";
     h.ui.updateWidget();
 
-    const res = await h.execution.runAgent(def, task, phase, ctx.cwd);
+    const res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
 
     // A clean exit with (near-)empty output usually means the agent did no real
     // work — fail it so the orchestrator re-dispatches instead of building on
@@ -1315,7 +1348,7 @@ export async function dispatchParallelCore(
     const results = await Promise.all(
         entries.map(async ({ def, task, phase }) => {
             const t0 = Date.now();
-            const res = await h.execution.runAgent(def, task, phase, ctx.cwd);
+            const res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
             // A trivial ping legitimately returns a short "pong" with no tools —
             // don't count that as an empty/failed dispatch.
             const emptyOutput =

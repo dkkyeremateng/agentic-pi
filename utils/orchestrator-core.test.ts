@@ -387,6 +387,44 @@ describe("dispatchAgentCore", () => {
         assert.equal(st.phases[0].status, "error");
     });
 
+    it("retries once when the first dispatch comes back empty, then succeeds", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        let calls = 0;
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => {
+                    calls++;
+                    return calls === 1
+                        ? { output: "   ", exitCode: 0 } // empty first attempt
+                        : {
+                              output:
+                                  "Recovered: here is a real plan with enough text",
+                              exitCode: 0,
+                          };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchAgentCore(
+            st,
+            host,
+            "planner",
+            "plan",
+            undefined,
+            mkCtx(),
+        );
+        assert.equal(calls, 2); // retried once
+        assert.equal(st.phases[0].status, "done");
+        assert.equal(st.phases[0].attempt, 2);
+        assert.ok((result.content[0] as { text: string }).text.includes("done"));
+    });
+
     it("does not flag tool-driven agents with short output as empty", async () => {
         const agents = new Map<string, AgentDef>();
         agents.set("seeker", mkAgent("seeker"));
