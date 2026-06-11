@@ -301,11 +301,13 @@ for a per-project sink instead, or point the server at one project with
 `npm run obs:server -- <project>`.
 
 ```bash
-./run.sh --obs                        # one step: launches pi + the dashboard (http://127.0.0.1:7616)
-# …or run them separately:
-npm run obs:server                    # tail the shared sink (all instances)
-npm run obs:server -- <project>       # …or tail one project's .agent/obs/events.jsonl
-PI_OBS=1 ./run.sh                      # pi with emission on (no auto-started server)
+./run.sh                              # pi only
+./run.sh --obs                        # pi + the dashboard (http://127.0.0.1:7616)
+./run.sh --server                     # the dashboard server only (no pi)
+./run.sh --server -- --port 8000      # …server only, on a custom port / project
+# equivalents:
+npm run obs:server                    # same as `./run.sh --server`
+PI_OBS=1 ./run.sh                      # same as `./run.sh --obs`
 ```
 
 `./run.sh --obs` starts the dashboard server in the background (port `PI_OBS_PORT`,
