@@ -43,6 +43,7 @@ header h1 {
     border-radius: 6px;
     padding: 4px 8px;
     font: inherit;
+    font-family: var(--font-mono);
     cursor: pointer;
 }
 /* the run filter's live dot sits INSIDE the select (over its left

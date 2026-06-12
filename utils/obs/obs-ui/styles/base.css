@@ -1,26 +1,165 @@
-/* base — design tokens, reset, body type */
+/* base — the design-system foundation (ui.md §3).
+   Semantic tokens with the LEGACY names aliased on top, so the per-view
+   stylesheets keep working untouched. Chrome reads in a UI sans stack; data
+   surfaces (ids, numbers, times, args, JSON) stay mono with tabular figures. */
+
 :root {
-    --bg: #14141b;
-    --panel: #1b1b26;
-    --panel2: #22222f;
-    --line: #2c2c3a;
-    --fg: #c8c8d4;
-    --dim: #7a7a8c;
+    /* surfaces — 5-step elevation ramp (no pure black: OLED smear) */
+    --surface-0: #0e0e14; /* app background (used by the P2 shell) */
+    --surface-1: #14141b; /* view background */
+    --surface-2: #1b1b26; /* cards, nav */
+    --surface-3: #22222f; /* inputs, hover, nested */
+    --surface-4: #2a2a3a; /* drawer, popovers, palette */
+    --border: #2c2c3a;
+    --border-strong: #3b3b4f;
+
+    /* text — contrast tiers, verified on surface-1/2 */
+    --text-hi: #e2e2ec; /* ≥9:1  — primary content */
+    --text-md: #b6b6c6; /* ≥6:1  — body */
+    --text-lo: #8b8b9e; /* ≥4.5:1 — secondary */
+    --text-faint: #6a6a7e; /* ≥3:1 — decorative only, never data */
+
+    /* brand + status */
     --accent: #7aa2f7;
+    --accent-hover: #93b4f9;
+    --on-accent: #0d0d14;
     --ok: #9ece6a;
     --warn: #e0af68;
     --err: #f7768e;
-    --tool: #7dcfff;
-    --magenta: #bb9af7;
+    --info: #7dcfff;
+    --special: #bb9af7;
+
+    /* data-viz categorical ramp (agents, chart series) */
+    --viz-1: #7aa2f7;
+    --viz-2: #9ece6a;
+    --viz-3: #e0af68;
+    --viz-4: #bb9af7;
+    --viz-5: #7dcfff;
+    --viz-6: #f7768e;
+    --viz-7: #73daca;
+    --viz-8: #ff9e64;
+
+    /* typography */
+    --font-ui:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+        sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* spacing (4px grid), radius, motion */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --radius-s: 4px;
+    --radius-m: 8px;
+    --radius-l: 12px;
+    --shadow-pop: 0 8px 32px rgb(0 0 0 / 0.45);
+    --t-fast: 150ms;
+    --t-med: 240ms;
+
+    /* ── legacy aliases (the per-view stylesheets consume these) ──────────
+       --fg/--dim are lifted to the new contrast tiers; surfaces unchanged. */
+    --bg: var(--surface-1);
+    --panel: var(--surface-2);
+    --panel2: var(--surface-3);
+    --line: var(--border);
+    --fg: var(--text-md);
+    --dim: var(--text-lo);
+    --tool: var(--info);
+    --magenta: var(--special);
 }
+
 * {
     box-sizing: border-box;
 }
+
 body {
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font:
-        13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas,
-        monospace;
+    font: 13px/1.5 var(--font-ui);
+}
+
+/* ── chrome sans / data mono ──────────────────────────────────────────────
+   The body is sans (nav, labels, headings, buttons inherit it). Everything
+   that carries ids, numbers, times, tool args, or JSON stays mono. */
+.row,
+.badge,
+.lane-meta,
+.race-agent .meta,
+.race-agent .model,
+.race-event,
+.race-turn-label,
+.race-turn-snippet,
+.trace-meta,
+.trace-label .model,
+.tile .v,
+.lat-cell .lv,
+.bar-row .bv,
+table.lead,
+#statbar,
+#ctxwidget,
+.xpanel pre,
+.insp-json,
+.insp-field,
+.find-snip,
+.single-id .sub,
+.proj-tag,
+#race-axis,
+#trace-axis,
+#stats-axis,
+#compare-axis,
+#find-axis,
+.runhist-head,
+.cmp-boot-row,
+#trace-scrub-t,
+.stat b,
+select {
+    font-family: var(--font-mono);
+}
+
+/* numeric columns and counters never jitter */
+.tile .v,
+.lat-cell .lv,
+.bar-row .bv,
+table.lead td.num,
+.trace-meta,
+.lane-meta,
+.stat b,
+#statbar {
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── interaction baseline ───────────────────────────────────────────────── */
+button,
+select,
+input {
+    transition:
+        color var(--t-fast) ease-out,
+        background-color var(--t-fast) ease-out,
+        border-color var(--t-fast) ease-out;
+}
+
+/* visible keyboard focus everywhere (mouse clicks stay ring-free) */
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-s);
+}
+
+::selection {
+    background: rgba(122, 162, 247, 0.3);
+}
+
+/* ── reduced motion: freeze pulses/flashes/transitions globally ─────────── */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }

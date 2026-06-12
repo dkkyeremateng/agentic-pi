@@ -97,6 +97,7 @@
     border-radius: 6px;
     padding: 4px 10px;
     font: inherit;
+    font-family: var(--font-mono);
     width: 220px;
 }
 .chip {

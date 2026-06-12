@@ -17,6 +17,7 @@
     border-radius: 6px;
     padding: 4px 8px;
     font: inherit;
+    font-family: var(--font-mono);
     cursor: pointer;
     max-width: 340px;
 }
