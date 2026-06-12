@@ -25,21 +25,24 @@ function singleList() {
     return singleVList;
 }
 
-// One virtualized row. turn_start = separator; everything else = event row
-// with time · badge · one-line detail · right-aligned latency/cost extras.
-function makeVRow(ev) {
+// One virtualized row (item = { ev, odd } — `odd` is the turn-CYCLE parity:
+// a cycle runs from a turn 0 start to the last turn before the next turn 0,
+// i.e. one user-request round; alternating cycles get a tinted background).
+function makeVRow(item) {
+    const ev = item.ev;
+    const galt = item.odd ? " galt" : "";
     if (ev.type === "turn_start") {
         const sep = document.createElement("div");
-        sep.className = "vsep";
+        const idx = ev.payload?.turnIndex ?? "";
+        sep.className = "vsep" + galt + (idx === 0 ? " g0" : "");
         const lbl = document.createElement("span");
-        lbl.textContent =
-            "turn " + (ev.payload?.turnIndex ?? "") + " · " + clock(ev.ts);
+        lbl.textContent = "turn " + idx + " · " + clock(ev.ts);
         sep.appendChild(lbl);
         return sep;
     }
     const { kls, badge, detail } = describe(ev);
     const row = document.createElement("div");
-    row.className = "row vrow";
+    row.className = "row vrow" + galt;
     const t = document.createElement("span");
     t.className = "t";
     t.textContent = clock(ev.ts);
@@ -88,17 +91,28 @@ function renderSingle() {
         return;
     }
     const items = [];
-    for (const ev of a.events)
-        if (ev.type === "turn_start" || passesFilter(ev)) items.push(ev);
+    singleCycle = 0; // turn-cycle counter (a turn 0 start begins a new cycle)
+    for (const ev of a.events) {
+        if (isCycleStart(ev)) singleCycle++;
+        if (ev.type === "turn_start" || passesFilter(ev))
+            items.push({ ev, odd: singleCycle % 2 === 1 });
+    }
     list.setItems(items, makeVRow);
     renderStatbar();
     if (autoscroll) $("content").scrollTop = $("content").scrollHeight;
 }
 
+// A new user-request cycle starts when the agent loop resets to turn 0.
+function isCycleStart(ev) {
+    return ev.type === "turn_start" && (ev.payload?.turnIndex ?? 0) === 0;
+}
+let singleCycle = 0; // parity source for live appends (set by renderSingle)
+
 // Live tail: append without rebuilding the whole window.
 function singleAppend(ev) {
     if (!singleVList) return renderSingle();
-    singleVList.append(ev);
+    if (isCycleStart(ev)) singleCycle++;
+    singleVList.append({ ev, odd: singleCycle % 2 === 1 });
     if (autoscroll) $("content").scrollTop = $("content").scrollHeight;
 }
 

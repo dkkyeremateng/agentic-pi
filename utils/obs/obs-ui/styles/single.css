@@ -193,10 +193,23 @@
     white-space: nowrap;
     overflow: hidden;
     cursor: pointer;
-    border-radius: var(--radius-s);
+}
+/* alternating turn-CYCLE bands (turn 0 → the turn before the next turn 0);
+   rows are contiguous fixed-height strips, so the tint reads as one band */
+.vrow.galt,
+.vsep.galt {
+    background: rgba(122, 162, 247, 0.07);
 }
 .vrow:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(255, 255, 255, 0.05);
+}
+/* a cycle's opening separator (turn 0) is accented */
+.vsep.g0 {
+    color: var(--accent);
+}
+.vsep.g0::before,
+.vsep.g0::after {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .vrow .d {
     flex: 1 1 auto;
