@@ -165,22 +165,50 @@ function renderStats() {
     const runs = collectRuns();
     const runList = [...runs.values()].sort((x, y) => y.lastTs - x.lastTs);
     const sel = $("stats-run");
+
+    // Which runs are live (any of their lanes still active).
+    const live = new Set();
+    for (const a of lanes.values())
+        if (laneInProject(a) && a.rollup.active && a.runId) live.add(a.runId);
+
+    // With only one run "all runs" is redundant — omit it and scope to that run.
+    const single = runList.length === 1;
+    const scope = single
+        ? runList[0].id
+        : statsRun && runs.has(statsRun)
+          ? statsRun
+          : "";
+
     sel.innerHTML = "";
-    const allOpt = document.createElement("option");
-    allOpt.value = "";
-    allOpt.textContent = "all runs";
-    sel.appendChild(allOpt);
-    runList.forEach((r, i) => {
+    if (!single) {
+        const allOpt = document.createElement("option");
+        allOpt.value = "";
+        allOpt.textContent = "all runs";
+        sel.appendChild(allOpt);
+    }
+    runList.forEach((r) => {
         const o = document.createElement("option");
         o.value = r.id;
+        const isLive = live.has(r.id);
+        if (isLive) o.style.color = "var(--ok)";
         const when = new Date(r.firstTs).toTimeString().slice(0, 8);
         o.textContent =
-            (i === 0 ? "● " : "") + when + " · " + r.agents.size + " agents";
+            when +
+            " · " +
+            r.agents.size +
+            " agents" +
+            (isLive ? " · live" : "");
         sel.appendChild(o);
     });
-    sel.value = statsRun && runs.has(statsRun) ? statsRun : "";
+    sel.value = scope;
 
-    const a = collectAnalytics(statsRun && runs.has(statsRun) ? statsRun : "");
+    // Live dot inside the picker — on when the scoped run is live, or (for "all
+    // runs") when any run is live. Same .dot.on used on the agent cards.
+    const statsDot = $("stats-run-dot");
+    if (statsDot)
+        statsDot.classList.toggle("on", scope ? live.has(scope) : live.size > 0);
+
+    const a = collectAnalytics(scope);
     const has = a.firstTs !== null && a.agents.size > 0;
     $("stats-empty").style.display = has ? "none" : "block";
     $("stats-body").style.display = has ? "" : "none";

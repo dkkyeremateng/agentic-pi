@@ -66,7 +66,8 @@
                 color: #0d0d14;
                 font-weight: 600;
             }
-            #projfilter {
+            #projfilter,
+            #runfilter {
                 background: var(--panel2);
                 color: var(--fg);
                 border: 1px solid var(--line);
@@ -74,6 +75,25 @@
                 padding: 4px 8px;
                 font: inherit;
                 cursor: pointer;
+            }
+            /* the run filter's live dot sits INSIDE the select (over its left
+               padding), where the old text bullet was; the select's text is padded
+               to clear it */
+            .runfilter-wrap {
+                position: relative;
+                display: flex;
+                align-items: center;
+            }
+            .runfilter-wrap #run-dot {
+                position: absolute;
+                left: 9px;
+                top: 50%;
+                transform: translateY(-50%);
+                z-index: 1;
+                pointer-events: none;
+            }
+            #runfilter {
+                padding-left: 22px;
             }
             .proj-tag {
                 color: var(--dim);
@@ -838,12 +858,26 @@
                 font-size: 11px;
                 letter-spacing: 0.08em;
             }
+            /* run picker with the live dot INSIDE the select (Trace + Stats) */
+            .runsel {
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+            }
+            .runsel .dot {
+                position: absolute;
+                left: 9px;
+                top: 50%;
+                transform: translateY(-50%);
+                z-index: 1;
+                pointer-events: none;
+            }
             #trace-run {
                 background: var(--panel2);
                 color: var(--fg);
                 border: 1px solid var(--line);
                 border-radius: 6px;
-                padding: 4px 8px;
+                padding: 4px 8px 4px 22px;
                 font: inherit;
                 cursor: pointer;
                 max-width: 420px;
@@ -1003,7 +1037,7 @@
                 color: var(--fg);
                 border: 1px solid var(--line);
                 border-radius: 6px;
-                padding: 4px 8px;
+                padding: 4px 8px 4px 22px;
                 font: inherit;
                 cursor: pointer;
                 max-width: 420px;
@@ -1267,6 +1301,19 @@
             <select id="projfilter" title="filter by project">
                 <option value="">all projects</option>
             </select>
+            <span
+                id="runfilter-wrap"
+                class="runfilter-wrap"
+                style="display: none"
+            >
+                <span class="dot" id="run-dot"></span>
+                <select
+                    id="runfilter"
+                    title="filter by run (pick a project first)"
+                >
+                    <option value="">all runs</option>
+                </select>
+            </span>
             <span class="stat">agents <b id="s-agents">0</b></span>
             <span class="stat">events <b id="s-events">0</b></span>
             <span class="stat">tokens <b id="s-tokens">0</b></span>
@@ -1339,7 +1386,10 @@
                 <section id="trace" class="view">
                     <div id="trace-bar">
                         <span class="trace-lbl">RUN</span>
-                        <select id="trace-run" title="select a run"></select>
+                        <span class="runsel">
+                            <span class="dot" id="trace-run-dot"></span>
+                            <select id="trace-run" title="select a run"></select>
+                        </span>
                         <span id="trace-axis"></span>
                         <span class="trace-export">
                             <button
@@ -1367,9 +1417,12 @@
                 <section id="stats" class="view">
                     <div id="stats-bar">
                         <span class="trace-lbl">SCOPE</span>
-                        <select id="stats-run" title="scope to a run">
-                            <option value="">all runs</option>
-                        </select>
+                        <span class="runsel">
+                            <span class="dot" id="stats-run-dot"></span>
+                            <select id="stats-run" title="scope to a run">
+                                <option value="">all runs</option>
+                            </select>
+                        </span>
                         <span id="stats-axis"></span>
                     </div>
                     <div id="stats-empty">

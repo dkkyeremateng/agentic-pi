@@ -48,6 +48,7 @@ function setView(v) {
         renderSingle();
     }
     updateSidebarState();
+    updateRunFilter(); // shown only on the lane views (swimlane/single/race)
     if (v === "race") renderRace();
     if (v === "trace") renderTrace();
     if (v === "stats") renderStats();

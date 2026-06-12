@@ -88,11 +88,18 @@ $("trace-json").addEventListener("click", () => {
 });
 $("projfilter").addEventListener("change", (e) => {
     projectFilter = e.target.value;
+    runFilter = ""; // the previous run belongs to the previous project
+    runFilterAuto = true; // re-follow the live/last run in the new project
     try {
         localStorage.setItem("obs.projectFilter", projectFilter);
     } catch {
         /* ignore */
     }
+    applyVisibility();
+});
+$("runfilter").addEventListener("change", (e) => {
+    runFilter = e.target.value;
+    runFilterAuto = false; // an explicit choice (incl. "all runs") pins it
     applyVisibility();
 });
 $("search").addEventListener("input", (e) => {
@@ -147,6 +154,7 @@ if (projectFilter) {
     maybeAddProject(projectFilter); // ensure the option exists + selected
     $("projfilter").value = projectFilter;
 }
+updateRunFilter(); // show the run picker if a project was restored
 setInterval(renderHeader, 500);
 connect();
 

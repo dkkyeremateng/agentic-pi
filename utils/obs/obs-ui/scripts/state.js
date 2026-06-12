@@ -14,6 +14,8 @@ let view = "swimlane";
 let selected = null; // lane key
 let search = "";
 let projectFilter = ""; // "" = all projects
+let runFilter = ""; // "" = all runs; scopes swimlane/single/race to one run (single project only)
+let runFilterAuto = true; // when true, the run filter follows the live (or last) run
 let autoscroll = true;
 let laneOrd = 0; // creation order, for stable #n suffixing of same-agent instances
 
@@ -33,12 +35,15 @@ function laneKey(ev) {
     return (ev.cwd || "") + "\u0000" + ev.agent + "\u0000" + (ev.sessionId || "");
 }
 
-// All lanes that are instances of one agent (same project+agent), in creation
-// order, the parallel/sequential runs of that agent.
+// In-scope instances of one agent (same project+agent, passing the current
+// project+run filters), in creation order. Scope-aware so "#n" only appears when
+// the agent actually has several instances IN VIEW (e.g. parallel in the selected
+// run) — a lone instance in the selected run shows just its name.
 function laneSiblings(a) {
     const out = [];
     for (const l of lanes.values())
-        if (l.cwd === a.cwd && l.agent === a.agent) out.push(l);
+        if (l.cwd === a.cwd && l.agent === a.agent && laneInScope(l))
+            out.push(l);
     return out.sort((x, y) => x.ord - y.ord);
 }
 // Recompute display labels for an agent instance group and push them to the

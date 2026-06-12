@@ -133,29 +133,73 @@ function renderTrace() {
     }
     $("trace-empty").style.display = "none";
 
-    // Run picker — latest first, with a "follow latest" sentinel.
+    // Which runs are live (any of their lanes still active).
+    const live = new Set();
+    for (const a of lanes.values())
+        if (laneInProject(a) && a.rollup.active && a.runId) live.add(a.runId);
+
+    // Run picker — latest first, with a "follow live/latest" sentinel. When all
+    // projects are shown and >1 is present, group runs under their project. Live
+    // runs are flagged with green text + "· live". With only one run the sentinel
+    // is redundant — omit it and just show that run.
+    const distinctProjects = new Set(runList.map((r) => r.project));
+    const byProject = projectFilter === "" && distinctProjects.size > 1;
+    const single = runList.length === 1;
+
     sel.innerHTML = "";
-    const latest = document.createElement("option");
-    latest.value = "";
-    latest.textContent = "latest (live)";
-    sel.appendChild(latest);
-    runList.forEach((r, i) => {
+    if (!single) {
+        const latest = document.createElement("option");
+        latest.value = "";
+        latest.textContent = "live (latest)";
+        sel.appendChild(latest);
+    }
+
+    const optFor = (r) => {
         const o = document.createElement("option");
         o.value = r.id;
+        const isLive = live.has(r.id);
+        if (isLive) o.style.color = "var(--ok)";
         const when = new Date(r.firstTs).toTimeString().slice(0, 8);
         o.textContent =
-            (i === 0 ? "● " : "") +
             when +
             " · " +
             r.agents.size +
             " agents · " +
-            fmtDur(r.lastTs - r.firstTs);
-        sel.appendChild(o);
-    });
-    sel.value = traceRun && runs.has(traceRun) ? traceRun : "";
+            fmtDur(r.lastTs - r.firstTs) +
+            (isLive ? " · live" : "");
+        return o;
+    };
 
-    const run = traceRun && runs.get(traceRun) ? runs.get(traceRun) : runList[0];
+    if (!byProject) {
+        runList.forEach((r) => sel.appendChild(optFor(r)));
+    } else {
+        // Bucket runs by project, preserving latest-first order; projects ordered
+        // by their most recent run.
+        const projs = new Map();
+        runList.forEach((r) => {
+            let p = projs.get(r.project);
+            if (!p) {
+                p = [];
+                projs.set(r.project, p);
+            }
+            p.push(r);
+        });
+        for (const [project, items] of projs) {
+            const og = document.createElement("optgroup");
+            og.label = project;
+            for (const r of items) og.appendChild(optFor(r));
+            sel.appendChild(og);
+        }
+    }
+    // Default (sentinel) follows the live run, else the latest.
+    const def = runList.find((r) => live.has(r.id)) || runList[0];
+    const run = traceRun && runs.get(traceRun) ? runs.get(traceRun) : def;
     traceCurrentRun = run.id;
+    // No sentinel when single — select the one run directly.
+    sel.value = traceRun && runs.has(traceRun) ? traceRun : single ? run.id : "";
+    // Live dot inside the picker — the same .dot.on used on the agent cards.
+    const traceDot = $("trace-run-dot");
+    if (traceDot) traceDot.classList.toggle("on", live.has(run.id));
     const nodes = buildTraceNodes(run.id);
     const t0 = run.firstTs;
     const span = Math.max(1, run.lastTs - run.firstTs);
@@ -204,6 +248,7 @@ function renderTrace() {
     for (const n of nodes.values())
         if (traceStatus(n) === "running") running++;
     $("trace-axis").innerHTML =
+        (byProject ? "project <b>" + run.project + "</b> · " : "") +
         "<b>" +
         nodes.size +
         "</b> agents · span <b>" +
