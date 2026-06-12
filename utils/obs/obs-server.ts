@@ -323,12 +323,21 @@ const server = createServer((req, res) => {
         serveStatic(res, join(UI_DIR, "index.html"));
         return;
     }
-    // Dashboard client scripts (vanilla, no bundler) live under obs-ui/scripts/.
-    // Serve only flat *.js names from that dir — no path traversal.
+    // Dashboard client scripts (vanilla, no bundler) live under obs-ui/scripts/,
+    // stylesheets under obs-ui/styles/. Serve only flat names — no traversal.
     if (url.startsWith("/scripts/")) {
         const name = url.slice("/scripts/".length);
         if (/^[a-zA-Z0-9_-]+\.js$/.test(name)) {
             serveStatic(res, join(UI_DIR, "scripts", name));
+        } else {
+            res.writeHead(404).end("not found");
+        }
+        return;
+    }
+    if (url.startsWith("/styles/")) {
+        const name = url.slice("/styles/".length);
+        if (/^[a-zA-Z0-9_-]+\.css$/.test(name)) {
+            serveStatic(res, join(UI_DIR, "styles", name));
         } else {
             res.writeHead(404).end("not found");
         }

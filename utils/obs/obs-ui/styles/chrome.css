@@ -1,0 +1,162 @@
+/* chrome — header, view toggle, filters, sidebar, layout shell */
+header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 3;
+}
+header h1 {
+    font-size: 14px;
+    margin: 0;
+    letter-spacing: 0.04em;
+}
+.toggle {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.toggle button {
+    background: transparent;
+    color: var(--dim);
+    border: 0;
+    padding: 4px 14px;
+    font: inherit;
+    cursor: pointer;
+}
+.toggle button.on {
+    background: var(--accent);
+    color: #0d0d14;
+    font-weight: 600;
+}
+#projfilter,
+#runfilter {
+    background: var(--panel2);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font: inherit;
+    cursor: pointer;
+}
+/* the run filter's live dot sits INSIDE the select (over its left
+   padding), where the old text bullet was; the select's text is padded
+   to clear it */
+.runfilter-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.runfilter-wrap #run-dot {
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1;
+    pointer-events: none;
+}
+#runfilter {
+    padding-left: 22px;
+}
+.proj-tag {
+    color: var(--dim);
+    font-size: 11px;
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0 5px;
+}
+.stat {
+    color: var(--dim);
+}
+.stat b {
+    color: var(--fg);
+    font-weight: 600;
+}
+#conn {
+    margin-left: auto;
+    color: var(--err);
+}
+#conn.up {
+    color: var(--ok);
+}
+#layout {
+    display: flex;
+    align-items: stretch;
+    min-height: calc(100vh - 44px);
+}
+#sidebar {
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    flex: none;
+}
+#sbtns {
+    position: sticky;
+    top: 48px; /* sits just below the sticky header */
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 8px;
+}
+.sbtn {
+    width: 34px;
+    height: 34px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: var(--panel2);
+    color: var(--dim);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    position: relative;
+}
+.sbtn:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+}
+.sbtn.on {
+    color: #0d0d14;
+    background: var(--accent);
+    border-color: var(--accent);
+}
+.sbtn.off {
+    opacity: 0.35;
+    border-style: dashed;
+}
+.sbtn .live-dot {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ok);
+    display: none;
+}
+.sbtn.active .live-dot {
+    display: block;
+}
+main {
+    flex: 1;
+    min-width: 0;
+}
+.view {
+    display: none;
+}
+.view.on {
+    display: block;
+}
+
+/* header health chip (fed by the 500ms header tick) */
+#s-health.warn {
+    color: var(--warn);
+}
+#s-health.err {
+    color: var(--err);
+}

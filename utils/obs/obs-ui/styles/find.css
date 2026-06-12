@@ -1,0 +1,57 @@
+/* search — cross-run, whole-sink */
+#find {
+    padding: 16px;
+}
+#find-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+#find-q {
+    background: var(--panel2);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font: inherit;
+    width: 320px;
+}
+#find-q:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+#find-axis {
+    color: var(--dim);
+    font-size: 12px;
+}
+#find-axis b {
+    color: var(--fg);
+}
+#find-empty {
+    color: var(--dim);
+    padding: 30px 4px;
+}
+.find-row {
+    cursor: pointer;
+}
+.find-row:hover td {
+    background: rgba(255, 255, 255, 0.03);
+}
+.find-snip {
+    color: var(--dim);
+    max-width: 480px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.find-snip b {
+    color: var(--warn);
+}
+.find-run {
+    color: var(--accent);
+    cursor: pointer;
+}
+.find-run:hover {
+    text-decoration: underline;
+}

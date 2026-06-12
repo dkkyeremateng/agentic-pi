@@ -1,0 +1,87 @@
+/* event inspector (bottom dock) */
+#inspector {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 42vh;
+    background: var(--panel);
+    border-top: 1px solid var(--accent);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+    display: none;
+    flex-direction: column;
+    z-index: 10;
+}
+#inspector.open {
+    display: flex;
+}
+.insp-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+}
+.insp-title {
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+}
+.insp-type {
+    font-weight: 600;
+}
+.insp-btn {
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    color: var(--dim);
+    border-radius: 4px;
+    padding: 2px 9px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+.insp-btn:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+}
+#insp-copy {
+    margin-left: auto;
+}
+.insp-body {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+}
+.insp-left {
+    width: 300px;
+    flex: none;
+    padding: 12px 14px;
+    border-right: 1px solid var(--line);
+    overflow: auto;
+}
+.insp-field {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+.insp-field > span {
+    width: 56px;
+    flex: none;
+    color: var(--dim);
+}
+.insp-summary {
+    margin-top: 12px;
+    color: var(--fg);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.insp-json {
+    flex: 1;
+    margin: 0;
+    padding: 12px 14px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    color: var(--fg);
+}
