@@ -176,18 +176,42 @@
                             </span>
                         </span>
                         <div id="statbar"></div>
-                        <div id="ctxwidget">
-                            <span class="ctx-label">CONTEXT</span>
-                            <span class="ctx-nums"
-                                ><b id="ctx-used">—</b> /
-                                <span id="ctx-win">—</span></span
-                            >
-                            <span class="ctx-rem"
-                                ><b id="ctx-pct">—</b> remaining</span
-                            >
-                            <div class="ctx-bar">
-                                <div id="ctx-fill"></div>
-                            </div>
+                        <div
+                            id="ctxwidget"
+                            title="context window — the ring drains as it fills"
+                        >
+                            <svg class="ctx-ring" viewBox="0 0 36 36">
+                                <circle
+                                    class="ctx-ring-track"
+                                    cx="18"
+                                    cy="18"
+                                    r="15.5"
+                                />
+                                <circle
+                                    class="ctx-ring-fill"
+                                    id="ctx-ring"
+                                    cx="18"
+                                    cy="18"
+                                    r="15.5"
+                                />
+                                <text
+                                    id="ctx-ring-pct"
+                                    x="18"
+                                    y="21"
+                                    text-anchor="middle"
+                                >
+                                    —
+                                </text>
+                            </svg>
+                            <span class="ctx-text">
+                                <span class="ctx-nums"
+                                    ><b id="ctx-used">—</b> /
+                                    <span id="ctx-win">—</span></span
+                                >
+                                <span class="ctx-sub"
+                                    >context · <b id="ctx-pct">—</b> left</span
+                                >
+                            </span>
                         </div>
                     </div>
                     <div id="single-empty">

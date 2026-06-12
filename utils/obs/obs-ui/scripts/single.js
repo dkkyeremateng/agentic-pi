@@ -145,13 +145,24 @@ function renderStatbar() {
     renderCtxWidget(r.context);
 }
 
+// The ring gauge drains as the window fills: arc length = % remaining, with
+// runway colors (ok ≥40% left, warn ≥15%, err below). Center shows what's left.
+const CTX_RING_C = 2 * Math.PI * 15.5; // circumference at r=15.5
+
 function renderCtxWidget(ctx) {
     const used = ctx && ctx.tokens != null ? ctx.tokens : null;
     const win = ctx && ctx.window ? ctx.window : null;
-    const pct = ctx && ctx.percent != null ? ctx.percent : null;
+    const pct = ctx && ctx.percent != null ? ctx.percent : null; // % USED
+    const left =
+        pct != null ? Math.max(0, Math.min(100, Math.round(100 - pct))) : null;
     $("ctx-used").textContent = used != null ? fmtTok(used) : "—";
     $("ctx-win").textContent = win != null ? fmtTok(win) : "—";
-    $("ctx-pct").textContent =
-        pct != null ? Math.max(0, Math.round(100 - pct)) + "%" : "—";
-    $("ctx-fill").style.width = (pct != null ? Math.min(100, pct) : 0) + "%";
+    $("ctx-pct").textContent = left != null ? left + "%" : "—";
+    const ring = $("ctx-ring");
+    ring.style.strokeDasharray = CTX_RING_C;
+    ring.style.strokeDashoffset =
+        left != null ? CTX_RING_C * (1 - left / 100) : CTX_RING_C;
+    ring.classList.toggle("warn", left != null && left < 40 && left >= 15);
+    ring.classList.toggle("err", left != null && left < 15);
+    $("ctx-ring-pct").textContent = left != null ? left + "%" : "—";
 }
