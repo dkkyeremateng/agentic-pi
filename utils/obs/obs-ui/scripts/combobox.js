@@ -63,7 +63,9 @@ function makeCombo({ input, list, onPick }) {
         if (it) onPick(it.value);
     }
     function openList() {
-        if (open) return;
+        // Nothing to choose (0–1 items) — stay a static label, like a 1-option
+        // <select>; don't pop a dropdown on focus.
+        if (open || items.length <= 1) return;
         open = true;
         input.value = "";
         list.hidden = false;
@@ -107,6 +109,9 @@ function makeCombo({ input, list, onPick }) {
         update(newItems, newDisplay) {
             items = newItems;
             display = newDisplay;
+            // With 0–1 options there's nothing to filter; make the input a static,
+            // read-only label (no caret, no dropdown) — matching a 1-option select.
+            input.readOnly = newItems.length <= 1;
             if (open) render();
             else input.value = display;
         },

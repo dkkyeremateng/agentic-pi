@@ -291,9 +291,11 @@ function renderTrace() {
     traceCurrentRun = run.id;
 
     // Combobox: a "follow live/latest" sentinel + every run (project-tagged
-    // when several projects are in view).
+    // when several projects are in view). With only one run the sentinel is
+    // redundant — show just that run (like the Stats picker).
+    const single = runList.length === 1;
     const items = [
-        { value: "", label: "live (latest)", live: true },
+        ...(single ? [] : [{ value: "", label: "live (latest)", live: true }]),
         ...runList.map((r) => ({
             value: r.id,
             label: traceRunLabel(r, live),
@@ -303,7 +305,9 @@ function renderTrace() {
     ];
     traceCombo.update(
         items,
-        (traceRun ? "" : "live · ") + traceRunLabel(run, live),
+        single
+            ? traceRunLabel(run, live)
+            : (traceRun ? "" : "live · ") + traceRunLabel(run, live),
     );
     const traceDot = $("trace-run-dot");
     if (traceDot) traceDot.classList.toggle("on", live.has(run.id));

@@ -76,8 +76,26 @@ function makeVRow(item) {
     return row;
 }
 
+// The lane to show when nothing is selected: the orchestrator (the run's root),
+// else the first visible lane.
+function defaultSingleLane() {
+    let first = null;
+    for (const l of lanes.values()) {
+        if (!laneVisible(l)) continue;
+        if (l.agent === "orchestrator") return l;
+        if (!first) first = l;
+    }
+    return first;
+}
+
 function renderSingle() {
-    const a = selected && lanes.get(selected);
+    let a = selected && lanes.get(selected);
+    // Default to the orchestrator when nothing (valid) is selected, so opening
+    // Single lands on the run's root instead of a blank pane.
+    if (!a || !laneVisible(a)) {
+        a = defaultSingleLane();
+        selected = a ? a.key : null;
+    }
     $("single-empty").style.display = a ? "none" : "block";
     $("single-agent").textContent = a ? a.label : "—";
     $("single-proj").textContent = a ? a.project : "";
