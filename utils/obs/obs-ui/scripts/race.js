@@ -133,8 +133,9 @@ function projCollapsed(project) {
     return raceProjCollapsed.has(project) ? raceProjCollapsed.get(project) : false;
 }
 
-// Event inspector (bottom dock) — full detail for a clicked event.
+// Event inspector (detail drawer) — full detail for a clicked event.
 function openInspector(ev, lane) {
+    $("insp-action").hidden = true; // span-detail-only affordance
     $("insp-type").textContent = emojiFor(ev) + "  " + typeLabel(ev);
     $("insp-agent").textContent =
         (lane ? lane.label : ev.agent) +

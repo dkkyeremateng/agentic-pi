@@ -40,11 +40,7 @@ $("v-swimlane").addEventListener("click", () => setView("swimlane"));
 $("v-single").addEventListener("click", () => setView("single"));
 $("v-race").addEventListener("click", () => setView("race"));
 $("v-trace").addEventListener("click", () => setView("trace"));
-$("trace-run").addEventListener("change", (e) => {
-    traceRun = e.target.value;
-    renderTrace();
-    syncHash();
-});
+// (the trace run picker is a combobox now — wired in trace.js)
 $("trace-scrub").addEventListener("input", (e) => {
     traceSetReplay(Number(e.target.value));
 });

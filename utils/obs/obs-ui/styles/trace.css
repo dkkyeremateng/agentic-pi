@@ -28,7 +28,7 @@
     z-index: 1;
     pointer-events: none;
 }
-#trace-run {
+#trace-run-q {
     background: var(--panel2);
     color: var(--fg);
     border: 1px solid var(--line);
@@ -36,8 +36,11 @@
     padding: 4px 8px 4px 22px;
     font: inherit;
     font-family: var(--font-mono);
-    cursor: pointer;
-    max-width: 420px;
+    width: 340px;
+}
+#trace-run-q:focus {
+    border-color: var(--accent);
+    outline: none;
 }
 #trace-axis {
     color: var(--dim);
@@ -88,10 +91,85 @@
     color: var(--dim);
     padding: 30px 4px;
 }
+#trace-body {
+    position: relative;
+}
+/* ticks header — mirrors the row grid (label | track | meta) so the T+ labels
+   sit exactly over the time axis */
+#trace-ticks {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+.trace-label-sp {
+    flex: none;
+    width: 230px;
+}
+.trace-meta-sp {
+    flex: none;
+    width: 320px;
+}
+.ticks-track {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+    height: 15px;
+}
+.tick-lbl {
+    position: absolute;
+    bottom: 0;
+    transform: translateX(-50%);
+    font: 10px/1 var(--font-mono);
+    color: var(--text-faint);
+    white-space: nowrap;
+}
+.tick-lbl:first-child {
+    transform: none;
+}
+.tick-lbl:last-child {
+    transform: translateX(-100%);
+}
 #trace-tree {
     display: flex;
     flex-direction: column;
     gap: 3px;
+}
+/* hover crosshair + drag-to-zoom selection (positioned by trace.js) */
+#trace-cross {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--accent);
+    opacity: 0.65;
+    pointer-events: none;
+    z-index: 5;
+}
+#trace-cross-t {
+    position: absolute;
+    top: -2px;
+    left: 6px;
+    background: var(--surface-4);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-s);
+    padding: 1px 6px;
+    font: 10px/1.5 var(--font-mono);
+    color: var(--text-hi);
+    white-space: nowrap;
+}
+#trace-brush {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border: 1px solid var(--accent);
+    pointer-events: none;
+    z-index: 4;
+}
+.trace-skel {
+    height: 24px;
+    margin: 6px 0;
 }
 .trace-row {
     display: flex;
@@ -135,9 +213,46 @@
     height: 22px;
     min-width: 0;
     background: var(--panel);
+    /* faint gridlines at 25/50/75% — they line up with the ticks header */
+    background-image: linear-gradient(var(--border), var(--border)),
+        linear-gradient(var(--border), var(--border)),
+        linear-gradient(var(--border), var(--border));
+    background-size: 1px 100%;
+    background-repeat: no-repeat;
+    background-position:
+        25% 0,
+        50% 0,
+        75% 0;
     border: 1px solid var(--line);
     border-radius: 5px;
     overflow: hidden;
+}
+/* tool-call ticks (dark slits over the bar; errors in red) + retry markers */
+.t-tick {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 9px;
+    border-radius: 1px;
+    background: rgb(13 13 20 / 0.6);
+    z-index: 2;
+    pointer-events: none;
+}
+.t-tick.err {
+    background: var(--err);
+    width: 3px;
+    height: 13px;
+    box-shadow: 0 0 4px var(--err);
+}
+.t-retry {
+    position: absolute;
+    top: 1px;
+    transform: translateX(-50%);
+    font: 11px/1.4 var(--font-mono);
+    color: var(--warn);
+    z-index: 3;
+    pointer-events: none;
 }
 .trace-span {
     position: absolute;

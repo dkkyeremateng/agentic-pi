@@ -160,3 +160,50 @@
     z-index: 50;
     pointer-events: none;
 }
+
+/* ── combobox (filterable run pickers) ──────────────────────────────────── */
+.combo {
+    position: relative;
+}
+.combo-list {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 100%;
+    max-width: 480px;
+    max-height: 320px;
+    overflow-y: auto;
+    background: var(--surface-4);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-m);
+    box-shadow: var(--shadow-pop);
+    z-index: 60;
+    padding: 4px;
+}
+.combo-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: var(--radius-s);
+    color: var(--text-md);
+    font: 12px/1.5 var(--font-mono);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.combo-item.sel {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--text-hi);
+}
+.combo-item.live {
+    color: var(--ok);
+}
+.combo-sub {
+    margin-left: auto;
+    color: var(--text-faint);
+    font-size: 11px;
+}
+.combo-empty {
+    padding: 10px;
+    color: var(--text-lo);
+}
