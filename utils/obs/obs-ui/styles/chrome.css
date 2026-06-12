@@ -379,3 +379,17 @@ header {
     padding: 14px;
     color: var(--text-lo);
 }
+
+/* floating chart tooltip (chart.js) */
+#chart-tip {
+    position: fixed;
+    z-index: 200;
+    background: var(--surface-4);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-s);
+    padding: 3px 8px;
+    font: 11px/1.5 var(--font-mono);
+    color: var(--text-hi);
+    pointer-events: none;
+    box-shadow: var(--shadow-pop);
+}

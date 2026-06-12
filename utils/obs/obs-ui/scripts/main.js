@@ -56,19 +56,11 @@ $("find-go").addEventListener("click", runFind);
 $("find-q").addEventListener("keydown", (e) => {
     if (e.key === "Enter") runFind();
 });
-$("cmp-a").addEventListener("change", (e) => {
-    cmpA = e.target.value;
-    renderCompare();
-    syncHash();
-});
-$("cmp-b").addEventListener("change", (e) => {
-    cmpB = e.target.value;
-    renderCompare();
-    syncHash();
-});
+// (A/B pickers are comboboxes now — wired in compare.js)
 $("cmp-swap").addEventListener("click", () => {
-    const a = $("cmp-a").value;
-    cmpA = $("cmp-b").value;
+    // swap what is actually rendered (the pins may be "" = defaults)
+    const a = cmpCurrentA;
+    cmpA = cmpCurrentB;
     cmpB = a;
     renderCompare();
     syncHash();

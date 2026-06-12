@@ -5,21 +5,84 @@
 // View key is "find" — the id "search" belongs to the Single view's filter box.
 let findBusy = false;
 let findLast = ""; // last executed query (re-run guard)
+let findFilters = {}; // parsed run:/agent:/type:/project: prefixes
+
+// `run:abc agent:scout type:tool_end project:foo` narrow client-side; the
+// remaining words go to the server's raw-line scan. With ONLY prefixes, the
+// first filter value doubles as the server query (it appears in raw lines).
+function parseFindQuery(raw) {
+    const filters = {};
+    const rest = [];
+    for (const tok of raw.split(/\s+/)) {
+        const m = tok.match(/^(run|agent|type|project):(.+)$/i);
+        if (m) filters[m[1].toLowerCase()] = m[2].toLowerCase();
+        else if (tok) rest.push(tok);
+    }
+    return {
+        filters,
+        q: rest.join(" ") || Object.values(filters)[0] || "",
+    };
+}
+
+function passesFindFilters(ev) {
+    const f = findFilters;
+    if (f.run && !(ev.runId || "").toLowerCase().startsWith(f.run))
+        return false;
+    if (f.agent && ev.agent.toLowerCase() !== f.agent) return false;
+    if (f.type && ev.type !== f.type) return false;
+    if (f.project && projectName(ev.cwd).toLowerCase() !== f.project)
+        return false;
+    return true;
+}
+
+// recent queries (last 8, deduped) feed the input's <datalist>
+function findRecents() {
+    try {
+        return JSON.parse(localStorage.getItem("obs.findRecent") || "[]");
+    } catch {
+        return [];
+    }
+}
+function rememberFind(raw) {
+    const list = [raw, ...findRecents().filter((x) => x !== raw)].slice(0, 8);
+    try {
+        localStorage.setItem("obs.findRecent", JSON.stringify(list));
+    } catch {
+        /* ignore */
+    }
+    renderFindRecents();
+}
+function renderFindRecents() {
+    const dl = $("find-recent");
+    dl.innerHTML = "";
+    for (const q of findRecents()) {
+        const o = document.createElement("option");
+        o.value = q;
+        dl.appendChild(o);
+    }
+}
+renderFindRecents();
 
 function runFind() {
-    const q = $("find-q").value.trim();
-    if (!q || findBusy) return;
+    const raw = $("find-q").value.trim();
+    if (!raw || findBusy) return;
+    const { filters, q } = parseFindQuery(raw);
+    if (!q) return;
     findBusy = true;
-    findLast = q;
+    findLast = raw;
+    findFilters = filters;
     $("find-axis").textContent = "searching…";
     fetch("/search?q=" + encodeURIComponent(q) + "&limit=200")
         .then((r) => r.json())
-        .then((evs) =>
+        .then((evs) => {
+            rememberFind(raw);
             renderFindResults(
                 q,
-                (Array.isArray(evs) ? evs : []).map(normalizeEvent),
-            ),
-        )
+                (Array.isArray(evs) ? evs : [])
+                    .map(normalizeEvent)
+                    .filter(passesFindFilters),
+            );
+        })
         .catch(() => {
             $("find-axis").textContent = "search failed (server too old?)";
         })
@@ -111,4 +174,5 @@ function renderFindResults(q, evs) {
     }
     table.appendChild(tbody);
     box.appendChild(table);
+    makeSortable(table);
 }

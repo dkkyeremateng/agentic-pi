@@ -190,3 +190,51 @@ table.lead td.err {
 .runhist-head b {
     color: var(--fg);
 }
+
+/* ── P4: KPI deltas, chart, sortable tables, run-history rows ───────────── */
+.kpi-delta {
+    margin-top: 2px;
+    font: 600 11px/1.2 var(--font-ui);
+}
+.kpi-delta.bad {
+    color: var(--err);
+}
+.kpi-delta.good {
+    color: var(--ok);
+}
+#stats-timeline canvas.chart {
+    width: 100%;
+    height: 120px;
+    display: block;
+}
+.chart-note {
+    font-size: 11px;
+    margin-top: 4px;
+}
+.runhist-head .spark {
+    width: 140px;
+    height: 20px;
+    vertical-align: middle;
+    margin-left: 10px;
+}
+.runhist-row {
+    cursor: pointer;
+}
+.runhist-row:hover td {
+    background: rgba(255, 255, 255, 0.03);
+}
+table.lead th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+table.lead th.sortable:hover {
+    color: var(--text-hi);
+}
+table.lead th[aria-sort="ascending"]::after {
+    content: " ▲";
+    font-size: 9px;
+}
+table.lead th[aria-sort="descending"]::after {
+    content: " ▼";
+    font-size: 9px;
+}

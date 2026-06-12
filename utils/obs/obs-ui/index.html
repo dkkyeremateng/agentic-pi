@@ -313,9 +313,33 @@
                 <section id="compare" class="view">
                     <div id="compare-bar">
                         <span class="trace-lbl">A</span>
-                        <select id="cmp-a" title="baseline run"></select>
+                        <span class="combo">
+                            <input
+                                id="cmp-a-q"
+                                autocomplete="off"
+                                spellcheck="false"
+                                title="baseline run (type to filter)"
+                            />
+                            <div
+                                class="combo-list"
+                                id="cmp-a-list"
+                                hidden
+                            ></div>
+                        </span>
                         <span class="trace-lbl">B</span>
-                        <select id="cmp-b" title="candidate run"></select>
+                        <span class="combo">
+                            <input
+                                id="cmp-b-q"
+                                autocomplete="off"
+                                spellcheck="false"
+                                title="candidate run (type to filter)"
+                            />
+                            <div
+                                class="combo-list"
+                                id="cmp-b-list"
+                                hidden
+                            ></div>
+                        </span>
                         <button
                             id="cmp-swap"
                             class="exp-btn"
@@ -340,6 +364,10 @@
                                 <div id="cmp-boot"></div>
                             </div>
                             <div class="stats-card wide">
+                                <h3>Timelines (shared scale)</h3>
+                                <div id="cmp-waterfalls"></div>
+                            </div>
+                            <div class="stats-card wide">
                                 <h3>Per-agent</h3>
                                 <div id="cmp-agents"></div>
                             </div>
@@ -354,8 +382,10 @@
                     <div id="find-bar">
                         <input
                             id="find-q"
-                            placeholder="search every run… (Enter)"
+                            list="find-recent"
+                            placeholder="search every run…  (run: agent: type: project: filters)"
                         />
+                        <datalist id="find-recent"></datalist>
                         <button id="find-go" class="exp-btn">search</button>
                         <span id="find-axis"></span>
                     </div>
@@ -440,6 +470,7 @@
         <script src="/scripts/views.js"></script>
         <script src="/scripts/race.js"></script>
         <script src="/scripts/combobox.js"></script>
+        <script src="/scripts/chart.js"></script>
         <script src="/scripts/trace.js"></script>
         <script src="/scripts/stats.js"></script>
         <script src="/scripts/compare.js"></script>

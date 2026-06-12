@@ -6,6 +6,8 @@
 // archive (fetched on demand), so any two runs ever recorded can be compared.
 let cmpA = ""; // pinned runIds; "" = auto (A = previous run, B = latest)
 let cmpB = "";
+let cmpCurrentA = ""; // the ids actually rendered (for the swap button)
+let cmpCurrentB = "";
 
 function escHtml(s) {
     return String(s).replace(/[&<>"]/g, (c) =>
@@ -374,15 +376,13 @@ function renderCompare() {
     const runList = [...runs.values()].sort((x, y) => y.lastTs - x.lastTs);
     const body = $("compare-body");
     const empty = $("compare-empty");
-    const selA = $("cmp-a");
-    const selB = $("cmp-b");
 
     if (runList.length < 2) {
         empty.style.display = "block";
         body.style.display = "none";
         $("compare-axis").textContent = "";
-        selA.innerHTML = "";
-        selB.innerHTML = "";
+        cmpComboA.update([], "");
+        cmpComboB.update([], "");
         return;
     }
     empty.style.display = "none";
@@ -396,31 +396,27 @@ function renderCompare() {
     // disappeared (project switch, sink rotation) falls back to the default.
     const aId = cmpA && runs.has(cmpA) ? cmpA : runList[1].id;
     const bId = cmpB && runs.has(cmpB) ? cmpB : runList[0].id;
+    cmpCurrentA = aId;
+    cmpCurrentB = bId;
 
     // When several projects are in view, qualify labels with the project name.
     const manyProjects = new Set(runList.map((r) => r.project)).size > 1;
-    const fill = (sel, val) => {
-        sel.innerHTML = "";
-        for (const r of runList) {
-            const o = document.createElement("option");
-            o.value = r.id;
-            const isLive = live.has(r.id);
-            if (isLive) o.style.color = "var(--ok)";
-            o.textContent =
-                verdictMark(r.id) +
-                (manyProjects ? r.project + " · " : "") +
-                (r.name || fmtWhen(r.firstTs)) +
-                " · " +
-                r.agents.size +
-                " agents · " +
-                fmtDur(r.lastTs - r.firstTs) +
-                (isLive ? " · live" : r.archived ? " · archived" : "");
-            sel.appendChild(o);
-        }
-        sel.value = val;
-    };
-    fill(selA, aId);
-    fill(selB, bId);
+    const labelFor = (r) =>
+        verdictMark(r.id) +
+        (manyProjects ? r.project + " · " : "") +
+        (r.name || fmtWhen(r.firstTs)) +
+        " · " +
+        r.agents.size +
+        " agents · " +
+        fmtDur(r.lastTs - r.firstTs) +
+        (live.has(r.id) ? " · live" : r.archived ? " · archived" : "");
+    const items = runList.map((r) => ({
+        value: r.id,
+        label: labelFor(r),
+        live: live.has(r.id),
+    }));
+    cmpComboA.update(items, labelFor(runs.get(aId)));
+    cmpComboB.update(items, labelFor(runs.get(bId)));
 
     const runA = runs.get(aId);
     const runB = runs.get(bId);
@@ -443,7 +439,93 @@ function renderCompare() {
         escHtml(label(runB)) +
         " · Δ reads B vs A";
     renderCmpHeadline(A, B);
+    renderCmpWaterfalls(runA, runB, evA, evB);
     renderCmpAgents(A, B);
     renderCmpBoot(A, B);
     renderCmpTools(A, B);
 }
+
+// Side-by-side mini-waterfalls on ONE shared time scale — the visual diff:
+// where each run spent its wall clock, by agent.
+function renderCmpWaterfalls(runA, runB, evA, evB) {
+    const box = $("cmp-waterfalls");
+    box.innerHTML = "";
+    const scale = Math.max(
+        runA.lastTs - runA.firstTs,
+        runB.lastTs - runB.firstTs,
+        1,
+    );
+    const renderOne = (tag, run, evs) => {
+        const nodes = buildTraceNodes(
+            run.id,
+            (function* () {
+                for (const ev of evs) yield { ev, laneKey: null };
+            })(),
+        );
+        const list = [...nodes.values()]
+            .sort((x, y) => x.firstTs - y.firstTs)
+            .slice(0, 8);
+        for (const n of list) n.rollup.active = false; // post-hoc views never pulse
+        const wrap = document.createElement("div");
+        wrap.className = "cmp-wf";
+        const head = document.createElement("div");
+        head.className = "cmp-wf-head";
+        head.innerHTML =
+            "<b>" +
+            tag +
+            "</b> " +
+            escHtml(run.name || fmtWhen(run.firstTs)) +
+            ' <span class="cmp-wf-dur">' +
+            fmtDur(run.lastTs - run.firstTs) +
+            "</span>";
+        wrap.appendChild(head);
+        for (const n of list) {
+            const row = document.createElement("div");
+            row.className = "cmp-wf-row";
+            const lbl = document.createElement("span");
+            lbl.className = "cmp-wf-lbl";
+            lbl.textContent = n.agent;
+            lbl.title = n.agent;
+            const track = document.createElement("span");
+            track.className = "cmp-wf-track";
+            const bar = document.createElement("span");
+            bar.className = "cmp-wf-bar " + traceStatus(n);
+            const l = ((n.firstTs - run.firstTs) / scale) * 100;
+            const w = Math.max(0.5, ((n.lastTs - n.firstTs) / scale) * 100);
+            bar.style.left = l + "%";
+            bar.style.width = Math.min(100 - l, w) + "%";
+            bar.title =
+                n.agent +
+                " · " +
+                fmtDur(n.lastTs - n.firstTs) +
+                " · " +
+                fmtCost(n.rollup.costUsd);
+            track.appendChild(bar);
+            row.append(lbl, track);
+            wrap.appendChild(row);
+        }
+        box.appendChild(wrap);
+    };
+    renderOne("A", runA, evA);
+    renderOne("B", runB, evB);
+}
+
+// A/B pickers (comboboxes — typing filters by name/time/id).
+const cmpComboA = makeCombo({
+    input: $("cmp-a-q"),
+    list: $("cmp-a-list"),
+    onPick: (v) => {
+        cmpA = v;
+        renderCompare();
+        syncHash();
+    },
+});
+const cmpComboB = makeCombo({
+    input: $("cmp-b-q"),
+    list: $("cmp-b-list"),
+    onPick: (v) => {
+        cmpB = v;
+        renderCompare();
+        syncHash();
+    },
+});

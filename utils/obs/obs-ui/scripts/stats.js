@@ -100,7 +100,9 @@ function collectAnalytics(runId, fromArchive) {
     return a;
 }
 
-function tile(parent, k, v, cls) {
+// KPI tile; `delta` (optional) renders a vs-previous-run arrow:
+// { pct, worse } — worse=true colors it red (more cost/time/errors).
+function tile(parent, k, v, cls, delta) {
     const el = document.createElement("div");
     el.className = "tile";
     const kk = document.createElement("div");
@@ -110,65 +112,56 @@ function tile(parent, k, v, cls) {
     vv.className = "v" + (cls ? " " + cls : "");
     vv.textContent = v;
     el.append(kk, vv);
+    if (delta && isFinite(delta.pct) && delta.pct !== 0) {
+        const d = document.createElement("div");
+        d.className = "kpi-delta " + (delta.worse ? "bad" : "good");
+        d.textContent =
+            (delta.pct > 0 ? "▲ " : "▼ ") + Math.abs(delta.pct) + "%";
+        d.title = "vs the previous run in this project";
+        el.append(d);
+    }
     parent.append(el);
 }
 
+// vs-previous helper: % change current → prev (rounded), `worse` when up.
+function deltaVs(cur, prev) {
+    if (prev == null || !isFinite(prev) || prev <= 0 || cur == null) return null;
+    const pct = Math.round(((cur - prev) / prev) * 100);
+    return { pct, worse: pct > 0 };
+}
+
+// Cumulative cost over time — canvas line with crosshair + hover tooltip.
 function renderCostTimeline(series, span0, span1) {
     const box = $("stats-timeline");
-    box.innerHTML = "";
     if (series.length < 2) {
         box.innerHTML = '<span class="stats-muted">not enough turns yet</span>';
         return;
     }
-    const t0 = span0,
-        t1 = Math.max(span1, span0 + 1);
+    let canvas = box.querySelector("canvas");
+    if (!canvas) {
+        box.innerHTML = "";
+        canvas = document.createElement("canvas");
+        canvas.className = "chart";
+        box.appendChild(canvas);
+        const note = document.createElement("div");
+        note.className = "stats-muted chart-note";
+        note.id = "stats-timeline-note";
+        box.appendChild(note);
+    }
     let cum = 0;
     const pts = series.map((s) => {
         cum += s.cost;
-        return { x: ((s.ts - t0) / (t1 - t0)) * 100, y: cum };
+        return { x: s.ts, y: cum };
     });
-    const maxY = pts[pts.length - 1].y || 1;
-    const H = 30,
-        W = 100;
-    const sx = (x) => x.toFixed(2);
-    const sy = (y) => (H - (y / maxY) * (H - 2)).toFixed(2);
-    let line = "";
-    for (const pt of pts) line += (line ? " L" : "M") + sx(pt.x) + " " + sy(pt.y);
-    const area =
-        "M0 " +
-        H +
-        " L" +
-        sx(pts[0].x) +
-        " " +
-        H +
-        " " +
-        line.replace(/^M/, "L") +
-        " L" +
-        sx(pts[pts.length - 1].x) +
-        " " +
-        H +
-        " Z";
-    box.innerHTML =
-        '<svg viewBox="0 0 ' +
-        W +
-        " " +
-        H +
-        '" preserveAspectRatio="none">' +
-        '<path d="' +
-        area +
-        '" fill="rgba(122,162,247,0.18)"/>' +
-        '<path d="' +
-        line +
-        '" fill="none" stroke="var(--accent)" stroke-width="0.7" vector-effect="non-scaling-stroke"/>' +
-        "</svg>" +
-        '<div class="stats-muted" style="font-size:11px;margin-top:4px">' +
+    chartLine(canvas, pts, { yFmt: fmtCost, xFmt: clock });
+    $("stats-timeline-note").textContent =
         "total " +
-        fmtCost(maxY) +
+        fmtCost(cum) +
         " over " +
-        fmtDur(t1 - t0) +
+        fmtDur(span1 - span0) +
         " · " +
         series.length +
-        " turns</div>";
+        " turns";
 }
 
 function renderStats() {
@@ -257,11 +250,22 @@ function renderStats() {
         "</b>" +
         (scope ? verdictBadge(scope) : "");
 
-    // headline tiles
+    // headline tiles — with vs-previous-run deltas when scoped to one run
+    // (the previous run = the latest archive-indexed run in the same project
+    // that started earlier; its summary carries cost/duration/errors).
+    let prev = null;
+    if (scopeRun) {
+        for (const s of archiveRuns.values()) {
+            if (s.runId === scope) continue;
+            if (projectName(s.cwd) !== scopeRun.project) continue;
+            if (s.firstTs >= scopeRun.firstTs) continue;
+            if (!prev || s.firstTs > prev.firstTs) prev = s;
+        }
+    }
     const tiles = $("stats-tiles");
     tiles.innerHTML = "";
     const avgTps = a.turnMs > 0 ? Math.round((a.outTok / a.turnMs) * 1000) : 0;
-    tile(tiles, "cost", fmtCost(a.cost), "ok");
+    tile(tiles, "cost", fmtCost(a.cost), "ok", prev && deltaVs(a.cost, prev.costUsd));
     tile(tiles, "tokens", fmtTok(a.tokens));
     tile(tiles, "turns", a.turns);
     tile(tiles, "tool calls", a.toolCalls);
@@ -270,9 +274,15 @@ function renderStats() {
         "errors",
         a.errors + a.toolErrors,
         a.errors + a.toolErrors ? "err" : "",
+        prev && deltaVs(a.errors + a.toolErrors, prev.errors),
     );
     tile(tiles, "agents", a.agents.size);
-    tile(tiles, "wall clock", fmtDur(wall));
+    tile(
+        tiles,
+        "wall clock",
+        fmtDur(wall),
+        prev && deltaVs(wall, prev.lastTs - prev.firstTs),
+    );
     tile(tiles, "avg tok/s", avgTps);
 
     // latency percentiles
@@ -354,6 +364,7 @@ function renderStats() {
                 "</td></tr>";
         }
         toolBox.innerHTML = html + "</tbody></table>";
+        makeSortable(toolBox.querySelector("table"));
     }
 
     // cost over time
@@ -413,7 +424,10 @@ function renderRunHistory() {
         "</b>";
 
     const manyProjects = new Set(rows.map((r) => r.project)).size > 1;
-    let html = '<div class="runhist-head">' + head + "</div>";
+    let html =
+        '<div class="runhist-head">' +
+        head +
+        ' <canvas class="spark" title="cost across these runs (oldest → newest)"></canvas></div>';
     html +=
         '<table class="lead"><thead><tr><th>when</th>' +
         (manyProjects ? "<th>project</th>" : "") +
@@ -423,7 +437,9 @@ function renderRunHistory() {
     for (const { s, project } of recent) {
         const badge = verdictBadge(s.runId); // " · <span…>" or ""
         html +=
-            "<tr><td>" +
+            '<tr class="runhist-row" data-run="' +
+            escHtml(s.runId) +
+            '"><td>' +
             fmtWhen(s.firstTs) +
             "</td>" +
             (manyProjects ? "<td>" + escHtml(project) + "</td>" : "") +
@@ -444,5 +460,69 @@ function renderRunHistory() {
             "</td></tr>";
     }
     box.innerHTML = html + "</tbody></table>";
+    // header sparkline: cost across the shown runs, oldest → newest
+    chartSpark(
+        box.querySelector(".spark"),
+        [...recent].reverse().map(({ s }) => s.costUsd || 0),
+    );
+    makeSortable(box.querySelector("table"));
+    // row click → run summary in the drawer (+ compare-with-previous action)
+    box.querySelectorAll(".runhist-row").forEach((tr) => {
+        tr.addEventListener("click", () => {
+            const id = tr.getAttribute("data-run");
+            const s = archiveRuns.get(id);
+            if (!s) return;
+            // the run that started right before this one, same project
+            let prev = null;
+            for (const o of archiveRuns.values()) {
+                if (o.runId === id) continue;
+                if (projectName(o.cwd) !== projectName(s.cwd)) continue;
+                if (o.firstTs >= s.firstTs) continue;
+                if (!prev || o.firstTs > prev.firstTs) prev = o;
+            }
+            openRunDrawer(s, prev ? prev.runId : null);
+        });
+    });
+}
+
+// Run summary in the detail drawer; `prevId` powers "compare with previous".
+function openRunDrawer(s, prevId) {
+    $("insp-type").textContent = "run · " + (s.name || s.runId);
+    $("insp-agent").textContent = projectName(s.cwd);
+    $("insp-time").textContent =
+        fmtWhen(s.firstTs) + " · " + fmtDur(s.lastTs - s.firstTs);
+    $("insp-seq").textContent = s.runId;
+    $("insp-typ2").textContent = s.verdict ? s.verdict.status : "unscored";
+    $("insp-summary").textContent = [
+        fmtCost(s.costUsd || 0) +
+            " · " +
+            s.events +
+            " events · " +
+            (s.agents || []).length +
+            " agents",
+        s.errors ? s.errors + " error(s)" : "no errors",
+        s.verdict
+            ? "verdict " +
+              s.verdict.status +
+              (s.verdict.source ? " (" + s.verdict.source + ")" : "") +
+              (s.verdict.note ? " — " + s.verdict.note : "")
+            : "unscored — `obs-cli score " + s.runId.slice(0, 12) + "… --pass`",
+        "agents: " + (s.agents || []).join(", "),
+    ].join("\n");
+    $("insp-json").textContent = JSON.stringify(s, null, 2);
+    const act = $("insp-action");
+    if (prevId) {
+        act.hidden = false;
+        act.textContent = "compare with previous";
+        act.onclick = () => {
+            cmpA = prevId;
+            cmpB = s.runId;
+            setView("compare");
+            syncHash();
+        };
+    } else {
+        act.hidden = true;
+    }
+    $("inspector").classList.add("open");
 }
 
