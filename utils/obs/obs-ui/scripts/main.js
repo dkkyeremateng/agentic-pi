@@ -56,11 +56,7 @@ $("trace-scrub").addEventListener("input", (e) => {
     traceSetReplay(Number(e.target.value));
 });
 $("v-stats").addEventListener("click", () => setView("stats"));
-$("stats-run").addEventListener("change", (e) => {
-    statsRun = e.target.value;
-    renderStats();
-    syncHash();
-});
+// (the stats run picker is a combobox now — wired in stats.js)
 $("v-compare").addEventListener("click", () => setView("compare"));
 $("v-find").addEventListener("click", () => setView("find"));
 $("find-go").addEventListener("click", runFind);
@@ -118,22 +114,20 @@ $("trace-json").addEventListener("click", () => {
         "application/x-ndjson",
     );
 });
-$("projfilter").addEventListener("change", (e) => {
-    projectFilter = e.target.value;
-    runFilter = ""; // the previous run belongs to the previous project
-    runFilterAuto = true; // re-follow the live/last run in the new project
-    try {
-        localStorage.setItem("obs.projectFilter", projectFilter);
-    } catch {
-        /* ignore */
-    }
-    applyVisibility();
-    syncHash();
+// Header project + run filters are comboboxes (uniform with Trace/Stats/Compare).
+projfilterCombo = makeCombo({
+    input: $("projfilter-q"),
+    list: $("projfilter-list"),
+    onPick: (v) => setProjectFilter(v),
 });
-$("runfilter").addEventListener("change", (e) => {
-    runFilter = e.target.value;
-    runFilterAuto = false; // an explicit choice (incl. "all runs") pins it
-    applyVisibility();
+runfilterCombo = makeCombo({
+    input: $("runfilter-q"),
+    list: $("runfilter-list"),
+    onPick: (v) => {
+        runFilter = v;
+        runFilterAuto = false; // an explicit choice (incl. "all runs") pins it
+        applyVisibility();
+    },
 });
 $("search").addEventListener("input", (e) => {
     search = e.target.value.trim().toLowerCase();
@@ -193,10 +187,8 @@ try {
 } catch {
     projectFilter = "";
 }
-if (projectFilter) {
-    maybeAddProject(projectFilter); // ensure the option exists + selected
-    $("projfilter").value = projectFilter;
-}
+if (projectFilter) maybeAddProject(projectFilter); // ensure the option exists
+renderProjectFilter(); // paint the project combo (incl. its restored selection)
 updateRunFilter(); // show the run picker if a project was restored
 applyHash(); // permalink state (view/project/pinned runs) — beats localStorage
 window.addEventListener("hashchange", applyHash);

@@ -6,6 +6,7 @@
 function makeCombo({ input, list, onPick }) {
     let items = [];
     let display = ""; // label shown while closed
+    let current = null; // value of the current selection (for the ✓ marker)
     let shown = [];
     let sel = 0;
     let open = false;
@@ -26,12 +27,23 @@ function makeCombo({ input, list, onPick }) {
             return;
         }
         shown.forEach((item, i) => {
+            // The current selection (by value, or by label when no value given).
+            const isCur =
+                current != null ? item.value === current : item.label === display;
             const el = document.createElement("div");
             el.className =
                 "combo-item" +
                 (i === sel ? " sel" : "") +
-                (item.live ? " live" : "");
-            el.textContent = item.label;
+                (item.live ? " live" : "") +
+                (isCur ? " cur" : "");
+            const check = document.createElement("span");
+            check.className = "combo-check";
+            check.textContent = isCur ? "✓" : "";
+            el.appendChild(check);
+            const lbl = document.createElement("span");
+            lbl.className = "combo-label";
+            lbl.textContent = item.label;
+            el.appendChild(lbl);
             if (item.sub) {
                 const s = document.createElement("span");
                 s.className = "combo-sub";
@@ -106,9 +118,10 @@ function makeCombo({ input, list, onPick }) {
     return {
         // Refresh the option set + the closed-state label. While the list is
         // open we re-render in place (live runs keep streaming in).
-        update(newItems, newDisplay) {
+        update(newItems, newDisplay, newValue) {
             items = newItems;
             display = newDisplay;
+            current = newValue ?? null; // which option shows the ✓
             // With 0–1 options there's nothing to filter; make the input a static,
             // read-only label (no caret, no dropdown) — matching a 1-option select.
             input.readOnly = newItems.length <= 1;

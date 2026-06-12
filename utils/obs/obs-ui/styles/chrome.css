@@ -226,33 +226,13 @@ header {
     border-radius: var(--radius-s);
     padding: 2px 4px;
 }
-#projfilter,
-#runfilter {
-    background: var(--panel2);
-    color: var(--fg);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 4px 8px;
-    font: inherit;
-    font-family: var(--font-mono);
-    cursor: pointer;
+/* header dropdowns are comboboxes (.combo input, primitives.css) — width only.
+   The run filter's live dot sits inside its box via .runsel (trace.css). */
+#projfilter-q {
+    width: 200px;
 }
-/* the run filter's live dot sits INSIDE the select (over its left padding) */
-.runfilter-wrap {
-    position: relative;
-    display: flex;
-    align-items: center;
-}
-.runfilter-wrap #run-dot {
-    position: absolute;
-    left: 9px;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 1;
-    pointer-events: none;
-}
-#runfilter {
-    padding-left: 22px;
+#runfilter-q {
+    width: 240px;
 }
 .proj-tag {
     color: var(--dim);

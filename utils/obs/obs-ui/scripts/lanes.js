@@ -2,12 +2,51 @@
 function maybeAddProject(p) {
     if (projects.has(p)) return;
     projects.add(p);
-    const o = document.createElement("option");
-    o.value = p;
-    o.textContent = p;
-    $("projfilter").appendChild(o);
-    // keep the dropdown showing the restored filter once its project appears
-    if (p === projectFilter) $("projfilter").value = projectFilter;
+    renderProjectFilter();
+}
+
+// Rebuild the project-filter combobox from the known projects. "all projects" is
+// included only when more than one project is present; with a single project the
+// combo scopes to it (and renders as a static label — the combobox auto-disables
+// its dropdown for ≤1 item).
+function renderProjectFilter() {
+    if (!projfilterCombo) return;
+    const names = [...projects].sort();
+    if (names.length === 1 && projectFilter === "") projectFilter = names[0];
+    const items = [
+        ...(names.length > 1 ? [{ value: "", label: "all projects" }] : []),
+        ...names.map((p) => ({ value: p, label: p })),
+    ];
+    projfilterCombo.update(items, projectFilter || "all projects", projectFilter);
+}
+
+// Switch the project filter (combobox pick, palette, etc.): reset the run scope
+// to re-follow the live/last run in the new project, persist, and re-render.
+function setProjectFilter(p) {
+    projectFilter = p;
+    runFilter = "";
+    runFilterAuto = true;
+    try {
+        localStorage.setItem("obs.projectFilter", projectFilter);
+    } catch {
+        /* ignore */
+    }
+    renderProjectFilter();
+    applyVisibility();
+    syncHash();
+}
+
+// Run-picker option label, shared by the header run filter (matches the old
+// <option> text): "<name|time> · <n> agents[ · live]".
+function runLabel(r, live) {
+    const when = new Date(r.firstTs).toTimeString().slice(0, 8);
+    return (
+        (r.name || when) +
+        " · " +
+        r.agents.size +
+        " agents" +
+        (live.has(r.id) ? " · live" : "")
+    );
 }
 function laneInProject(a) {
     return !projectFilter || a.project === projectFilter;
@@ -75,19 +114,18 @@ function laneVisible(a) {
     return laneInScope(a) && laneGroupVisible(a);
 }
 
-// Populate + show the header run filter. Runs are project-scoped, so it only
-// applies when a single project is selected; it's hidden for "all projects".
-// Populate + show the header run filter; returns true if the selection changed.
+// Populate + show the header run filter (a combobox). Runs are project-scoped,
+// so it only applies when a single project is selected; it's hidden for "all
+// projects". Returns true if the selection changed.
 function updateRunFilter() {
-    const rf = $("runfilter");
     const wrap = $("runfilter-wrap");
     const dot = $("run-dot");
-    if (!rf) return false;
+    if (!runfilterCombo) return false;
     const prev = runFilter;
     // Only for the lane views; Trace and Stats have their own per-view run pickers.
     const show =
         projectFilter !== "" && view !== "trace" && view !== "stats";
-    if (wrap) wrap.style.display = show ? "flex" : "none";
+    if (wrap) wrap.style.display = show ? "inline-flex" : "none";
     if (!show) return false;
     const list = [...collectRuns().values()].sort((a, b) => b.lastTs - a.lastTs);
 
@@ -108,31 +146,16 @@ function updateRunFilter() {
         runFilter = ""; // a pinned run vanished
     }
 
-    rf.innerHTML = "";
-    if (!single) {
-        const all = document.createElement("option");
-        all.value = "";
-        all.textContent = "all runs";
-        rf.appendChild(all);
-    }
-    list.forEach((r, i) => {
-        const o = document.createElement("option");
-        o.value = r.id;
-        const isLive = live.has(r.id);
-        // <option>s can't hold the agent's styled dot; greening the text + a "live"
-        // suffix flags live runs in the open list. The agent-style dot beside the
-        // select (below) is the indicator for the selected run.
-        if (isLive) o.style.color = "var(--ok)";
-        const when = new Date(r.firstTs).toTimeString().slice(0, 8);
-        o.textContent =
-            (r.name || when) +
-            " · " +
-            r.agents.size +
-            " agents" +
-            (isLive ? " · live" : "");
-        rf.appendChild(o);
-    });
-    rf.value = runFilter;
+    const items = [
+        ...(single ? [] : [{ value: "", label: "all runs", live: live.size > 0 }]),
+        ...list.map((r) => ({
+            value: r.id,
+            label: runLabel(r, live),
+            live: live.has(r.id),
+        })),
+    ];
+    const sel = list.find((r) => r.id === runFilter);
+    runfilterCombo.update(items, sel ? runLabel(sel, live) : "all runs", runFilter);
     // The agent-style green dot next to the picker lights when the selected run is
     // live (or, for "all runs", when any run is live) — the same .dot.on used on
     // the agent cards.

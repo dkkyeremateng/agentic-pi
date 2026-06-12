@@ -9,16 +9,9 @@
     margin-bottom: 14px;
     flex-wrap: wrap;
 }
-#stats-run {
-    background: var(--panel2);
-    color: var(--fg);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 4px 8px 4px 22px;
-    font: inherit;
-    font-family: var(--font-mono);
-    cursor: pointer;
-    max-width: 420px;
+/* width override only; shared look comes from .combo input (primitives.css) */
+#stats-run-q {
+    width: 280px;
 }
 #stats-axis {
     color: var(--dim);

@@ -9,21 +9,10 @@
     margin-bottom: 14px;
     flex-wrap: wrap;
 }
+/* width override only; shared look comes from .combo input (primitives.css) */
 #cmp-a-q,
 #cmp-b-q {
-    background: var(--panel2);
-    color: var(--fg);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 4px 8px;
-    font: inherit;
-    font-family: var(--font-mono);
     width: 300px;
-}
-#cmp-a-q:focus,
-#cmp-b-q:focus {
-    border-color: var(--accent);
-    outline: none;
 }
 #compare-axis {
     color: var(--dim);

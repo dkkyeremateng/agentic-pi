@@ -161,9 +161,30 @@
     pointer-events: none;
 }
 
-/* ── combobox (filterable run pickers) ──────────────────────────────────── */
+/* ── combobox (filterable pickers — uniform across the app) ─────────────── */
 .combo {
     position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+/* one input style for every dropdown; instances set their own width */
+.combo input {
+    background: var(--panel2);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font: inherit;
+    font-family: var(--font-mono);
+    width: 220px;
+}
+.combo input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+/* when a live dot sits inside the box (.runsel), leave room for it */
+.runsel.combo input {
+    padding-left: 22px;
 }
 .combo-list {
     position: absolute;
@@ -197,6 +218,16 @@
 }
 .combo-item.live {
     color: var(--ok);
+}
+/* ✓ marker for the current selection — fixed-width so labels stay aligned */
+.combo-check {
+    flex: none;
+    width: 12px;
+    text-align: center;
+    color: var(--accent);
+}
+.combo-item.cur {
+    color: var(--text-hi);
 }
 .combo-sub {
     margin-left: auto;

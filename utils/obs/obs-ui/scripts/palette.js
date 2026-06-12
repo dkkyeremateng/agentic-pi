@@ -25,12 +25,7 @@ function palSources() {
         items.push({
             label: "Project: " + p,
             kind: "project",
-            act: () => {
-                projectFilter = p === projectFilter ? "" : p;
-                $("projfilter").value = projectFilter;
-                applyVisibility();
-                syncHash();
-            },
+            act: () => setProjectFilter(p === projectFilter ? "" : p),
         });
     const runs = [...archiveRuns.values()]
         .sort((a, b) => b.firstTs - a.firstTs)

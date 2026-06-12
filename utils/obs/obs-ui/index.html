@@ -114,21 +114,28 @@
                         <span>Search…</span>
                         <kbd>⌘K</kbd>
                     </button>
-                    <select id="projfilter" title="filter by project">
-                        <option value="">all projects</option>
-                    </select>
+                    <span class="combo" id="projfilter-wrap">
+                        <input
+                            id="projfilter-q"
+                            autocomplete="off"
+                            spellcheck="false"
+                            title="filter by project (type to filter)"
+                        />
+                        <div class="combo-list" id="projfilter-list" hidden></div>
+                    </span>
                     <span
                         id="runfilter-wrap"
-                        class="runfilter-wrap"
+                        class="runsel combo"
                         style="display: none"
                     >
                         <span class="dot" id="run-dot"></span>
-                        <select
-                            id="runfilter"
+                        <input
+                            id="runfilter-q"
+                            autocomplete="off"
+                            spellcheck="false"
                             title="filter by run (pick a project first)"
-                        >
-                            <option value="">all runs</option>
-                        </select>
+                        />
+                        <div class="combo-list" id="runfilter-list" hidden></div>
                     </span>
                     <span id="conn">connecting…</span>
                 </header>
@@ -319,11 +326,15 @@
                 <section id="stats" class="view">
                     <div id="stats-bar">
                         <span class="trace-lbl">SCOPE</span>
-                        <span class="runsel">
+                        <span class="runsel combo">
                             <span class="dot" id="stats-run-dot"></span>
-                            <select id="stats-run" title="scope to a run">
-                                <option value="">all runs</option>
-                            </select>
+                            <input
+                                id="stats-run-q"
+                                autocomplete="off"
+                                spellcheck="false"
+                                title="scope to a run (type to filter)"
+                            />
+                            <div class="combo-list" id="stats-run-list" hidden></div>
                         </span>
                         <span id="stats-axis"></span>
                     </div>

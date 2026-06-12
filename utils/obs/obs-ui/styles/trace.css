@@ -28,19 +28,9 @@
     z-index: 1;
     pointer-events: none;
 }
+/* width override only; shared look comes from .combo input (primitives.css) */
 #trace-run-q {
-    background: var(--panel2);
-    color: var(--fg);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 4px 8px 4px 22px;
-    font: inherit;
-    font-family: var(--font-mono);
     width: 340px;
-}
-#trace-run-q:focus {
-    border-color: var(--accent);
-    outline: none;
 }
 #trace-axis {
     color: var(--dim);

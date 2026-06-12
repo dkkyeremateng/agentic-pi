@@ -168,7 +168,6 @@ function renderCostTimeline(series, span0, span1) {
 function renderStats() {
     const runs = collectRuns();
     const runList = [...runs.values()].sort((x, y) => y.lastTs - x.lastTs);
-    const sel = $("stats-run");
 
     // Which runs are live (any of their lanes still active).
     const live = new Set();
@@ -183,28 +182,26 @@ function renderStats() {
           ? statsRun
           : "";
 
-    sel.innerHTML = "";
-    if (!single) {
-        const allOpt = document.createElement("option");
-        allOpt.value = "";
-        allOpt.textContent = "all runs";
-        sel.appendChild(allOpt);
-    }
-    runList.forEach((r) => {
-        const o = document.createElement("option");
-        o.value = r.id;
-        const isLive = live.has(r.id);
-        if (isLive) o.style.color = "var(--ok)";
-        o.textContent =
-            verdictMark(r.id) +
-            (r.name || fmtWhen(r.firstTs)) +
-            " · " +
-            r.agents.size +
-            " agents" +
-            (isLive ? " · live" : r.archived ? " · archived" : "");
-        sel.appendChild(o);
-    });
-    sel.value = scope;
+    // Run-picker combobox: "all runs" (when several) + every run.
+    const statsLabel = (r) =>
+        verdictMark(r.id) +
+        (r.name || fmtWhen(r.firstTs)) +
+        " · " +
+        r.agents.size +
+        " agents" +
+        (live.has(r.id) ? " · live" : r.archived ? " · archived" : "");
+    const items = [
+        ...(single
+            ? []
+            : [{ value: "", label: "all runs", live: live.size > 0 }]),
+        ...runList.map((r) => ({
+            value: r.id,
+            label: statsLabel(r),
+            live: live.has(r.id),
+        })),
+    ];
+    const scopeRun = runs.get(scope);
+    statsCombo.update(items, scopeRun ? statsLabel(scopeRun) : "all runs", scope);
 
     // Live dot inside the picker — on when the scoped run is live, or (for "all
     // runs") when any run is live. Same .dot.on used on the agent cards.
@@ -217,8 +214,7 @@ function renderStats() {
     renderRunHistory();
 
     // A non-live scoped run whose events only the sink archive holds in full —
-    // fetch them once and aggregate those instead of the lanes.
-    const scopeRun = scope ? runs.get(scope) : null;
+    // fetch them once and aggregate those instead of the lanes. (scopeRun set above)
     const fromArchive =
         !!scopeRun &&
         !live.has(scope) &&
@@ -527,3 +523,15 @@ function openRunDrawer(s, prevId) {
     $("inspector").classList.add("open");
 }
 
+
+// Run-scope picker (combobox — typing filters by name/time/id). Replaces the
+// old <select> so every dropdown on the site shares one look + behavior.
+const statsCombo = makeCombo({
+    input: $("stats-run-q"),
+    list: $("stats-run-list"),
+    onPick: (v) => {
+        statsRun = v;
+        renderStats();
+        syncHash();
+    },
+});

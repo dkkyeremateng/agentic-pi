@@ -415,8 +415,8 @@ function renderCompare() {
         label: labelFor(r),
         live: live.has(r.id),
     }));
-    cmpComboA.update(items, labelFor(runs.get(aId)));
-    cmpComboB.update(items, labelFor(runs.get(bId)));
+    cmpComboA.update(items, labelFor(runs.get(aId)), aId);
+    cmpComboB.update(items, labelFor(runs.get(bId)), bId);
 
     const runA = runs.get(aId);
     const runB = runs.get(bId);

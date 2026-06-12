@@ -25,6 +25,10 @@ let errorsOnly = false; // Single: only errors / failed tools / retries
 let projectFilter = ""; // "" = all projects
 let runFilter = ""; // "" = all runs; scopes swimlane/single/race to one run (single project only)
 let runFilterAuto = true; // when true, the run filter follows the live (or last) run
+// Header dropdowns are comboboxes (uniform with Trace/Stats/Compare). Created in
+// main.js init (after combobox.js loads); their update fns live in lanes.js.
+let projfilterCombo = null;
+let runfilterCombo = null;
 let autoscroll = true;
 let laneOrd = 0; // creation order, for stable #n suffixing of same-agent instances
 

@@ -93,8 +93,8 @@ function applyHash() {
         const proj = p.get("project");
         if (proj) {
             projectFilter = proj;
-            maybeAddProject(proj); // ensure the option exists + selected
-            $("projfilter").value = proj;
+            maybeAddProject(proj); // ensure the option exists
+            renderProjectFilter(); // reflect the selection in the combo
             applyVisibility();
         }
         if (p.get("run")) traceRun = p.get("run");
