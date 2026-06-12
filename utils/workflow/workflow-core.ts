@@ -1424,7 +1424,7 @@ export function setupSessions(cwd: string, wipe: boolean): string {
     if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true });
     const now = Date.now();
     for (const f of readdirSync(sessionDir)) {
-        if (!f.endsWith(".json")) continue;
+        if (!f.endsWith(".jsonl")) continue;
         if (wipe) {
             try {
                 unlinkSync(join(sessionDir, f));
@@ -3015,10 +3015,12 @@ function spawnAgentWithModelFallback(
     // Use the main session directory with project hash in filename
     const projectHash = projectSessionHash(cwd);
 
-    // Each agent runs in its own per-agent session file (parallel-safe).
+    // Each agent runs in its own per-agent session file (parallel-safe). pi
+    // stores sessions as JSONL — use the .jsonl extension to match (the content
+    // is line-delimited JSON regardless; this just names it correctly).
     const sessionFile = join(
         config.sessionDir,
-        `${sessionKey}-${projectHash}.json`,
+        `${sessionKey}-${projectHash}.jsonl`,
     );
 
     // Validate session file before using it
@@ -3216,8 +3218,9 @@ export function spawnAgentWithModel(
         }
     }
 
-    // Each agent runs in its own per-agent session file (parallel-safe).
-    const sessionFile = join(projectSessionDir, `${sessionKey}.json`);
+    // Each agent runs in its own per-agent session file (parallel-safe). pi
+    // stores sessions as JSONL — use the .jsonl extension to match.
+    const sessionFile = join(projectSessionDir, `${sessionKey}.jsonl`);
 
     // Validate session file before using it
     let hasSession = false;
