@@ -1,8 +1,10 @@
 // ── auto-scroll pause/resume (single view) ───────────────────────────────────
+// #content is the scroll container (the app shell pins header/rail/statusbar).
 function nearBottom() {
-    return window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
+    const c = $("content");
+    return c.scrollTop + c.clientHeight >= c.scrollHeight - 40;
 }
-window.addEventListener("scroll", () => {
+$("content").addEventListener("scroll", () => {
     if (view !== "single") return;
     if (nearBottom()) {
         autoscroll = true;
@@ -141,15 +143,15 @@ $("search").addEventListener("input", (e) => {
 $("resume").addEventListener("click", () => {
     autoscroll = true;
     $("resume").classList.remove("show");
-    window.scrollTo(0, document.body.scrollHeight);
+    $("content").scrollTop = $("content").scrollHeight;
 });
 $("insp-close").addEventListener("click", closeInspector);
 $("insp-copy").addEventListener("click", () => {
     if (navigator.clipboard)
         navigator.clipboard.writeText($("insp-json").textContent);
-    const b = $("insp-copy");
-    b.textContent = "copied";
-    setTimeout(() => (b.textContent = "copy"), 1000);
+    const b = $("insp-copy"); // icon button — flash green instead of relabeling
+    b.classList.add("flash");
+    setTimeout(() => b.classList.remove("flash"), 1000);
 });
 window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeInspector();

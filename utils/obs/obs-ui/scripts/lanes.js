@@ -194,10 +194,12 @@ function buildSidebarBtn(a) {
     const btn = document.createElement("button");
     btn.className = "sbtn";
     btn.title = a.project + " / " + a.label + " — click to show/hide";
-    btn.textContent = a.agent.slice(0, 1).toUpperCase();
     const dot = document.createElement("span");
     dot.className = "live-dot";
-    btn.appendChild(dot);
+    const lbl = document.createElement("span");
+    lbl.className = "sb-label";
+    lbl.textContent = a.label;
+    btn.append(dot, lbl);
     btn.addEventListener("click", () => {
         if (view === "single") {
             // single-select: pick this agent, or deselect if it's already shown
@@ -298,7 +300,7 @@ function handle(ev) {
 
     if (view === "single" && a.key === selected && passesFilter(ev)) {
         $("single-feed").appendChild(makeRow(ev, true));
-        if (autoscroll) window.scrollTo(0, document.body.scrollHeight);
+        if (autoscroll) $("content").scrollTop = $("content").scrollHeight;
         renderStatbar();
     }
     if (view === "race") scheduleRace();

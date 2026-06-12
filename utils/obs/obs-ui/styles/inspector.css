@@ -1,25 +1,39 @@
-/* event inspector (bottom dock) */
+/* event detail drawer (right column of the #app grid).
+   The drawer stacks meta fields above the JSON (it's a narrow column now);
+   width is user-resizable via the left-edge grip (shell.js, persisted). */
 #inspector {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 42vh;
-    background: var(--panel);
-    border-top: 1px solid var(--accent);
-    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
     display: none;
-    flex-direction: column;
-    z-index: 10;
+    width: var(--drawer-w, 420px);
+    min-width: 0;
+    background: var(--surface-2);
+    border-left: 1px solid var(--border);
+    position: relative;
 }
 #inspector.open {
     display: flex;
+}
+#drawer-grip {
+    flex: none;
+    width: 5px;
+    cursor: col-resize;
+    background: transparent;
+}
+#drawer-grip:hover,
+#drawer-grip.dragging {
+    background: var(--accent);
+}
+.drawer-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
 }
 .insp-head {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 14px;
+    flex: none;
+    padding: 8px 12px;
     border-bottom: 1px solid var(--line);
 }
 .insp-title {
@@ -29,20 +43,28 @@
 }
 .insp-type {
     font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .insp-btn {
     background: var(--panel2);
     border: 1px solid var(--line);
     color: var(--dim);
     border-radius: 4px;
-    padding: 2px 9px;
+    padding: 4px;
     font: inherit;
     font-size: 12px;
     cursor: pointer;
+    display: flex;
 }
 .insp-btn:hover {
     color: var(--fg);
     border-color: var(--accent);
+}
+.insp-btn.flash {
+    color: var(--ok);
+    border-color: var(--ok);
 }
 #insp-copy {
     margin-left: auto;
@@ -50,14 +72,14 @@
 .insp-body {
     flex: 1;
     display: flex;
+    flex-direction: column;
     min-height: 0;
+    overflow-y: auto;
 }
 .insp-left {
-    width: 300px;
     flex: none;
     padding: 12px 14px;
-    border-right: 1px solid var(--line);
-    overflow: auto;
+    border-bottom: 1px solid var(--line);
 }
 .insp-field {
     display: flex;

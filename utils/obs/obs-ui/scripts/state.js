@@ -115,9 +115,12 @@ function refreshGroupLabels(a) {
     sibs.forEach((l, i) => {
         l.label = sibs.length > 1 ? l.agent + " #" + (i + 1) : l.agent;
         if (l.card && l.card.agentEl) l.card.agentEl.textContent = l.label;
-        if (l.btn)
+        if (l.btn) {
             l.btn.title =
                 l.project + " / " + l.label + " click to show/hide";
+            const lb = l.btn.querySelector(".sb-label");
+            if (lb) lb.textContent = l.label;
+        }
     });
 }
 
