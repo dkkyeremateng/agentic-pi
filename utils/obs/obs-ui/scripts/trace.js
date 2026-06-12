@@ -85,6 +85,7 @@ function collectRuns() {
 function* laneRunEvents(runId) {
     for (const a of lanes.values()) {
         if (!laneInProject(a)) continue;
+        if (!laneGroupVisible(a)) continue; // hidden orchestrator groups drop from the trace
         for (const ev of a.events)
             if (ev.runId === runId) yield { ev, laneKey: a.key };
     }

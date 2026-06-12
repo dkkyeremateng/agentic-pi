@@ -90,6 +90,7 @@ function collectAnalytics(runId, fromArchive) {
     } else {
         for (const lane of lanes.values()) {
             if (!laneInProject(lane)) continue;
+            if (!laneGroupVisible(lane)) continue; // hidden orchestrator groups drop from stats
             for (const ev of lane.events) {
                 if (runId && ev.runId !== runId) continue;
                 add(lane.agent, ev);

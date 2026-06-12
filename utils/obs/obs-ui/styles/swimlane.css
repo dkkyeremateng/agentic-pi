@@ -53,6 +53,65 @@
     overflow: hidden;
 }
 
+/* per-card hide control — sits at the far right of the header */
+.lane-hide {
+    flex: none;
+    margin-left: 6px;
+    width: 18px;
+    height: 18px;
+    line-height: 16px;
+    text-align: center;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-faint);
+    font-size: 15px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.1s;
+}
+.lane-head:hover .lane-hide {
+    opacity: 1;
+}
+.lane-hide:hover {
+    background: var(--panel);
+    color: var(--err);
+}
+
+/* "hidden agents" restore strip at the top of the swimlane */
+#hidden-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px 0;
+}
+.hidden-bar-label {
+    color: var(--text-faint);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.hidden-chip {
+    font: inherit;
+    font-size: 12px;
+    color: var(--dim);
+    background: var(--panel2);
+    border: 1px dashed var(--line);
+    border-radius: 999px;
+    padding: 2px 9px;
+    cursor: pointer;
+}
+.hidden-chip::before {
+    content: "+ ";
+    color: var(--text-faint);
+}
+.hidden-chip:hover {
+    color: var(--text);
+    border-color: var(--accent);
+    border-style: solid;
+}
+
 #empty {
     padding: 40px 18px;
     color: var(--dim);

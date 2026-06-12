@@ -9,7 +9,14 @@ const EVENTS_CAP = 4000; // events kept per lane
 
 const lanes = new Map(); // key -> { key, agent, project, cwd, events[], rollup, card, btn }
 const projects = new Set();
-const hidden = new Set(); // lane keys toggled off via the sidebar
+// Visibility is grouped by orchestrator instance: an orchestrator (a root lane,
+// no parent) plus the sub-agents it spawned. A pi /reload starts a fresh
+// orchestrator session — a new group — even though it keeps the same runId, so
+// run-scoping can't separate it; grouping by root session can. By default only
+// the active orchestrator's group is shown; these sets hold explicit overrides.
+const hiddenGroups = new Set(); // root sessionIds the user force-hid
+const shownGroups = new Set(); // root sessionIds the user force-showed (past default)
+const activeGroupByCwd = new Map(); // cwd -> root sessionId of the default-visible group
 let view = "swimlane";
 let selected = null; // lane key
 let search = "";

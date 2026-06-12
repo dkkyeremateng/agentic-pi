@@ -21,9 +21,58 @@ function laneInRun(a) {
 function laneInScope(a) {
     return laneInProject(a) && laneInRun(a);
 }
-// A lane is shown when it's in scope AND not toggled off in the sidebar.
+
+// ── orchestrator groups ──────────────────────────────────────────────────────
+// Each lane belongs to one orchestrator instance: a root lane (no parent) is its
+// own group; every other lane is attributed to the most recent orchestrator (in
+// the same project) that had started by the time it began. So the pre- and
+// post-/reload orchestrators — same runId, different root session — fall into
+// separate groups. Also records, per project, which group is "active": the
+// running orchestrator (latest), else the latest orchestrator seen.
+function assignGroups() {
+    const all = [...lanes.values()];
+    const roots = all
+        .filter((a) => !a.parent)
+        .sort((x, y) => (x.firstTs ?? 0) - (y.firstTs ?? 0));
+    for (const a of all) {
+        if (!a.parent) {
+            a.group = a.sessionId;
+            continue;
+        }
+        let g = null;
+        let firstSame = null;
+        for (const r of roots) {
+            if (r.cwd !== a.cwd) continue;
+            if (!firstSame) firstSame = r;
+            if ((r.firstTs ?? 0) <= (a.firstTs ?? 0)) g = r; // latest preceding
+        }
+        a.group = (g || firstSame || a).sessionId;
+    }
+    // Per cwd: the active group is the latest still-running orchestrator, or the
+    // latest orchestrator overall when none is running.
+    activeGroupByCwd.clear();
+    const latest = new Map(); // roots are sorted ascending, so the last write wins
+    const active = new Map();
+    for (const r of roots) {
+        latest.set(r.cwd, r.sessionId);
+        if (r.rollup.active) active.set(r.cwd, r.sessionId);
+    }
+    for (const cwd of latest.keys())
+        activeGroupByCwd.set(cwd, active.get(cwd) || latest.get(cwd));
+}
+
+// Is a lane's orchestrator group currently shown? Explicit hide/show win;
+// otherwise only the active group (per project) shows by default.
+function laneGroupVisible(a) {
+    const g = a.group;
+    if (hiddenGroups.has(g)) return false;
+    if (shownGroups.has(g)) return true;
+    return g === activeGroupByCwd.get(a.cwd);
+}
+
+// A lane is shown when it's in scope AND its orchestrator group is visible.
 function laneVisible(a) {
-    return laneInScope(a) && !hidden.has(a.key);
+    return laneInScope(a) && laneGroupVisible(a);
 }
 
 // Populate + show the header run filter. Runs are project-scoped, so it only
@@ -105,17 +154,61 @@ function updateSidebarState() {
             a.btn.classList.remove("off");
             a.btn.classList.toggle("on", a.key === selected);
         } else {
-            // swimlane/race: every included (shown) agent uses the same
-            // highlighted style; hidden agents are dimmed
-            const shown = !hidden.has(a.key);
+            // swimlane/race: every shown agent uses the highlighted style;
+            // agents in a hidden orchestrator group are dimmed
+            const shown = laneGroupVisible(a);
             a.btn.classList.toggle("on", shown);
             a.btn.classList.toggle("off", !shown);
         }
     }
 }
 
-// Reflect project + run filters and per-agent sidebar toggles across every view.
+// Hide / show a whole orchestrator group (the orchestrator and its sub-agents).
+// Hiding force-hides it; showing force-shows it past the active-only default.
+function setGroupHidden(group, hide) {
+    if (hide) {
+        hiddenGroups.add(group);
+        shownGroups.delete(group);
+    } else {
+        shownGroups.add(group);
+        hiddenGroups.delete(group);
+    }
+    applyVisibility();
+}
+
+// Render the swimlane "hidden" strip — a chip per in-scope orchestrator group
+// that isn't currently shown (whether auto-hidden as stale or force-hidden).
+// Clicking a chip brings that orchestrator and its sub-agents back.
+function renderHiddenBar() {
+    const bar = $("hidden-bar");
+    if (!bar) return;
+    const roots = [...lanes.values()]
+        .filter((a) => !a.parent && laneInScope(a) && !laneGroupVisible(a))
+        .sort((x, y) => (x.firstTs ?? 0) - (y.firstTs ?? 0));
+    if (!roots.length) {
+        bar.hidden = true;
+        bar.innerHTML = "";
+        return;
+    }
+    bar.hidden = false;
+    bar.innerHTML = "";
+    const lbl = document.createElement("span");
+    lbl.className = "hidden-bar-label";
+    lbl.textContent = "hidden:";
+    bar.appendChild(lbl);
+    for (const r of roots) {
+        const chip = document.createElement("button");
+        chip.className = "hidden-chip";
+        chip.textContent = r.label;
+        chip.title = "show " + r.label + " and its sub-agents";
+        chip.addEventListener("click", () => setGroupHidden(r.sessionId, false));
+        bar.appendChild(chip);
+    }
+}
+
+// Reflect project + run filters and orchestrator-group visibility across views.
 function applyVisibility() {
+    assignGroups();
     updateRunFilter();
     // Re-label agent groups for the current scope so "#n" only appears when an
     // agent has several in-scope instances (one per dedup key is enough).
@@ -131,6 +224,7 @@ function applyVisibility() {
         if (a.card) a.card.el.style.display = laneVisible(a) ? "" : "none";
         if (a.btn) a.btn.style.display = laneInScope(a) ? "" : "none";
     }
+    renderHiddenBar();
     // keep Single on a visible agent
     const sel = selected && lanes.get(selected);
     if (sel && !laneVisible(sel)) {
@@ -160,6 +254,8 @@ function ensureLane(ev) {
         agent: ev.agent,
         sessionId: ev.sessionId || "",
         runId: ev.runId || "", // a session belongs to one run
+        parent: ev.parent || "", // dispatcher agent NAME; "" = root orchestrator
+        group: ev.sessionId || "", // orchestrator-instance group (set by assignGroups)
         label: ev.agent, // display name; gets a "#n" suffix when the agent has siblings
         ord: laneOrd++,
         cwd: ev.cwd || "",
@@ -178,15 +274,9 @@ function ensureLane(ev) {
     buildSidebarBtn(a);
     // A new instance can turn "scout" into "scout #1/#2…" — refresh the group.
     refreshGroupLabels(a);
-    // A new session may introduce a new run; if auto-follow switches the selected
-    // run, refresh all visibility, otherwise just place this new lane.
-    if (updateRunFilter()) {
-        applyVisibility();
-    } else {
-        if (!laneInScope(a)) a.btn.style.display = "none";
-        if (!laneVisible(a)) a.card.el.style.display = "none";
-        updateSidebarState(); // highlight the new button for the current view
-    }
+    // A new lane re-groups (a fresh orchestrator becomes the active group; its
+    // sub-agents attribute to it) and may introduce a new run — recompute all.
+    applyVisibility();
     return a;
 }
 
@@ -207,10 +297,8 @@ function buildSidebarBtn(a) {
             updateSidebarState();
             renderSingle();
         } else {
-            // swimlane/race: toggle this agent's lane in/out of the view
-            if (hidden.has(a.key)) hidden.delete(a.key);
-            else hidden.add(a.key);
-            applyVisibility();
+            // swimlane/race: toggle this agent's whole orchestrator group
+            setGroupHidden(a.group, laneGroupVisible(a));
         }
     });
     $("sbtns").appendChild(btn);
@@ -221,15 +309,28 @@ function buildLaneCard(a) {
     $("empty").style.display = "none";
     const el = document.createElement("div");
     el.className = "lane";
+    // Only the orchestrator (root) card carries the hide control; it hides the
+    // whole group — the orchestrator and its sub-agents — in one click.
+    const hideBtn = a.parent
+        ? ""
+        : '<button class="lane-hide" title="hide this orchestrator and its sub-agents">×</button>';
     el.innerHTML =
         '<div class="lane-head"><span class="dot"></span>' +
         '<span class="agent"></span><span class="proj-tag"></span>' +
-        '<span class="lane-meta"></span></div><div class="feed"></div>';
+        '<span class="lane-meta"></span>' +
+        hideBtn +
+        "</div><div class=\"feed\"></div>";
     el.querySelector(".agent").textContent = a.label;
     el.querySelector(".proj-tag").textContent = a.project;
     el.querySelector(".lane-head").addEventListener("click", () =>
         selectLane(a.key),
     );
+    const hb = el.querySelector(".lane-hide");
+    if (hb)
+        hb.addEventListener("click", (e) => {
+            e.stopPropagation(); // don't also open Single
+            setGroupHidden(a.group, true);
+        });
     $("lanes").appendChild(el);
     a.card = {
         el,
@@ -296,6 +397,7 @@ function handle(ev) {
     }
     const a = ensureLane(ev);
     if (!a.runId && ev.runId) a.runId = ev.runId; // backfill if the first event lacked it
+    if (!a.parent && ev.parent) a.parent = ev.parent; // backfill dispatcher name
     a.count++;
     if (a.firstTs === null || ev.ts < a.firstTs) a.firstTs = ev.ts;
     if (a.lastTs === null || ev.ts > a.lastTs) a.lastTs = ev.ts;
@@ -309,11 +411,11 @@ function handle(ev) {
     laneMeta(a);
     if (a.btn) a.btn.classList.toggle("active", a.rollup.active);
 
-    // Session start/end change a run's agent count and live state — refresh the run
-    // picker (counts/dot) after the event is recorded, and re-apply visibility if
-    // auto-follow switches to a newly-live run.
+    // Session start/end change a run's agent count and live state, and shift the
+    // active orchestrator group (a /reload's new orchestrator becomes active and
+    // the old group auto-hides) — re-apply visibility so both update.
     if (ev.type === "session_start" || ev.type === "session_end") {
-        if (updateRunFilter()) applyVisibility();
+        applyVisibility();
     }
 
     if (view === "single" && a.key === selected) {
