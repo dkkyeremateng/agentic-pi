@@ -1,6 +1,6 @@
 ---
 name: metrics
-description: "Report agent-workflow observability metrics for a project — the trifecta (cost, tokens, speed) plus pipeline facts (per-phase breakdown, retries, ship outcome, context-prune savings, per-tool counts). Reads the workflow-report.md and the per-agent pi session logs offline; no live server. Use when asked how much a run cost, how long it took, where it spent time/tokens, whether pruning helped, or to compare runs. Keywords - metrics, observability, cost, tokens, latency, telemetry, trifecta, how much, how long, prune savings, per-phase."
+description: "Report agent-workflow observability metrics for a project — the trifecta (cost, tokens, speed) plus pipeline facts (per-phase breakdown, retries, ship outcome, context-prune savings, per-tool counts). Also explains a single run (anomaly digest: retries, errors, slow tools, cost outliers) and scores runs pass/fail. Reads workflow-report.md, pi session logs, and the obs event sink offline; no live server. Use when asked how much a run cost, how long it took, where it spent time/tokens, what happened in a run, why a run was slow/expensive/failed, or to score/compare runs. Keywords - metrics, observability, cost, tokens, latency, telemetry, trifecta, how much, how long, prune savings, per-phase, explain, debug run, why slow, why failed, what happened, score, verdict, pass, fail."
 allowed-tools: Bash
 ---
 
@@ -19,6 +19,8 @@ Offline analyzer over the artifacts a workflow run already leaves behind:
   the detail the report summarizes away: per-tool counts, tool errors, and
   context-prune savings. Auto-scoped to the run's time window (from the report) so
   reused session files aren't double-counted across runs.
+- **The obs event sink** (`~/.pi/agent/obs/events.jsonl`, written when runs use
+  `PI_OBS=1`) — the per-event stream behind `explain` and `score` below.
 
 ## Run it
 
@@ -46,6 +48,39 @@ bash <this-skill-dir>/run.sh --session ~/.pi/agent/sessions/--Users-.../2026-...
 ```
 
 From the config repo you can also use `npm run metrics -- [project-path] [flags]`.
+
+## Explain a run (anomaly digest)
+
+```
+bash <this-skill-dir>/run.sh explain <runId|--last> [--json] [--sink <file>]
+```
+
+Distills one run's event stream (from the obs sink) into a compact digest:
+header facts (cost/tokens/wall/verdict/models), an agent timeline, a typed
+**anomaly list** (dispatch retries, truncated outputs, tool errors with the
+failing command, provider errors, slow tools/turns, cost outliers vs the run's
+own median, compactions, context pressure), per-agent and per-tool rollups, and
+the boot setup (tools/skills/context-file/prompt sizes).
+
+**How to use it:** run the command, read the digest, then ANSWER THE USER'S
+QUESTION from it — lead with the anomalies that explain the symptom they asked
+about (slow → slow-tool/slow-turn/retries; expensive → cost-outlier/context/
+compaction; failed → tool-error/provider-error/truncated/verdict). Quote the
+specific numbers. `<runId|--last>` accepts a unique runId prefix; `--last` is
+the most recent run. Run ids are visible in the dashboard's Trace view, or from
+a wrong-id error (it lists recent runs).
+
+## Score a run (verdict)
+
+```
+bash <this-skill-dir>/run.sh score <runId|--last> --pass|--fail [--note <text>] [--sink <file>]
+```
+
+Appends a `verdict` event for the run to the obs sink. The workflow auto-emits
+a verdict at terminal status (shipped/done → pass, retries exhausted → fail,
+else open); this records or OVERRIDES the human judgement — the last verdict
+wins. Verdicts power the dashboard's Run history (pass rate, medians) and the
+✓/✗ marks in its run pickers.
 
 ## Metrics reported
 

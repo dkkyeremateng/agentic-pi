@@ -8,6 +8,9 @@
 //   tsx utils/obs/obs-cli.ts [projectPath] [--json] [--since ISO] [--until ISO]
 //   tsx utils/obs/obs-cli.ts --session <file.jsonl> [--json]
 //   tsx utils/obs/obs-cli.ts --all [root] [--json] [--since ISO] [--until ISO]
+//   tsx utils/obs/obs-cli.ts score <runId|--last> --pass|--fail [--note <text>]
+//                                  [--sink <file>]
+//   tsx utils/obs/obs-cli.ts explain <runId|--last> [--json] [--sink <file>]
 //
 //   projectPath  defaults to the current directory. Its session dir is resolved
 //                the same way the workflow spawns sub-agents (projectSessionHash).
@@ -18,7 +21,16 @@
 //                or filter runs by start date (--all).
 //   --json       emit JSON instead of the text report.
 
-import { readFileSync, existsSync, readdirSync, statSync } from "fs";
+import {
+    readFileSync,
+    existsSync,
+    readdirSync,
+    statSync,
+    appendFileSync,
+    openSync,
+    readSync,
+    closeSync,
+} from "fs";
 import { join, basename, resolve as resolvePath } from "path";
 import { homedir } from "os";
 import {
@@ -26,6 +38,14 @@ import {
     parseProgressLedger,
     type WorkflowMetrics,
 } from "../workflow/workflow-core";
+import {
+    makeFactory,
+    serializeEvent,
+    parseEventLine,
+    type ObsEvent,
+} from "./obs-events";
+import { RunIndexer, LineScanner, type RunSummary } from "./obs-run-index";
+import { buildRunDigest, formatRunDigest } from "./obs-explain";
 import {
     parseSession,
     aggregateRun,
@@ -317,8 +337,203 @@ function loadReport(projectPath: string): {
     return {};
 }
 
+// ── score: append a manual verdict for a run to the obs sink ─────────────────
+// The lightweight eval loop: a `verdict` event in the sink, attributed to the
+// run, that the dashboard's run history and pickers surface. The workflow
+// auto-emits one at terminal status; this command records (or overrides — the
+// last verdict wins) the human judgement after the fact.
+
+function obsSinkPath(explicit?: string): string {
+    const p = explicit || process.env.PI_OBS_SINK;
+    if (p) return resolvePath(p.replace(/^~(?=$|\/)/, homedir()));
+    return join(homedir(), ".pi", "agent", "obs", "events.jsonl");
+}
+
+function indexSink(sink: string): RunIndexer {
+    const idx = new RunIndexer();
+    const fd = openSync(sink, "r");
+    try {
+        const CHUNK = 1 << 20;
+        const buf = Buffer.alloc(CHUNK);
+        for (;;) {
+            const n = readSync(fd, buf, 0, CHUNK, idx.scannedTo);
+            if (n <= 0) break;
+            idx.feed(buf.subarray(0, n));
+        }
+    } finally {
+        closeSync(fd);
+    }
+    return idx;
+}
+
+// One run's events from its indexed byte range (the range interleaves other
+// runs' lines in a shared sink — filter by runId).
+function readRunEvents(sink: string, run: RunSummary): ObsEvent[] {
+    const events: ObsEvent[] = [];
+    const scanner = new LineScanner((line) => {
+        const ev = parseEventLine(line);
+        if (ev && ev.runId === run.runId) events.push(ev);
+    }, run.startOffset);
+    const fd = openSync(sink, "r");
+    try {
+        const CHUNK = 1 << 20;
+        const buf = Buffer.alloc(CHUNK);
+        let pos = run.startOffset;
+        while (pos < run.endOffset) {
+            const n = readSync(
+                fd,
+                buf,
+                0,
+                Math.min(CHUNK, run.endOffset - pos),
+                pos,
+            );
+            if (n <= 0) break;
+            scanner.push(buf.subarray(0, n));
+            pos += n;
+        }
+    } finally {
+        closeSync(fd);
+    }
+    return events;
+}
+
+function runLabel(r: RunSummary): string {
+    return r.name || new Date(r.firstTs).toLocaleString();
+}
+
+// Resolve <runId|--last> against the indexed runs (exact id or unique prefix);
+// prints the recent runs and exits on no/ambiguous match.
+function resolveRun(runs: RunSummary[], runArg: string, last: boolean): RunSummary {
+    if (last) return runs[0]; // runs() is latest-first
+    const matches = runs.filter(
+        (r) => r.runId === runArg || r.runId.startsWith(runArg),
+    );
+    if (matches.length !== 1) {
+        console.error(
+            matches.length
+                ? `Ambiguous run "${runArg}" (${matches.length} matches). Recent runs:`
+                : `No run matching "${runArg}". Recent runs:`,
+        );
+        for (const r of runs.slice(0, 8))
+            console.error(
+                `  ${r.runId}  ${runLabel(r)}  ${r.agents.length} agent(s)`,
+            );
+        process.exit(1);
+    }
+    return matches[0];
+}
+
+function scoreCommand(argv: string[]): void {
+    let runArg = "";
+    let last = false;
+    let status = "";
+    let note: string | undefined;
+    let sinkArg: string | undefined;
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (a === "--pass") status = "pass";
+        else if (a === "--fail") status = "fail";
+        else if (a === "--last") last = true;
+        else if (a === "--note") note = argv[++i];
+        else if (a === "--sink") sinkArg = argv[++i];
+        else if (!a.startsWith("--") && !runArg) runArg = a;
+    }
+    if (!status || (!runArg && !last)) {
+        console.error(
+            "usage: score <runId|--last> --pass|--fail [--note <text>] [--sink <file>]",
+        );
+        process.exit(1);
+    }
+    const sink = obsSinkPath(sinkArg);
+    if (!existsSync(sink)) {
+        console.error(
+            `No obs sink at ${sink} — run a workflow with PI_OBS=1 first.`,
+        );
+        process.exit(1);
+    }
+    const runs = indexSink(sink).runs(); // latest-first
+    if (!runs.length) {
+        console.error(`No runs recorded in ${sink}.`);
+        process.exit(1);
+    }
+    const run = resolveRun(runs, runArg, last);
+    const f = makeFactory({
+        sessionId: `score-${Date.now().toString(36)}-${Math.random()
+            .toString(36)
+            .slice(2, 7)}`,
+        agent: "user",
+        cwd: run.cwd,
+        runId: run.runId,
+    });
+    const ev = f.next("verdict", {
+        status,
+        ...(note ? { note } : {}),
+        source: "cli",
+    });
+    appendFileSync(sink, serializeEvent(ev) + "\n", "utf-8");
+    const prev = run.verdict
+        ? ` (overrides ${run.verdict.status}${
+              run.verdict.source ? " from " + run.verdict.source : ""
+          })`
+        : "";
+    console.log(
+        `Scored ${run.runId} (${runLabel(run)}) as ${status.toUpperCase()}` +
+            (note ? ` — ${note}` : "") +
+            prev,
+    );
+}
+
+// ── explain: LLM-ready digest of one run (anomalies, timeline, rollups) ──────
+// The metrics skill runs this and hands the output to pi — "what happened in
+// that run / why was it slow or expensive" without reading the raw sink.
+function explainCommand(argv: string[]): void {
+    let runArg = "";
+    let last = false;
+    let json = false;
+    let sinkArg: string | undefined;
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (a === "--last") last = true;
+        else if (a === "--json") json = true;
+        else if (a === "--sink") sinkArg = argv[++i];
+        else if (!a.startsWith("--") && !runArg) runArg = a;
+    }
+    if (!runArg && !last) {
+        console.error("usage: explain <runId|--last> [--json] [--sink <file>]");
+        process.exit(1);
+    }
+    const sink = obsSinkPath(sinkArg);
+    if (!existsSync(sink)) {
+        console.error(
+            `No obs sink at ${sink} — run a workflow with PI_OBS=1 first.`,
+        );
+        process.exit(1);
+    }
+    const runs = indexSink(sink).runs();
+    if (!runs.length) {
+        console.error(`No runs recorded in ${sink}.`);
+        process.exit(1);
+    }
+    const run = resolveRun(runs, runArg, last);
+    const digest = buildRunDigest(readRunEvents(sink, run));
+    if (json) {
+        console.log(JSON.stringify(digest, null, 2));
+        return;
+    }
+    console.log(formatRunDigest(digest).join("\n"));
+}
+
 function main() {
-    const opts = parseArgs(process.argv.slice(2));
+    const argv = process.argv.slice(2);
+    if (argv[0] === "score") {
+        scoreCommand(argv.slice(1));
+        return;
+    }
+    if (argv[0] === "explain") {
+        explainCommand(argv.slice(1));
+        return;
+    }
+    const opts = parseArgs(argv);
 
     if (opts.all) {
         runAllTrends({
