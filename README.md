@@ -21,8 +21,9 @@ only `.env` config — no code edits.
 - **Sub-agent dispatch** — `dispatch_agent` / `dispatch_parallel` for ad-hoc
   delegation to any agent, in any session.
 - **Observability** — an offline metrics analyzer (per-run reports + cross-project
-  trends) and an opt-in live dashboard (`PI_OBS=1`) with Swimlane / Single / Race / Trace / Stats
-  views that span every pi instance you're running.
+  trends) and an opt-in live dashboard (`PI_OBS=1`) with seven views (Swimlane,
+  Single, Race, Trace, Stats, Compare, Search), full run history, and an
+  OpenTelemetry export — spanning every pi instance you're running.
 - **Skills** — LSP diagnostics & navigation (Python/Go/TS/PHP), Playwright browser
   automation, Linear and Jira CLIs, GitHub, and commit helpers.
 - **Per-agent models** — point each agent at a different model via `.env`; mix a
@@ -287,28 +288,46 @@ per-project rollup. The `metrics` skill wraps the same CLI for the agent to call
 every sub-agent append canonical events to a shared sink (`~/.pi/agent/obs/events.jsonl`
 by default): a one-time **boot snapshot** (selected tools, loaded skills, context files +
 hashes, system-prompt size/hash), then turns, tool calls (with **execution latency**),
-tokens, cost, **per-turn throughput (tok/s)**, model changes, compaction, and **provider
-errors**. A dependency-free Node server tails that file and streams it to a browser
-dashboard over SSE with five views — **Swimlane** (a live lane per agent), **Single**
-(one agent's full timeline with filters, search, stat bar + context widget, and
-click-to-expand full tool args/results), **Race** (a turn-normalized grid showing who
-reached which step), **Trace** (a hierarchical waterfall of one run — the orchestrator
-at the root with each dispatched agent nested beneath on a shared time axis, annotated
-with dispatch retries/truncation), and **Stats** (aggregate analytics: latency
-percentiles, cost/tokens by agent, a tool-duration leaderboard, and cost over time,
-scopable to one run). Click any event row in Single to see its complete detail.
+tokens, cost, **per-turn throughput (tok/s)**, model changes, compaction, the run's
+**verdict** (pass/fail/paused), and **provider errors**. A dependency-free Node server
+tails that file and streams it to a browser dashboard over SSE with seven views:
+
+- **Swimlane** — a live lane per agent.
+- **Single** — one agent's full (virtualized) timeline, banded by turn-cycle, with
+  filters, search, a stat bar + context widget, and click-to-expand tool args/results.
+- **Race** — a turn-normalized grid of who reached which step, grouped by agent
+  (parallel instances collapse under one header) and, across projects, by project.
+- **Trace** — a hierarchical waterfall of one run: the orchestrator at the root with
+  each dispatched agent nested on a shared time axis, annotated with dispatch
+  retries/truncation.
+- **Stats** — aggregate analytics (latency percentiles, cost/tokens by agent, a
+  tool-duration leaderboard, cost over time) with vs-previous-run deltas.
+- **Compare** — a side-by-side diff of any two runs (A baseline vs B candidate):
+  headline metrics, per-agent and tool usage, and setup changes from the boot snapshots.
+- **Search** — server-side substring search over **every run ever recorded**, with
+  `run:` / `agent:` / `type:` / `project:` filters.
+
+A **⌘K command palette** jumps to any view, project, or run.
+
+**Run history & selection.** The server indexes the whole sink by run, so the dashboard
+isn't limited to the live tail: `/runs` lists **every run ever recorded** and any one's
+events are fetched on demand. A run picker (per-view on Trace/Stats/Compare, plus a header
+filter that scopes the lane views) defaults to the **live run** (green live dot) and labels
+runs by their **session name** when one was set (`pi.setSessionName`), else by timestamp;
+runs beyond the live buffer are marked `archived`.
 
 Every event is tagged with a **trace id** (`runId`, shared across the orchestrator and the
 agents it dispatches) and a **parent** (the agent that dispatched it), so a whole workflow
 reads as one trace. The orchestrator also emits **dispatch lifecycle events**
 (`dispatch_start`/`dispatch_retry`/`dispatch_end`) carrying why a sub-agent re-ran
-(empty output, or output-token truncation).
+(empty output, or output-token truncation) and a final **verdict**. Parallel instances of
+the same agent stay distinct (their own lanes/spans, `#n` labels).
 
 Because the sink is shared, **multiple pi instances across different projects stream into
 one dashboard** — events carry their `cwd`, so lanes stay separated by project and a
 project filter in the header scopes the views. Set `PI_OBS_SINK=$PWD/.agent/obs/events.jsonl`
 for a per-project sink instead, or point the server at one project with
-`npm run obs:server -- <project>`.
+`npm run obs:server -- <project>`. A read-only **`/api`** is exposed for external UIs.
 
 ```bash
 ./run.sh                              # pi only
