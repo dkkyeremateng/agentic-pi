@@ -13,6 +13,8 @@ const hidden = new Set(); // lane keys toggled off via the sidebar
 let view = "swimlane";
 let selected = null; // lane key
 let search = "";
+let searchRegex = false; // Single: treat `search` as a regular expression
+let errorsOnly = false; // Single: only errors / failed tools / retries
 let projectFilter = ""; // "" = all projects
 let runFilter = ""; // "" = all runs; scopes swimlane/single/race to one run (single project only)
 let runFilterAuto = true; // when true, the run filter follows the live (or last) run

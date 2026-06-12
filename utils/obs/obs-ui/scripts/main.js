@@ -136,6 +136,16 @@ $("search").addEventListener("input", (e) => {
     search = e.target.value.trim().toLowerCase();
     renderSingle();
 });
+$("f-regex").addEventListener("click", () => {
+    searchRegex = !searchRegex;
+    $("f-regex").classList.toggle("on", searchRegex);
+    renderSingle();
+});
+$("f-errors").addEventListener("click", () => {
+    errorsOnly = !errorsOnly;
+    $("f-errors").classList.toggle("on", errorsOnly);
+    renderSingle();
+});
 $("resume").addEventListener("click", () => {
     autoscroll = true;
     $("resume").classList.remove("show");

@@ -1,11 +1,78 @@
-// ── single view ──────────────────────────────────────────────────────────────
-// Open an agent's full timeline in Single (used by lane headers / race cards,
-// not the sidebar, which only toggles visibility).
+// ── single view — one agent's full timeline (virtualized) ────────────────────
+// Rows are fixed-height and windowed (vlist.js), so the feed handles tens of
+// thousands of events. turn_start events render as separator rows; clicking
+// any row opens the full event in the detail drawer.
+
+// Open an agent's full timeline in Single (used by lane headers / race cards /
+// the trace drawer — the rail buttons only toggle visibility).
 function selectLane(key) {
     selected = key;
     setView("single");
     updateSidebarState();
     renderSingle();
+}
+
+const SINGLE_ROW_H = 26;
+let singleVList = null;
+
+function singleList() {
+    if (!singleVList)
+        singleVList = makeVList({
+            container: $("single-feed"),
+            scroller: $("content"),
+            rowH: SINGLE_ROW_H,
+        });
+    return singleVList;
+}
+
+// One virtualized row. turn_start = separator; everything else = event row
+// with time · badge · one-line detail · right-aligned latency/cost extras.
+function makeVRow(ev) {
+    if (ev.type === "turn_start") {
+        const sep = document.createElement("div");
+        sep.className = "vsep";
+        const lbl = document.createElement("span");
+        lbl.textContent =
+            "turn " + (ev.payload?.turnIndex ?? "") + " · " + clock(ev.ts);
+        sep.appendChild(lbl);
+        return sep;
+    }
+    const { kls, badge, detail } = describe(ev);
+    const row = document.createElement("div");
+    row.className = "row vrow";
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = clock(ev.ts);
+    const em = document.createElement("span");
+    em.className = "row-emoji";
+    em.textContent = emojiFor(ev);
+    const b = document.createElement("span");
+    b.className = "badge " + kls;
+    b.textContent = badge;
+    const d = document.createElement("span");
+    d.className = "d";
+    d.textContent = detail.split("\n")[0];
+    row.append(t, em, b, d);
+    // right-aligned extras: tool latency / turn cost+duration
+    const p = ev.payload || {};
+    let extra = "";
+    if (ev.type === "tool_end" && p.durationMs) extra = fmtMs(p.durationMs);
+    else if (ev.type === "turn_end")
+        extra =
+            (p.durationMs ? fmtDur(p.durationMs) + " · " : "") +
+            (p.costUsd ? fmtCost(p.costUsd) : "");
+    if (extra) {
+        const x = document.createElement("span");
+        x.className = "vx";
+        x.textContent = extra;
+        row.append(x);
+    }
+    row.addEventListener("click", () => {
+        const sel = window.getSelection && String(window.getSelection());
+        if (sel) return;
+        openInspector(ev, selected ? lanes.get(selected) : null);
+    });
+    return row;
 }
 
 function renderSingle() {
@@ -16,18 +83,25 @@ function renderSingle() {
     $("single-model").textContent = a && a.rollup.model ? a.rollup.model : "";
     const dot = document.querySelector(".single-dot");
     if (dot) dot.classList.toggle("active", !!(a && a.rollup.active));
-    const feed = $("single-feed");
-    feed.innerHTML = "";
+    const list = singleList();
     if (!a) {
+        list.setItems([], makeVRow);
         renderStatbar();
         return;
     }
-    const frag = document.createDocumentFragment();
+    const items = [];
     for (const ev of a.events)
-        if (passesFilter(ev)) frag.appendChild(makeRow(ev, true));
-    feed.appendChild(frag);
+        if (ev.type === "turn_start" || passesFilter(ev)) items.push(ev);
+    list.setItems(items, makeVRow);
     renderStatbar();
-    if (autoscroll) window.scrollTo(0, document.body.scrollHeight);
+    if (autoscroll) $("content").scrollTop = $("content").scrollHeight;
+}
+
+// Live tail: append without rebuilding the whole window.
+function singleAppend(ev) {
+    if (!singleVList) return renderSingle();
+    singleVList.append(ev);
+    if (autoscroll) $("content").scrollTop = $("content").scrollHeight;
 }
 
 function renderStatbar() {
@@ -83,4 +157,3 @@ function renderCtxWidget(ctx) {
         pct != null ? Math.max(0, Math.round(100 - pct)) + "%" : "—";
     $("ctx-fill").style.width = (pct != null ? Math.min(100, pct) : 0) + "%";
 }
-

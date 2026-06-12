@@ -143,7 +143,8 @@ function openInspector(ev, lane) {
     $("insp-time").textContent = clock(ev.ts);
     $("insp-seq").textContent = "#" + ev.seq;
     $("insp-typ2").textContent = typeLabel(ev);
-    $("insp-summary").textContent = describe(ev).detail;
+    // the full payload text (args/results/message), not the one-line preview
+    $("insp-summary").textContent = fullDetail(ev);
     $("insp-json").textContent = JSON.stringify(ev, null, 2);
     $("inspector").classList.add("open");
 }

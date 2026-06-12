@@ -148,35 +148,12 @@ function fullDetail(ev) {
     }
 }
 
-function toggleExpand(row, ev) {
-    const next = row.nextSibling;
-    if (next && next.classList && next.classList.contains("xpanel")) {
-        next.remove();
-        return;
-    }
-    const panel = document.createElement("div");
-    panel.className = "xpanel";
-    const pre = document.createElement("pre");
-    pre.textContent = fullDetail(ev);
-    const copy = document.createElement("button");
-    copy.className = "copy";
-    copy.textContent = "copy";
-    copy.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (navigator.clipboard) navigator.clipboard.writeText(pre.textContent);
-        copy.textContent = "copied";
-        setTimeout(() => (copy.textContent = "copy"), 1000);
-    });
-    panel.append(copy, pre);
-    row.parentNode.insertBefore(panel, row.nextSibling);
-}
-
-// `full` (Single view) rows are expandable; swimlane lane rows are static.
-function makeRow(ev, full) {
+// Swimlane mini-feed rows (static, one line). The Single view renders its own
+// virtualized rows (single.js makeVRow); full detail lives in the drawer.
+function makeRow(ev) {
     const { kls, badge, detail } = describe(ev);
-    const oneLine = detail.split("\n")[0];
     const row = document.createElement("div");
-    row.className = "row" + (full ? " expandable" : " new");
+    row.className = "row new";
     const t = document.createElement("span");
     t.className = "t";
     t.textContent = clock(ev.ts);
@@ -188,24 +165,10 @@ function makeRow(ev, full) {
     b.textContent = badge;
     const d = document.createElement("span");
     d.className = "d";
-    d.textContent = oneLine;
+    d.textContent = detail.split("\n")[0];
     if (detail) d.title = detail;
-
-    if (full) {
-        const caret = document.createElement("span");
-        caret.className = "caret";
-        caret.textContent = "›";
-        row.append(caret, t, em, b, d);
-        row.addEventListener("click", () => {
-            const sel = window.getSelection && String(window.getSelection());
-            if (sel) return;
-            caret.textContent = caret.textContent === "›" ? "⌄" : "›";
-            toggleExpand(row, ev);
-        });
-    } else {
-        row.append(t, em, b, d);
-        setTimeout(() => row.classList.remove("new"), 600);
-    }
+    row.append(t, em, b, d);
+    setTimeout(() => row.classList.remove("new"), 600);
     return row;
 }
 

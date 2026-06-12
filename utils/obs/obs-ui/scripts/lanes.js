@@ -258,9 +258,27 @@ function laneMeta(a) {
 
 function passesFilter(ev) {
     if (!filters.has(categoryOf(ev))) return false;
+    if (errorsOnly) {
+        const p = ev.payload || {};
+        const isErr =
+            ev.type === "error" ||
+            (ev.type === "tool_end" && p.isError) ||
+            (ev.type === "dispatch_end" && p.status === "error") ||
+            ev.type === "dispatch_retry";
+        if (!isErr) return false;
+    }
     if (search) {
         const { badge, detail } = describe(ev);
-        if (!(badge + " " + detail).toLowerCase().includes(search)) return false;
+        const hay = badge + " " + detail;
+        if (searchRegex) {
+            try {
+                if (!new RegExp(search, "i").test(hay)) return false;
+            } catch {
+                return false; // an invalid pattern matches nothing
+            }
+        } else if (!hay.toLowerCase().includes(search)) {
+            return false;
+        }
     }
     return true;
 }
@@ -285,7 +303,7 @@ function handle(ev) {
     if (a.events.length > EVENTS_CAP) a.events.shift();
     applyRollup(a.rollup, ev);
 
-    a.card.feed.appendChild(makeRow(ev, false));
+    a.card.feed.appendChild(makeRow(ev));
     while (a.card.feed.childElementCount > FEED_MAX)
         a.card.feed.removeChild(a.card.feed.firstChild);
     laneMeta(a);
@@ -298,9 +316,9 @@ function handle(ev) {
         if (updateRunFilter()) applyVisibility();
     }
 
-    if (view === "single" && a.key === selected && passesFilter(ev)) {
-        $("single-feed").appendChild(makeRow(ev, true));
-        if (autoscroll) $("content").scrollTop = $("content").scrollHeight;
+    if (view === "single" && a.key === selected) {
+        // separators (turn_start) always show; the rest pass the filters
+        if (ev.type === "turn_start" || passesFilter(ev)) singleAppend(ev);
         renderStatbar();
     }
     if (view === "race") scheduleRace();

@@ -11,6 +11,9 @@ body {
 #app {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
+    /* one explicit row clamped to the app height — otherwise the implicit
+       auto row grows with content and the columns overflow the viewport */
+    grid-template-rows: minmax(0, 1fr);
     height: 100dvh;
 }
 
@@ -186,6 +189,7 @@ body {
     display: flex;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
 }
 
 header {

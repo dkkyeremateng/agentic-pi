@@ -127,6 +127,20 @@
                 <section id="single" class="view">
                     <div id="filters">
                         <input id="search" placeholder="search…" />
+                        <button
+                            id="f-regex"
+                            class="chip"
+                            title="treat the search as a regular expression"
+                        >
+                            .*
+                        </button>
+                        <button
+                            id="f-errors"
+                            class="chip"
+                            title="only errors, failed tools, and retries"
+                        >
+                            errors only
+                        </button>
                         <span id="chips"></span>
                     </div>
                     <div id="statrow">
@@ -421,6 +435,7 @@
         <script src="/scripts/feed.js"></script>
         <script src="/scripts/rollup.js"></script>
         <script src="/scripts/lanes.js"></script>
+        <script src="/scripts/vlist.js"></script>
         <script src="/scripts/single.js"></script>
         <script src="/scripts/views.js"></script>
         <script src="/scripts/race.js"></script>
