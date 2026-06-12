@@ -325,15 +325,20 @@ the same agent stay distinct (their own lanes/spans, `#n` labels).
 
 Because the sink is shared, **multiple pi instances across different projects stream into
 one dashboard** — events carry their `cwd`, so lanes stay separated by project and a
-project filter in the header scopes the views. Set `PI_OBS_SINK=$PWD/.agent/obs/events.jsonl`
-for a per-project sink instead, or point the server at one project with
+project filter in the header scopes the views. To scope obs to one project instead, add
+**`--project`** (alias `--cwd`): the collector emits to and the server tails a
+per-project sink under `~/.pi/agent/obs/<cwd-slug>-<hash>/events.jsonl`, named like
+pi's session folder (e.g. `-Users-me-Documents-Dev-slf-ai-p-0d3c1ef2`). Equivalently,
+set `PI_OBS_SINK` to any path yourself, or point the server at one project with
 `npm run obs:server -- <project>`. A read-only **`/api`** is exposed for external UIs.
 
 ```bash
 ./run.sh                              # pi only
 ./run.sh --obs                        # pi + the dashboard (http://127.0.0.1:7616)
+./run.sh --obs --project              # …scoped to this project's sink (cwd), not the global one
 ./run.sh --emit                       # pi with emission ON but no server (use with a running --server)
 ./run.sh --server                     # the dashboard server only (background; prints a pid to stop)
+./run.sh --server --project           # …server only, tailing this project's sink (cwd)
 ./run.sh --server -- --port 8000      # …server only, on a custom port / project
 # equivalents:
 npm run obs:server                    # same as `./run.sh --server`

@@ -10,9 +10,19 @@
 #   ./run.sh --emit                # pi with emission on, but DON'T start a server
 #                                  #   (use when a `--server` is already running)
 #   ./run.sh --server              # the dashboard server only (background; no pi)
+#   ./run.sh --obs --project       # scope obs to THIS project: emit to and tail a
+#                                  #   per-project sink under ~/.pi/agent/obs/<slug>/
+#                                  #   instead of the shared global sink
 #   ./run.sh -- <pi args>          # pass extra args straight to pi
 #   ./run.sh --obs -- <pi args>
 #   ./run.sh --server -- <obs-server args>   # e.g. --port 8000, or a project path
+#
+# By default obs uses one shared global sink (~/.pi/agent/obs/events.jsonl) so
+# every pi instance (any project) streams into a single dashboard; the UI
+# separates them by cwd. --project (alias --cwd) instead scopes everything to a
+# per-project sink under ~/.pi/agent/obs/<cwd-slug>-<hash>/events.jsonl, named
+# like pi's session folder. Setting PI_OBS_SINK in the environment overrides both
+# and is respected as-is.
 #
 # Requires: `pi` on PATH (for pi/--obs). `--obs`/`--server` also need the dev deps
 # (`npm install`) and node for the dashboard server (PI_OBS_PORT, default 7616).
@@ -27,15 +37,36 @@ TSX="$DIR/node_modules/.bin/tsx"
 MODE="pi"
 [[ "${PI_OBS:-}" == "1" || "${PI_OBS:-}" == "true" ]] && MODE="both"
 
+# Sink scope: global (shared ~/.pi sink) | project (this cwd's sink). --project.
+SINK_SCOPE="global"
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --obs) MODE="both"; shift ;;
         --emit) MODE="emit"; shift ;;
         --server | --obs-only) MODE="server"; shift ;;
+        --project | --cwd) SINK_SCOPE="project"; shift ;;
         --) shift; break ;;
         *) break ;;
     esac
 done
+
+# --project/--cwd scopes obs to the current directory: give it a dedicated sink
+# under ~/.pi/agent/obs/, named like pi's per-project session folder — a slug of
+# the absolute cwd (/ → -) plus a short hash of the path for uniqueness, e.g.
+#   ~/.pi/agent/obs/-Users-me-Documents-Dev-slf-ai-p-0d3c1ef2/events.jsonl
+# Both the collector and the server honor PI_OBS_SINK, so exporting it here covers
+# every mode (and sub-agents inherit it). An explicit PI_OBS_SINK always wins.
+if [[ "$SINK_SCOPE" == "project" && -z "${PI_OBS_SINK:-}" ]]; then
+    obs_slug="$(printf '%s' "$PWD" | tr '/' '-')"
+    if command -v shasum >/dev/null 2>&1; then
+        obs_hash="$(printf '%s' "$PWD" | shasum | cut -c1-8)"
+    else
+        obs_hash="$(printf '%s' "$PWD" | sha1sum | cut -c1-8)"
+    fi
+    export PI_OBS_SINK="$HOME/.pi/agent/obs/${obs_slug}-${obs_hash}/events.jsonl"
+    echo "run.sh: obs sink → $PI_OBS_SINK"
+fi
 
 # ── server only ──────────────────────────────────────────────────────────────
 if [[ "$MODE" == "server" ]]; then
