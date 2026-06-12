@@ -9,7 +9,13 @@ import {
     reviewTask,
     projectSessionHash,
     parsePlanPhases,
+    parseProgressLedger,
+    buildReviewChecklist,
+    REVIEW_CHECKLIST,
+    inferWorkflowTeam,
     buildPhaseMap,
+    buildWorkflowMetrics,
+    spawnModelArg,
     failPhase,
     renderTemplate,
     tokenNote,
@@ -674,6 +680,112 @@ describe("parsePlanPhases", () => {
     });
 });
 
+describe("parseProgressLedger", () => {
+    it("parses the seeded ledger format, ignoring heading and Base line", () => {
+        const ledger =
+            "# Implementation progress\n\nBase: abc123\n\n- [ ] Phase 1: Skeleton\n- [x] Phase 2: Polish\n";
+        assert.deepEqual(parseProgressLedger(ledger), [
+            { label: "Phase 1: Skeleton", done: false },
+            { label: "Phase 2: Polish", done: true },
+        ]);
+    });
+
+    it("treats [X] (uppercase) as done and keeps order", () => {
+        const out = parseProgressLedger("- [X] A\n- [ ] B\n- [x] C\n");
+        assert.deepEqual(
+            out.map((i) => i.done),
+            [true, false, true],
+        );
+        assert.deepEqual(
+            out.map((i) => i.label),
+            ["A", "B", "C"],
+        );
+    });
+
+    it("returns [] for empty or checkbox-free content", () => {
+        assert.deepEqual(parseProgressLedger(""), []);
+        assert.deepEqual(parseProgressLedger("# Heading\nno boxes here\n"), []);
+    });
+});
+
+describe("inferWorkflowTeam", () => {
+    const teams = { build: ["implementer"], spec: ["planner"] };
+
+    it("maps build/implement-the-plan phrasings to the build team", () => {
+        for (const req of [
+            "build the implementation plan",
+            "implement the plan",
+            "implement the implementation plan",
+            "build the plan",
+            "please build the implementation plan for the dashboard",
+        ]) {
+            assert.equal(inferWorkflowTeam(req, teams), "build", req);
+        }
+    });
+
+    it("does not match from-scratch or planning requests", () => {
+        for (const req of [
+            "build me a todo app",
+            "create an implementation plan",
+            "build a plan for the API",
+            "add a dark mode toggle",
+            "",
+        ]) {
+            assert.equal(inferWorkflowTeam(req, teams), "", req);
+        }
+    });
+
+    it("returns '' when the build team isn't defined", () => {
+        assert.equal(
+            inferWorkflowTeam("implement the plan", { spec: ["planner"] }),
+            "",
+        );
+    });
+});
+
+describe("buildReviewChecklist", () => {
+    const phase = (agent: string, status: PhaseState["status"]) => {
+        const p = testPhase(agent);
+        p.status = status;
+        return p;
+    };
+
+    it("is hidden until the reviewer phase exists or starts", () => {
+        assert.deepEqual(buildReviewChecklist([]), []);
+        assert.deepEqual(buildReviewChecklist([phase("implementer", "running")]), []);
+        assert.deepEqual(buildReviewChecklist([phase("reviewer", "pending")]), []);
+    });
+
+    it("shows all items unchecked while the reviewer runs with no markers", () => {
+        const items = buildReviewChecklist([phase("reviewer", "running")]);
+        assert.equal(items.length, REVIEW_CHECKLIST.length);
+        assert.ok(items.every((i) => !i.done));
+        assert.equal(items[0].label, "Plan conformance");
+    });
+
+    it("ticks only the reported items live while running (doneLabels)", () => {
+        const items = buildReviewChecklist(
+            [phase("reviewer", "running")],
+            new Set(["Correctness", "Tests"]),
+        );
+        const done = items.filter((i) => i.done).map((i) => i.label);
+        assert.deepEqual(done.sort(), ["Correctness", "Tests"]);
+    });
+
+    it("ignores doneLabels once finished — all items read done", () => {
+        const items = buildReviewChecklist(
+            [phase("reviewer", "done")],
+            new Set(["Correctness"]),
+        );
+        assert.ok(items.every((i) => i.done));
+    });
+
+    it("checks every item once the reviewer finishes", () => {
+        const items = buildReviewChecklist([phase("reviewer", "done")]);
+        assert.ok(items.length > 0 && items.every((i) => i.done));
+    });
+});
+
 describe("contextWindowForModel", () => {
     const models = [
         { id: "gateframe_yoda/qwen-max-3-7-yoda-2", provider: "gateframe", contextWindow: 1000000 },
@@ -812,7 +924,15 @@ describe("clampSummary", () => {
 });
 
 describe("dispatchEnv", () => {
-    const KEYS = ["PI_DISPATCH_DEPTH", "PI_DISPATCH_ANCESTRY"];
+    const KEYS = [
+        "PI_DISPATCH_DEPTH",
+        "PI_DISPATCH_ANCESTRY",
+        "PI_OBS",
+        "PI_OBS_RUN",
+        "PI_OBS_AGENT",
+        "PI_OBS_PARENT",
+        "PI_OBS_DISPATCH_ID",
+    ];
     function withEnv(
         vars: Record<string, string | undefined>,
         fn: () => void,
@@ -847,6 +967,40 @@ describe("dispatchEnv", () => {
             const env = dispatchEnv("Scout");
             assert.equal(env.PI_DISPATCH_DEPTH, "2");
             assert.equal(env.PI_DISPATCH_ANCESTRY, "coordinator>scout");
+        });
+    });
+
+    it("omits the obs vars when PI_OBS is off", () => {
+        withEnv({ PI_OBS: undefined }, () => {
+            const env = dispatchEnv("Scout", "scout-123");
+            assert.equal(env.PI_OBS_AGENT, undefined);
+            assert.equal(env.PI_OBS_DISPATCH_ID, undefined);
+        });
+    });
+
+    it("propagates the dispatchId (and run/parent) for obs when PI_OBS=1", () => {
+        withEnv(
+            {
+                PI_OBS: "1",
+                PI_OBS_RUN: "run-xyz",
+                PI_OBS_AGENT: "orchestrator",
+                PI_OBS_DISPATCH_ID: undefined,
+            },
+            () => {
+                const env = dispatchEnv("Seeker", "seeker-1759-abc");
+                assert.equal(env.PI_OBS_AGENT, "seeker");
+                assert.equal(env.PI_OBS_RUN, "run-xyz");
+                assert.equal(env.PI_OBS_PARENT, "orchestrator");
+                assert.equal(env.PI_OBS_DISPATCH_ID, "seeker-1759-abc");
+            },
+        );
+    });
+
+    it("sets no dispatchId when none is given even with obs on", () => {
+        withEnv({ PI_OBS: "1" }, () => {
+            const env = dispatchEnv("Seeker");
+            assert.equal(env.PI_OBS_AGENT, "seeker");
+            assert.equal(env.PI_OBS_DISPATCH_ID, undefined);
         });
     });
 });
@@ -894,6 +1048,67 @@ describe("renderWorkflowFooter", () => {
         );
         assert.ok(line.includes("+2"));
         assert.ok(!line.includes("∥ E"));
+    });
+
+    // The inline LSP segment.
+    function footerWith(opts: {
+        lspServers?: {
+            server: string;
+            extensions: string[];
+            installed: boolean;
+        }[];
+        width?: number;
+    }): string {
+        return renderWorkflowFooter({
+            width: opts.width ?? 200,
+            theme,
+            selfName: "agent-workflow",
+            model: "m",
+            running: false,
+            lastStatus: "idle",
+            iteration: 1,
+            maxLoopsRef: 3,
+            dispatchMode: true,
+            phases: [],
+            dispatchElapsedMs: 0,
+            runElapsedMs: 0,
+            lspServers: opts.lspServers,
+            contextUsage: () => undefined,
+            visibleWidth: (s) => s.length,
+            truncateToWidth: (s, w, e = "") =>
+                s.length <= w ? s : s.slice(0, Math.max(0, w - e.length)) + e,
+        })[0];
+    }
+
+    it("omits the LSP segment when there are no relevant servers", () => {
+        assert.ok(!footerWith({}).includes("LSP"));
+        assert.ok(!footerWith({ lspServers: [] }).includes("LSP"));
+    });
+
+    it("shows LSP with its install mark and extensions when there's room", () => {
+        const line = footerWith({
+            lspServers: [
+                {
+                    server: "typescript-language-server",
+                    extensions: [".js"],
+                    installed: true,
+                },
+            ],
+        });
+        assert.match(line, /LSP: ✓ typescript-language-server/);
+        assert.ok(line.includes(".js"));
+    });
+
+    it("clips the LSP segment (…) instead of crowding out the cost/context", () => {
+        const many = Array.from({ length: 6 }, (_, i) => ({
+            server: `language-server-number-${i}`,
+            extensions: [".aaa", ".bbb"],
+            installed: true,
+        }));
+        const line = footerWith({ lspServers: many });
+        assert.ok(line.includes("LSP:"));
+        assert.ok(line.includes("…")); // clipped
+        assert.ok(line.includes("$0.00")); // cost preserved on the right
     });
 });
 
@@ -1257,5 +1472,160 @@ describe("runAgentWithFallback transient retry", () => {
         const r = await runAgentWithFallback(agent, "t", mkPhase("T", "tester-agent"), "/x", "primary", "", spawn, noopOpts);
         assert.equal(r.exitCode, 1);
         assert.equal(n, 3); // initial + 2 retries
+    });
+});
+
+// ── buildWorkflowMetrics ─────────────────────────
+
+describe("buildWorkflowMetrics", () => {
+    it("emits a structured single-run record from phase states + totals", () => {
+        const scout = mkPhase("Scout", "scout");
+        scout.status = "done";
+        scout.elapsed = 19_000;
+        scout.toolCount = 2;
+        scout.tokens = {
+            input: 8000,
+            output: 1000,
+            cacheRead: 2000,
+            cacheWrite: 0,
+            contextWindow: 200000,
+            costUsd: 0.022,
+        };
+        const impl = mkPhase("Implementer", "implementer");
+        impl.status = "done";
+        impl.elapsed = 378_000;
+        impl.attempt = 2;
+        impl.tokens = {
+            input: 40000,
+            output: 20000,
+            cacheRead: 412700,
+            cacheWrite: 0,
+            contextWindow: 200000,
+            costUsd: 0.397,
+        };
+
+        const m = buildWorkflowMetrics({
+            request: "build a todo app",
+            status: "paused-no-remote",
+            verdict: "pass",
+            passes: 1,
+            maxLoops: 3,
+            passed: true,
+            prUrl: "",
+            team: "build",
+            startedAt: Date.parse("2026-06-10T19:25:00.000Z"),
+            endedAt: Date.parse("2026-06-10T19:35:38.000Z"),
+            totals: {
+                runElapsedMs: 638_000,
+                totalToolCalls: 53,
+                totalTokens: {
+                    input: 47677,
+                    output: 24308,
+                    cacheRead: 518993,
+                    cacheWrite: 0,
+                },
+                totalDroppedLines: 0,
+                totalCostUsd: 0.643,
+            },
+            phases: [scout, null, null, impl, null, null, null],
+        });
+
+        assert.equal(m.schema, 1);
+        assert.equal(m.team, "build");
+        assert.equal(m.shipOutcome, "paused");
+        assert.equal(m.passes, 1);
+        assert.equal(m.maxLoops, 3);
+        assert.equal(m.startedAt, "2026-06-10T19:25:00.000Z");
+        assert.equal(m.totals.wallclockMs, 638_000);
+        assert.equal(m.totals.toolCalls, 53);
+        assert.equal(m.totals.tokens.total, 47677 + 24308 + 518993);
+        assert.equal(m.totals.costUsd, 0.643);
+        // nulls are dropped; order preserved
+        assert.equal(m.phases.length, 2);
+        assert.equal(m.phases[0].label, "Scout");
+        assert.equal(m.phases[1].label, "Implementer");
+        assert.equal(m.phases[1].attempt, 2);
+        assert.equal(m.phases[1].tokens?.total, 40000 + 20000 + 412700);
+        assert.equal(m.phases[1].tokens?.costUsd, 0.397);
+    });
+
+    it("maps ship outcome from status and prUrl", () => {
+        const base = {
+            request: "x",
+            verdict: "pass",
+            passes: 1,
+            maxLoops: 3,
+            passed: true,
+            totals: {
+                runElapsedMs: 0,
+                totalToolCalls: 0,
+                totalTokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                totalDroppedLines: 0,
+            },
+            phases: [],
+        };
+        assert.equal(
+            buildWorkflowMetrics({ ...base, status: "shipped", prUrl: "" })
+                .shipOutcome,
+            "shipped",
+        );
+        assert.equal(
+            buildWorkflowMetrics({
+                ...base,
+                status: "done",
+                prUrl: "https://github.com/o/r/pull/1",
+            }).shipOutcome,
+            "shipped",
+        );
+        assert.equal(
+            buildWorkflowMetrics({
+                ...base,
+                status: "failed-after-retries",
+                prUrl: "",
+            }).shipOutcome,
+            "failed",
+        );
+        assert.equal(
+            buildWorkflowMetrics({ ...base, status: "done", prUrl: "" })
+                .shipOutcome,
+            "unknown",
+        );
+    });
+});
+
+// ── spawnModelArg ────────────────────────────────
+
+describe("spawnModelArg", () => {
+    it("passes a bare id (with optional :thinking) through unchanged", () => {
+        assert.equal(spawnModelArg("qwen-max-3-7-yoda-2"), "qwen-max-3-7-yoda-2");
+        assert.equal(
+            spawnModelArg("qwen-max-3-7-yoda-2:low"),
+            "qwen-max-3-7-yoda-2:low",
+        );
+    });
+
+    it("keeps the provider for a single-slash provider/id string", () => {
+        assert.equal(
+            spawnModelArg("anthropic/claude-opus-4-8"),
+            "anthropic/claude-opus-4-8",
+        );
+        assert.equal(
+            spawnModelArg("anthropic/claude-fable-5:low"),
+            "anthropic/claude-fable-5:low",
+        );
+    });
+
+    it("keeps the provider for a two-or-more-slash string", () => {
+        assert.equal(
+            spawnModelArg("gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low"),
+            "gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low",
+        );
+    });
+
+    it("returns null for empty or whitespace-containing strings", () => {
+        assert.equal(spawnModelArg(undefined), null);
+        assert.equal(spawnModelArg(""), null);
+        assert.equal(spawnModelArg("   "), null);
+        assert.equal(spawnModelArg("two words"), null);
     });
 });

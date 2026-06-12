@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 .agent/
 .pi/
+.playwright-mcp/
+.obs-server.log

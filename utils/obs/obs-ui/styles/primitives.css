@@ -1,0 +1,240 @@
+/* primitives — shared component classes (ui.md §3.5) + global polish.
+   The classes here are the building blocks the shell/views adopt as the
+   redesign lands (P2+); the scrollbar/skeleton rules apply immediately. */
+
+/* ── scrollbars (dark, thin, consistent) ────────────────────────────────── */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+}
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 5px;
+    border: 2px solid var(--surface-1);
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-faint);
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/* ── buttons ────────────────────────────────────────────────────────────── */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 12px;
+    background: var(--surface-3);
+    color: var(--text-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-m);
+    font: 500 12px/1 var(--font-ui);
+    cursor: pointer;
+}
+.btn:hover {
+    color: var(--text-hi);
+    border-color: var(--accent);
+}
+.btn-primary {
+    background: var(--accent);
+    color: var(--on-accent);
+    border-color: var(--accent);
+}
+.btn-primary:hover {
+    background: var(--accent-hover);
+    color: var(--on-accent);
+}
+.btn-icon {
+    padding: 0;
+    width: 28px;
+    justify-content: center;
+}
+
+/* ── status chip (icon + text + tint; never color alone) ────────────────── */
+.s-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font: 500 11px/16px var(--font-ui);
+    border: 1px solid var(--border);
+    color: var(--text-lo);
+}
+.s-chip.ok {
+    color: var(--ok);
+    border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+    background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.s-chip.warn {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+    background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.s-chip.err {
+    color: var(--err);
+    border-color: color-mix(in srgb, var(--err) 45%, transparent);
+    background: color-mix(in srgb, var(--err) 10%, transparent);
+}
+
+/* ── card + KPI ─────────────────────────────────────────────────────────── */
+.card {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-m);
+    padding: var(--space-3) 14px;
+}
+.kpi .k {
+    color: var(--text-lo);
+    font: 500 11px/1.3 var(--font-ui);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.kpi .v {
+    color: var(--text-hi);
+    font: 600 20px/1.3 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── skeleton (loading shimmer; frozen under reduced motion via base) ───── */
+.skeleton {
+    border-radius: var(--radius-s);
+    background: linear-gradient(
+        100deg,
+        var(--surface-3) 40%,
+        var(--surface-4) 50%,
+        var(--surface-3) 60%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+    color: transparent;
+    user-select: none;
+}
+@keyframes skeleton-shimmer {
+    from {
+        background-position: 200% 0;
+    }
+    to {
+        background-position: -200% 0;
+    }
+}
+
+/* ── meter (thin horizontal bar, e.g. context usage) ────────────────────── */
+.meter {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--surface-3);
+    overflow: hidden;
+}
+.meter > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+}
+
+/* ── CSS-only tooltip (title= stays for a11y; this is the visual) ───────── */
+[data-tip] {
+    position: relative;
+}
+[data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface-4);
+    color: var(--text-hi);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-s);
+    padding: 3px 8px;
+    font: 11px/1.4 var(--font-ui);
+    white-space: nowrap;
+    box-shadow: var(--shadow-pop);
+    z-index: 50;
+    pointer-events: none;
+}
+
+/* ── combobox (filterable pickers — uniform across the app) ─────────────── */
+.combo {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+/* one input style for every dropdown; instances set their own width */
+.combo input {
+    background: var(--panel2);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font: inherit;
+    font-family: var(--font-mono);
+    width: 220px;
+}
+.combo input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+/* when a live dot sits inside the box (.runsel), leave room for it */
+.runsel.combo input {
+    padding-left: 22px;
+}
+.combo-list {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 100%;
+    max-width: 480px;
+    max-height: 320px;
+    overflow-y: auto;
+    background: var(--surface-4);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-m);
+    box-shadow: var(--shadow-pop);
+    z-index: 60;
+    padding: 4px;
+}
+.combo-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: var(--radius-s);
+    color: var(--text-md);
+    font: 12px/1.5 var(--font-mono);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.combo-item.sel {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--text-hi);
+}
+.combo-item.live {
+    color: var(--ok);
+}
+/* ✓ marker for the current selection — fixed-width so labels stay aligned */
+.combo-check {
+    flex: none;
+    width: 12px;
+    text-align: center;
+    color: var(--accent);
+}
+.combo-item.cur {
+    color: var(--text-hi);
+}
+.combo-sub {
+    margin-left: auto;
+    color: var(--text-faint);
+    font-size: 11px;
+}
+.combo-empty {
+    padding: 10px;
+    color: var(--text-lo);
+}

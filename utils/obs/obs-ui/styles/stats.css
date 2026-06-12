@@ -1,0 +1,233 @@
+/* stats — aggregate analytics for a run (or all runs) */
+#stats {
+    padding: 16px;
+}
+#stats-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+/* width override only; shared look comes from .combo input (primitives.css) */
+#stats-run-q {
+    width: 280px;
+}
+#stats-axis {
+    color: var(--dim);
+    font-size: 12px;
+}
+#stats-axis b {
+    color: var(--fg);
+}
+#stats-empty {
+    color: var(--dim);
+    padding: 30px 4px;
+}
+#stats-tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+}
+.tile {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+.tile .k {
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+}
+.tile .v {
+    color: var(--fg);
+    font-size: 20px;
+    font-weight: 600;
+    margin-top: 3px;
+}
+.tile .v.ok {
+    color: var(--ok);
+}
+.tile .v.err {
+    color: var(--err);
+}
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+.stats-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px;
+    min-width: 0;
+}
+.stats-card.wide {
+    grid-column: 1 / -1;
+}
+.stats-card h3 {
+    margin: 0 0 10px;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: var(--dim);
+    font-weight: 600;
+}
+/* latency: labelled big-number grid */
+.lat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    gap: 12px;
+}
+.lat-cell .lk {
+    color: var(--dim);
+    font-size: 11px;
+}
+.lat-cell .lv {
+    color: var(--fg);
+    font-size: 16px;
+    font-weight: 600;
+    margin-top: 2px;
+}
+/* horizontal bar rows (per-agent) */
+.bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 7px;
+}
+.bar-row .nm {
+    flex: none;
+    width: 110px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.bar-track {
+    flex: 1;
+    height: 14px;
+    background: var(--panel2);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 0;
+}
+.bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+}
+.bar-fill.cost {
+    background: var(--ok);
+}
+.bar-row .bv {
+    flex: none;
+    width: 110px;
+    text-align: right;
+    color: var(--dim);
+    font-size: 11px;
+}
+.bar-row .bv b {
+    color: var(--fg);
+    font-weight: 600;
+}
+/* tool leaderboard table */
+table.lead {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+table.lead th {
+    text-align: left;
+    color: var(--dim);
+    font-weight: 600;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+}
+table.lead th.num,
+table.lead td.num {
+    text-align: right;
+}
+table.lead td {
+    padding: 3px 8px;
+    border-bottom: 1px solid rgba(44, 44, 58, 0.5);
+    white-space: nowrap;
+}
+table.lead td.tool {
+    color: var(--tool);
+}
+table.lead td.err {
+    color: var(--err);
+}
+.stats-muted {
+    color: var(--dim);
+}
+#stats-timeline svg {
+    width: 100%;
+    height: 120px;
+    display: block;
+}
+
+/* run history (regression strip) */
+#stats-runs-card {
+    margin-top: 12px;
+    display: none; /* shown once runs exist */
+}
+.runhist-head {
+    color: var(--dim);
+    font-size: 12px;
+    margin-bottom: 10px;
+}
+.runhist-head b {
+    color: var(--fg);
+}
+
+/* ── P4: KPI deltas, chart, sortable tables, run-history rows ───────────── */
+.kpi-delta {
+    margin-top: 2px;
+    font: 600 11px/1.2 var(--font-ui);
+}
+.kpi-delta.bad {
+    color: var(--err);
+}
+.kpi-delta.good {
+    color: var(--ok);
+}
+#stats-timeline canvas.chart {
+    width: 100%;
+    height: 120px;
+    display: block;
+}
+.chart-note {
+    font-size: 11px;
+    margin-top: 4px;
+}
+.runhist-head .spark {
+    width: 140px;
+    height: 20px;
+    vertical-align: middle;
+    margin-left: 10px;
+}
+.runhist-row {
+    cursor: pointer;
+}
+.runhist-row:hover td {
+    background: rgba(255, 255, 255, 0.03);
+}
+table.lead th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+table.lead th.sortable:hover {
+    color: var(--text-hi);
+}
+table.lead th[aria-sort="ascending"]::after {
+    content: " ▲";
+    font-size: 9px;
+}
+table.lead th[aria-sort="descending"]::after {
+    content: " ▼";
+    font-size: 9px;
+}

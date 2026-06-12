@@ -20,6 +20,10 @@ only `.env` config — no code edits.
   written run report.
 - **Sub-agent dispatch** — `dispatch_agent` / `dispatch_parallel` for ad-hoc
   delegation to any agent, in any session.
+- **Observability** — an offline metrics analyzer (per-run reports + cross-project
+  trends) and an opt-in live dashboard (`PI_OBS=1`) with seven views (Swimlane,
+  Single, Race, Trace, Stats, Compare, Search), full run history, and an
+  OpenTelemetry export — spanning every pi instance you're running.
 - **Skills** — LSP diagnostics & navigation (Python/Go/TS/PHP), Playwright browser
   automation, Linear and Jira CLIs, GitHub, and commit helpers.
 - **Per-agent models** — point each agent at a different model via `.env`; mix a
@@ -55,12 +59,23 @@ downstream agents, so it is never re-threaded through the context.
 - Optional per-language tools you want the agents to use: language servers for
   `lsp` (pyright, gopls, typescript-language-server, intelephense), `gh` for
   GitHub, Playwright browsers for `bowser`.
+- **Context-pruning packages (recommended)** — two third-party `pi` packages power
+  the [context management](#context-management) below. Install once; they register
+  in pi's global config and load automatically (including in sub-agents):
+
+  ```bash
+  pi install npm:pi-context        # provides the context_tag tool
+  pi install npm:pi-context-prune  # prunes stale tool output on each tag
+  ```
+
+  Without them the agents' `context_tag` milestone calls are inert — the workflow
+  still runs, relying only on pi's built-in compaction.
 
 ## Quick start
 
 ```bash
 cp example.env .env          # then fill in your models / API keys
-./run.sh                     # launches dispatch.ts + agent-workflow.ts
+./run.sh                     # loads dispatch + interactive + agent-workflow extensions
 ```
 
 `run.sh` loads the extensions resolved relative to itself, so you never edit pi's
@@ -124,13 +139,19 @@ run a planning team first.)
 
 ### What you'll see
 
-- **Live dashboard** — per-agent cards (status, model, context usage), the pipeline
-  with progress, and an **LSP Servers** panel showing which language servers the
-  project needs and whether they're installed.
+- **Live dashboard** — per-agent cards (status, model, context usage) and the
+  pipeline with progress, plus two live checklists during a run: a **`# Todos`**
+  panel mirroring the implementer's phases as they tick `[ ] → [x]`, and a
+  **`# Review`** panel ticking the reviewer's checklist (Plan conformance,
+  Correctness, Tests, …) as it works.
+- **Footer** — the active model, context usage + cost, run status, and an inline
+  **`LSP:`** segment showing which language servers the project needs and whether
+  they're installed (`✓` ready / `○` missing).
 - **`workflow-report.md`** — the end-of-run report (requirement, files changed,
   suite/diagnostics results, verdict, branch/commits, PR link or next steps).
 - **`.agent/`** scratch — `plan.md` (and `plan.draft.md`), `progress.md` (phase
-  ledger), `checkpoints/` (for `/revert`), `screenshots/` (browser QA). Gitignored.
+  ledger), `metrics.json`/`metrics.jsonl` (run metrics for the analyzer),
+  `checkpoints/` (for `/revert`), `screenshots/` (browser QA). Gitignored.
 - **`docs/plans/`** — optional permanent plan archive per run (opt-in; see
   `PI_WORKFLOW_ARCHIVE_PLANS`).
 
@@ -181,7 +202,7 @@ ones:
 | Variable | Purpose |
 |----------|---------|
 | `PI_WORKFLOW_MODEL` | Global fallback model for all agents. |
-| `PI_AGENT_<NAME>_MODEL` | Per-agent model (e.g. `PI_AGENT_IMPLEMENTER_MODEL`). The context-window for the dashboard comes from pi's model registry. |
+| `PI_AGENT_<NAME>_MODEL` | Per-agent model (e.g. `PI_AGENT_IMPLEMENTER_MODEL`). Accepts pi's `[provider/]id[:thinking]` form — e.g. `gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low` pins a provider and thinking level; a bare `id` or `id:thinking` uses the default provider. (Set thinking lower for recon/review agents to avoid output-token truncation.) The dashboard context-window comes from pi's model registry. |
 | `PI_DISPATCH_MAX_DEPTH` | How deep dispatch may nest (default 1; a cycle guard is always on). |
 | `PI_MAX_DISPATCHES_PER_TURN` | Breadth cap on dispatches per turn. |
 | `PI_AGENT_TRANSIENT_RETRIES` | Same-model retries on transient errors (interrupted stream, dropped connection, 429/502/503/504/529). |
@@ -211,7 +232,144 @@ with `PI_WORKFLOW_APPROVE_PROJECT=1` (force on, e.g. session-only trust) or `=0`
   *Resuming a build*) and the shipper squashes the wips into clean commits.
 - **`/revert`** — restore the pre-run state if you don't like the result.
 - **Context bounding** — agent outputs and shared context are clamped so a long
-  run can't blow the context window.
+  run can't blow the context window (see *Context management* for the pruning layer
+  on top).
+
+## Context management
+
+Long runs are kept inside the model's context window by two complementary layers:
+
+1. **pi's built-in compaction** (always on, no setup) — as a session nears the
+   window, pi summarizes the older messages and keeps the most recent. The coarse
+   safety net.
+2. **pi-context-prune** (the third-party package from *Prerequisites*) — precise,
+   lossless, **cache-aware** pruning of *verbose tool output* (file reads, command
+   output, sub-agent dumps) once it has been used. Originals stay retrievable via the
+   `context_tree_query` tool, and the session file on disk is never modified.
+
+This config drives the second layer in **`on-context-tag`** mode: a prune flushes
+when an agent calls **`context_tag`** (from the `pi-context` package). The agents tag
+at natural milestones, so each flush reclaims a batch of now-stale output with a
+single cache-friendly rewrite:
+
+- the **implementer** tags after each completed phase (alongside the
+  `.agent/progress.md` update), so a phase's reads/commands are pruned before the
+  next phase — keeping a long implement run well under the window;
+- the **orchestrator** tags at task boundaries — a `run_agent_workflow` run, a
+  dispatch, or a delivered file completes — to keep a long multi-task session lean.
+
+Because both `pi-context` and `pi-context-prune` are registered in pi's global config
+(`packages` in `~/.pi/agent/settings.json`), they load in **every** pi process,
+including the spawned sub-agents. Pruning settings (enable/disable, trigger mode,
+summarizer model) live in pi's global config at
+`~/.pi/agent/context-prune/settings.json` — **not** this folder's `.env`. Inside pi,
+`/pruner` views or changes them and `/pruner stats` shows how much it has reclaimed.
+
+## Observability
+
+Two layers measure what a run actually costs, where it spends time, and where it
+stalls — the *trifecta* (cost / tokens / speed) plus pipeline facts (per-phase
+breakdown, retries, ship outcome, context-prune savings).
+
+**Offline analyzer (always available).** Every run writes a structured
+`.agent/metrics.json` (latest) and appends `.agent/metrics.jsonl` (one line per run);
+the analyzer also reads `workflow-report.md` and the per-agent pi session logs.
+
+```bash
+npm run metrics -- <project>          # single-run report (trifecta + per-phase + detail)
+npm run metrics -- --all <root>       # cross-run trends across projects
+npm run metrics -- <project> --json   # machine-readable
+```
+
+Trends include cost/run, validator pass rate, retry rate, slowest/costliest phase, and a
+per-project rollup. The `metrics` skill wraps the same CLI for the agent to call.
+
+**Live dashboard (opt-in, `PI_OBS=1`).** With observability on, the orchestrator and
+every sub-agent append canonical events to a shared sink (`~/.pi/agent/obs/events.jsonl`
+by default): a one-time **boot snapshot** (selected tools, loaded skills, context files +
+hashes, system-prompt size/hash), then turns, tool calls (with **execution latency**),
+tokens, cost, **per-turn throughput (tok/s)**, model changes, compaction, the run's
+**verdict** (pass/fail/paused), and **provider errors**. A dependency-free Node server
+tails that file and streams it to a browser dashboard over SSE with seven views:
+
+- **Swimlane** — a live lane per agent.
+- **Single** — one agent's full (virtualized) timeline, banded by turn-cycle, with
+  filters, search, a stat bar + context widget, and click-to-expand tool args/results.
+- **Race** — a turn-normalized grid of who reached which step, grouped by agent
+  (parallel instances collapse under one header) and, across projects, by project.
+- **Trace** — a hierarchical waterfall of one run: the orchestrator at the root with
+  each dispatched agent nested on a shared time axis, annotated with dispatch
+  retries/truncation.
+- **Stats** — aggregate analytics (latency percentiles, cost/tokens by agent, a
+  tool-duration leaderboard, cost over time) with vs-previous-run deltas.
+- **Compare** — a side-by-side diff of any two runs (A baseline vs B candidate):
+  headline metrics, per-agent and tool usage, and setup changes from the boot snapshots.
+- **Search** — server-side substring search over **every run ever recorded**, with
+  `run:` / `agent:` / `type:` / `project:` filters.
+
+A **⌘K command palette** jumps to any view, project, or run.
+
+**Run history & selection.** The server indexes the whole sink by run, so the dashboard
+isn't limited to the live tail: `/runs` lists **every run ever recorded** and any one's
+events are fetched on demand. A run picker (per-view on Trace/Stats/Compare, plus a header
+filter that scopes the lane views) defaults to the **live run** (green live dot) and labels
+runs by their **session name** when one was set (`pi.setSessionName`), else by timestamp;
+runs beyond the live buffer are marked `archived`.
+
+Every event is tagged with a **trace id** (`runId`, shared across the orchestrator and the
+agents it dispatches) and a **parent** (the agent that dispatched it), so a whole workflow
+reads as one trace. The orchestrator also emits **dispatch lifecycle events**
+(`dispatch_start`/`dispatch_retry`/`dispatch_end`) carrying why a sub-agent re-ran
+(empty output, or output-token truncation) and a final **verdict**. Parallel instances of
+the same agent stay distinct (their own lanes/spans, `#n` labels).
+
+Because the sink is shared, **multiple pi instances across different projects stream into
+one dashboard** — events carry their `cwd`, so lanes stay separated by project and a
+project filter in the header scopes the views. To scope obs to one project instead, add
+**`--project`** (alias `--cwd`): the collector emits to and the server tails a
+per-project sink under `~/.pi/agent/obs/<cwd-slug>-<hash>/events.jsonl`, named like
+pi's session folder (e.g. `-Users-me-Documents-Dev-slf-ai-p-0d3c1ef2`). Equivalently,
+set `PI_OBS_SINK` to any path yourself, or point the server at one project with
+`npm run obs:server -- <project>`. A read-only **`/api`** is exposed for external UIs.
+
+```bash
+./run.sh                              # pi only
+./run.sh --obs                        # pi + the dashboard (http://127.0.0.1:7616)
+./run.sh --obs --project              # …scoped to this project's sink (cwd), not the global one
+./run.sh --emit                       # pi with emission ON but no server (use with a running --server)
+./run.sh --server                     # the dashboard server only (background; prints a pid to stop)
+./run.sh --server --project           # …server only, tailing this project's sink (cwd)
+./run.sh --server -- --port 8000      # …server only, on a custom port / project
+# equivalents:
+npm run obs:server                    # same as `./run.sh --server`
+PI_OBS=1 ./run.sh                      # same as `./run.sh --obs`
+```
+
+Run the dashboard once and observe many pi sessions: `./run.sh --server` (start
+it, leave it running), then `./run.sh --emit` for each pi run you want on the
+dashboard. Both default to the same shared sink, so the events show up live.
+
+`./run.sh --obs` starts the dashboard server in the background (port `PI_OBS_PORT`,
+default 7616) and stops it when pi exits; it needs the dev deps (`npm install`).
+
+**OpenTelemetry export.** The same sink converts to an OTLP/JSON trace following the
+[OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
+(`invoke_agent` / `chat` / `execute_tool` spans with `gen_ai.*` attributes), so a run can
+feed any OTel-aware backend (Datadog, Phoenix, Langfuse, Honeycomb, …). Use the **Trace**
+view's `⤓ OTLP` / `⤓ JSON` buttons, the server's `/otel?run=<id>` endpoint, or the CLI:
+
+```bash
+tsx utils/obs/obs-export.ts                       # OTLP for every run in the sink → stdout
+tsx utils/obs/obs-export.ts --run <runId> --out trace.json
+curl "http://127.0.0.1:7616/otel?run=<runId>" # OTLP from the running server
+```
+
+The collector is inert unless `PI_OBS=1` and never disrupts a run if the sink can't
+be written. Tool args/results are captured **in full** so the expand panel shows
+everything; set `PI_OBS_TOOL_MAX=<chars>` to cap them (e.g. to bound the sink size).
+Agent **message and thinking text** is a separate opt-in (it can echo file
+contents): `PI_OBS_CONTENT=1`, capped to `PI_OBS_CONTENT_MAX` (default 2000) — e.g.
+`PI_OBS=1 PI_OBS_CONTENT=1 ./run.sh`.
 
 ## Develop
 
@@ -220,11 +378,16 @@ globally-installed pi (the exact version you run) into `node_modules`:
 
 ```bash
 npm run setup:types     # link pi types (auto-runs before typecheck/test)
-npm run typecheck       # tsc --noEmit
-npm test                # unit tests (tsx) — utils/*.test.ts
+npm test                # unit tests (tsx) — utils/*.test.ts — the source of truth
+npm run typecheck       # tsc --noEmit — best-effort; see note below
 npm run test:linear     # Python tests for the linear skill
 npm run test:atlassian  # Python tests for the atlassian skill
 ```
+
+`npm test` is the primary gate. `npm run typecheck` is best-effort: the extensions
+use loose (`any`) handler signatures that don't fully line up with pi's strict type
+defs, so `tsc` reports known mismatches. For a quick per-file syntax/type-strip
+check use `node --experimental-strip-types --check <file>`.
 
 `node_modules` is dev-only and gitignored — it is **not** needed to run.
 

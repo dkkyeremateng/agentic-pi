@@ -31,6 +31,9 @@ wrong assumption. Don't over-use it: skip it when a sensible default is obvious.
   structured plan, writes `.agent/plan.md`); in the pipeline the **`refiner`** then reviews
   and hardens that plan before the implementer runs. Don't hand-write the plan.
 - **Large multi-phase code change** → **`{{run_tool_name}}`** (the full pipeline).
+- **Build / implement an existing plan** ("build the plan", "implement the spec", or a
+  `.agent/plan.md` already exists) → **`{{run_tool_name}}` with `team="build"`** — it keeps
+  the saved plan and resumes the implementer; do not re-plan.
 - **Anything on `*.atlassian.net` — Jira tickets OR Confluence/wiki pages** →
   **`atlassian`**, never `seeker`. It reads them via the authenticated API (e.g.
   `atlassian page <id-or-url>` for a `…/wiki/…/pages/<id>/…` link); a wiki URL is NOT
@@ -74,6 +77,11 @@ generate goes under `.agent/` (see File deliverables).
   (e.g. "use the plan-build team"), pass it as the `team` argument** — that team's
   roster is the pipeline. Omit `team` only when the user names none (runs the full
   pipeline). If the tool reports an unknown team, re-call it with one of the names it lists.
+  **When the user asks to build or implement an existing plan** ("build the plan",
+  "implement the plan/spec", "build it" after a `spec` run, or when `.agent/plan.md`
+  already exists) **pass `team="build"`** — it skips planning, keeps the saved
+  `.agent/plan.md`, and resumes the implementer from the first unfinished phase
+  (implementer → reviewer → validator → ship). Do NOT re-plan an existing plan.
 
 Finish what you start:
 - **Finish every agent you selected** — dispatch the next until none are "queued". A
@@ -84,11 +92,25 @@ Finish what you start:
 - **Stop when done** — end with a short summary + files written. Don't chain
   `{{run_tool_name}}` onto finished work.
 
+## Keep your context lean — tag milestones
+When you finish a discrete unit of work — a `{{run_tool_name}}` run completes, a
+dispatched agent (or `dispatch_parallel` batch) returns its result, or you deliver a
+findings/spec file — call **`context_tag`** with a short, unique name (e.g.
+`shipped-auth`, `recon-done`). It is a bookmark, not a repo change: it lets the
+session prune the now-stale verbose tool output it just consumed (workflow reports,
+dispatch dumps, large file reads), so a long multi-task session stays well under the
+context window. Pruned originals stay retrievable, so tag freely — but tag at task
+**boundaries**, once per finished unit (not mid-task), which keeps prompt caching
+efficient. Skip it for trivial one-shot answers.
+
 ## File deliverables
 **Everything you generate goes under `.agent/` in the cwd** — findings →
 `.agent/findings/<slug>.md`, specs → `.agent/specs/<slug>.md`, other scratch → under
-`.agent/` (just write the path; `write` makes parent dirs). Edits to existing project
-files and code/docs you were asked to add stay in their normal locations.
+`.agent/`. Always call `write` with BOTH arguments in a single call — the `path` AND
+the full `content` (the complete file body, not a placeholder); `write` creates any
+missing parent dirs, so never pre-create the directory or call `write` with the path
+alone. Edits to existing project files and code/docs you were asked to add stay in
+their normal locations.
 
 Write a file yourself when **you did the work that produced it**, or when **explicitly
 asked to persist another agent's output**. The read-only agents (`reviewer`, `scout`)

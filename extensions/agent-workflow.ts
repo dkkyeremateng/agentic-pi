@@ -47,25 +47,25 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { execFileSync } from "child_process";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
-import { secs } from "../utils/workflow-utils";
-import { emitNotification } from "../utils/notify";
+import { secs } from "../utils/workflow/workflow-utils";
+import { emitNotification } from "../utils/shared/notify";
 import {
     type Checkpoint,
     createCheckpoint,
     revertCommands,
     describeCheckpoint,
     ensureWorkBranch,
-} from "../utils/checkpoint";
+} from "../utils/workflow/checkpoint";
 import {
     calculateGridLayout,
     renderCardGrid,
     renderPhaseCardsWithArrows,
     renderEmptyAgentMessage,
     renderRichCard,
-    renderLspServers,
+    renderTodos,
     type LspServerInfo,
     MAX_CARD_WIDTH,
-} from "../utils/workflow-widgets";
+} from "../utils/workflow/workflow-widgets";
 import {
     REQUIRED_AGENTS,
     DEFAULT_MAX_LOOPS,
@@ -89,6 +89,7 @@ import {
     renderWorkflowFooter,
     teamsBlock as teamsBlockCore,
     chooseTeam as chooseTeamCore,
+    inferWorkflowTeam,
     loadedExplicitly as loadedExplicitlyCore,
     isActiveWorkflow as isActiveWorkflowCore,
     loadAgents as loadAgentsCore,
@@ -105,15 +106,18 @@ import {
     clearModelOverride,
     clearAllModelOverrides,
     getModelOverrides,
-} from "../utils/workflow-core";
+    parseProgressLedger,
+    buildReviewChecklist,
+    REVIEW_CHECKLIST,
+} from "../utils/workflow/workflow-core";
 import {
     newOrchestratorState,
     type OrchestratorHost,
     runWorkflowCore,
     runFullWorkflowCommand,
     resolveAgent,
-} from "../utils/orchestrator-core";
-import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/dispatch-events";
+} from "../utils/workflow/orchestrator-core";
+import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/workflow/dispatch-events";
 
 // Run before any process.env reads below (WORKER_MODEL, …).
 loadDotEnv(process.cwd());
@@ -176,6 +180,20 @@ export default function (pi: ExtensionAPI) {
     const st = newOrchestratorState();
     // Extension-local: live ctx, session dir, subprocess.
     let widgetCtx: any;
+    // The primary session's model, tracked live via the model_select event so
+    // sub-agents that fall back to "the primary's model" follow /model changes.
+    let primaryModel: string | undefined;
+    // Memo for the dashboard widget: pi may re-invoke the widget factory on
+    // every redraw (theme change, resize, frame), so cache the (disk-reading)
+    // built lines and only rebuild when the state generation, theme, or width
+    // changes. updateWidget() bumps widgetGen to force a rebuild.
+    let widgetGen = 0;
+    const widgetMemo: {
+        gen: number;
+        width: number;
+        theme: any;
+        lines: string[];
+    } = { gen: -1, width: -1, theme: null, lines: [] };
     // The model registry lives on the command/event ctx (not the factory `pi`),
     // so capture it whenever a ctx is available for use in getArgumentCompletions
     // (which receives no ctx of its own).
@@ -188,12 +206,14 @@ export default function (pi: ExtensionAPI) {
     // The checkpoint taken before the most recent workflow run (for /revert).
     let lastCheckpoint: Checkpoint | null = null;
     // Run a git command in `cwd`, returning trimmed stdout (throws on failure).
-    const git = (cwd: string) => (args: string[]): string =>
-        execFileSync("git", args, {
-            cwd,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
+    const git =
+        (cwd: string) =>
+        (args: string[]): string =>
+            execFileSync("git", args, {
+                cwd,
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "ignore"],
+            }).trim();
     const checkpointPath = (cwd: string) =>
         join(cwd, ".agent", "checkpoints", "latest.json");
     // Append `entry` to the repo's .gitignore if not already present (best-effort).
@@ -202,7 +222,10 @@ export default function (pi: ExtensionAPI) {
             const file = join(cwd, ".gitignore");
             const existing = existsSync(file) ? readFileSync(file, "utf8") : "";
             const lines = existing.split(/\r?\n/).map((l) => l.trim());
-            if (lines.includes(entry) || lines.includes(entry.replace(/\/$/, "")))
+            if (
+                lines.includes(entry) ||
+                lines.includes(entry.replace(/\/$/, ""))
+            )
                 return;
             const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
             writeFileSync(file, `${existing}${prefix}${entry}\n`, "utf8");
@@ -295,13 +318,19 @@ export default function (pi: ExtensionAPI) {
 
     // ── Team helpers ─────────────────────────────
 
-    function fallbackModel(): string {
-        if (WORKER_MODEL) return WORKER_MODEL;
+    // The primary session's current model as a "provider/id" string. Prefers the
+    // value tracked from model_select (always live), falling back to ctx.model.
+    function primaryModelStr(): string {
+        if (primaryModel) return primaryModel;
         const m = widgetCtx?.model;
         return (
             (m?.provider && m?.id ? `${m.provider}/${m.id}` : m?.id) ||
             "default"
         );
+    }
+    function fallbackModel(): string {
+        if (WORKER_MODEL) return WORKER_MODEL;
+        return primaryModelStr();
     }
     function modelFor(agentKey: string): string {
         return resolveAgentModel(
@@ -562,6 +591,63 @@ export default function (pi: ExtensionAPI) {
         return kept;
     }
 
+    // Live review-checklist progress (Option D): the reviewer is read-only, so it
+    // can't tick a ledger — instead it emits a `[review-check] <item>` marker line as
+    // it finishes each check, and we scan its streamed output (phase.log, a rolling
+    // tail) for them. Sticky: once seen, a mark persists here even after it scrolls
+    // out of the capped buffer. Reset between reviewer runs (see buildWidgetLines).
+    const reviewMarks = new Set<string>();
+    function scanReviewMarkers(text: string) {
+        if (!text) return;
+        for (const line of text.match(/\[review-check\][^\n]*/gi) || []) {
+            const low = line.toLowerCase();
+            for (const item of REVIEW_CHECKLIST) {
+                if (low.includes(item.toLowerCase())) reviewMarks.add(item);
+            }
+        }
+    }
+
+    // The implementer's phase checklist, read fresh from .agent/progress.md so the
+    // dashboard ticks each phase as it's marked done mid-run. Cheap (small file),
+    // best-effort. Empty when there's no ledger yet.
+    function readProgressItems() {
+        try {
+            const cwd = widgetCtx?.cwd;
+            if (!cwd) return [];
+            return parseProgressLedger(
+                readFileSync(join(cwd, ".agent", "progress.md"), "utf8"),
+            );
+        } catch {
+            return [];
+        }
+    }
+
+    // The reviewer's checklist panel ("# Review"), shown whenever a reviewer phase is
+    // running or done — in both the full pipeline AND an ad-hoc dispatch of the
+    // reviewer. While it runs, items tick live from the `[review-check]` markers
+    // scanned out of its stream (best-effort; reconciles to all-checked once the phase
+    // finishes). Scanned only while running; the sticky set is reset otherwise so a
+    // re-review starts fresh. Returns [] (with no leading blank) when there's nothing
+    // to show, so the caller can splice it unconditionally.
+    function reviewPanelLines(width: number, theme: any): string[] {
+        const reviewerPhase = st.phases.find((p) => p.agent === "reviewer");
+        if (reviewerPhase?.status === "running") {
+            scanReviewMarkers(reviewerPhase.log || "");
+        } else {
+            reviewMarks.clear();
+        }
+        const reviewItems = buildReviewChecklist(st.phases, reviewMarks);
+        if (!reviewItems.length) return [];
+        return [
+            "\u200b",
+            ...renderTodos(reviewItems, theme, {
+                running: reviewerPhase?.status === "running",
+                width,
+                title: " # Review",
+            }),
+        ];
+    }
+
     // Build the dashboard as a plain line array. Returned to pi via the string[]
     // setWidget overload (below) so pi owns the diffing/redraw — re-issuing a
     // custom component each tick made the sticky widget redraw incorrectly
@@ -572,18 +658,15 @@ export default function (pi: ExtensionAPI) {
             // the orchestrator dispatches), with the running agent's live log below.
             const gridLines = renderAgentGrid(width, theme);
             if (st.dispatchMode) {
+                // An ad-hoc dispatch of the reviewer still gets its checklist panel.
+                gridLines.push(...reviewPanelLines(width, theme));
                 appendLiveLog(gridLines, width, theme);
                 return clampWidget(gridLines, theme);
             }
-            // Idle roster: the project's LSP servers + install status sit ABOVE the
-            // team grid so they read as project context, not a trailing footnote.
-            // Separate them with a real blank ROW: pi-tui's Text renders nothing for
-            // an empty/whitespace-only line (text.js: `text.trim() === "" -> []`), so
-            // a visible gap needs a non-whitespace char — a zero-width space survives
-            // .trim() yet is invisible.
-            const lsp = renderLspServers(lspServers, theme);
-            const lines = lsp.length ? [...lsp, "\u200b", ...gridLines] : gridLines;
-            return clampWidget(lines, theme);
+            // The project's LSP servers + install status now live inline in the
+            // footer (always visible, including during runs), not as a panel above
+            // the grid.
+            return clampWidget(gridLines, theme);
         }
 
         // ── Pipeline view (full run_agent_workflow) ───────────
@@ -596,7 +679,9 @@ export default function (pi: ExtensionAPI) {
             MAX_CARD_WIDTH,
             Math.max(14, Math.floor((width - arrowWidth * (cols - 1)) / cols)),
         );
-        const cards = st.phases.map((p) => renderAgentCard(p.agent, colWidth, theme));
+        const cards = st.phases.map((p) =>
+            renderAgentCard(p.agent, colWidth, theme),
+        );
         const lines: string[] = [];
         const passInfo =
             st.iteration > 1
@@ -616,30 +701,62 @@ export default function (pi: ExtensionAPI) {
         );
         lines.push("");
         lines.push(...renderPhaseCardsWithArrows(cards, theme, st.phases));
+        // The implementer's phases as a live todo list — each ticks [ ] -> [x] as it
+        // commits them. Separated by a blank ROW: pi-tui's Text renders nothing for an
+        // empty/whitespace line, so a visible gap needs a zero-width space (survives
+        // .trim() yet is invisible). Omitted until a ledger exists.
+        const todos = renderTodos(readProgressItems(), theme, {
+            running: st.running,
+            width,
+        });
+        if (todos.length) {
+            lines.push("\u200b");
+            lines.push(...todos);
+        }
+        // The reviewer's checklist panel (also shown in ad-hoc dispatch above).
+        lines.push(...reviewPanelLines(width, theme));
         appendLiveLog(lines, width, theme);
         return clampWidget(lines, theme);
     }
 
     function renderWidgetNow() {
         if (!widgetCtx || !widgetCtx.hasUI) return; // no chrome without a UI
-        const theme = widgetCtx.ui.theme;
-        // Reserve 2 columns: pi wraps each widget line in Text(line, 1, 0) (a +1
-        // left pad), so a row built to the full terminal width would overflow by one
-        // column and wrap — shattering the card borders. Build to columns-2 so the
-        // widest row plus the pad still fits with a column to spare.
-        const width = Math.max(20, (process.stdout.columns || 80) - 2);
-        const lines = buildWidgetLines(width, theme);
         // Use the component (factory) overload, not the string[] one: pi hard-caps
         // string[] widgets at MAX_WIDGET_LINES (10) with "(widget truncated)", which
         // would cut the live-log panel. Build the same per-line Container pi uses
         // internally for string[] (so it redraws cleanly in place — no ghosting),
         // but without the 10-line cap. Our own clampWidget already bounds the height
         // to the screen, so this can't push the editor/footer off.
-        widgetCtx.ui.setWidget("agent-workflow", (_tui: any) => {
-            const container = new Container();
-            for (const line of lines) container.addChild(new Text(line, 1, 0));
-            return container;
-        });
+        //
+        // Build the lines INSIDE the factory using the theme (and width) pi passes
+        // in on each (re)render — like the footer — so the cards restyle on /theme
+        // and reflow on resize. Reserve 2 columns: pi wraps each line in
+        // Text(line, 1, 0) (a +1 left pad), so building to columns-2 keeps the
+        // widest row + pad from wrapping and shattering the card borders.
+        widgetGen++; // a state change → rebuild on the next factory call
+        widgetCtx.ui.setWidget(
+            "agent-workflow",
+            (_tui: any, theme?: any) => {
+                const t = theme || widgetCtx.ui.theme;
+                const width = Math.max(20, (process.stdout.columns || 80) - 2);
+                // Rebuild only when state, theme, or width changed; reuse the
+                // cached lines on plain redraws so we don't re-read disk per frame.
+                if (
+                    widgetMemo.gen !== widgetGen ||
+                    widgetMemo.theme !== t ||
+                    widgetMemo.width !== width
+                ) {
+                    widgetMemo.gen = widgetGen;
+                    widgetMemo.theme = t;
+                    widgetMemo.width = width;
+                    widgetMemo.lines = buildWidgetLines(width, t);
+                }
+                const container = new Container();
+                for (const line of widgetMemo.lines)
+                    container.addChild(new Text(line, 1, 0));
+                return container;
+            },
+        );
     }
 
     // ── Run a single agent as a subprocess ───────
@@ -859,9 +976,17 @@ export default function (pi: ExtensionAPI) {
                 // the picker does. The team is deactivated once the job finishes
                 // (below), so each run starts from a clean "no team" state.
                 let request: string;
+                const inferredTeam = namedTeam
+                    ? ""
+                    : inferWorkflowTeam(rawArgs, st.teams);
                 if (namedTeam) {
                     activateTeam(namedTeam);
                     request = rawArgs.slice(firstTok.length).trim();
+                } else if (inferredTeam) {
+                    // "build/implement the (implementation) plan" → the build team,
+                    // no picker: it resumes from the saved .agent/plan.md.
+                    activateTeam(inferredTeam);
+                    request = rawArgs;
                 } else {
                     const picked = await chooseTeam(ctx);
                     if (picked === null) return; // user cancelled the picker
@@ -889,7 +1014,11 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 pi.setSessionName?.(
-                    sessionLabel("agent-workflow", st.activeTeamName, finalRequest),
+                    sessionLabel(
+                        "agent-workflow",
+                        st.activeTeamName,
+                        finalRequest,
+                    ),
                 );
                 await runFullWorkflowCommand(
                     st,
@@ -958,7 +1087,10 @@ export default function (pi: ExtensionAPI) {
                 // Let "reset" also complete in the model slot (clears the override).
                 const opts = "reset".startsWith(q) ? ["reset", ...ids] : ids;
                 if (opts.length === 0) return null;
-                return opts.map((id) => ({ value: `${first} ${id}`, label: id }));
+                return opts.map((id) => ({
+                    value: `${first} ${id}`,
+                    label: id,
+                }));
             },
             handler: async (args, ctx) => {
                 widgetCtx = ctx;
@@ -1109,7 +1241,7 @@ export default function (pi: ExtensionAPI) {
             name: "run_agent_workflow",
             label: "Run Workflow (Team)",
             description:
-                "Run the plan -> refine -> implement -> review -> validate -> ship lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself. Pass `team` when the user names one (e.g. 'use the plan-build team'); omit it to run the full default pipeline.",
+                "Run the plan -> refine -> implement -> review -> validate -> ship lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself. Pass `team` when the user names one (e.g. 'use the plan-build team'); omit it to run the full default pipeline. When the user asks to build or implement an existing plan ('build the plan', 'implement the plan/spec', or when .agent/plan.md already exists), pass team='build' — it skips planning, keeps the saved .agent/plan.md, and resumes the implementer from the first unfinished phase.",
             parameters: Type.Object({
                 request: Type.String({
                     description: "The bug, feature, or app to deliver",
@@ -1163,7 +1295,9 @@ export default function (pi: ExtensionAPI) {
                     }
                     st.activeTeamName = team;
                 } else {
-                    st.activeTeamName = "";
+                    // No explicit team: infer "build/implement the plan" intent from
+                    // the request (→ build team); otherwise "" runs the full pipeline.
+                    st.activeTeamName = inferWorkflowTeam(request, st.teams);
                 }
                 widgetCtx = ctx;
                 st.pipelineRanThisTurn = true; // fold the primary's turn time into the total
@@ -1286,7 +1420,11 @@ export default function (pi: ExtensionAPI) {
         pi.on("message_end", async (event: any) => {
             const msg = event?.message;
             const total = msg?.usage?.cost?.total;
-            if (msg?.role === "assistant" && typeof total === "number" && total > 0) {
+            if (
+                msg?.role === "assistant" &&
+                typeof total === "number" &&
+                total > 0
+            ) {
                 primaryCostUsd += total;
                 updateWidget(); // refresh the footer with the new total
             }
@@ -1371,7 +1509,10 @@ export default function (pi: ExtensionAPI) {
             // routes via the explicit Routing section of the prompt; this is the roster
             // reference, so it stays terse (no full description, no per-agent tools).
             const agentCatalog = dispatchableDefs
-                .map((def) => `- \`${def.name}\` — ${terse(def.description, 110)}`)
+                .map(
+                    (def) =>
+                        `- \`${def.name}\` — ${terse(def.description, 110)}`,
+                )
                 .join("\n");
 
             const teamMembers = dispatchableDefs
@@ -1382,7 +1523,10 @@ export default function (pi: ExtensionAPI) {
             const skills = loadSkills(_ctx.cwd);
             const skillCatalog = skills.length
                 ? skills
-                      .map((s) => `- **${s.name}** — ${terse(s.description, 140)}`)
+                      .map(
+                          (s) =>
+                              `- **${s.name}** — ${terse(s.description, 140)}`,
+                      )
                       .join("\n")
                 : "(none)";
 
@@ -1411,9 +1555,23 @@ export default function (pi: ExtensionAPI) {
             };
         });
 
+    // Track the primary session's model so sub-agents that fall back to it (and
+    // the footer) follow /model changes live, not just the session-start model.
+    pi.on("model_select", async (event: any) => {
+        const m = event?.model;
+        if (m) primaryModel = m.provider && m.id ? `${m.provider}/${m.id}` : m.id;
+        updateWidget();
+    });
+
     pi.on("session_start", async (_event, ctx) => {
         widgetCtx = ctx;
         modelRegistry = (ctx as any).modelRegistry;
+        const sm = ctx.model;
+        primaryModel = sm
+            ? sm.provider && sm.id
+                ? `${sm.provider}/${sm.id}`
+                : sm.id
+            : undefined;
         // /agent-model overrides are session-scoped: drop any carried over by the
         // process-global store so they clear on a fresh start and on /reload (which
         // re-fires session_start), while still persisting across turns within a
@@ -1482,12 +1640,11 @@ export default function (pi: ExtensionAPI) {
                 );
             } else {
                 ctx.ui.notify(
-                    `Workflow Team\n` +
-                        `Teams:\n${teamsBlock()}\n\n` +
+                    `Workflow Teams:\n${teamsBlock()}\n\n` +
                         `/agent-workflow [request]   Pick a team (Select Team), then run the lifecycle\n` +
-                        `/agent-workflow-clear       Clear the progress widget\n` +
+                        `/agent-workflow-clear       Clear the progress widget\n\n` +
                         `run_agent_workflow          Tool — the agent can launch the workflow for non-trivial tasks\n` +
-                        `dispatch_agent          Tool — dispatch task(s) to any loaded agent(s) outside the pipeline`,
+                        `dispatch_agent              Tool — dispatch task(s) to any loaded agent(s) outside the pipeline`,
                     "info",
                 );
                 // The per-agent model list is already visible on the dashboard cards
@@ -1505,18 +1662,15 @@ export default function (pi: ExtensionAPI) {
                 dispose: () => {},
                 invalidate() {},
                 render(width: number): string[] {
-                    // Primary (orchestrator) agent's model — the full `provider/model`
-                    // pi was loaded with.
-                    const pm = widgetCtx?.model || ctx.model;
-                    const primaryFull =
-                        pm?.provider && pm?.id
-                            ? `${pm.provider}/${pm.id}`
-                            : pm?.id || "default";
+                    // Primary (orchestrator) agent's model — tracked live so it
+                    // follows /model changes.
+                    const primaryFull = primaryModelStr();
                     return renderWorkflowFooter({
                         width,
                         theme,
                         selfName: "agent-workflow",
                         model: primaryFull,
+                        lspServers,
                         running: st.running,
                         lastStatus: st.lastStatus,
                         iteration: st.iteration,

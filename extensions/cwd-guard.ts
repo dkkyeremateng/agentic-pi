@@ -19,7 +19,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "url";
 import { dirname, resolve, delimiter as pathDelimiter } from "path";
-import { isOutsideCwd, isWithinAny } from "../utils/path-guard";
+import { isOutsideCwd, isWithinAny } from "../utils/guards/path-guard";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 const WRITE_TOOLS = ["edit", "write"] as const;

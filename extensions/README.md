@@ -441,9 +441,9 @@ Extensions can't be `tsc`'d against installed types without this link step, so r
 
 ## Code layout
 
-Both extensions share their stateless guts via `.pi/utils/workflow-core.ts`
+Both extensions share their stateless guts via `.pi/utils/workflow/workflow-core.ts`
 (types, constants, the agent/team/`.env` loaders, and the prompt templates) and
-`.pi/utils/workflow-utils.ts` (verdict/digest helpers). These live in `.pi/utils/`
+`.pi/utils/workflow/workflow-utils.ts` (verdict/digest helpers). These live in `.pi/utils/`
 — **not** `.pi/extensions/` — so pi doesn't try to auto-load them as extensions.
 Only the model-aware orchestration, rendering, and per-extension identity stay
 in `agent-workflow.ts`.

@@ -24,6 +24,7 @@ import {
     clampOutput,
     contextBundleForPhase,
     buildWorkflowReport,
+    buildWorkflowMetrics,
     scoutTask,
     planTask,
     refineTask,
@@ -44,6 +45,7 @@ import {
     secs,
     isModelFailure,
 } from "./workflow-utils";
+import { obsEmit } from "../obs/obs-events";
 import {
     writeFileSync,
     mkdirSync,
@@ -241,6 +243,13 @@ function activeMembers(s: OrchestratorState): string[] {
 function fail(s: OrchestratorState, label: string, output: string): RunResult {
     s.running = false;
     s.lastStatus = "error";
+    // Run-level verdict for the observability stream (no-op when PI_OBS is off).
+    obsEmit("verdict", {
+        status: "fail",
+        outcome: "error",
+        note: label,
+        source: "workflow",
+    });
     return failPhase(label, output);
 }
 
@@ -548,6 +557,12 @@ export async function runWorkflowCore(
             if (aborted) return aborted;
             implP.status = "pending";
             implP.note = "";
+            // Sent back for changes: the prior verdict no longer stands. Reset the
+            // reviewer phase now (not just at the next loop top) so its card and the
+            // live # Review checklist clear while the implementer re-works, instead of
+            // reading a stale "done" / all-checked.
+            reviewerP.status = "pending";
+            reviewerP.note = "";
             h.ui.updateWidget();
             impl = await h.execution.runPhase(
                 implP,
@@ -598,6 +613,10 @@ export async function runWorkflowCore(
             if (aborted) return aborted;
             implP.status = "pending";
             implP.note = "";
+            // Reset the validator phase too so its card doesn't read a stale "done"
+            // while the implementer re-works the FAIL (re-validated next iteration).
+            valP.status = "pending";
+            valP.note = "";
             h.ui.updateWidget();
             impl = await h.execution.runPhase(
                 implP,
@@ -712,6 +731,46 @@ export async function runWorkflowCore(
     });
 
     writeReport(h, cwd, report);
+
+    // Structured sibling of the report for the observability analyzer.
+    const metrics = buildWorkflowMetrics({
+        request,
+        status,
+        verdict,
+        passes,
+        maxLoops,
+        passed,
+        prUrl,
+        team: s.activeTeamName || undefined,
+        startedAt: s.runStartedAt,
+        endedAt: Date.now(),
+        totals: {
+            runElapsedMs: s.runElapsedMs,
+            totalToolCalls: s.totalToolCalls,
+            totalTokens: s.totalTokens,
+            totalDroppedLines: s.totalDroppedLines,
+            totalCostUsd: s.totalCostUsd,
+        },
+        phases: [scoutP, planP, refinerP, implP, reviewerP, valP, shipP],
+    });
+    writeMetrics(h, cwd, metrics);
+
+    // Run-level verdict for the observability stream — the regression signal the
+    // dashboard's run history tracks. pass = the run landed; fail = retries
+    // exhausted; everything else (needs-review, paused-no-remote) stays open.
+    // `obs-cli score` can override it later (last verdict wins).
+    obsEmit("verdict", {
+        status:
+            status === "shipped" || status === "done"
+                ? "pass"
+                : status === "failed-after-retries"
+                  ? "fail"
+                  : "open",
+        outcome: status,
+        source: "workflow",
+        ...(prUrl ? { prUrl } : {}),
+    });
+
     h.ui.publishLogs();
     return { status, report };
 }
@@ -724,6 +783,28 @@ function writeReport(h: OrchestratorHost, cwd: string, report: string): void {
             `Could not write workflow-report.md: ${e.message}`,
             "warning",
         );
+    }
+}
+
+// Writes the structured run metrics under .agent/: metrics.json (latest run,
+// overwritten) plus an append-only metrics.jsonl (one line per run, for trends).
+function writeMetrics(
+    h: OrchestratorHost,
+    cwd: string,
+    metrics: ReturnType<typeof buildWorkflowMetrics>,
+): void {
+    try {
+        const dir = join(cwd, ".agent");
+        mkdirSync(dir, { recursive: true });
+        const line = JSON.stringify(metrics);
+        writeFileSync(join(dir, "metrics.json"), line + "\n", "utf-8");
+        const log = join(dir, "metrics.jsonl");
+        writeFileSync(log, line + "\n", {
+            encoding: "utf-8",
+            flag: "a",
+        });
+    } catch (e: any) {
+        h.ui.notify(`Could not write .agent/metrics.json: ${e.message}`, "warning");
     }
 }
 
@@ -921,6 +1002,56 @@ export function resolveAgent(
     return undefined;
 }
 
+// Run a dispatched agent, with ONE automatic retry when it comes back empty —
+// a clean exit (code 0) with no tool calls and ~no output, which is almost
+// always a transient empty completion from the provider rather than a real
+// "did nothing" result. Retrying in-place lets the dispatch self-recover
+// instead of surfacing a failure that depends on the orchestrator to re-dispatch.
+async function runAgentWithEmptyRetry(
+    h: OrchestratorHost,
+    def: AgentDef,
+    task: string,
+    phase: PhaseState,
+    cwd: string,
+): Promise<{ output: string; exitCode: number }> {
+    const agentKey = def.name.toLowerCase();
+    obsEmit("dispatch_start", {
+        agent: agentKey,
+        dispatchId: phase.dispatchId,
+        attempt: phase.attempt || 1,
+        task: task.length > 200 ? task.slice(0, 199) + "…" : task,
+    });
+    let res = await h.execution.runAgent(def, task, phase, cwd);
+    const looksEmpty = () =>
+        !isTrivialPing(task) &&
+        res.exitCode === 0 &&
+        res.output.trim().length < h.config.minDispatchOutputChars &&
+        phase.toolCount === 0;
+    if (looksEmpty()) {
+        // Distinguish a genuine empty result from a model that exhausted its output
+        // budget (stop reason "length") — the dashboard surfaces the difference.
+        const reason = phase.lastStopReason === "length" ? "truncated" : "empty";
+        h.ui.notify(
+            `${displayName(def.name)} returned nothing — retrying once…`,
+            "warning",
+        );
+        phase.attempt = (phase.attempt || 1) + 1;
+        phase.toolCount = 0;
+        phase.contextPct = 0;
+        phase.droppedLines = 0;
+        phase.lastStopReason = undefined;
+        obsEmit("dispatch_retry", {
+            agent: agentKey,
+            dispatchId: phase.dispatchId,
+            attempt: phase.attempt,
+            reason,
+        });
+        h.ui.updateWidget();
+        res = await h.execution.runAgent(def, task, phase, cwd);
+    }
+    return res;
+}
+
 // ── dispatch_agent: run one specialist on a focused task ──
 export async function dispatchAgentCore(
     s: OrchestratorState,
@@ -1051,7 +1182,7 @@ export async function dispatchAgentCore(
     phase.status = "running";
     h.ui.updateWidget();
 
-    const res = await h.execution.runAgent(def, task, phase, ctx.cwd);
+    const res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
 
     // A clean exit with (near-)empty output usually means the agent did no real
     // work — fail it so the orchestrator re-dispatches instead of building on
@@ -1073,10 +1204,29 @@ export async function dispatchAgentCore(
     s.dispatchElapsedMs = Date.now() - s.dispatchStartedAt;
     h.ui.updateWidget();
 
-    // Build error message: show actual output for diagnosis, flag model failures
+    // Build error message: show actual output for diagnosis, flag model failures.
+    // A "length" stop reason means the model hit its output-token cap and was
+    // truncated before finishing — distinct from a genuinely empty result.
+    const truncatedByLength = emptyOutput && phase.lastStopReason === "length";
     const modelFail = !ok && isModelFailure(res.output);
+    obsEmit("dispatch_end", {
+        agent: def.name.toLowerCase(),
+        dispatchId: phase.dispatchId,
+        status: ok ? "done" : "error",
+        durationMs: phase.elapsed,
+        attempts: phase.attempt || 1,
+        reason: truncatedByLength
+            ? "truncated"
+            : emptyOutput
+              ? "empty"
+              : modelFail
+                ? "model-failure"
+                : undefined,
+    });
     const errMsg = !ok
-        ? emptyOutput
+        ? truncatedByLength
+            ? ": truncated at the output-token limit (stop reason \"length\")"
+            : emptyOutput
             ? res.output.trim()
                 ? `: ${res.output.trim().slice(0, 120)}${modelFail ? " (model failure)" : ""}`
                 : ": returned no usable output"
@@ -1104,7 +1254,9 @@ export async function dispatchAgentCore(
         .filter((p) => p.status === "pending")
         .map((p) => displayName(p.agent));
     const nextStep = emptyOutput
-        ? `\n\n${def.name} returned almost no output — this dispatch FAILED. It is NOT a result to build on. RE-DISPATCH ${def.name} with a clearer, more specific task. Do NOT skip it, do NOT do its work yourself, and do NOT hand its job to a different agent.`
+        ? truncatedByLength
+            ? `\n\n${def.name} was TRUNCATED at the model's output-token limit (stop reason "length") before it produced a result — it spent its whole output budget (usually on reasoning) without finishing. This is a model/config limit, NOT a bad task: lower ${def.name}'s thinking level or raise its max output tokens, then RE-DISPATCH ${def.name} with the same task. Do NOT do its work yourself or hand it to another agent.`
+            : `\n\n${def.name} returned almost no output — this dispatch FAILED. It is NOT a result to build on. RE-DISPATCH ${def.name} with a clearer, more specific task. Do NOT skip it, do NOT do its work yourself, and do NOT hand its job to a different agent.`
         : remaining.length
           ? `\n\nNOT DONE YET — still queued: ${remaining.join(", ")}. ` +
             `Dispatch the next one (${remaining[0]}) now. Do not stop until every selected agent has run.`
@@ -1258,7 +1410,7 @@ export async function dispatchParallelCore(
     const results = await Promise.all(
         entries.map(async ({ def, task, phase }) => {
             const t0 = Date.now();
-            const res = await h.execution.runAgent(def, task, phase, ctx.cwd);
+            const res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
             // A trivial ping legitimately returns a short "pong" with no tools —
             // don't count that as an empty/failed dispatch.
             const emptyOutput =
@@ -1268,6 +1420,19 @@ export async function dispatchParallelCore(
             const ok = res.exitCode === 0 && !emptyOutput;
             phase.status = ok ? "done" : "error";
             phase.elapsed = Date.now() - t0;
+            obsEmit("dispatch_end", {
+                agent: def.name.toLowerCase(),
+                dispatchId: phase.dispatchId,
+                status: ok ? "done" : "error",
+                durationMs: phase.elapsed,
+                attempts: phase.attempt || 1,
+                reason:
+                    emptyOutput && phase.lastStopReason === "length"
+                        ? "truncated"
+                        : emptyOutput
+                          ? "empty"
+                          : undefined,
+            });
             h.ui.updateWidget();
             const truncated = clampOutput(res.output, perItemBudget);
             return { name: def.name, ok, elapsed: phase.elapsed, truncated };

@@ -41,6 +41,14 @@ import {
     outcomeLine,
 } from "./workflow-utils";
 
+// This module lives in utils/workflow/. The repo layout is
+// <repo>/{utils,extensions,agents,skills,prompts} plus the bundled .env at the
+// root, so resolve those siblings relative to this file: utils/workflow/ → utils/
+// → <repo>. Downstream code joins from UTILS_DIR (e.g. join(UTILS_DIR, "..",
+// "agents")), so this is the single place that encodes where this file sits.
+const UTILS_DIR = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = resolvePath(UTILS_DIR, "..");
+
 // Max same-model retries on a TRANSIENT agent error (interrupted stream, dropped
 // connection, 429/503/…). Tunable via PI_AGENT_TRANSIENT_RETRIES (clamped 0..5).
 export function transientRetryLimit(env: NodeJS.ProcessEnv = process.env): number {
@@ -147,6 +155,7 @@ export interface PhaseState {
     modelFallback: boolean; // true if the phase retried with the fallback model after the primary model failed
     activeModel?: string; // the model the agent is actually running on (set at spawn; reflects fallback)
     tokens?: TokenUsage; // per-phase token usage captured from the agent's message_end event
+    lastStopReason?: string; // stopReason of the last assistant message ("length" = output-token truncation)
 }
 
 // ── Active-workflow detection ────────────────────
@@ -231,10 +240,10 @@ function isEnvAllowed(key: string): boolean {
 export function loadDotEnv(cwd: string): void {
     // First, load from the config directory (global defaults). The primary
     // location is THIS repo's own root, resolved relative to this source file
-    // (utils/workflow-core.ts -> repo root) so the bundled `.env` is found wherever
+    // (utils/workflow/workflow-core.ts -> repo root) so the bundled `.env` is found wherever
     // the folder is copied — no hardcoded path. `~/.config/pi` and `~/.pi` remain as
     // optional machine-level fallbacks.
-    const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
+    const repoRoot = REPO_ROOT;
     const possibleConfigDirs = [
         repoRoot,
         join(homedir(), ".config", "pi"),
@@ -562,9 +571,14 @@ export function renderWorkflowFooter(opts: {
     // USD cost of the primary (orchestrator) session itself, folded into the
     // footer total alongside the sub-agent phase costs. Optional (defaults to 0).
     primaryCostUsd?: number;
+    // Project language servers, shown inline as `LSP: ✓ <server> <exts> …` between
+    // the model and the agent name. Typed structurally (not LspServerInfo) to avoid
+    // a workflow-core ↔ workflow-widgets import cycle. Omitted when empty; clipped so
+    // it can never crowd out the cost/context readout on the right.
+    lspServers?: { server: string; extensions: string[]; installed: boolean }[];
     contextUsage: () => any;
     visibleWidth: (s: string) => number;
-    truncateToWidth: (s: string, w: number) => string;
+    truncateToWidth: (s: string, w: number, ellipsis?: string) => string;
 }): string[] {
     const {
         width,
@@ -580,6 +594,7 @@ export function renderWorkflowFooter(opts: {
         dispatchElapsedMs,
         runElapsedMs,
         primaryCostUsd = 0,
+        lspServers = [],
         contextUsage,
         visibleWidth,
         truncateToWidth,
@@ -670,8 +685,8 @@ export function renderWorkflowFooter(opts: {
               ? `${lastStatus} · ${secs(runElapsedMs)} total`
               : lastStatus;
 
-    const left =
-        theme.fg("dim", ` ◆ ${model}`) +
+    const modelPart = theme.fg("dim", ` ◆ ${model}`);
+    const namePart =
         theme.fg("muted", " · ") +
         theme.fg("accent", selfName) +
         theme.fg("dim", " ") +
@@ -684,6 +699,54 @@ export function renderWorkflowFooter(opts: {
         phases.reduce((sum, p) => sum + (p.tokens?.costUsd || 0), 0);
     const costStr = theme.fg("muted", `${formatCostUsd(totalCostUsd)} · `);
     const right = costStr + theme.fg("dim", `[${bar}] ${pctStr} `);
+
+    // Inline LSP segment, between the model and the agent name. Built plain first so
+    // we can budget/clip by visible width, then colored. Dropped entirely when there
+    // are no relevant servers, or when there isn't room for it after the model, name,
+    // and cost/context — so it never cannibalizes the right side.
+    let lspPart = "";
+    if (lspServers.length) {
+        const sepRaw = " · ";
+        const lspRaw =
+            "LSP: " +
+            lspServers
+                .map(
+                    (s) =>
+                        `${s.installed ? "✓" : "○"} ${s.server}${s.extensions.length ? "  " + s.extensions.join(" ") : ""}`,
+                )
+                .join("  ");
+        const budget =
+            width -
+            visibleWidth(modelPart) -
+            visibleWidth(namePart) -
+            visibleWidth(right) -
+            sepRaw.length;
+        if (budget >= 8) {
+            const sep = theme.fg("muted", sepRaw);
+            if (lspRaw.length <= budget) {
+                // Fits: render with the success/dim marks colored per server.
+                const marks = lspServers
+                    .map(
+                        (s) =>
+                            (s.installed
+                                ? theme.fg("success", "✓")
+                                : theme.fg("dim", "○")) +
+                            " " +
+                            theme.fg("dim", s.server) +
+                            (s.extensions.length
+                                ? "  " + theme.fg("dim", s.extensions.join(" "))
+                                : ""),
+                    )
+                    .join("  ");
+                lspPart = sep + theme.fg("muted", "LSP: ") + marks;
+            } else {
+                // Crowded: clip the plain string with an ellipsis, all dim.
+                lspPart = sep + theme.fg("dim", truncateToWidth(lspRaw, budget, "…"));
+            }
+        }
+    }
+
+    const left = modelPart + lspPart + namePart;
     const pad = " ".repeat(
         Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
     );
@@ -970,6 +1033,22 @@ export function agentModelEnvVar(agentKey: string): string {
     return `PI_AGENT_${name}_MODEL`;
 }
 
+// Build the value passed to pi's `--model` from a configured model string.
+// pi's --model parses `[provider/]id[:thinking]` and resolves the provider
+// itself, so the configured string is passed through VERBATIM:
+//   - bare id        "qwen-max-3-7-yoda-2[:low]"
+//   - provider/id    "anthropic/claude-opus-4-8[:low]"
+//   - provider/<slashed id>  "gfr_prt/gateframe_yoda/qwen-max-3-7-yoda-2:low"
+// (Earlier code stripped the segment before the first slash, which silently
+// discarded the provider — e.g. anthropic/claude-… resolved under the DEFAULT
+// provider instead of anthropic. That's fixed by not stripping.)
+// Returns null when there's no usable model (empty or contains whitespace).
+export function spawnModelArg(model: string | undefined): string | null {
+    const clean = model?.trim();
+    if (!clean || /\s/.test(clean)) return null;
+    return clean;
+}
+
 // Combined per-agent config env var: PI_AGENT_<NAME>, an object that can set the
 // model AND the context window in one place, e.g.
 //   PI_AGENT_VALIDATOR={"model":"gateframe_yoda/qwen-max-3-7-yoda-2","contextWindow":1000000}
@@ -1092,7 +1171,7 @@ export function loadAgents(
     }
 
     // Then load extension-level agents as fallback
-    const extensionDir = dirname(fileURLToPath(import.meta.url));
+    const extensionDir = UTILS_DIR;
     const agentsDir = join(extensionDir, "..", "agents");
     if (existsSync(agentsDir)) {
         try {
@@ -1161,7 +1240,7 @@ export function loadTeams(
     }
 
     // Fallback to extension-level teams
-    const extensionDir = dirname(fileURLToPath(import.meta.url));
+    const extensionDir = UTILS_DIR;
     const teamsFile = join(extensionDir, "..", "agents", "teams.yaml");
     if (existsSync(teamsFile)) {
         try {
@@ -1214,7 +1293,7 @@ function parseSkillFile(filePath: string, fallbackName: string): SkillDef | null
 // the orchestrator which skills it can use — adding a SKILL.md needs no code change.
 export function loadSkills(cwd: string): SkillDef[] {
     const byName = new Map<string, SkillDef>();
-    const extensionDir = dirname(fileURLToPath(import.meta.url));
+    const extensionDir = UTILS_DIR;
     const dirs = [
         join(cwd, ".claude", "skills"),
         join(cwd, ".pi", "skills"),
@@ -1295,6 +1374,24 @@ export async function chooseTeam(
     return teamNames[options.indexOf(choice)];
 }
 
+// Infer a team from the request text when the caller named none. Today it only
+// recognizes "build / implement an existing plan" intent — a build/implement verb
+// AND a reference to "the plan" / "implementation plan" (e.g. "build the
+// implementation plan", "implement the plan") — and maps it to the planner-less
+// `build` team, which resumes from the saved .agent/plan.md instead of re-planning.
+// "build a plan" / "create an implementation plan" do NOT match (that's planning,
+// not building from one). Returns "" when nothing matches or the team isn't defined.
+export function inferWorkflowTeam(
+    request: string,
+    teams: Record<string, string[]>,
+): string {
+    const r = (request || "").toLowerCase();
+    const hasBuildVerb = /\b(build|implement(?:s|ing|ed)?)\b/.test(r);
+    const refsExistingPlan = /\b(implementation plan|the plan)\b/.test(r);
+    if (hasBuildVerb && refsExistingPlan && teams["build"]) return "build";
+    return "";
+}
+
 // ── Sessions & report publishing ─────────────────
 
 // Default TTL for orphaned session files: 7 days. Files older than this are
@@ -1327,7 +1424,7 @@ export function setupSessions(cwd: string, wipe: boolean): string {
     if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true });
     const now = Date.now();
     for (const f of readdirSync(sessionDir)) {
-        if (!f.endsWith(".json")) continue;
+        if (!f.endsWith(".jsonl")) continue;
         if (wipe) {
             try {
                 unlinkSync(join(sessionDir, f));
@@ -1549,7 +1646,7 @@ export function formatContextUsage(opts: {
 // The final markdown report is identical between both extensions, so it lives
 // here. tokenNote/digest/testSignal/outcomeLine are resolved from this module.
 
-interface ReportTotals {
+export interface ReportTotals {
     runElapsedMs: number;
     totalToolCalls: number;
     totalTokens: {
@@ -1685,6 +1782,148 @@ export function buildWorkflowReport(o: {
     ].join("\n");
 }
 
+// ── Structured run metrics (machine-readable sibling of the report) ─────────
+// buildWorkflowReport emits human markdown; this emits the same run as JSON so
+// the observability analyzer (utils/obs/obs-cli.ts) has a precise, single-run record
+// instead of re-parsing the markdown. Same call site, same inputs.
+
+export interface PhaseMetrics {
+    label: string;
+    agent: string;
+    status: string;
+    elapsedMs: number;
+    attempt: number;
+    toolCount: number;
+    modelFallback: boolean;
+    activeModel?: string;
+    droppedLines: number;
+    tokens?: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        total: number;
+        costUsd?: number;
+    };
+}
+
+export interface WorkflowMetrics {
+    schema: number; // bump on shape changes
+    startedAt?: string; // ISO
+    endedAt: string; // ISO
+    request: string;
+    team?: string;
+    status: string; // raw terminal status (e.g. "paused-no-remote")
+    shipOutcome: "shipped" | "paused" | "failed" | "unknown";
+    verdict: string;
+    passes: number; // attempts used
+    maxLoops: number;
+    passed: boolean;
+    prUrl: string;
+    totals: {
+        wallclockMs: number;
+        toolCalls: number;
+        droppedLines: number;
+        costUsd?: number;
+        tokens: {
+            input: number;
+            output: number;
+            cacheRead: number;
+            cacheWrite: number;
+            total: number;
+        };
+    };
+    phases: PhaseMetrics[];
+}
+
+function phaseMetrics(p: PhaseState): PhaseMetrics {
+    const t = p.tokens;
+    const cacheRead = t?.cacheRead || 0;
+    const cacheWrite = t?.cacheWrite || 0;
+    return {
+        label: p.label,
+        agent: p.agent,
+        status: p.status,
+        elapsedMs: p.elapsed,
+        attempt: p.attempt,
+        toolCount: p.toolCount,
+        modelFallback: p.modelFallback,
+        activeModel: p.activeModel,
+        droppedLines: p.droppedLines,
+        tokens: t
+            ? {
+                  input: t.input,
+                  output: t.output,
+                  cacheRead,
+                  cacheWrite,
+                  total: t.input + t.output + cacheRead + cacheWrite,
+                  costUsd: t.costUsd,
+              }
+            : undefined,
+    };
+}
+
+function shipOutcomeFromStatus(
+    status: string,
+    prUrl: string,
+): WorkflowMetrics["shipOutcome"] {
+    if (prUrl || /shipped/i.test(status)) return "shipped";
+    if (/paus/i.test(status)) return "paused";
+    if (/fail|block|abort/i.test(status)) return "failed";
+    return "unknown";
+}
+
+export function buildWorkflowMetrics(o: {
+    request: string;
+    status: string;
+    verdict: string;
+    passes: number;
+    maxLoops: number;
+    passed: boolean;
+    prUrl: string;
+    team?: string;
+    startedAt?: number;
+    endedAt?: number;
+    totals: ReportTotals;
+    phases: (PhaseState | null)[];
+}): WorkflowMetrics {
+    const tt = o.totals.totalTokens;
+    const cacheRead = tt.cacheRead || 0;
+    const cacheWrite = tt.cacheWrite || 0;
+    return {
+        schema: 1,
+        startedAt: o.startedAt
+            ? new Date(o.startedAt).toISOString()
+            : undefined,
+        endedAt: new Date(o.endedAt ?? Date.now()).toISOString(),
+        request: o.request,
+        team: o.team || undefined,
+        status: o.status,
+        shipOutcome: shipOutcomeFromStatus(o.status, o.prUrl),
+        verdict: o.verdict,
+        passes: o.passes,
+        maxLoops: o.maxLoops,
+        passed: o.passed,
+        prUrl: o.prUrl,
+        totals: {
+            wallclockMs: o.totals.runElapsedMs,
+            toolCalls: o.totals.totalToolCalls,
+            droppedLines: o.totals.totalDroppedLines,
+            costUsd: o.totals.totalCostUsd,
+            tokens: {
+                input: tt.input,
+                output: tt.output,
+                cacheRead,
+                cacheWrite,
+                total: tt.input + tt.output + cacheRead + cacheWrite,
+            },
+        },
+        phases: o.phases
+            .filter((p): p is PhaseState => !!p)
+            .map(phaseMetrics),
+    };
+}
+
 // ── Plan structural validation ───────────────────
 
 interface PlanCheck {
@@ -1730,6 +1969,58 @@ export function parsePlanPhases(plan: string): string[] {
         if (m) out.push(m[1].trim());
     }
     return out;
+}
+
+// One entry of the implementer's progress ledger (.agent/progress.md). Feeds the
+// dashboard's live Todos panel as the implementer flips phases [ ] -> [x].
+export interface ProgressItem {
+    label: string;
+    done: boolean;
+}
+
+// Parse the checkbox lines ("- [ ] …" / "- [x] …") out of the progress ledger,
+// in order. Non-checkbox lines (the heading, the `Base:` line, blanks) are ignored.
+export function parseProgressLedger(content: string): ProgressItem[] {
+    const out: ProgressItem[] = [];
+    for (const raw of (content || "").split(/\r?\n/)) {
+        const m = /^\s*-\s*\[([ xX])\]\s*(.+?)\s*$/.exec(raw);
+        if (m) out.push({ done: m[1].toLowerCase() === "x", label: m[2] });
+    }
+    return out;
+}
+
+// The reviewer's fixed review checklist, shown as a live panel while the reviewer
+// phase runs. Mirror of the "## Review Checklist" in agents/reviewer.md — keep in
+// sync. The reviewer is read-only (no .agent ledger to tick per item), so the panel
+// reflects phase status: working while it runs, all checked once it finishes.
+export const REVIEW_CHECKLIST = [
+    "Plan conformance",
+    "Acceptance criteria",
+    "Correctness",
+    "Completeness",
+    "Regressions",
+    "Error handling",
+    "Tests",
+];
+
+// Build the reviewer's checklist items from the run's phases. Empty (panel hidden)
+// until the reviewer phase has started. While it runs, items tick live from
+// `doneLabels` — the set of checks the reviewer has reported finishing via its
+// stream markers (best-effort; empty when the model emits none). Once the phase
+// settles, every item reads done (done = the reviewer worked through that check,
+// not that the code passed it), so a non-marking model still ends fully checked.
+export function buildReviewChecklist(
+    phases: PhaseState[],
+    doneLabels?: Iterable<string>,
+): ProgressItem[] {
+    const ph = phases.find((p) => p.agent === "reviewer");
+    if (!ph || ph.status === "pending") return [];
+    if (ph.status === "running") {
+        const done = new Set(doneLabels ?? []);
+        return REVIEW_CHECKLIST.map((label) => ({ label, done: done.has(label) }));
+    }
+    const done = ph.status === "done";
+    return REVIEW_CHECKLIST.map((label) => ({ label, done }));
 }
 
 // ── Shared run context (curated cross-agent bundle) ──
@@ -2379,15 +2670,31 @@ export interface SpawnResult {
 // down through the environment. Each hop increments PI_DISPATCH_DEPTH and appends
 // the spawned agent to PI_DISPATCH_ANCESTRY; dispatchAgentCore reads these to bound
 // recursion. PI_SUBAGENT is kept for backward compatibility.
-export function dispatchEnv(agentName: string): Record<string, string> {
+export function dispatchEnv(
+    agentName: string,
+    dispatchId?: string,
+): Record<string, string> {
     const depth = parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
     const ancestry = process.env.PI_DISPATCH_ANCESTRY || "";
     const name = agentName.toLowerCase();
-    return {
+    const env: Record<string, string> = {
         PI_SUBAGENT: "1",
         PI_DISPATCH_DEPTH: String(depth + 1),
         PI_DISPATCH_ANCESTRY: ancestry ? `${ancestry}>${name}` : name,
     };
+    // Label this sub-agent's observability lane (obs-live.ts reads it) and carry
+    // the trace linkage down: PI_OBS_RUN is the shared trace id (minted by the root
+    // orchestrator's collector); PI_OBS_PARENT is THIS process's agent — the one
+    // doing the dispatching — so the child knows who spawned it. PI_OBS_DISPATCH_ID
+    // ties the child's events back to the orchestrator's dispatch_* events for this
+    // exact dispatch, so concurrent instances of the same agent stay distinct.
+    if (process.env.PI_OBS === "1" || process.env.PI_OBS === "true") {
+        env.PI_OBS_AGENT = name;
+        if (process.env.PI_OBS_RUN) env.PI_OBS_RUN = process.env.PI_OBS_RUN;
+        env.PI_OBS_PARENT = (process.env.PI_OBS_AGENT || "orchestrator").toLowerCase();
+        if (dispatchId) env.PI_OBS_DISPATCH_ID = dispatchId;
+    }
+    return env;
 }
 
 // Whether a spawned (headless) sub-agent should be told to trust the project's
@@ -2439,11 +2746,7 @@ export function shouldApproveProjectForSpawn(cwd: string): boolean {
 // - dispatch.ts registers dispatch_agent/dispatch_parallel/select_agents, needed
 //   only by agents whose tools include one of them.
 export function subagentExtArgs(tools: string): string[] {
-    const extDir = join(
-        dirname(fileURLToPath(import.meta.url)),
-        "..",
-        "extensions",
-    );
+    const extDir = join(UTILS_DIR, "..", "extensions");
     const args: string[] = [];
     const add = (name: string) => {
         const p = join(extDir, name);
@@ -2471,6 +2774,18 @@ export function subagentExtArgs(tools: string): string[] {
     }
     if (/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))
         add("dispatch.ts");
+    // readonly-guard.ts keeps a read-only agent read-only: it blocks mutating `gh`
+    // and `git` commands. Loaded for agents that can run bash but cannot write files
+    // (scout, reviewer, validator) — they query GitHub and inspect the repo but must
+    // never mutate state. Agents that may write (e.g. the shipper, which opens PRs)
+    // keep full access by not loading it.
+    const t = tools || "";
+    if (/\bbash\b/.test(t) && !/\b(write|edit)\b/.test(t)) add("readonly-guard.ts");
+    // Live observability: when PI_OBS=1, every sub-agent emits ObsEvents to the
+    // shared sink so the dashboard shows the whole pipeline. PI_OBS_AGENT (set on
+    // the spawn env) labels which agent's lane the events land in.
+    if (process.env.PI_OBS === "1" || process.env.PI_OBS === "true")
+        add("obs-live.ts");
     return args;
 }
 
@@ -2575,14 +2890,19 @@ export function handleSpawnEvent(
                 : (event.messages || []).find(
                       (m: any) => m.role === "assistant",
                   );
-        if (msg?.role === "assistant" && Array.isArray(msg.content)) {
-            const text = msg.content
-                .filter((c: any) => c?.type === "text")
-                .map((c: any) => c.text || "")
-                .join("");
-            if (text) state.finalText = text;
-            if (msg.stopReason === "error" && msg.errorMessage)
-                state.finalError = String(msg.errorMessage);
+        if (msg?.role === "assistant") {
+            // Track why the last turn ended — "length" means the model hit its
+            // output-token cap and was truncated (often before acting at all).
+            if (msg.stopReason) phase.lastStopReason = msg.stopReason;
+            if (Array.isArray(msg.content)) {
+                const text = msg.content
+                    .filter((c: any) => c?.type === "text")
+                    .map((c: any) => c.text || "")
+                    .join("");
+                if (text) state.finalText = text;
+                if (msg.stopReason === "error" && msg.errorMessage)
+                    state.finalError = String(msg.errorMessage);
+            }
         }
         if (msg?.usage?.input) {
             // contextWindow may not be reported by all providers. Fall back to the
@@ -2695,10 +3015,12 @@ function spawnAgentWithModelFallback(
     // Use the main session directory with project hash in filename
     const projectHash = projectSessionHash(cwd);
 
-    // Each agent runs in its own per-agent session file (parallel-safe).
+    // Each agent runs in its own per-agent session file (parallel-safe). pi
+    // stores sessions as JSONL — use the .jsonl extension to match (the content
+    // is line-delimited JSON regardless; this just names it correctly).
     const sessionFile = join(
         config.sessionDir,
-        `${sessionKey}-${projectHash}.json`,
+        `${sessionKey}-${projectHash}.jsonl`,
     );
 
     // Validate session file before using it
@@ -2752,12 +3074,8 @@ function spawnAgentWithModelFallback(
     ];
 
     const cleanModel = model?.trim();
-    if (cleanModel && !/\s/.test(cleanModel)) {
-        const firstSlash = cleanModel.indexOf("/");
-        const modelId =
-            firstSlash > 0 ? cleanModel.slice(firstSlash + 1) : cleanModel;
-        args.push("--model", modelId);
-    }
+    const modelArg = spawnModelArg(model);
+    if (modelArg) args.push("--model", modelArg);
     if (hasSession) args.push("-c");
     args.push(task);
 
@@ -2789,7 +3107,7 @@ function spawnAgentWithModelFallback(
     return new Promise((resolve) => {
         const proc = spawn("pi", args, {
             stdio: ["ignore", "pipe", "pipe"],
-            env: { ...process.env, ...dispatchEnv(agentDef.name) },
+            env: { ...process.env, ...dispatchEnv(agentDef.name, phase.dispatchId) },
             cwd,
         });
 
@@ -2900,8 +3218,9 @@ export function spawnAgentWithModel(
         }
     }
 
-    // Each agent runs in its own per-agent session file (parallel-safe).
-    const sessionFile = join(projectSessionDir, `${sessionKey}.json`);
+    // Each agent runs in its own per-agent session file (parallel-safe). pi
+    // stores sessions as JSONL — use the .jsonl extension to match.
+    const sessionFile = join(projectSessionDir, `${sessionKey}.jsonl`);
 
     // Validate session file before using it
     let hasSession = false;
@@ -2981,30 +3300,12 @@ export function spawnAgentWithModel(
         ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
         ...subagentExtArgs(agentDef.tools),
     ];
-    // Only pass --model if the string looks valid (non-empty, no whitespace).
-    // If the string contains a slash, it's in provider/model format.
-    // Extract everything after the FIRST slash as the model ID.
-    // e.g., "gate_frame_private/gateframe/mimo-v2.5" -> "gateframe/mimo-v2.5"
-    // e.g., "anthropic/claude-3-opus" -> "claude-3-opus"
-    // e.g., "openai/gpt-4" -> "gpt-4"
+    // Pass --model via spawnModelArg: a two-or-more-slash string keeps its
+    // provider (provider/<slashed id>), a single-slash string drops the leading
+    // prefix (legacy), a bare id passes through.
     const cleanModel = model?.trim();
-    if (cleanModel && !/\s/.test(cleanModel)) {
-        const firstSlash = cleanModel.indexOf("/");
-        let modelId = cleanModel;
-
-        if (firstSlash > 0) {
-            modelId = cleanModel.slice(firstSlash + 1);
-            // Validate the extracted model ID
-            if (!modelId || modelId.trim().length === 0) {
-                console.error(
-                    `[spawnAgentWithModel] Invalid model format: "${cleanModel}" - extracted model ID is empty, using original string`,
-                );
-                modelId = cleanModel;
-            }
-        }
-
-        args.push("--model", modelId);
-    }
+    const modelArg = spawnModelArg(model);
+    if (modelArg) args.push("--model", modelArg);
     if (hasSession) args.push("-c");
     args.push(task);
 
@@ -3037,7 +3338,7 @@ export function spawnAgentWithModel(
     return new Promise((resolve) => {
         const proc = spawn("pi", args, {
             stdio: ["ignore", "pipe", "pipe"],
-            env: { ...process.env, ...dispatchEnv(agentDef.name) },
+            env: { ...process.env, ...dispatchEnv(agentDef.name, phase.dispatchId) },
             cwd,
         });
         config.setCurrentProc(proc);
@@ -3168,7 +3469,7 @@ export function loadPromptTemplate(
     if (cwd) candidates.push(join(cwd, ".pi", "prompts", `${name}.md`));
     // Install-level prompts: <ext>/../prompts/<name>.md
     try {
-        const extDir = dirname(fileURLToPath(import.meta.url));
+        const extDir = UTILS_DIR;
         candidates.push(join(extDir, "..", "prompts", `${name}.md`));
     } catch {}
     for (const path of candidates) {

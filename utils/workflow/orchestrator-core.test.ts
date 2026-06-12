@@ -23,6 +23,7 @@ import {
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
 import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
+import { setObsEmit } from "../obs/obs-events";
 
 // Run with: npx tsx --test orchestrator-core.test.ts
 
@@ -385,6 +386,147 @@ describe("dispatchAgentCore", () => {
         );
         assert.ok((result.content[0] as { text: string }).text.includes("RE-DISPATCH"));
         assert.equal(st.phases[0].status, "error");
+    });
+
+    it("retries once when the first dispatch comes back empty, then succeeds", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        let calls = 0;
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async () => {
+                    calls++;
+                    return calls === 1
+                        ? { output: "   ", exitCode: 0 } // empty first attempt
+                        : {
+                              output:
+                                  "Recovered: here is a real plan with enough text",
+                              exitCode: 0,
+                          };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchAgentCore(
+            st,
+            host,
+            "planner",
+            "plan",
+            undefined,
+            mkCtx(),
+        );
+        assert.equal(calls, 2); // retried once
+        assert.equal(st.phases[0].status, "done");
+        assert.equal(st.phases[0].attempt, 2);
+        assert.ok((result.content[0] as { text: string }).text.includes("done"));
+    });
+
+    it("reports truncation (stop=length) instead of a generic empty failure", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runAgent: async (_def, _task, phase) => {
+                    phase.lastStopReason = "length"; // hit the output-token cap
+                    return { output: "", exitCode: 0 };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchAgentCore(
+            st,
+            host,
+            "scout",
+            "recon the repo",
+            undefined,
+            mkCtx(),
+        );
+        const text = (result.content[0] as { text: string }).text;
+        assert.ok(
+            text.includes("TRUNCATED") && text.includes("output-token limit"),
+            `expected truncation message, got: ${text}`,
+        );
+        assert.equal(st.phases[0].status, "error");
+    });
+
+    it("emits dispatch_start then dispatch_end through the obs hook", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        const events: { type: string; payload: any }[] = [];
+        setObsEmit((type, payload) => events.push({ type, payload }));
+        try {
+            const host = mkHost({
+                setup: {
+                    loadAgents: () => agents,
+                    setupSessions: () => {},
+                    prepareRun: () => {},
+                },
+                execution: {
+                    runAgent: async () => ({
+                        output: "a real plan with plenty of substantive text",
+                        exitCode: 0,
+                    }),
+                },
+            });
+            const st = mkStateWithAgents(agents);
+            await dispatchAgentCore(st, host, "planner", "plan", undefined, mkCtx());
+        } finally {
+            setObsEmit(undefined);
+        }
+        assert.deepEqual(
+            events.map((e) => e.type),
+            ["dispatch_start", "dispatch_end"],
+        );
+        assert.equal(events[0].payload.agent, "planner");
+        assert.equal(events[1].payload.status, "done");
+    });
+
+    it("emits dispatch_retry with a reason when the first attempt is empty", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        const events: { type: string; payload: any }[] = [];
+        setObsEmit((type, payload) => events.push({ type, payload }));
+        let calls = 0;
+        try {
+            const host = mkHost({
+                setup: {
+                    loadAgents: () => agents,
+                    setupSessions: () => {},
+                    prepareRun: () => {},
+                },
+                execution: {
+                    runAgent: async () => {
+                        calls++;
+                        return calls === 1
+                            ? { output: "   ", exitCode: 0 }
+                            : {
+                                  output: "recovered with a real, substantive result",
+                                  exitCode: 0,
+                              };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents);
+            await dispatchAgentCore(st, host, "scout", "recon", undefined, mkCtx());
+        } finally {
+            setObsEmit(undefined);
+        }
+        assert.deepEqual(
+            events.map((e) => e.type),
+            ["dispatch_start", "dispatch_retry", "dispatch_end"],
+        );
+        assert.equal(events[1].payload.reason, "empty");
+        assert.equal(events[2].payload.status, "done");
     });
 
     it("does not flag tool-driven agents with short output as empty", async () => {

@@ -1,0 +1,109 @@
+/* event detail drawer (right column of the #app grid).
+   The drawer stacks meta fields above the JSON (it's a narrow column now);
+   width is user-resizable via the left-edge grip (shell.js, persisted). */
+#inspector {
+    display: none;
+    width: var(--drawer-w, 420px);
+    min-width: 0;
+    background: var(--surface-2);
+    border-left: 1px solid var(--border);
+    position: relative;
+}
+#inspector.open {
+    display: flex;
+}
+#drawer-grip {
+    flex: none;
+    width: 5px;
+    cursor: col-resize;
+    background: transparent;
+}
+#drawer-grip:hover,
+#drawer-grip.dragging {
+    background: var(--accent);
+}
+.drawer-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+.insp-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+}
+.insp-title {
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+}
+.insp-type {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.insp-btn {
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    color: var(--dim);
+    border-radius: 4px;
+    padding: 4px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+}
+.insp-btn:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+}
+.insp-btn.flash {
+    color: var(--ok);
+    border-color: var(--ok);
+}
+#insp-copy {
+    margin-left: auto;
+}
+.insp-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+}
+.insp-left {
+    flex: none;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+}
+.insp-field {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+.insp-field > span {
+    width: 56px;
+    flex: none;
+    color: var(--dim);
+}
+.insp-summary {
+    margin-top: 12px;
+    color: var(--fg);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.insp-json {
+    flex: 1;
+    margin: 0;
+    padding: 12px 14px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    color: var(--fg);
+}

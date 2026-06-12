@@ -1,0 +1,560 @@
+# OpenAPI spec for the agent-observability API (obs-server /api/*).
+# Served live at GET /api/openapi.yaml; human docs in API.md.
+# 3.0.3 for the widest tooling compatibility (Swagger UI, codegen, Postman).
+openapi: 3.0.3
+info:
+  title: pi Agent Observability API
+  description: >
+    Local-first observability for pi agent workflows. The obs-server tails a
+    JSONL event sink that every agent process appends to, indexes it by run,
+    and exposes this read-mostly API for external UIs and integrations. CORS
+    is open (`*`) because the server binds to 127.0.0.1 only. There is no
+    authentication. Run `:id` path parameters accept the full runId or any
+    unique prefix.
+  version: "2.0.0"
+servers:
+  - url: http://127.0.0.1:7616
+    description: default local obs-server (PI_OBS_PORT/--port to change)
+
+tags:
+  - name: meta
+  - name: runs
+  - name: live
+  - name: search
+
+paths:
+  /api:
+    get:
+      tags: [meta]
+      operationId: getMeta
+      summary: Discovery + server meta
+      responses:
+        "200":
+          description: Server metadata and the endpoint list.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Meta" }
+
+  /api/openapi.yaml:
+    get:
+      tags: [meta]
+      operationId: getOpenApi
+      summary: This spec
+      responses:
+        "200":
+          description: The OpenAPI document (YAML).
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /api/summary:
+    get:
+      tags: [live]
+      operationId: getSummary
+      summary: Live rollup of the recent in-memory buffer
+      responses:
+        "200":
+          description: Per-agent rollup of buffered (recent) events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LiveSummary" }
+
+  /api/events:
+    get:
+      tags: [live]
+      operationId: listRecentEvents
+      summary: Recent events from the live buffer (oldest-first)
+      parameters:
+        - name: limit
+          in: query
+          description: Return only the newest N buffered events.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Buffered events.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ObsEvent" }
+
+  /api/runs:
+    get:
+      tags: [runs]
+      operationId: listRuns
+      summary: Every run recorded in the sink (latest-first)
+      parameters:
+        - name: project
+          in: query
+          description: Filter to runs whose cwd basename equals this.
+          schema: { type: string }
+        - name: since
+          in: query
+          description: Epoch ms or an ISO date — keep runs started at/after it.
+          schema: { type: string }
+        - name: limit
+          in: query
+          description: Newest N runs.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Run summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RunSummary" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/runs/{id}:
+    get:
+      tags: [runs]
+      operationId: getRun
+      summary: One run's summary
+      parameters: [{ $ref: "#/components/parameters/RunId" }]
+      responses:
+        "200":
+          description: The run summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunSummary" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/runs/{id}/events:
+    get:
+      tags: [runs]
+      operationId: getRunEvents
+      summary: The run's complete event history (from the sink archive)
+      parameters: [{ $ref: "#/components/parameters/RunId" }]
+      responses:
+        "200":
+          description: All of the run's events, in file (≈chronological) order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ObsEvent" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/runs/{id}/digest:
+    get:
+      tags: [runs]
+      operationId: getRunDigest
+      summary: Anomaly digest ("what happened in this run?")
+      description: >
+        The digest behind `obs-cli explain`: header facts, agent timeline,
+        typed anomalies (retries, truncations, tool/provider errors, slow
+        tools/turns, cost outliers, compactions, context pressure), per-agent
+        and per-tool rollups, and boot setup.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - name: format
+          in: query
+          description: "`text` returns a human/LLM-ready markdown rendering."
+          schema: { type: string, enum: [json, text], default: json }
+      responses:
+        "200":
+          description: The digest.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunDigest" }
+            text/plain:
+              schema: { type: string }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/runs/{id}/otel:
+    get:
+      tags: [runs]
+      operationId: getRunOtel
+      summary: The run as an OTLP/JSON trace (OpenTelemetry GenAI conventions)
+      parameters: [{ $ref: "#/components/parameters/RunId" }]
+      responses:
+        "200":
+          description: OTLP/JSON ExportTraceServiceRequest payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resourceSpans: { type: array, items: { type: object } }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/runs/{id}/verdict:
+    post:
+      tags: [runs]
+      operationId: scoreRun
+      summary: Score a run (pass/fail/open)
+      description: >
+        Appends a verdict event to the sink (source `api`). The tailer
+        broadcasts it, so open dashboards update live. The LAST verdict for a
+        run wins — this overrides the workflow's auto-verdict or earlier scores.
+      parameters: [{ $ref: "#/components/parameters/RunId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [pass, fail, open] }
+                note: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Verdict recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, runId, verdict]
+                properties:
+                  ok: { type: boolean }
+                  runId: { type: string }
+                  verdict:
+                    type: object
+                    properties:
+                      status: { type: string, enum: [pass, fail, open] }
+                      note: { type: string }
+                      source: { type: string, enum: [api] }
+                  previous:
+                    nullable: true
+                    allOf: [{ $ref: "#/components/schemas/RunVerdict" }]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          description: The verdict could not be appended to the sink.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/search:
+    get:
+      tags: [search]
+      operationId: searchEvents
+      summary: Substring search over the entire sink (every run)
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Case-insensitive substring, matched on raw event lines.
+          schema: { type: string, minLength: 1 }
+        - name: limit
+          in: query
+          description: Newest N matches (default 200).
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+      responses:
+        "200":
+          description: Matching events (newest kept when over the limit).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ObsEvent" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/stream:
+    get:
+      tags: [live]
+      operationId: streamEvents
+      summary: Live event stream (Server-Sent Events)
+      description: >
+        `text/event-stream`: replays the current buffer, then streams live.
+        Each frame is `event: obs` with an ObsEvent JSON `data:` payload;
+        comment heartbeats every 15s. Consume with EventSource.
+      parameters:
+        - name: run
+          in: query
+          description: Exact runId — scopes both replay and live delivery.
+          schema: { type: string }
+      responses:
+        "200":
+          description: SSE stream of ObsEvent frames.
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+components:
+  parameters:
+    RunId:
+      name: id
+      in: path
+      required: true
+      description: Full runId or a unique prefix.
+      schema: { type: string }
+
+  responses:
+    NotFound:
+      description: No (or no unique) run matches the id.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: Missing or unparseable parameter / body.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+    Meta:
+      type: object
+      required: [name, schema, sink, bufferedEvents, uptimeMs, endpoints]
+      properties:
+        name: { type: string, example: pi-agent-obs }
+        schema:
+          type: integer
+          description: ObsEvent schema version.
+          example: 2
+        sink:
+          type: string
+          description: Path of the tailed JSONL sink.
+        bufferedEvents: { type: integer }
+        uptimeMs: { type: integer }
+        endpoints:
+          type: array
+          items: { type: string }
+
+    ObsEvent:
+      type: object
+      description: >
+        One observability event. Events of one run interleave with other runs
+        in the shared sink — always group by runId. Verdict events are
+        run-level annotations (their synthetic sessions use agent "user");
+        exclude them from per-agent aggregation and time bounds.
+      required: [v, seq, ts, sessionId, agent, type, payload]
+      properties:
+        v: { type: integer, description: Schema version (2). }
+        seq: { type: integer, description: Per-session monotonic sequence. }
+        ts: { type: integer, description: Epoch milliseconds. }
+        sessionId: { type: string, description: Unique per agent process. }
+        agent: { type: string, example: orchestrator }
+        cwd: { type: string, description: Project directory. }
+        runId:
+          type: string
+          description: Groups every agent of one workflow invocation.
+        parent:
+          type: string
+          description: Name of the dispatching agent (unset on the root).
+        name:
+          type: string
+          description: Run display name (root session, when named).
+        type:
+          type: string
+          enum:
+            - session_start
+            - boot
+            - session_end
+            - turn_start
+            - turn_end
+            - message
+            - tool_start
+            - tool_end
+            - model_change
+            - compaction
+            - error
+            - dispatch_start
+            - dispatch_retry
+            - dispatch_end
+            - verdict
+            - custom
+        payload:
+          type: object
+          additionalProperties: true
+          description: >
+            Type-specific. Highlights — turn_end: turnIndex, tokens{input,
+            output,cacheRead,cacheWrite,total}, costUsd, durationMs, tps,
+            prefillMs, context{tokens,window,percent}, model, stopReason;
+            tool_start/end: toolCallId, toolName, arg/argsText, durationMs,
+            isError, result/resultText; boot: tools[], skills[],
+            contextFiles[{path,bytes,hash}], promptChars, promptHash;
+            error: source, status, message; dispatch_*: agent, dispatchId,
+            reason, status, attempts; verdict: status(pass|fail|open),
+            outcome?, note?, source(workflow|cli|api), prUrl?.
+
+    RunVerdict:
+      type: object
+      required: [status, ts]
+      properties:
+        status: { type: string, enum: [pass, fail, open] }
+        outcome:
+          type: string
+          description: Precise workflow status ("shipped", "error", …).
+        note: { type: string }
+        source: { type: string, enum: [workflow, cli, api] }
+        ts: { type: integer, description: Epoch ms of the verdict. }
+
+    RunSummary:
+      type: object
+      required: [runId, firstTs, lastTs, events, agents, costUsd, errors, startOffset, endOffset]
+      properties:
+        runId: { type: string }
+        firstTs: { type: integer, description: Epoch ms. }
+        lastTs: { type: integer, description: Epoch ms. }
+        events: { type: integer }
+        agents:
+          type: array
+          items: { type: string }
+        cwd: { type: string }
+        name: { type: string, description: "Display name, when the run was named." }
+        costUsd: { type: number }
+        errors:
+          type: integer
+          description: Provider errors + tool errors.
+        verdict: { $ref: "#/components/schemas/RunVerdict" }
+        startOffset:
+          type: integer
+          description: Internal sink byte range — ignore.
+        endOffset:
+          type: integer
+          description: Internal sink byte range — ignore.
+
+    LiveSummary:
+      type: object
+      required: [sessions, totalEvents, totalTokens, totalCostUsd, totalErrors, agents]
+      properties:
+        sessions: { type: integer }
+        totalEvents: { type: integer }
+        totalTokens: { type: integer }
+        totalCostUsd: { type: number }
+        totalErrors: { type: integer }
+        firstTs: { type: integer }
+        lastTs: { type: integer }
+        agents:
+          type: array
+          items: { $ref: "#/components/schemas/AgentRollup" }
+
+    AgentRollup:
+      type: object
+      required: [agent, events, turns, toolCalls, toolErrors, errors, tokens, costUsd, lastType, lastTs, active]
+      properties:
+        agent: { type: string }
+        events: { type: integer }
+        turns: { type: integer }
+        toolCalls: { type: integer }
+        toolErrors: { type: integer }
+        errors: { type: integer }
+        tokens: { type: integer }
+        costUsd: { type: number }
+        lastType: { type: string }
+        lastTs: { type: integer }
+        active: { type: boolean }
+
+    RunDigest:
+      type: object
+      required: [runId, startTs, endTs, wallMs, totals, models, agents, tools, anomalies]
+      properties:
+        runId: { type: string }
+        name: { type: string }
+        cwd: { type: string }
+        startTs: { type: integer }
+        endTs: { type: integer }
+        wallMs: { type: integer }
+        verdict:
+          type: object
+          properties:
+            status: { type: string, enum: [pass, fail, open] }
+            outcome: { type: string }
+            note: { type: string }
+            source: { type: string }
+        totals:
+          type: object
+          required: [costUsd, tokens, turns, toolCalls, toolErrors, providerErrors, retries, compactions]
+          properties:
+            costUsd: { type: number }
+            tokens:
+              type: object
+              properties:
+                input: { type: integer }
+                output: { type: integer }
+                cacheRead: { type: integer }
+                cacheWrite: { type: integer }
+                total: { type: integer }
+            turns: { type: integer }
+            toolCalls: { type: integer }
+            toolErrors: { type: integer }
+            providerErrors: { type: integer }
+            retries: { type: integer }
+            compactions: { type: integer }
+        models:
+          type: array
+          items: { type: string }
+        agents:
+          type: array
+          items: { $ref: "#/components/schemas/AgentDigest" }
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/ToolDigest" }
+        anomalies:
+          type: array
+          items: { $ref: "#/components/schemas/Anomaly" }
+
+    AgentDigest:
+      type: object
+      required: [agent, instances, firstTs, lastTs, turns, costUsd, tokens, turnMs, toolCalls, toolErrors, errors, compactions, prefillAvgMs]
+      properties:
+        agent: { type: string }
+        instances: { type: integer, description: Distinct sessions of this agent name. }
+        firstTs: { type: integer }
+        lastTs: { type: integer }
+        turns: { type: integer }
+        costUsd: { type: number }
+        tokens: { type: integer }
+        turnMs:
+          type: integer
+          description: Summed turn durations (excludes idle/dispatch gaps).
+        toolCalls: { type: integer }
+        toolErrors: { type: integer }
+        errors: { type: integer }
+        compactions: { type: integer }
+        prefillAvgMs: { type: integer }
+        maxContextPct: { type: number, nullable: true }
+        model: { type: string }
+        boot:
+          type: object
+          properties:
+            tools: { type: integer }
+            skills: { type: integer }
+            ctxFiles: { type: integer }
+            promptChars: { type: integer }
+
+    ToolDigest:
+      type: object
+      required: [tool, calls, totalMs, errors]
+      properties:
+        tool: { type: string }
+        calls: { type: integer }
+        totalMs: { type: integer }
+        errors: { type: integer }
+
+    Anomaly:
+      type: object
+      required: [kind, detail]
+      properties:
+        kind:
+          type: string
+          enum:
+            - retry
+            - dispatch-error
+            - truncated
+            - tool-error
+            - provider-error
+            - slow-tool
+            - slow-turn
+            - cost-outlier
+            - compaction
+            - context
+        agent: { type: string }
+        detail: { type: string, description: "Human-readable, with numbers." }

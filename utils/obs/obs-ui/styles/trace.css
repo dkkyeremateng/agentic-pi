@@ -1,0 +1,306 @@
+/* trace — hierarchical waterfall of one run's agent spans */
+#trace {
+    padding: 16px;
+}
+#trace-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+.trace-lbl {
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+}
+/* run picker with the live dot INSIDE the select (Trace + Stats) */
+.runsel {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+.runsel .dot {
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1;
+    pointer-events: none;
+}
+/* width override only; shared look comes from .combo input (primitives.css) */
+#trace-run-q {
+    width: 340px;
+}
+#trace-axis {
+    color: var(--dim);
+    font-size: 12px;
+}
+#trace-axis b {
+    color: var(--fg);
+}
+/* replay scrubber — render the waterfall as-of a point in time */
+#trace-replay {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+#trace-scrub {
+    width: 170px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+#trace-scrub-t {
+    color: var(--dim);
+    font-size: 11px;
+    min-width: 52px;
+}
+#trace-scrub-t.scrubbing {
+    color: var(--warn);
+}
+.trace-export {
+    display: flex;
+    gap: 6px;
+}
+.exp-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    color: var(--dim);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+.exp-btn:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+}
+#trace-empty {
+    color: var(--dim);
+    padding: 30px 4px;
+}
+#trace-body {
+    position: relative;
+}
+/* ticks header — mirrors the row grid (label | track | meta) so the T+ labels
+   sit exactly over the time axis */
+#trace-ticks {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+.trace-label-sp {
+    flex: none;
+    width: 230px;
+}
+.trace-meta-sp {
+    flex: none;
+    width: 320px;
+}
+.ticks-track {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+    height: 15px;
+}
+.tick-lbl {
+    position: absolute;
+    bottom: 0;
+    transform: translateX(-50%);
+    font: 10px/1 var(--font-mono);
+    color: var(--text-faint);
+    white-space: nowrap;
+}
+.tick-lbl:first-child {
+    transform: none;
+}
+.tick-lbl:last-child {
+    transform: translateX(-100%);
+}
+#trace-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+/* hover crosshair + drag-to-zoom selection (positioned by trace.js) */
+#trace-cross {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--accent);
+    opacity: 0.65;
+    pointer-events: none;
+    z-index: 5;
+}
+#trace-cross-t {
+    position: absolute;
+    top: -2px;
+    left: 6px;
+    background: var(--surface-4);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-s);
+    padding: 1px 6px;
+    font: 10px/1.5 var(--font-mono);
+    color: var(--text-hi);
+    white-space: nowrap;
+}
+#trace-brush {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border: 1px solid var(--accent);
+    pointer-events: none;
+    z-index: 4;
+}
+.trace-skel {
+    height: 24px;
+    margin: 6px 0;
+}
+.trace-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 3px 0;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.trace-row:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+.trace-label {
+    flex: none;
+    width: 230px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    overflow: hidden;
+}
+.trace-label .dot {
+    flex: none;
+}
+.trace-label .nm {
+    flex: 0 0 auto;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.trace-label .model {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--dim);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.trace-track {
+    flex: 1;
+    position: relative;
+    height: 22px;
+    min-width: 0;
+    background: var(--panel);
+    /* faint gridlines at 25/50/75% — they line up with the ticks header */
+    background-image: linear-gradient(var(--border), var(--border)),
+        linear-gradient(var(--border), var(--border)),
+        linear-gradient(var(--border), var(--border));
+    background-size: 1px 100%;
+    background-repeat: no-repeat;
+    background-position:
+        25% 0,
+        50% 0,
+        75% 0;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    overflow: hidden;
+}
+/* tool-call ticks (dark slits over the bar; errors in red) + retry markers */
+.t-tick {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 9px;
+    border-radius: 1px;
+    background: rgb(13 13 20 / 0.6);
+    z-index: 2;
+    pointer-events: none;
+}
+.t-tick.err {
+    background: var(--err);
+    width: 3px;
+    height: 13px;
+    box-shadow: 0 0 4px var(--err);
+}
+.t-retry {
+    position: absolute;
+    top: 1px;
+    transform: translateX(-50%);
+    font: 11px/1.4 var(--font-mono);
+    color: var(--warn);
+    z-index: 3;
+    pointer-events: none;
+}
+.trace-span {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    min-width: 3px;
+    border-radius: 3px;
+    background: var(--accent);
+    opacity: 0.85;
+}
+.trace-span.done {
+    background: var(--ok);
+}
+.trace-span.error {
+    background: var(--err);
+}
+.trace-span.running {
+    background: var(--accent);
+    animation: tracePulse 1.4s ease-in-out infinite;
+}
+@keyframes tracePulse {
+    0%,
+    100% {
+        opacity: 0.55;
+    }
+    50% {
+        opacity: 1;
+    }
+}
+.trace-meta {
+    flex: none;
+    width: 320px;
+    text-align: right;
+    color: var(--dim);
+    font-size: 11px;
+    white-space: nowrap;
+}
+.trace-meta b {
+    color: var(--fg);
+    font-weight: 600;
+}
+.trace-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 15px;
+    border: 1px solid var(--line);
+}
+.trace-tag.retry {
+    color: var(--warn);
+    border-color: var(--warn);
+}
+.trace-tag.trunc {
+    color: var(--err);
+    border-color: var(--err);
+}

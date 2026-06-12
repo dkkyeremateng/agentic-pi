@@ -7,7 +7,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { applyExtensionDefaults } from "../utils/themeMap.ts";
+import { applyExtensionDefaults } from "../utils/shared/themeMap.ts";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
 export default function (pi: ExtensionAPI) {
