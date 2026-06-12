@@ -21,4 +21,12 @@ function fmtMs(ms) {
 function clock(ts) {
     return new Date(ts).toTimeString().slice(0, 8);
 }
+// Run-picker timestamp: time-of-day for today, date-qualified for older runs
+// (archived runs can be days old, where "14:02:11" alone is ambiguous).
+function fmtWhen(ts) {
+    const d = new Date(ts);
+    const hms = d.toTimeString().slice(0, 8);
+    if (d.toDateString() === new Date().toDateString()) return hms;
+    return d.getMonth() + 1 + "/" + d.getDate() + " " + hms.slice(0, 5);
+}
 

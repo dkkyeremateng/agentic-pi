@@ -21,20 +21,56 @@ function collectRuns() {
                     firstTs: ev.ts,
                     lastTs: ev.ts,
                     agents: new Set(),
+                    count: 0, // lane-held events, vs the archive's full count
                 };
                 runs.set(ev.runId, r);
             }
             if (ev.ts < r.firstTs) r.firstTs = ev.ts;
             if (ev.ts > r.lastTs) r.lastTs = ev.ts;
             r.agents.add(ev.agent);
+            if (ev.name) r.name = ev.name; // root-only run name (if the session was named)
+            r.count++;
         }
+    }
+    // Merge in archived runs the live buffer never (or no longer) held. Bounds
+    // and agents come from the server's sink index; `archived` marks that the
+    // events must be fetched via /events?run= rather than read from lanes.
+    for (const [id, s] of archiveRuns) {
+        if (runs.has(id)) continue;
+        const project = projectName(s.cwd);
+        if (projectFilter && project !== projectFilter) continue;
+        runs.set(id, {
+            id,
+            project,
+            firstTs: s.firstTs,
+            lastTs: s.lastTs,
+            agents: new Set(s.agents || []),
+            name: s.name,
+            count: 0,
+            archived: true,
+        });
     }
     return runs;
 }
 
+// Event sources for buildTraceNodes: the live lanes, or a fetched archive run
+// (which has no lanes — laneKey is null and rows aren't clickable).
+function* laneRunEvents(runId) {
+    for (const a of lanes.values()) {
+        if (!laneInProject(a)) continue;
+        for (const ev of a.events)
+            if (ev.runId === runId) yield { ev, laneKey: a.key };
+    }
+}
+function* archiveRunEvents(runId) {
+    for (const ev of archivedEvents.get(runId) || [])
+        if (ev.runId === runId) yield { ev, laneKey: null };
+}
+
 // Build per-agent span nodes for one run, plus the orchestrator-side dispatch
 // annotations (which arrive on the orchestrator lane but describe a child).
-function buildTraceNodes(runId) {
+// `source` yields { ev, laneKey } — laneRunEvents (live) or archiveRunEvents.
+function buildTraceNodes(runId, source) {
     const nodes = new Map(); // sessionId -> node
     // Dispatch annotations indexed two ways: by dispatchId (precise, binds to the
     // exact instance) and by agent name (fallback for events lacking a dispatchId).
@@ -60,45 +96,42 @@ function buildTraceNodes(runId) {
         if (did) byId.set(did, d);
         else byName.set(nm, d);
     };
-    for (const a of lanes.values()) {
-        if (!laneInProject(a)) continue;
-        for (const ev of a.events) {
-            if (ev.runId !== runId) continue;
-            // dispatch_* events ride on the ORCHESTRATOR lane but describe a child.
-            // Record the annotation, but still let the event extend the emitting
-            // (orchestrator) span so the root bar spans the whole run.
-            if (
-                ev.type === "dispatch_start" ||
-                ev.type === "dispatch_retry" ||
-                ev.type === "dispatch_end"
-            ) {
-                recordDispatch(ev);
-            }
-            // Key nodes by sessionId so parallel/sequential instances of one agent
-            // are separate spans (not merged under the agent name).
-            let n = nodes.get(ev.sessionId);
-            if (!n) {
-                n = {
-                    agent: ev.agent, // bare name; parent links + labels use it
-                    sessionId: ev.sessionId,
-                    dispatchId: null, // this instance's dispatch id (from session_start)
-                    laneKey: a.key,
-                    parent: null, // parent AGENT NAME (resolved to a node in renderTrace)
-                    firstTs: ev.ts,
-                    lastTs: ev.ts,
-                    rollup: newRollup(),
-                    ended: false,
-                };
-                nodes.set(ev.sessionId, n);
-            }
-            if (ev.ts < n.firstTs) n.firstTs = ev.ts;
-            if (ev.ts > n.lastTs) n.lastTs = ev.ts;
-            if (ev.parent && !n.parent) n.parent = ev.parent;
-            if (ev.type === "session_start" && ev.payload && ev.payload.dispatchId)
-                n.dispatchId = ev.payload.dispatchId;
-            if (ev.type === "session_end") n.ended = true;
-            applyRollup(n.rollup, ev);
+    for (const { ev, laneKey } of source) {
+        if (ev.runId !== runId) continue;
+        // dispatch_* events ride on the ORCHESTRATOR lane but describe a child.
+        // Record the annotation, but still let the event extend the emitting
+        // (orchestrator) span so the root bar spans the whole run.
+        if (
+            ev.type === "dispatch_start" ||
+            ev.type === "dispatch_retry" ||
+            ev.type === "dispatch_end"
+        ) {
+            recordDispatch(ev);
         }
+        // Key nodes by sessionId so parallel/sequential instances of one agent
+        // are separate spans (not merged under the agent name).
+        let n = nodes.get(ev.sessionId);
+        if (!n) {
+            n = {
+                agent: ev.agent, // bare name; parent links + labels use it
+                sessionId: ev.sessionId,
+                dispatchId: null, // this instance's dispatch id (from session_start)
+                laneKey,
+                parent: null, // parent AGENT NAME (resolved to a node in renderTrace)
+                firstTs: ev.ts,
+                lastTs: ev.ts,
+                rollup: newRollup(),
+                ended: false,
+            };
+            nodes.set(ev.sessionId, n);
+        }
+        if (ev.ts < n.firstTs) n.firstTs = ev.ts;
+        if (ev.ts > n.lastTs) n.lastTs = ev.ts;
+        if (ev.parent && !n.parent) n.parent = ev.parent;
+        if (ev.type === "session_start" && ev.payload && ev.payload.dispatchId)
+            n.dispatchId = ev.payload.dispatchId;
+        if (ev.type === "session_end") n.ended = true;
+        applyRollup(n.rollup, ev);
     }
     // Bind each instance to its dispatch annotation: prefer the precise dispatchId
     // match, fall back to the agent name (legacy events without a dispatchId).
@@ -159,14 +192,13 @@ function renderTrace() {
         o.value = r.id;
         const isLive = live.has(r.id);
         if (isLive) o.style.color = "var(--ok)";
-        const when = new Date(r.firstTs).toTimeString().slice(0, 8);
         o.textContent =
-            when +
+            (r.name || fmtWhen(r.firstTs)) +
             " · " +
             r.agents.size +
             " agents · " +
             fmtDur(r.lastTs - r.firstTs) +
-            (isLive ? " · live" : "");
+            (isLive ? " · live" : r.archived ? " · archived" : "");
         return o;
     };
 
@@ -200,7 +232,24 @@ function renderTrace() {
     // Live dot inside the picker — the same .dot.on used on the agent cards.
     const traceDot = $("trace-run-dot");
     if (traceDot) traceDot.classList.toggle("on", live.has(run.id));
-    const nodes = buildTraceNodes(run.id);
+
+    // Lanes may hold nothing (or just a stale tail) of a non-live run the sink
+    // still has in full — render those from the fetched archive instead.
+    const fromArchive =
+        !live.has(run.id) && (run.archived || archiveHasMore(run));
+    if (fromArchive && !archivedEvents.has(run.id)) {
+        fetchArchivedRun(run.id); // re-renders on arrival
+        $("trace-axis").innerHTML = "loading archived run…";
+        $("trace-tree").innerHTML = "";
+        return;
+    }
+    const nodes = buildTraceNodes(
+        run.id,
+        fromArchive ? archiveRunEvents(run.id) : laneRunEvents(run.id),
+    );
+    // An archived run is finished by definition — never show it as running
+    // (a crashed agent may have left no session_end).
+    if (fromArchive) for (const n of nodes.values()) n.rollup.active = false;
     const t0 = run.firstTs;
     const span = Math.max(1, run.lastTs - run.firstTs);
 
@@ -262,7 +311,9 @@ function renderTrace() {
         const status = traceStatus(n);
         const row = document.createElement("div");
         row.className = "trace-row";
-        row.addEventListener("click", () => selectLane(n.laneKey));
+        // Archived runs have no lanes to jump to — rows aren't clickable.
+        if (n.laneKey)
+            row.addEventListener("click", () => selectLane(n.laneKey));
 
         // label (indented by depth)
         const label = document.createElement("div");

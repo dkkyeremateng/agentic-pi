@@ -2,7 +2,10 @@
 //
 // Tails the sink file that pi processes append ObsEvent lines to, keeps a
 // bounded in-memory store, and serves a vanilla dashboard that streams events
-// over SSE. Node stdlib only — no deps, no SQLite, no Bun.
+// over SSE. The sink file doubles as the archive: a byte-range run index backs
+// /runs (every run ever recorded) and /events?run=<id> (one run's full
+// history), so the dashboard is live + archive while memory stays bounded.
+// Node stdlib only — no deps, no SQLite, no Bun.
 //
 // Usage:
 //   tsx utils/obs/obs-server.ts [projectPath] [--sink <file>] [--port <n>]
@@ -26,6 +29,7 @@ import { fileURLToPath } from "url";
 import { EventStore, sseFrame, sseComment } from "./obs-server-core";
 import { parseEventLine, type ObsEvent } from "./obs-events";
 import { eventsToOtlp } from "./obs-otel";
+import { LineScanner, RunIndexer } from "./obs-run-index";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UI_DIR = join(HERE, "obs-ui");
@@ -115,6 +119,80 @@ function readDelta(): void {
     for (const line of lines) ingest(line);
 }
 
+// ── run history (index over the WHOLE sink, not just the in-memory tail) ─────
+// The ring buffer + tail priming bound live memory, so older runs fall out of
+// /events and the SSE replay. The run index makes the JSONL file itself the
+// archive: it remembers every run's time bounds and byte range, and /runs +
+// /events?run=<id> serve history straight from the file.
+
+const runIndex = new RunIndexer();
+const SCAN_CHUNK = 1 << 20;
+
+// Bring the index up to date with the file — full scan on the first call, then
+// just the appended delta; rebuild from the top after truncation/rotation.
+function ensureRunIndex(): void {
+    if (!existsSync(SINK)) return;
+    let size: number;
+    try {
+        size = statSync(SINK).size;
+    } catch {
+        return;
+    }
+    if (size < runIndex.scannedTo) runIndex.reset();
+    if (size === runIndex.scannedTo) return;
+    const fd = openSync(SINK, "r");
+    try {
+        const buf = Buffer.alloc(SCAN_CHUNK);
+        let pos = runIndex.scannedTo;
+        while (pos < size) {
+            const n = readSync(fd, buf, 0, Math.min(SCAN_CHUNK, size - pos), pos);
+            if (n <= 0) break;
+            runIndex.feed(buf.subarray(0, n));
+            pos += n;
+        }
+    } finally {
+        closeSync(fd);
+    }
+}
+
+// One run's events, read straight from the sink via its indexed byte range.
+// Runs interleave in a shared sink, so the range is filtered by runId.
+function readRunEvents(runId: string): ObsEvent[] {
+    ensureRunIndex();
+    const run = runIndex.get(runId);
+    if (!run) return [];
+    const events: ObsEvent[] = [];
+    const scanner = new LineScanner((line) => {
+        const ev = parseEventLine(line);
+        if (ev && ev.runId === runId) events.push(ev);
+    }, run.startOffset);
+    let fd: number;
+    try {
+        fd = openSync(SINK, "r");
+    } catch {
+        return [];
+    }
+    try {
+        const buf = Buffer.alloc(SCAN_CHUNK);
+        let pos = run.startOffset;
+        while (pos < run.endOffset) {
+            const n = readSync(
+                fd,
+                buf,
+                0,
+                Math.min(SCAN_CHUNK, run.endOffset - pos),
+                pos,
+            );
+            if (n <= 0) break;
+            scanner.push(buf.subarray(0, n));
+            pos += n;
+        }
+    } finally {
+        closeSync(fd);
+    }
+    return events;
+}
+
 // ── SSE broadcast ────────────────────────────────────────────────────────────
 
 function broadcast(ev: ObsEvent): void {
@@ -175,9 +253,20 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify(store.summary()));
         return;
     }
-    if (url === "/events") {
+    // Every run ever recorded in the sink (latest-first), with time bounds,
+    // agents, cost, and event counts — the dashboard's archive picker.
+    if (url === "/runs") {
+        ensureRunIndex();
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(store.recent()));
+        res.end(JSON.stringify(runIndex.runs()));
+        return;
+    }
+    // ?run=<id> serves that run's full history from the sink file (beyond the
+    // in-memory ring); without it, the recent live buffer as before.
+    if (url === "/events") {
+        const runId = query.get("run");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(runId ? readRunEvents(runId) : store.recent()));
         return;
     }
     // OTLP/JSON trace export (OpenTelemetry GenAI conventions). ?run=<id> scopes
@@ -185,7 +274,14 @@ const server = createServer((req, res) => {
     // OTel-aware backend, or `curl … > trace.json`.
     if (url === "/otel") {
         const runId = query.get("run") || undefined;
-        const otlp = eventsToOtlp(store.recent(), {
+        // For a specific run, prefer the sink-file archive (complete even when
+        // the run has scrolled out of the ring); fall back to the live buffer.
+        let events = store.recent();
+        if (runId) {
+            const archived = readRunEvents(runId);
+            if (archived.length) events = archived;
+        }
+        const otlp = eventsToOtlp(events, {
             runId,
             serviceName: "pi-agent-workflow",
         });
@@ -237,6 +333,7 @@ server.listen(opts.port, "127.0.0.1", () => {
         `\nAgent observability — live\n` +
             `  dashboard  http://127.0.0.1:${opts.port}/\n` +
             `  tailing    ${SINK}\n` +
+            `  history    /runs · /events?run=<id> · /otel?run=<id>\n` +
             `  (run a workflow with PI_OBS=1 to see events; Ctrl-C to stop)\n\n`,
     );
 });

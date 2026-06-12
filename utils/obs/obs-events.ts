@@ -45,6 +45,10 @@ export interface ObsEvent {
     // PI_OBS_PARENT) so each sub-agent process tags its own events.
     runId?: string;
     parent?: string;
+    // The run's display name (the root orchestrator session's name, if it was
+    // named via pi.setSessionName). Emitted by the root only, once it's set, so the
+    // dashboard can label a run by name instead of its timestamp.
+    name?: string;
     type: ObsEventType;
     payload: Record<string, unknown>;
 }

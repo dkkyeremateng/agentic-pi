@@ -21,6 +21,16 @@ let laneOrd = 0; // creation order, for stable #n suffixing of same-agent instan
 
 const $ = (id) => document.getElementById(id);
 
+// The root session (no parent) is always the orchestrator. Older sinks recorded
+// its agent as the session name (when the session was named) — normalize on
+// ingestion so agent lanes never show a session name; the name surfaces as the run
+// name instead. Mutates in place; applied to every event entering the dashboard.
+function normalizeEvent(ev) {
+    if (ev && !ev.parent && ev.agent && ev.agent !== "orchestrator")
+        ev.agent = "orchestrator";
+    return ev;
+}
+
 // ── lane identity (project + agent) ──────────────────────────────────────────
 function projectName(cwd) {
     if (!cwd) return "local";

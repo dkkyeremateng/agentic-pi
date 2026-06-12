@@ -52,5 +52,7 @@ function setView(v) {
     if (v === "race") renderRace();
     if (v === "trace") renderTrace();
     if (v === "stats") renderStats();
+    // Refresh the archive's run list when a run picker comes into view.
+    if (v === "trace" || v === "stats") loadRunArchive();
 }
 

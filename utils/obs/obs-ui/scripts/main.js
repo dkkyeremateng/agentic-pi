@@ -26,7 +26,7 @@ function connect() {
     });
     es.addEventListener("obs", (e) => {
         try {
-            handle(JSON.parse(e.data));
+            handle(normalizeEvent(JSON.parse(e.data)));
         } catch {
             /* ignore */
         }
@@ -74,11 +74,14 @@ $("trace-otlp").addEventListener("click", () => {
 });
 $("trace-json").addEventListener("click", () => {
     if (!traceCurrentRun) return;
-    // Raw events for this run, gathered client-side from the lanes.
-    const evs = [];
+    // Raw events for this run, gathered client-side from the lanes — or from
+    // the fetched archive when it holds more than the live buffer.
+    let evs = [];
     for (const lane of lanes.values())
         for (const ev of lane.events)
             if (ev.runId === traceCurrentRun) evs.push(ev);
+    const arch = archivedEvents.get(traceCurrentRun);
+    if (arch && arch.length > evs.length) evs = arch.slice();
     evs.sort((x, y) => x.ts - y.ts);
     downloadBlob(
         "run-" + traceCurrentRun + ".jsonl",
@@ -157,4 +160,5 @@ if (projectFilter) {
 updateRunFilter(); // show the run picker if a project was restored
 setInterval(renderHeader, 500);
 connect();
+loadRunArchive(); // run history beyond the live buffer (sink-file index)
 

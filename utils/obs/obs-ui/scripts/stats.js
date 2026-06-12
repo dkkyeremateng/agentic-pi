@@ -13,8 +13,9 @@ function percentile(sorted, p) {
     return sorted[idx];
 }
 
-// Walk visible lanes' events (optionally scoped to a runId) into aggregates.
-function collectAnalytics(runId) {
+// Walk events into aggregates — the visible lanes (optionally scoped to a
+// runId), or a fetched archive run's events when `fromArchive` is set.
+function collectAnalytics(runId, fromArchive) {
     const a = {
         firstTs: null,
         lastTs: null,
@@ -33,57 +34,65 @@ function collectAnalytics(runId) {
         perTool: new Map(), // tool -> {calls, totalMs, errors}
         costSeries: [], // {ts, cost} per turn_end, in time order
     };
-    for (const lane of lanes.values()) {
-        if (!laneInProject(lane)) continue;
-        for (const ev of lane.events) {
-            if (runId && ev.runId !== runId) continue;
-            if (a.firstTs === null || ev.ts < a.firstTs) a.firstTs = ev.ts;
-            if (a.lastTs === null || ev.ts > a.lastTs) a.lastTs = ev.ts;
-            a.agents.add(lane.agent);
-            const p = ev.payload || {};
-            const ag =
-                a.perAgent.get(lane.agent) ||
-                { cost: 0, tokens: 0, turns: 0, tools: 0 };
-            switch (ev.type) {
-                case "turn_end": {
-                    a.turns++;
-                    ag.turns++;
-                    if (p.durationMs) a.turnDur.push(p.durationMs);
-                    if (p.prefillMs) a.prefills.push(p.prefillMs);
-                    a.turnMs += p.durationMs || 0;
-                    if (p.tokens) {
-                        a.tokens += p.tokens.total || 0;
-                        a.outTok += p.tokens.output || 0;
-                        ag.tokens += p.tokens.total || 0;
-                    }
-                    a.cost += p.costUsd || 0;
-                    ag.cost += p.costUsd || 0;
-                    a.costSeries.push({ ts: ev.ts, cost: p.costUsd || 0 });
-                    break;
+    // Shared per-event accumulator — fed from the live lanes or, for a run
+    // that only the sink archive still holds, from its fetched events.
+    const add = (agent, ev) => {
+        if (a.firstTs === null || ev.ts < a.firstTs) a.firstTs = ev.ts;
+        if (a.lastTs === null || ev.ts > a.lastTs) a.lastTs = ev.ts;
+        a.agents.add(agent);
+        const p = ev.payload || {};
+        const ag =
+            a.perAgent.get(agent) || { cost: 0, tokens: 0, turns: 0, tools: 0 };
+        switch (ev.type) {
+            case "turn_end": {
+                a.turns++;
+                ag.turns++;
+                if (p.durationMs) a.turnDur.push(p.durationMs);
+                if (p.prefillMs) a.prefills.push(p.prefillMs);
+                a.turnMs += p.durationMs || 0;
+                if (p.tokens) {
+                    a.tokens += p.tokens.total || 0;
+                    a.outTok += p.tokens.output || 0;
+                    ag.tokens += p.tokens.total || 0;
                 }
-                case "tool_start": {
-                    a.toolCalls++;
-                    ag.tools++;
-                    break;
-                }
-                case "tool_end": {
-                    const t =
-                        a.perTool.get(p.toolName || "?") ||
-                        { calls: 0, totalMs: 0, errors: 0 };
-                    t.calls++;
-                    t.totalMs += p.durationMs || 0;
-                    if (p.isError) {
-                        t.errors++;
-                        a.toolErrors++;
-                    }
-                    a.perTool.set(p.toolName || "?", t);
-                    break;
-                }
-                case "error":
-                    a.errors++;
-                    break;
+                a.cost += p.costUsd || 0;
+                ag.cost += p.costUsd || 0;
+                a.costSeries.push({ ts: ev.ts, cost: p.costUsd || 0 });
+                break;
             }
-            a.perAgent.set(lane.agent, ag);
+            case "tool_start": {
+                a.toolCalls++;
+                ag.tools++;
+                break;
+            }
+            case "tool_end": {
+                const t =
+                    a.perTool.get(p.toolName || "?") ||
+                    { calls: 0, totalMs: 0, errors: 0 };
+                t.calls++;
+                t.totalMs += p.durationMs || 0;
+                if (p.isError) {
+                    t.errors++;
+                    a.toolErrors++;
+                }
+                a.perTool.set(p.toolName || "?", t);
+                break;
+            }
+            case "error":
+                a.errors++;
+                break;
+        }
+        a.perAgent.set(agent, ag);
+    };
+    if (fromArchive) {
+        for (const ev of archivedEvents.get(runId) || []) add(ev.agent, ev);
+    } else {
+        for (const lane of lanes.values()) {
+            if (!laneInProject(lane)) continue;
+            for (const ev of lane.events) {
+                if (runId && ev.runId !== runId) continue;
+                add(lane.agent, ev);
+            }
         }
     }
     a.costSeries.sort((x, y) => x.ts - y.ts);
@@ -191,13 +200,12 @@ function renderStats() {
         o.value = r.id;
         const isLive = live.has(r.id);
         if (isLive) o.style.color = "var(--ok)";
-        const when = new Date(r.firstTs).toTimeString().slice(0, 8);
         o.textContent =
-            when +
+            (r.name || fmtWhen(r.firstTs)) +
             " · " +
             r.agents.size +
             " agents" +
-            (isLive ? " · live" : "");
+            (isLive ? " · live" : r.archived ? " · archived" : "");
         sel.appendChild(o);
     });
     sel.value = scope;
@@ -208,7 +216,22 @@ function renderStats() {
     if (statsDot)
         statsDot.classList.toggle("on", scope ? live.has(scope) : live.size > 0);
 
-    const a = collectAnalytics(scope);
+    // A non-live scoped run whose events only the sink archive holds in full —
+    // fetch them once and aggregate those instead of the lanes.
+    const scopeRun = scope ? runs.get(scope) : null;
+    const fromArchive =
+        !!scopeRun &&
+        !live.has(scope) &&
+        (scopeRun.archived || archiveHasMore(scopeRun));
+    if (fromArchive && !archivedEvents.has(scope)) {
+        fetchArchivedRun(scope); // re-renders on arrival
+        $("stats-axis").innerHTML = "loading archived run…";
+        $("stats-empty").style.display = "none";
+        $("stats-body").style.display = "none";
+        return;
+    }
+
+    const a = collectAnalytics(scope, fromArchive);
     const has = a.firstTs !== null && a.agents.size > 0;
     $("stats-empty").style.display = has ? "none" : "block";
     $("stats-body").style.display = has ? "" : "none";

@@ -76,7 +76,7 @@ function updateRunFilter() {
         if (isLive) o.style.color = "var(--ok)";
         const when = new Date(r.firstTs).toTimeString().slice(0, 8);
         o.textContent =
-            when +
+            (r.name || when) +
             " · " +
             r.agents.size +
             " agents" +

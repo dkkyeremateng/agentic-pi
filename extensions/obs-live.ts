@@ -80,6 +80,8 @@ export default function obsLive(pi: any): void {
     let factory: EventFactory | undefined;
     let sink = "";
     let dead = false;
+    let isRoot = false; // the root orchestrator (no PI_OBS_PARENT) — owns the run name
+    let lastName = ""; // last emitted session name, to emit only on change
     let bootEmitted = false;
     let turnStartTs = 0;
     const toolStartTs = new Map<string, number>();
@@ -104,7 +106,24 @@ export default function obsLive(pi: any): void {
 
     const emit = (type: any, payload: Record<string, unknown> = {}): void => {
         if (!factory) return;
-        append(serializeEvent(factory.next(type, payload)));
+        const ev = factory.next(type, payload);
+        // Tag the run's name (root only) once it's set/changes. The workflow names
+        // its session via pi.setSessionName AFTER session_start, so the name first
+        // appears on a later event — emitted here on change, never per event.
+        if (isRoot) {
+            let nm = "";
+            try {
+                nm =
+                    (typeof pi.getSessionName === "function" &&
+                        pi.getSessionName()) ||
+                    "";
+            } catch {}
+            if (nm && nm !== lastName) {
+                ev.name = nm;
+                lastName = nm;
+            }
+        }
+        append(serializeEvent(ev));
     };
 
     pi.on("session_start", async (_e: any, ctx: any) => {
@@ -115,10 +134,11 @@ export default function obsLive(pi: any): void {
         } catch {
             dead = true;
         }
-        const agent =
-            process.env.PI_OBS_AGENT ||
-            (typeof pi.getSessionName === "function" && pi.getSessionName()) ||
-            "orchestrator";
+        // Sub-agents are labelled by PI_OBS_AGENT; the root is always
+        // "orchestrator". We deliberately do NOT fall back to the session name —
+        // that would put a named session's name on the agent lane. The session name
+        // is surfaced separately as the run name (see `name` below).
+        const agent = process.env.PI_OBS_AGENT || "orchestrator";
         // Unique per process so multiple agents never collide on (sessionId,seq).
         const sessionId = `${agent}-${Date.now().toString(36)}-${Math.random()
             .toString(36)
@@ -135,6 +155,7 @@ export default function obsLive(pi: any): void {
             process.env.PI_OBS_RUN = runId;
         }
         const parent = process.env.PI_OBS_PARENT || undefined;
+        isRoot = !parent; // only the root carries the run's display name
         factory = makeFactory({ sessionId, agent, cwd, runId, parent });
         // Publish the emit hook so orchestrator-core can append dispatch_* events
         // through this same factory/sink (no-op in processes without the collector).
