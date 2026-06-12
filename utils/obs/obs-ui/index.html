@@ -34,6 +34,22 @@
                 <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"/></symbol>
                 <symbol id="i-pause" viewBox="0 0 24 24"><line x1="9" y1="5" x2="9" y2="19"/><line x1="15" y1="5" x2="15" y2="19"/></symbol>
                 <symbol id="i-zoomout" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></symbol>
+                <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol>
+                <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></symbol>
+                <symbol id="i-flag" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></symbol>
+                <symbol id="i-square" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+                <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+                <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
+                <symbol id="i-xcircle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></symbol>
+                <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></symbol>
+                <symbol id="i-send" viewBox="0 0 24 24"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></symbol>
+                <symbol id="i-recv" viewBox="0 0 24 24"><line x1="17" y1="7" x2="7" y2="17"/><polyline points="17 17 7 17 7 7"/></symbol>
+                <symbol id="i-shrink" viewBox="0 0 24 24"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></symbol>
+                <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+                <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+                <symbol id="i-dotc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.5"/></symbol>
+                <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
+                <symbol id="i-swap" viewBox="0 0 24 24"><polyline points="17 11 21 7 17 3"/><line x1="21" y1="7" x2="9" y2="7"/><polyline points="7 21 3 17 7 13"/><line x1="3" y1="17" x2="15" y2="17"/></symbol>
             </defs>
         </svg>
         <div id="app">
@@ -51,37 +67,37 @@
                 </div>
                 <div class="rail-group">
                     <span class="rail-label">Live</span>
-                    <button id="v-swimlane" class="rail-item on">
+                    <button id="v-swimlane" aria-label="Swimlane view" class="rail-item on">
                         <svg class="icon"><use href="#i-layers" /></svg>
                         <span>Swimlane</span>
                     </button>
-                    <button id="v-single" class="rail-item">
+                    <button id="v-single" aria-label="Single view" class="rail-item">
                         <svg class="icon"><use href="#i-list" /></svg>
                         <span>Single</span>
                     </button>
-                    <button id="v-race" class="rail-item">
+                    <button id="v-race" aria-label="Race view" class="rail-item">
                         <svg class="icon"><use href="#i-zap" /></svg>
                         <span>Race</span>
                     </button>
                 </div>
                 <div class="rail-group">
                     <span class="rail-label">Analyze</span>
-                    <button id="v-trace" class="rail-item">
+                    <button id="v-trace" aria-label="Trace view" class="rail-item">
                         <svg class="icon"><use href="#i-branch" /></svg>
                         <span>Trace</span>
                     </button>
-                    <button id="v-stats" class="rail-item">
+                    <button id="v-stats" aria-label="Stats view" class="rail-item">
                         <svg class="icon"><use href="#i-chart" /></svg>
                         <span>Stats</span>
                     </button>
-                    <button id="v-compare" class="rail-item">
+                    <button id="v-compare" aria-label="Compare view" class="rail-item">
                         <svg class="icon"><use href="#i-compare" /></svg>
                         <span>Compare</span>
                     </button>
                 </div>
                 <div class="rail-group">
                     <span class="rail-label">Find</span>
-                    <button id="v-find" class="rail-item">
+                    <button id="v-find" aria-label="Search view" class="rail-item">
                         <svg class="icon"><use href="#i-search" /></svg>
                         <span>Search</span>
                     </button>
@@ -211,6 +227,7 @@
                                 id="trace-play"
                                 class="exp-btn"
                                 title="play / pause the replay (space)"
+                                aria-label="play or pause the replay"
                             >
                                 <svg class="icon"><use href="#i-play" /></svg>
                             </button>
@@ -235,6 +252,7 @@
                                 class="exp-btn"
                                 hidden
                                 title="reset zoom (or double-click the timeline)"
+                                aria-label="reset the timeline zoom"
                             >
                                 <svg class="icon"><use href="#i-zoomout" /></svg>
                             </button>
@@ -245,14 +263,16 @@
                                 class="exp-btn"
                                 title="download an OpenTelemetry GenAI (OTLP/JSON) trace for this run"
                             >
-                                ⤓ OTLP
+                                <svg class="icon"><use href="#i-download" /></svg>
+                                OTLP
                             </button>
                             <button
                                 id="trace-json"
                                 class="exp-btn"
                                 title="download this run's raw events as JSONL"
                             >
-                                ⤓ JSON
+                                <svg class="icon"><use href="#i-download" /></svg>
+                                JSON
                             </button>
                         </span>
                     </div>
@@ -344,8 +364,9 @@
                             id="cmp-swap"
                             class="exp-btn"
                             title="swap A and B"
+                            aria-label="swap runs A and B"
                         >
-                            ⇄
+                            <svg class="icon"><use href="#i-swap" /></svg>
                         </button>
                         <span id="compare-axis"></span>
                     </div>
@@ -418,10 +439,10 @@
                             id="insp-action"
                             hidden
                         ></button>
-                        <button class="insp-btn" id="insp-copy" title="copy JSON">
+                        <button class="insp-btn" id="insp-copy" title="copy JSON" aria-label="copy JSON">
                             <svg class="icon"><use href="#i-copy" /></svg>
                         </button>
-                        <button class="insp-btn" id="insp-close" title="close (Esc)">
+                        <button class="insp-btn" id="insp-close" title="close (Esc)" aria-label="close detail drawer">
                             <svg class="icon"><use href="#i-x" /></svg>
                         </button>
                     </div>

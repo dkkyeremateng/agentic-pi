@@ -43,9 +43,7 @@ function makeVRow(ev) {
     const t = document.createElement("span");
     t.className = "t";
     t.textContent = clock(ev.ts);
-    const em = document.createElement("span");
-    em.className = "row-emoji";
-    em.textContent = emojiFor(ev);
+    const em = iconEl(ev);
     const b = document.createElement("span");
     b.className = "badge " + kls;
     b.textContent = badge;

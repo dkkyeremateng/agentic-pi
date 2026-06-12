@@ -393,3 +393,17 @@ header {
     pointer-events: none;
     box-shadow: var(--shadow-pop);
 }
+
+/* narrow windows: the palette trigger shrinks to its icon */
+@media (max-width: 900px) {
+    #pal-open {
+        min-width: 0;
+    }
+    #pal-open span,
+    #pal-open kbd {
+        display: none;
+    }
+    header {
+        gap: var(--space-2);
+    }
+}

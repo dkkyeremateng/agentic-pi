@@ -74,6 +74,9 @@
     gap: 6px;
 }
 .exp-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     background: var(--panel2);
     border: 1px solid var(--line);
     color: var(--dim);

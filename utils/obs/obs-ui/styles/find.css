@@ -56,3 +56,8 @@
 .find-run:hover {
     text-decoration: underline;
 }
+
+.find-skel {
+    height: 22px;
+    margin: 6px 0;
+}

@@ -14,6 +14,16 @@
             /* ignore */
         }
     });
+    // Narrow windows auto-collapse the rail; widening restores the saved
+    // preference (the manual toggle still works either way).
+    const mq = window.matchMedia("(max-width: 1100px)");
+    const applyMq = () => {
+        if (mq.matches) app.classList.add("rail-collapsed");
+        else if (localStorage.getItem("obs.railCollapsed") !== "1")
+            app.classList.remove("rail-collapsed");
+    };
+    mq.addEventListener("change", applyMq);
+    applyMq();
 })();
 
 // detail drawer: drag the left-edge grip to resize (clamped, persisted)

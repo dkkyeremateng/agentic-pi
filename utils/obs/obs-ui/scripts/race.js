@@ -26,46 +26,6 @@ function bucketByTurn(a) {
     return { setup, turns, maxTurn, turnsReached: turns.size };
 }
 
-// Emoji marker per event type (in the spirit of disler's symbol set).
-function emojiFor(ev) {
-    switch (ev.type) {
-        case "session_start":
-            return "🚀";
-        case "boot":
-            return "🧰";
-        case "session_end":
-            return "🏁";
-        case "turn_start":
-            return "▶️";
-        case "turn_end":
-            return "⏹️";
-        case "tool_start":
-            return "🔧";
-        case "tool_end":
-            return ev.payload && ev.payload.isError ? "❌" : "✅";
-        case "model_change":
-            return "🔁";
-        case "dispatch_start":
-            return "📤";
-        case "dispatch_retry":
-            return "🔁";
-        case "dispatch_end":
-            return ev.payload && ev.payload.status === "error" ? "❌" : "📥";
-        case "compaction":
-            return "📦";
-        case "error":
-            return "❌";
-        case "message":
-            return (ev.payload && ev.payload.kind) === "thinking"
-                ? "💭"
-                : (ev.payload && ev.payload.kind) === "user"
-                  ? "👤"
-                  : "💬";
-        default:
-            return "•";
-    }
-}
-
 function typeLabel(ev) {
     switch (ev.type) {
         case "session_start":
@@ -136,7 +96,7 @@ function projCollapsed(project) {
 // Event inspector (detail drawer) — full detail for a clicked event.
 function openInspector(ev, lane) {
     $("insp-action").hidden = true; // span-detail-only affordance
-    $("insp-type").textContent = emojiFor(ev) + "  " + typeLabel(ev);
+    $("insp-type").textContent = typeLabel(ev);
     $("insp-agent").textContent =
         (lane ? lane.label : ev.agent) +
         (lane && lane.project ? " · " + lane.project : "");
@@ -159,9 +119,8 @@ function raceEventCard(ev, lane) {
     card.addEventListener("click", () => openInspector(ev, lane));
     const head = document.createElement("div");
     head.className = "ev-head";
-    const em = document.createElement("span");
-    em.className = "emoji";
-    em.textContent = emojiFor(ev);
+    const em = iconEl(ev);
+    em.classList.add("emoji");
     const ty = document.createElement("span");
     ty.className = "ev-type";
     ty.textContent = typeLabel(ev);

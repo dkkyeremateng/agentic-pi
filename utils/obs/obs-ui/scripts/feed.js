@@ -148,6 +148,62 @@ function fullDetail(ev) {
     }
 }
 
+// ── event icons (sprite ids + status color class) ────────────────────────────
+// Replaces the emoji set: consistent stroke icons that follow the theme.
+function iconFor(ev) {
+    const p = ev.payload || {};
+    switch (ev.type) {
+        case "session_start":
+            return { id: "power", cls: "warn" };
+        case "boot":
+            return { id: "cpu", cls: "dim" };
+        case "session_end":
+            return { id: "flag", cls: "dim" };
+        case "turn_start":
+            return { id: "play", cls: "accent" };
+        case "turn_end":
+            return { id: "square", cls: "accent" };
+        case "tool_start":
+            return { id: "wrench", cls: "tool" };
+        case "tool_end":
+            return p.isError
+                ? { id: "xcircle", cls: "err" }
+                : { id: "check", cls: "ok" };
+        case "model_change":
+            return { id: "refresh", cls: "magenta" };
+        case "dispatch_start":
+            return { id: "send", cls: "magenta" };
+        case "dispatch_retry":
+            return { id: "refresh", cls: "warn" };
+        case "dispatch_end":
+            return p.status === "error"
+                ? { id: "xcircle", cls: "err" }
+                : { id: "recv", cls: "magenta" };
+        case "compaction":
+            return { id: "shrink", cls: "dim" };
+        case "error":
+            return { id: "xcircle", cls: "err" };
+        case "message":
+            return p.kind === "user"
+                ? { id: "user", cls: "dim" }
+                : p.kind === "thinking"
+                  ? { id: "chat", cls: "dim" }
+                  : { id: "chat", cls: "fg" };
+        default:
+            return { id: "dotc", cls: "dim" };
+    }
+}
+
+function iconEl(ev) {
+    const { id, cls } = iconFor(ev);
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "icon ev-icon " + cls);
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", "#i-" + id);
+    svg.appendChild(use);
+    return svg;
+}
+
 // Swimlane mini-feed rows (static, one line). The Single view renders its own
 // virtualized rows (single.js makeVRow); full detail lives in the drawer.
 function makeRow(ev) {
@@ -157,9 +213,7 @@ function makeRow(ev) {
     const t = document.createElement("span");
     t.className = "t";
     t.textContent = clock(ev.ts);
-    const em = document.createElement("span");
-    em.className = "row-emoji";
-    em.textContent = emojiFor(ev);
+    const em = iconEl(ev);
     const b = document.createElement("span");
     b.className = "badge " + kls;
     b.textContent = badge;

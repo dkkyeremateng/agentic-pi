@@ -261,7 +261,8 @@
     gap: 5px;
 }
 .race-event .emoji {
-    font-size: 13px;
+    width: 14px;
+    height: 14px;
 }
 .race-event .ev-type {
     font-size: 11px;
