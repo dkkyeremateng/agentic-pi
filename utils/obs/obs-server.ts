@@ -22,14 +22,27 @@ import {
     readSync,
     closeSync,
     readFileSync,
+    appendFileSync,
 } from "fs";
 import { join, resolve as resolvePath, dirname } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
-import { EventStore, sseFrame, sseComment } from "./obs-server-core";
-import { parseEventLine, type ObsEvent } from "./obs-events";
+import {
+    EventStore,
+    sseFrame,
+    sseComment,
+    filterRuns,
+} from "./obs-server-core";
+import {
+    parseEventLine,
+    makeFactory,
+    serializeEvent,
+    OBS_SCHEMA,
+    type ObsEvent,
+} from "./obs-events";
 import { eventsToOtlp } from "./obs-otel";
-import { LineScanner, RunIndexer } from "./obs-run-index";
+import { LineScanner, RunIndexer, type RunSummary } from "./obs-run-index";
+import { buildRunDigest, formatRunDigest } from "./obs-explain";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UI_DIR = join(HERE, "obs-ui");
@@ -63,7 +76,9 @@ function resolveSink(o: ReturnType<typeof parseArgs>): string {
 const opts = parseArgs(process.argv.slice(2));
 const SINK = resolveSink(opts);
 const store = new EventStore();
-const clients = new Set<import("http").ServerResponse>();
+// SSE clients; the value carries an optional runId filter (/api/stream?run=).
+const clients = new Map<import("http").ServerResponse, { run?: string }>();
+const STARTED_AT = Date.now();
 
 // ── file tailing (poll-based; robust for appends across platforms) ───────────
 
@@ -193,6 +208,45 @@ function readRunEvents(runId: string): ObsEvent[] {
     return events;
 }
 
+// Case-insensitive substring scan over the whole sink's raw lines, newest
+// `limit` matches kept. Shared by /search (dashboard) and /api/search.
+function searchSink(q: string, limit: number): ObsEvent[] {
+    if (!q || !existsSync(SINK)) return [];
+    const matches: ObsEvent[] = [];
+    const scanner = new LineScanner((line) => {
+        if (!line.toLowerCase().includes(q)) return;
+        const ev = parseEventLine(line);
+        if (!ev) return;
+        matches.push(ev);
+        if (matches.length > limit) matches.shift(); // keep the newest
+    });
+    try {
+        const fd = openSync(SINK, "r");
+        try {
+            const size = statSync(SINK).size;
+            const buf = Buffer.alloc(SCAN_CHUNK);
+            let pos = 0;
+            while (pos < size) {
+                const n = readSync(
+                    fd,
+                    buf,
+                    0,
+                    Math.min(SCAN_CHUNK, size - pos),
+                    pos,
+                );
+                if (n <= 0) break;
+                scanner.push(buf.subarray(0, n));
+                pos += n;
+            }
+        } finally {
+            closeSync(fd);
+        }
+    } catch {
+        /* partial results are fine */
+    }
+    return matches;
+}
+
 // ── OTLP push (optional live forwarder) ──────────────────────────────────────
 // With PI_OBS_OTLP_ENDPOINT set (an OTLP/HTTP traces URL, e.g.
 // http://127.0.0.1:4318/v1/traces), each run's trace is POSTed once when the
@@ -287,13 +341,259 @@ if (OTLP_ENDPOINT) {
 
 function broadcast(ev: ObsEvent): void {
     const frame = sseFrame(ev);
-    for (const res of clients) {
+    for (const [res, f] of clients) {
+        if (f.run && ev.runId !== f.run) continue;
         try {
             res.write(frame);
         } catch {
             /* dropped on next close */
         }
     }
+}
+
+// ── public JSON API (/api/*) ─────────────────────────────────────────────────
+// A stable, CORS-open surface for external UIs and other integrations; the
+// bundled dashboard keeps using the legacy unprefixed routes (same data). The
+// server binds to 127.0.0.1, so open CORS only exposes it to local pages and
+// apps. Documented in utils/obs/API.md.
+
+const API_CORS: Record<string, string> = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-headers": "content-type",
+};
+
+type Res = import("http").ServerResponse;
+type Req = import("http").IncomingMessage;
+
+function apiJson(res: Res, status: number, data: unknown): void {
+    res.writeHead(status, { "content-type": "application/json", ...API_CORS });
+    res.end(JSON.stringify(data));
+}
+function apiError(res: Res, status: number, message: string): void {
+    apiJson(res, status, { error: message });
+}
+
+// Exact runId, or a unique prefix (friendly for hand-typed ids).
+function findRun(id: string): RunSummary | { ambiguous: number } | undefined {
+    ensureRunIndex();
+    const runs = runIndex.runs();
+    const exact = runs.find((r) => r.runId === id);
+    if (exact) return exact;
+    const pre = runs.filter((r) => r.runId.startsWith(id));
+    if (pre.length === 1) return pre[0];
+    if (pre.length > 1) return { ambiguous: pre.length };
+    return undefined;
+}
+
+function handleApi(
+    req: Req,
+    res: Res,
+    path: string,
+    query: URLSearchParams,
+): void {
+    if (req.method === "OPTIONS") {
+        res.writeHead(204, API_CORS);
+        res.end();
+        return;
+    }
+    const seg = path.split("/").filter(Boolean); // ["api", ...]
+
+    // GET /api — discovery + server meta
+    if (seg.length === 1 && req.method === "GET") {
+        apiJson(res, 200, {
+            name: "pi-agent-obs",
+            schema: OBS_SCHEMA,
+            sink: SINK,
+            bufferedEvents: store.size(),
+            uptimeMs: Date.now() - STARTED_AT,
+            endpoints: [
+                "GET  /api",
+                "GET  /api/summary",
+                "GET  /api/events?limit=",
+                "GET  /api/runs?project=&since=&limit=",
+                "GET  /api/runs/:id",
+                "GET  /api/runs/:id/events",
+                "GET  /api/runs/:id/digest?format=json|text",
+                "GET  /api/runs/:id/otel",
+                "POST /api/runs/:id/verdict  {status, note?}",
+                "GET  /api/search?q=&limit=",
+                "GET  /api/stream  (SSE; ?run= filters)",
+            ],
+        });
+        return;
+    }
+
+    const a = seg[1];
+
+    if (a === "summary" && req.method === "GET") {
+        apiJson(res, 200, store.summary());
+        return;
+    }
+    if (a === "events" && seg.length === 2 && req.method === "GET") {
+        apiJson(res, 200, store.recent(Number(query.get("limit")) || undefined));
+        return;
+    }
+    if (a === "search" && req.method === "GET") {
+        const q = (query.get("q") || "").toLowerCase();
+        if (!q) {
+            apiError(res, 400, "missing ?q=");
+            return;
+        }
+        const limit = Math.min(500, Number(query.get("limit")) || 200);
+        apiJson(res, 200, searchSink(q, limit));
+        return;
+    }
+    if (a === "stream" && req.method === "GET") {
+        res.writeHead(200, {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+            ...API_CORS,
+        });
+        res.write(sseComment("connected"));
+        const run = query.get("run") || undefined;
+        // Replay the buffer (scoped if filtered), then go live.
+        for (const ev of store.recent())
+            if (!run || ev.runId === run) res.write(sseFrame(ev));
+        clients.set(res, { run });
+        req.on("close", () => clients.delete(res));
+        return;
+    }
+    if (a === "runs") {
+        if (seg.length === 2 && req.method === "GET") {
+            ensureRunIndex();
+            const sinceRaw = query.get("since");
+            // since: epoch ms or any Date.parse-able string (ISO recommended)
+            let since: number | undefined;
+            if (sinceRaw) {
+                since = /^\d+$/.test(sinceRaw)
+                    ? Number(sinceRaw)
+                    : Date.parse(sinceRaw);
+                if (Number.isNaN(since)) {
+                    apiError(res, 400, "unparseable ?since=");
+                    return;
+                }
+            }
+            apiJson(
+                res,
+                200,
+                filterRuns(runIndex.runs(), {
+                    project: query.get("project") || undefined,
+                    since,
+                    limit: Number(query.get("limit")) || undefined,
+                }),
+            );
+            return;
+        }
+        const id = decodeURIComponent(seg[2] || "");
+        const found = findRun(id);
+        if (!found) {
+            apiError(res, 404, `no run matching "${id}"`);
+            return;
+        }
+        if ("ambiguous" in found) {
+            apiError(
+                res,
+                404,
+                `ambiguous run prefix "${id}" (${found.ambiguous} matches)`,
+            );
+            return;
+        }
+        const run = found;
+        const sub = seg[3];
+
+        if (!sub && req.method === "GET") {
+            apiJson(res, 200, run);
+            return;
+        }
+        if (sub === "events" && req.method === "GET") {
+            apiJson(res, 200, readRunEvents(run.runId));
+            return;
+        }
+        // The anomaly digest behind `obs-cli explain` — the highest-leverage
+        // endpoint for integrations ("what happened in that run", as JSON).
+        if (sub === "digest" && req.method === "GET") {
+            const digest = buildRunDigest(readRunEvents(run.runId));
+            if (query.get("format") === "text") {
+                res.writeHead(200, {
+                    "content-type": "text/plain; charset=utf-8",
+                    ...API_CORS,
+                });
+                res.end(formatRunDigest(digest).join("\n") + "\n");
+            } else {
+                apiJson(res, 200, digest);
+            }
+            return;
+        }
+        if (sub === "otel" && req.method === "GET") {
+            apiJson(
+                res,
+                200,
+                eventsToOtlp(readRunEvents(run.runId), {
+                    runId: run.runId,
+                    serviceName: "pi-agent-workflow",
+                }),
+            );
+            return;
+        }
+        // Score a run. Appends a verdict line to the sink — the tailer picks
+        // it up, so open dashboards update live; the last verdict wins.
+        if (sub === "verdict" && req.method === "POST") {
+            let body = "";
+            req.on("data", (d) => {
+                body += d;
+                if (body.length > 64_000) req.destroy();
+            });
+            req.on("end", () => {
+                let parsed: any;
+                try {
+                    parsed = JSON.parse(body || "{}");
+                } catch {
+                    apiError(res, 400, "invalid JSON body");
+                    return;
+                }
+                const status = String(parsed.status || "");
+                if (!["pass", "fail", "open"].includes(status)) {
+                    apiError(
+                        res,
+                        400,
+                        'status must be "pass", "fail", or "open"',
+                    );
+                    return;
+                }
+                const f = makeFactory({
+                    sessionId: `score-${Date.now().toString(36)}-${Math.random()
+                        .toString(36)
+                        .slice(2, 7)}`,
+                    agent: "user",
+                    cwd: run.cwd,
+                    runId: run.runId,
+                });
+                const ev = f.next("verdict", {
+                    status,
+                    ...(parsed.note
+                        ? { note: String(parsed.note).slice(0, 500) }
+                        : {}),
+                    source: "api",
+                });
+                try {
+                    appendFileSync(SINK, serializeEvent(ev) + "\n", "utf-8");
+                } catch (e: any) {
+                    apiError(res, 500, `could not append verdict: ${e?.message}`);
+                    return;
+                }
+                apiJson(res, 200, {
+                    ok: true,
+                    runId: run.runId,
+                    verdict: ev.payload,
+                    previous: run.verdict ?? null,
+                });
+            });
+            return;
+        }
+    }
+    apiError(res, 404, "unknown API route");
 }
 
 // ── http ──────────────────────────────────────────────────────────────────────
@@ -319,6 +619,12 @@ const server = createServer((req, res) => {
     const qIdx = raw.indexOf("?");
     const url = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
     const query = new URLSearchParams(qIdx >= 0 ? raw.slice(qIdx + 1) : "");
+    // Public API for external UIs/integrations; legacy routes below serve the
+    // bundled dashboard.
+    if (url === "/api" || url.startsWith("/api/")) {
+        handleApi(req, res, url, query);
+        return;
+    }
     if (url === "/" || url === "/index.html") {
         serveStatic(res, join(UI_DIR, "index.html"));
         return;
@@ -367,43 +673,7 @@ const server = createServer((req, res) => {
         const q = (query.get("q") || "").toLowerCase();
         const limit = Math.min(500, Number(query.get("limit")) || 200);
         res.writeHead(200, { "content-type": "application/json" });
-        if (!q || !existsSync(SINK)) {
-            res.end("[]");
-            return;
-        }
-        const matches: ObsEvent[] = [];
-        const scanner = new LineScanner((line) => {
-            if (!line.toLowerCase().includes(q)) return;
-            const ev = parseEventLine(line);
-            if (!ev) return;
-            matches.push(ev);
-            if (matches.length > limit) matches.shift(); // keep the newest
-        });
-        try {
-            const fd = openSync(SINK, "r");
-            try {
-                const size = statSync(SINK).size;
-                const buf = Buffer.alloc(SCAN_CHUNK);
-                let pos = 0;
-                while (pos < size) {
-                    const n = readSync(
-                        fd,
-                        buf,
-                        0,
-                        Math.min(SCAN_CHUNK, size - pos),
-                        pos,
-                    );
-                    if (n <= 0) break;
-                    scanner.push(buf.subarray(0, n));
-                    pos += n;
-                }
-            } finally {
-                closeSync(fd);
-            }
-        } catch {
-            /* partial results are fine */
-        }
-        res.end(JSON.stringify(matches));
+        res.end(JSON.stringify(searchSink(q, limit)));
         return;
     }
     // ?run=<id> serves that run's full history from the sink file (beyond the
@@ -451,7 +721,7 @@ const server = createServer((req, res) => {
         res.write(sseComment("connected"));
         // Replay the buffer so a late-joining dashboard sees the whole run.
         for (const ev of store.recent()) res.write(sseFrame(ev));
-        clients.add(res);
+        clients.set(res, {});
         req.on("close", () => clients.delete(res));
         return;
     }
@@ -460,7 +730,7 @@ const server = createServer((req, res) => {
 
 // Heartbeat keeps SSE connections alive through proxies/idle timeouts.
 setInterval(() => {
-    for (const res of clients) {
+    for (const res of clients.keys()) {
         try {
             res.write(sseComment("hb"));
         } catch {
@@ -477,6 +747,7 @@ server.listen(opts.port, "127.0.0.1", () => {
     process.stdout.write(
         `\nAgent observability — live\n` +
             `  dashboard  http://127.0.0.1:${opts.port}/\n` +
+            `  api        http://127.0.0.1:${opts.port}/api (see utils/obs/API.md)\n` +
             `  tailing    ${SINK}\n` +
             `  history    /runs · /events?run=<id> · /otel?run=<id>\n` +
             (OTLP_ENDPOINT ? `  otlp push  ${OTLP_ENDPOINT}\n` : "") +

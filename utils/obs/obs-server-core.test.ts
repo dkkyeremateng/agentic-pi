@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { EventStore, summarize, sseFrame } from "./obs-server-core";
+import {
+    EventStore,
+    summarize,
+    sseFrame,
+    filterRuns,
+} from "./obs-server-core";
 import { makeFactory, type ObsEvent } from "./obs-events";
 
 function evs(agent: string): {
@@ -85,4 +90,29 @@ test("sseFrame emits a valid named SSE frame", () => {
     const frame = sseFrame(f.next("turn_start", {}, 1));
     assert.match(frame, /^event: obs\ndata: \{/);
     assert.ok(frame.endsWith("\n\n"));
+});
+
+test("filterRuns scopes by project basename, since, and limit", () => {
+    const runs = [
+        { runId: "c", cwd: "/u/x/proj-b", firstTs: 3000 },
+        { runId: "b", cwd: "/u/x/proj-a", firstTs: 2000 },
+        { runId: "a", cwd: "/u/x/proj-a", firstTs: 1000 },
+    ];
+    assert.deepEqual(
+        filterRuns(runs, { project: "proj-a" }).map((r) => r.runId),
+        ["b", "a"],
+    );
+    assert.deepEqual(
+        filterRuns(runs, { since: 2000 }).map((r) => r.runId),
+        ["c", "b"],
+    );
+    assert.deepEqual(
+        filterRuns(runs, { limit: 1 }).map((r) => r.runId),
+        ["c"], // latest-first input — limit keeps the newest
+    );
+    assert.deepEqual(
+        filterRuns(runs, { project: "proj-a", since: 2000, limit: 5 }).map((r) => r.runId),
+        ["b"],
+    );
+    assert.equal(filterRuns(runs, {}).length, 3);
 });

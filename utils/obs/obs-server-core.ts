@@ -149,6 +149,32 @@ export function summarize(events: ObsEvent[]): LiveSummary {
     };
 }
 
+// ── run-list filtering (the /api/runs query params) ──────────────────────────
+
+export interface RunFilter {
+    project?: string; // matches the basename of the run's cwd
+    since?: number; // epoch ms — keep runs that STARTED at/after this
+    limit?: number; // newest N (input is expected latest-first)
+}
+
+export function projectOf(cwd: string | undefined): string {
+    if (!cwd) return "local";
+    const parts = String(cwd).split("/").filter(Boolean);
+    return parts[parts.length - 1] || "local";
+}
+
+export function filterRuns<T extends { cwd?: string; firstTs: number }>(
+    runs: T[],
+    f: RunFilter,
+): T[] {
+    let out = runs;
+    if (f.project) out = out.filter((r) => projectOf(r.cwd) === f.project);
+    if (f.since !== undefined && Number.isFinite(f.since))
+        out = out.filter((r) => r.firstTs >= (f.since as number));
+    if (f.limit && f.limit > 0) out = out.slice(0, f.limit);
+    return out;
+}
+
 // ── SSE framing ──────────────────────────────────────────────────────────────
 
 export function sseFrame(ev: ObsEvent): string {
