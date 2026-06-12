@@ -193,6 +193,96 @@ function readRunEvents(runId: string): ObsEvent[] {
     return events;
 }
 
+// ── OTLP push (optional live forwarder) ──────────────────────────────────────
+// With PI_OBS_OTLP_ENDPOINT set (an OTLP/HTTP traces URL, e.g.
+// http://127.0.0.1:4318/v1/traces), each run's trace is POSTed once when the
+// run goes quiet — so Langfuse / Phoenix / Honeycomb / Datadog become optional
+// heavyweight backends with one env var. PI_OBS_OTLP_HEADERS adds auth
+// ("k1=v1,k2=v2"). This is a live forwarder, not a backfill: runs already
+// finished at startup are skipped (backfill via `curl /otel?run=…` instead).
+
+const OTLP_ENDPOINT = process.env.PI_OBS_OTLP_ENDPOINT || "";
+// A run this quiet is considered finished (override: PI_OBS_OTLP_QUIET_MS).
+const OTLP_QUIET_MS = Number(process.env.PI_OBS_OTLP_QUIET_MS) || 60_000;
+const OTLP_MAX_ATTEMPTS = 3;
+const otlpDone = new Set<string>(); // pushed (or given up on) runIds
+const otlpAttempts = new Map<string, number>();
+let otlpSeeded = false;
+
+function otlpHeaders(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const pair of (process.env.PI_OBS_OTLP_HEADERS || "").split(",")) {
+        const i = pair.indexOf("=");
+        if (i > 0) out[pair.slice(0, i).trim()] = pair.slice(i + 1).trim();
+    }
+    return out;
+}
+
+async function otlpTick(): Promise<void> {
+    ensureRunIndex();
+    const now = Date.now();
+    if (!otlpSeeded) {
+        // First tick: everything already quiet predates this server — skip it.
+        otlpSeeded = true;
+        for (const r of runIndex.runs())
+            if (now - r.lastTs > OTLP_QUIET_MS) otlpDone.add(r.runId);
+        return;
+    }
+    for (const r of runIndex.runs()) {
+        if (otlpDone.has(r.runId)) continue;
+        if (now - r.lastTs < OTLP_QUIET_MS) continue; // still running
+        const events = readRunEvents(r.runId);
+        if (!events.length) {
+            otlpDone.add(r.runId);
+            continue;
+        }
+        const body = JSON.stringify(
+            eventsToOtlp(events, {
+                runId: r.runId,
+                serviceName: "pi-agent-workflow",
+            }),
+        );
+        const attempt = (otlpAttempts.get(r.runId) ?? 0) + 1;
+        otlpAttempts.set(r.runId, attempt);
+        try {
+            const resp = await fetch(OTLP_ENDPOINT, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    ...otlpHeaders(),
+                },
+                body,
+            });
+            if (resp.ok) {
+                otlpDone.add(r.runId);
+                process.stdout.write(`otlp push ${r.runId}: ${resp.status}\n`);
+            } else if (attempt >= OTLP_MAX_ATTEMPTS) {
+                otlpDone.add(r.runId);
+                process.stdout.write(
+                    `otlp push ${r.runId}: giving up after ${attempt}× (last ${resp.status})\n`,
+                );
+            }
+        } catch (e: any) {
+            if (attempt >= OTLP_MAX_ATTEMPTS) {
+                otlpDone.add(r.runId);
+                process.stdout.write(
+                    `otlp push ${r.runId}: giving up after ${attempt}× (${e?.message})\n`,
+                );
+            }
+        }
+    }
+}
+
+if (OTLP_ENDPOINT) {
+    otlpTick().catch(() => {}); // seed immediately
+    setInterval(
+        () => {
+            otlpTick().catch(() => {});
+        },
+        Math.max(2_000, Math.min(30_000, OTLP_QUIET_MS / 2)),
+    ).unref();
+}
+
 // ── SSE broadcast ────────────────────────────────────────────────────────────
 
 function broadcast(ev: ObsEvent): void {
@@ -380,6 +470,7 @@ server.listen(opts.port, "127.0.0.1", () => {
             `  dashboard  http://127.0.0.1:${opts.port}/\n` +
             `  tailing    ${SINK}\n` +
             `  history    /runs · /events?run=<id> · /otel?run=<id>\n` +
+            (OTLP_ENDPOINT ? `  otlp push  ${OTLP_ENDPOINT}\n` : "") +
             `  (run a workflow with PI_OBS=1 to see events; Ctrl-C to stop)\n\n`,
     );
 });

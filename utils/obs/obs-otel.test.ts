@@ -159,6 +159,97 @@ test("runId option scopes the export to a single run", () => {
     assert.ok(names(scoped).includes("invoke_agent scout"));
 });
 
+// ── enrichments: cache tokens, tool args, errors, retries, verdicts ──────────
+
+function enrichedEvents(): ObsEvent[] {
+    const evs = sampleEvents();
+    const mk = (
+        agent: string,
+        sessionId: string,
+        seq: number,
+        ts: number,
+        type: any,
+        payload: any = {},
+        parent?: string,
+    ): ObsEvent => {
+        const e: ObsEvent = { v: 2, seq, ts, sessionId, agent, runId: "run-1", type, payload };
+        if (parent) e.parent = parent;
+        return e;
+    };
+    return evs.concat([
+        // orchestrator: cache tokens on a second turn + an in-turn provider error
+        mk("orchestrator", "orc", 4, 5500, "turn_start", { turnIndex: 1 }),
+        mk("orchestrator", "orc", 5, 6000, "error", { source: "provider", status: 429 }),
+        mk("orchestrator", "orc", 6, 7000, "turn_end", {
+            turnIndex: 1,
+            tokens: { input: 100, output: 50, cacheRead: 9000, cacheWrite: 400, total: 9550 },
+            costUsd: 0.01,
+        }),
+        mk("orchestrator", "orc", 7, 7500, "compaction", {}),
+        // dispatch annotations about the scout
+        mk("orchestrator", "orc", 8, 1900, "dispatch_retry", { agent: "scout", reason: "empty" }),
+        // tool args captured by the collector
+        mk("scout", "sct", 6, 3000, "tool_start", {
+            toolCallId: "t2",
+            toolName: "bash",
+            arg: "npm test",
+            argsText: '{\n  "command": "npm test"\n}',
+        }, "orchestrator"),
+        mk("scout", "sct", 7, 3300, "tool_end", {
+            toolCallId: "t2",
+            toolName: "bash",
+            durationMs: 300,
+        }, "orchestrator"),
+        // verdicts: workflow first, CLI override later (synthetic session)
+        mk("orchestrator", "orc", 9, 9000, "verdict", { status: "open", source: "workflow" }),
+        mk("user", "score-1", 0, 99000, "verdict", { status: "pass", note: "ok", source: "cli" }),
+    ]);
+}
+
+test("chat span carries cache-token attrs and in-turn provider errors fail it", () => {
+    const otlp = eventsToOtlp(enrichedEvents());
+    const chat = findSpan(
+        otlp,
+        (s) =>
+            attrVal(s, "gen_ai.operation.name") === "chat" &&
+            attrVal(s, "gen_ai.usage.cache_read_input_tokens") !== undefined,
+    );
+    assert.ok(chat, "cache-token chat span present");
+    assert.equal(attrVal(chat, "gen_ai.usage.cache_read_input_tokens"), "9000");
+    assert.equal(attrVal(chat, "gen_ai.usage.cache_creation_input_tokens"), "400");
+    assert.equal(chat.status?.code, 2); // the 429 fell inside this turn
+});
+
+test("execute_tool span carries the call id and arguments", () => {
+    const otlp = eventsToOtlp(enrichedEvents());
+    const tool = findSpan(otlp, (s) => s.name === "execute_tool bash");
+    assert.ok(tool);
+    assert.equal(attrVal(tool, "gen_ai.tool.call.id"), "t2");
+    assert.match(attrVal(tool, "gen_ai.tool.call.arguments"), /npm test/);
+});
+
+test("dispatch_retry becomes a span event on the child agent's span", () => {
+    const otlp = eventsToOtlp(enrichedEvents());
+    const scout = findSpan(otlp, (s) => s.name === "invoke_agent scout");
+    const retry = (scout.events || []).find((e: any) => e.name === "dispatch_retry");
+    assert.ok(retry, "retry span event present");
+    assert.equal(retry.attributes[0].value.stringValue, "empty");
+});
+
+test("compaction becomes a span event on the agent's own span", () => {
+    const otlp = eventsToOtlp(enrichedEvents());
+    const orc = findSpan(otlp, (s) => s.name === "invoke_agent orchestrator");
+    assert.ok((orc.events || []).some((e: any) => e.name === "compaction"));
+});
+
+test("the last verdict lands on the root span; verdict-only sessions emit no span", () => {
+    const otlp = eventsToOtlp(enrichedEvents());
+    const orc = findSpan(otlp, (s) => s.name === "invoke_agent orchestrator");
+    assert.equal(attrVal(orc, "pi.run.verdict"), "pass"); // CLI overrode "open"
+    assert.equal(attrVal(orc, "pi.run.verdict.source"), "cli");
+    assert.equal(findSpan(otlp, (s) => s.name === "invoke_agent user"), undefined);
+});
+
 test("legacy events without runId still group into a trace by sessionId", () => {
     const ev: ObsEvent = {
         v: 1,

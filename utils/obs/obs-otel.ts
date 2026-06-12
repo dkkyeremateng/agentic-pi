@@ -10,6 +10,11 @@
 // `parent`; each turn is a `chat` span; each tool call is an `execute_tool` span.
 // Conventions: https://opentelemetry.io/docs/specs/semconv/gen-ai/
 //
+// NOTE the GenAI semconv is still in Development status (1.40 as of 2026-04);
+// cache-token usage has no standard attribute yet, so we use the Anthropic-style
+// `gen_ai.usage.cache_{read,creation}_input_tokens`, and anything pi-specific
+// (verdicts) is namespaced `pi.*`.
+//
 // We model 64-bit times as decimal STRINGS (BigInt) — OTLP/JSON requires fixed64
 // fields (…UnixNano) to be strings, and ms·1e6 overflows Number.MAX_SAFE_INTEGER.
 
@@ -44,6 +49,15 @@ function nanos(ms: number): string {
     return (BigInt(Math.round(ms)) * 1_000_000n).toString();
 }
 
+function capStr(s: string, max = 2000): string {
+    return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+// OTLP span event ({ timeUnixNano, name, attributes }).
+function spanEvent(ts: number, name: string, attrs: any[] = []) {
+    return { timeUnixNano: nanos(ts), name, attributes: attrs };
+}
+
 // Deterministic, well-formed trace/span ids (hex of the right length) derived from
 // stable keys so re-exporting the same events yields identical ids (idempotent).
 function traceIdFor(key: string): string {
@@ -76,23 +90,28 @@ interface PerSession {
 }
 
 // Group a single run's events into per-session buckets, tracking time bounds.
+// Verdict events never set the bounds — a CLI score can arrive days later and
+// must not stretch (or, for its synthetic session, define) a span.
 function bucketSessions(events: ObsEvent[]): Map<string, PerSession> {
     const sessions = new Map<string, PerSession>();
     for (const ev of events) {
+        const isVerdict = ev.type === "verdict";
         let s = sessions.get(ev.sessionId);
         if (!s) {
             s = {
                 sessionId: ev.sessionId,
                 agent: ev.agent,
                 parentAgent: ev.parent,
-                startTs: ev.ts,
-                endTs: ev.ts,
+                startTs: isVerdict ? Infinity : ev.ts,
+                endTs: isVerdict ? -Infinity : ev.ts,
                 events: [],
             };
             sessions.set(ev.sessionId, s);
         }
-        if (ev.ts < s.startTs) s.startTs = ev.ts;
-        if (ev.ts > s.endTs) s.endTs = ev.ts;
+        if (!isVerdict) {
+            if (ev.ts < s.startTs) s.startTs = ev.ts;
+            if (ev.ts > s.endTs) s.endTs = ev.ts;
+        }
         if (ev.parent && !s.parentAgent) s.parentAgent = ev.parent;
         const model = (ev.payload as any)?.model;
         if (typeof model === "string" && model && !s.model) s.model = model;
@@ -131,16 +150,23 @@ function spansForRun(traceKey: string, events: ObsEvent[]): any[] {
     const traceId = traceIdFor(traceKey);
     const sessions = bucketSessions(events);
 
+    // Sessions that carry only verdicts (the CLI's synthetic "score-*" session)
+    // are annotations, not agents — they must not become invoke_agent spans.
+    const real = (s: PerSession) => Number.isFinite(s.startTs);
+
     // agent NAME → its invoke_agent span id, so a child can find its parent. When a
     // name has several sessions (parallel same-name agents) the first wins.
     const agentSpanByName = new Map<string, string>();
     for (const s of sessions.values()) {
+        if (!real(s)) continue;
         const id = spanIdFor(traceKey + "/agent:" + s.sessionId);
         if (!agentSpanByName.has(s.agent)) agentSpanByName.set(s.agent, id);
     }
 
     const spans: any[] = [];
+    const agentSpanObjByName = new Map<string, any>(); // for second-pass annotations
     for (const s of sessions.values()) {
+        if (!real(s)) continue;
         const agentSpanId = spanIdFor(traceKey + "/agent:" + s.sessionId);
         const parentSpanId =
             s.parentAgent && agentSpanByName.has(s.parentAgent)
@@ -165,7 +191,20 @@ function spansForRun(traceKey: string, events: ObsEvent[]): any[] {
             agentSpan.attributes.push(sAttr("gen_ai.provider.name", providerOf(s.model)));
             agentSpan.attributes.push(sAttr("gen_ai.request.model", s.model));
         }
+        // Compactions mark context pressure — surfaced as span events.
+        for (const ev of s.events)
+            if (ev.type === "compaction") {
+                if (!agentSpan.events) agentSpan.events = [];
+                agentSpan.events.push(spanEvent(ev.ts, "compaction"));
+            }
         spans.push(agentSpan);
+        if (!agentSpanObjByName.has(s.agent))
+            agentSpanObjByName.set(s.agent, agentSpan);
+
+        // Provider-error timestamps mark the chat span they fall inside.
+        const errorTs = s.events
+            .filter((e) => e.type === "error")
+            .map((e) => e.ts);
 
         // chat spans — one per turn (turn_start..turn_end paired by turnIndex).
         const turns = pairBy(
@@ -201,12 +240,28 @@ function spansForRun(traceKey: string, events: ObsEvent[]): any[] {
                     chat.attributes.push(iAttr("gen_ai.usage.input_tokens", tok.input));
                 if (tok.output != null)
                     chat.attributes.push(iAttr("gen_ai.usage.output_tokens", tok.output));
+                // No standard cache attrs yet (semconv in Development) —
+                // Anthropic-style names, which several backends already read.
+                if (tok.cacheRead)
+                    chat.attributes.push(
+                        iAttr("gen_ai.usage.cache_read_input_tokens", tok.cacheRead),
+                    );
+                if (tok.cacheWrite)
+                    chat.attributes.push(
+                        iAttr(
+                            "gen_ai.usage.cache_creation_input_tokens",
+                            tok.cacheWrite,
+                        ),
+                    );
             }
             if (p.stopReason)
                 chat.attributes.push(
                     arrAttr("gen_ai.response.finish_reasons", [String(p.stopReason)]),
                 );
             if (p.costUsd != null) chat.attributes.push(dAttr("gen_ai.usage.cost_usd", p.costUsd));
+            // A provider error inside this turn's window fails the chat span.
+            if (errorTs.some((ts) => ts >= start && ts <= end))
+                chat.status = { code: STATUS_ERROR, message: "provider error" };
             spans.push(chat);
         }
 
@@ -240,9 +295,80 @@ function spansForRun(traceKey: string, events: ObsEvent[]): any[] {
                     sAttr("gen_ai.tool.name", name),
                 ],
             };
+            if (t.key) tool.attributes.push(sAttr("gen_ai.tool.call.id", t.key));
+            // Arguments when the collector captured them (argsText is the full
+            // pretty JSON; arg is the one-line preview) — capped for sanity.
+            const args = sp.argsText || sp.arg;
+            if (args)
+                tool.attributes.push(
+                    sAttr("gen_ai.tool.call.arguments", capStr(String(args))),
+                );
             if (ep.isError)
-                tool.status = { code: STATUS_ERROR, message: "tool error" };
+                tool.status = {
+                    code: STATUS_ERROR,
+                    message: capStr(
+                        String(ep.result || ep.resultText || "tool error"),
+                        300,
+                    ),
+                };
             spans.push(tool);
+        }
+    }
+
+    // Second pass — annotations that live in one session but describe another:
+    // dispatch_retry/dispatch_end (orchestrator about a child) and the run
+    // verdict (often a synthetic CLI session) land on the right spans.
+    let rootSpan: any;
+    for (const sp of agentSpanObjByName.values())
+        if (!sp.parentSpanId) {
+            rootSpan = sp;
+            break;
+        }
+    let verdictTs = -Infinity; // the LAST verdict (by ts) wins
+    for (const s of sessions.values()) {
+        for (const ev of s.events) {
+            const p = (ev.payload ?? {}) as any;
+            if (ev.type === "dispatch_retry") {
+                const target =
+                    agentSpanObjByName.get(String(p.agent)) ||
+                    agentSpanObjByName.get(ev.agent);
+                if (target) {
+                    if (!target.events) target.events = [];
+                    target.events.push(
+                        spanEvent(
+                            ev.ts,
+                            "dispatch_retry",
+                            p.reason ? [sAttr("reason", String(p.reason))] : [],
+                        ),
+                    );
+                }
+            } else if (ev.type === "dispatch_end" && p.status === "error") {
+                const target = agentSpanObjByName.get(String(p.agent));
+                if (target)
+                    target.status = {
+                        code: STATUS_ERROR,
+                        message: capStr(String(p.reason || "dispatch error"), 300),
+                    };
+            } else if (
+                ev.type === "verdict" &&
+                p.status &&
+                rootSpan &&
+                ev.ts >= verdictTs
+            ) {
+                verdictTs = ev.ts;
+                rootSpan.attributes = rootSpan.attributes.filter(
+                    (a: any) => !a.key.startsWith("pi.run.verdict"),
+                );
+                rootSpan.attributes.push(sAttr("pi.run.verdict", String(p.status)));
+                if (p.source)
+                    rootSpan.attributes.push(
+                        sAttr("pi.run.verdict.source", String(p.source)),
+                    );
+                if (p.note)
+                    rootSpan.attributes.push(
+                        sAttr("pi.run.verdict.note", capStr(String(p.note), 300)),
+                    );
+            }
         }
     }
     return spans;
