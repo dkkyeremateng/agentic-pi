@@ -265,6 +265,7 @@ function ensureLane(ev) {
         card: null,
         btn: null,
         count: 0, // total events seen (uncapped, for header)
+        maxSeq: -1, // highest seq ingested (dedupes SSE reconnect replays)
         firstTs: null,
         lastTs: null,
     };
@@ -396,6 +397,10 @@ function handle(ev) {
         return;
     }
     const a = ensureLane(ev);
+    // An SSE reconnect replays the server's whole buffer — skip what this
+    // lane already holds (per-session seq is monotonic in stream order).
+    if (ev.seq <= a.maxSeq) return;
+    a.maxSeq = ev.seq;
     if (!a.runId && ev.runId) a.runId = ev.runId; // backfill if the first event lacked it
     if (!a.parent && ev.parent) a.parent = ev.parent; // backfill dispatcher name
     a.count++;

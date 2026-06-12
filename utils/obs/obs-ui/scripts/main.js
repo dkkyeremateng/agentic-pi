@@ -16,6 +16,11 @@ $("content").addEventListener("scroll", () => {
 });
 
 // ── SSE ──────────────────────────────────────────────────────────────────────
+// EventSource auto-reconnects on stream drops, but Chrome gives up PERMANENTLY
+// when a retry hits connection-refused (a server restart longer than its retry
+// interval) — so we recreate the source ourselves. Replays after reconnect are
+// deduped per lane by seq (handle()).
+let sseRetryTimer = null;
 function connect() {
     const es = new EventSource("/stream");
     es.addEventListener("open", () => {
@@ -25,6 +30,12 @@ function connect() {
     es.addEventListener("error", () => {
         $("conn").textContent = "reconnecting…";
         $("conn").classList.remove("up");
+        if (es.readyState === EventSource.CLOSED && !sseRetryTimer) {
+            sseRetryTimer = setTimeout(() => {
+                sseRetryTimer = null;
+                connect();
+            }, 2000);
+        }
     });
     es.addEventListener("obs", (e) => {
         try {
