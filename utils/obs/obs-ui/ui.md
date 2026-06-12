@@ -1,299 +1,276 @@
-# Agent Observability — UI Redesign Plan
+# Agent Observability — UI Spec & React Implementation Plan
 
-A comprehensive redesign of the dashboard (`utils/obs/obs-ui/`), grounded in the
-current feature set and modeled on the interaction patterns of LangSmith,
-Langfuse, Braintrust, Datadog, and Grafana. The constraint that made this tool
-good stays non-negotiable: **vanilla HTML/CSS/JS, no build step, no runtime
-dependencies, served by the stdlib obs-server.**
+> **Status (2026-06-12):** the vanilla redesign described here is **fully
+> implemented and shipped** (commits `f75e548` → `5be0600`: P1 foundation,
+> P2 shell, P3 Trace/Single, P4 analytics, P5 polish, plus the context ring
+> gauge, turn-cycle banding, orchestrator-group visibility, and SSE
+> resilience fixes). Sections 1–4 are now the **living design spec** — the
+> source of truth the React app implements. Section 5 maps every view's
+> shipped behavior. Section 6 lists known gaps (= React requirements).
+> Section 7 is the React implementation plan.
+>
+> The vanilla app stays the bundled zero-dependency default served by
+> obs-server; the React app is the power UI consuming `/api` (see
+> `utils/obs/API.md` + `openapi.yaml`).
 
 ---
 
-## 1. Current-state audit
+## 1. Design direction
 
-What exists (7 views + chrome, ~1,900-line `index.html` with ~1,300 lines of
-embedded CSS, 14 vanilla JS modules):
+**North star: "a local-first Langfuse".** Calm, data-dense, OLED-dark
+developer tool. Information density of Datadog, navigation clarity of
+Langfuse, trace ergonomics of LangSmith — local-first, zero cloud.
 
-| Area | Works well | Weak |
-|---|---|---|
-| Theme | Consistent Tokyo-Night-ish dark palette | Flat 3-step surface ramp; `--dim` (#7a7a8c on #14141b ≈ 3.4:1) used for body-level text; no semantic token layer |
-| Type | Mono suits ids/numbers | **Everything** is 13px mono — headings, nav, prose. Fatiguing, weak hierarchy |
-| Nav | 7 views cover the feature set | Top tab strip + project filter + run filter + 8 stat numbers + health + conn all crammed into a wrapping header; no grouping of related views |
-| Trace | Waterfall + scrubber + dispatch tags + exports | Click targets are whole rows but only lane-jump; no span detail panel; no zoom/pan |
-| Single | Rich filter chips, search, context widget | Feed is an unvirtualized DOM list (caps at 4k events/lane); chips overflow |
-| Race | Distinctive turn-normalized comparison | Emoji as icons (against every modern design system); dense cards with no breathing rhythm |
-| Stats / Compare / Run history | Real analytics, A/B diff, regression strip | Hand-rolled tables with `innerHTML` strings; no sorting; one bespoke SVG chart |
-| Inspector | Full-event JSON + copy | Bottom dock (42vh) covers content; not resizable; replaced by industry-standard right drawer years ago |
-| Feedback | Live dot, stalled amber, verdict marks | Several color-only signals; pulsing dots ignore `prefers-reduced-motion` |
-| A11y | — | No focus styles audit, no keyboard navigation (besides Esc), emoji icons unreadable to screen readers, contrast misses on dim text |
-| Loading | "Waiting for events…" text | No skeletons; archived-run fetches show a bare string |
-| Responsive | — | Desktop-only; header wraps badly under ~1100px |
-
-## 2. Design direction
-
-**North star: "a local-first Langfuse".** Calm, data-dense, OLED-dark developer
-tool. Information density of Datadog, navigation clarity of Langfuse, trace
-ergonomics of LangSmith — with zero cloud and zero build.
-
-Principles:
-
-1. **Chrome in sans, data in mono.** UI text (nav, labels, headings) moves to a
-   system sans stack; ids, numbers, tokens, JSON stay mono with tabular figures.
-2. **One detail surface.** Everything inspectable (event, span, run, search hit)
-   opens the same right-side drawer. The bottom dock dies.
-3. **Master–detail everywhere.** List on the left, detail on the right — the
-   pattern users already know from every tracing tool.
+1. **Chrome in sans, data in mono.** UI text (nav, labels, headings) in the
+   system sans stack; ids, numbers, tokens, JSON in mono with
+   `font-variant-numeric: tabular-nums`.
+2. **One detail surface.** Everything inspectable (event, span, run, search
+   hit) opens the same right-side drawer.
+3. **Master–detail everywhere.** List on the left, detail on the right.
 4. **Status = icon + text + color**, never color alone.
-5. **Keep the soul.** Tokyo Night hues, the Race view's playfulness, and the
-   zero-dependency philosophy are features, not debt.
+5. **Local-first soul.** Tokyo Night hues, the Race view's playfulness, no
+   accounts, no cloud.
 
-## 3. Design system
+## 2. Design system (implemented in `styles/base.css` + `primitives.css`)
 
-### 3.1 Color tokens (semantic layer over the existing hues)
-
-```css
-:root {
-  /* surfaces — 5-step elevation ramp (avoid pure #000: OLED smear) */
-  --surface-0: #0e0e14;   /* app background */
-  --surface-1: #14141b;   /* view background (current --bg) */
-  --surface-2: #1b1b26;   /* cards, nav rail (current --panel) */
-  --surface-3: #22222f;   /* inputs, hover, nested (current --panel2) */
-  --surface-4: #2a2a3a;   /* drawer, popovers, command palette */
-  --border:    #2c2c3a;  --border-strong: #3b3b4f;
-
-  /* text — contrast-verified on surface-1/2 */
-  --text-hi:  #e2e2ec;   /* ≥ 9:1  — primary content */
-  --text-md:  #b6b6c6;   /* ≥ 6:1  — body (old --fg, lifted) */
-  --text-lo:  #8b8b9e;   /* ≥ 4.5:1 — secondary (old --dim, lifted) */
-  --text-faint: #6a6a7e; /* ≥ 3:1  — decorative only, never data */
-
-  /* brand + status (existing hues, kept) */
-  --accent: #7aa2f7;  --accent-hover: #93b4f9;  --on-accent: #0d0d14;
-  --ok: #9ece6a;  --warn: #e0af68;  --err: #f7768e;
-  --info: #7dcfff;  --special: #bb9af7;
-  /* tinted status surfaces for chips/rows: color-mix(in srgb, var(--ok) 12%, transparent) */
-
-  /* data-viz categorical ramp (agents, series) — 8 steps, colorblind-checked */
-  --viz-1: #7aa2f7; --viz-2: #9ece6a; --viz-3: #e0af68; --viz-4: #bb9af7;
-  --viz-5: #7dcfff; --viz-6: #f7768e; --viz-7: #73daca; --viz-8: #ff9e64;
-}
-```
-
-### 3.2 Typography
+### 2.1 Color tokens
 
 ```css
---font-ui:   -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
---font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-/* scale: 11 (micro labels) 12 (table) 13 (body) 14 (section) 16 (view title) 20 (KPI) */
+/* surfaces — 5-step elevation ramp (no pure black: OLED smear) */
+--surface-0: #0e0e14;  --surface-1: #14141b;  --surface-2: #1b1b26;
+--surface-3: #22222f;  --surface-4: #2a2a3a;
+--border: #2c2c3a;  --border-strong: #3b3b4f;
+
+/* text — contrast tiers (verified on surface-1/2) */
+--text-hi: #e2e2ec;    /* ≥9:1   primary */
+--text-md: #b6b6c6;    /* ≥6:1   body */
+--text-lo: #8b8b9e;    /* ≥4.5:1 secondary */
+--text-faint: #6a6a7e; /* ≥3:1   decorative only */
+
+/* brand + status */
+--accent: #7aa2f7;  --accent-hover: #93b4f9;  --on-accent: #0d0d14;
+--ok: #9ece6a;  --warn: #e0af68;  --err: #f7768e;
+--info: #7dcfff;  --special: #bb9af7;
+
+/* viz categorical ramp */
+--viz-1..8: #7aa2f7 #9ece6a #e0af68 #bb9af7 #7dcfff #f7768e #73daca #ff9e64;
 ```
 
-- Body/labels/nav → `--font-ui` 13px/1.5. Tables → 12px. KPI values → 20px/600.
-- Mono **only** for: run/session ids, tool args, JSON, token/cost/duration
-  columns (`font-variant-numeric: tabular-nums` so columns never jitter).
-- Weights: 600 headings/KPIs, 500 labels, 400 body. (Optional self-hosted Fira
-  Sans/Fira Code later — system stack first, no network fonts by default.)
+### 2.2 Typography / spacing / motion
 
-### 3.3 Spacing, radius, elevation, motion
+- `--font-ui`: system sans stack · `--font-mono`: ui-monospace stack.
+- Scale: 10/11 micro · 12 table · 13 body · 14 section · 20 KPI. Weights:
+  600 headings/KPI, 500 labels, 400 body.
+- 4px grid (`--space-1..6`), radius 4/8/12, one pop shadow.
+- Motion: `--t-fast: 150ms`, `--t-med: 240ms`; ease-out enter / ease-in
+  exit; **everything frozen under `prefers-reduced-motion`**.
 
-- 4px base grid: `4 / 8 / 12 / 16 / 24 / 32`. Card padding 12px (dense), view
-  gutter 16px. `--radius-s: 4px; --radius-m: 8px; --radius-l: 12px`.
-- Elevation = surface step + 1px border; single soft shadow only for
-  drawer/palette (`0 8px 32px rgb(0 0 0 / .45)`).
-- Motion tokens: `--t-fast: 150ms; --t-med: 240ms;` ease-out enter / ease-in
-  exit; everything inside `@media (prefers-reduced-motion: no-preference)`.
-  Live-dot pulse and bar shimmer freeze under reduced motion.
+### 2.3 Iconography
 
-### 3.4 Iconography — kill the emoji
+Inline SVG sprite (~30 Lucide-style symbols, 1.5px stroke, `currentColor`).
+Event types map to icons + status color classes (`iconFor()` in `feed.js`):
+power/cpu/flag/play/square/wrench/check/xcircle/refresh/send/recv/shrink/
+chat/user/dotc + chrome icons. **No emoji anywhere.**
 
-Inline SVG sprite (`icons.svg`, hand-picked ~24 Lucide outlines, 1.5px stroke,
-`currentColor`): play, square (stop), zap (turn), wrench (tool), file-text,
-brain (thinking), git-branch (dispatch), rotate-cw (retry), shrink
-(compaction), alert-triangle, x-circle, check-circle, circle-dashed (open),
-search, clock, coins, cpu, layers, list, bar-chart, diff, radio (live),
-download, command. Verdicts become chips: `✓ pass` → `<svg check-circle> pass`.
-The Race view's `emojiFor()` maps to the same sprite. ~3 KB, no dependency.
+### 2.4 Primitives
 
-### 3.5 Primitive components (one shared CSS file)
+`btn`/`btn-primary`/`btn-icon`, `s-chip` (status chip with tint), `card`,
+`kpi`, `skeleton` (shimmer), `meter`, `[data-tip]` tooltip, `combo`
+(filterable dropdown), sortable `table.lead`, dark thin scrollbars,
+`:focus-visible` accent ring.
 
-`chip` (status/filter), `btn` / `btn-primary` / `btn-icon`, `card`, `kpi`,
-`table` (sticky header, sortable, row hover, `td.num`), `input` / `select`
-(consistent 28px height), `drawer`, `palette`, `skeleton` (shimmer block),
-`dot` (live/stalled/error with paired label), `bar` (horizontal meter),
-`tooltip` (CSS-only, data-tip). Every interactive element: visible 2px
-`outline-offset` focus ring in `--accent`, `cursor: pointer`, hover state.
-
-## 4. Information architecture
-
-### 4.1 Layout shell (the biggest structural change)
+## 3. Information architecture (implemented)
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ Header: ⌘K search · project switcher · time hint · live ●    │
+│ Header: ⌘K trigger · project switcher · run filter · live ●  │
 ├────────┬────────────────────────────────────┬────────────────┤
-│ Nav    │                                    │ Detail drawer  │
-│ rail   │           Active view              │ (on demand,    │
-│ 64/200 │                                    │ 380–560px,     │
-│ px     │                                    │ resizable)     │
+│ Rail   │  #content (THE scroll container)   │ Detail drawer  │
+│ 196/52 │                                    │ 320–min(760,   │
+│ px     │                                    │ 50vw), resize  │
 ├────────┴────────────────────────────────────┴────────────────┤
-│ Status bar: agents · events · tokens · cost · tok/s · health │
+│ Status bar: agents events tokens cost tok/s errors · health  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Left nav rail** (collapsible 64px icons ↔ 200px icon+label), grouped the
-  way Langfuse/Datadog group:
-  - **LIVE** — Swimlane, Single, Race
-  - **ANALYZE** — Trace, Stats, Compare
-  - **FIND** — Search
-  - Agent lane toggles (the current letter-buttons) move into a "Agents"
-    section of the rail under LIVE, with full names + live/stalled dots.
-  - Active item: accent left-bar + tinted background (`nav-state-active`).
-- **Header slims to four things**: command palette trigger (`⌘K` —
-  search-as-navigation: views, runs by name/id, agents, "score this run",
-  "export OTLP"), project switcher (a proper menu instead of a bare `<select>`,
-  with per-project live counts), run-filter pill (when a project is active),
-  connection/live state.
-- **Status bar (bottom, 28px)** absorbs the 8 header stat numbers + health
-  chip — always visible, never wraps, the Datadog/IDE pattern.
-- **Detail drawer (right)** replaces the bottom inspector: event JSON,
-  span detail, run summary, search hit — tabbed (`Summary · Payload · Raw`),
-  resizable via drag handle, `Esc` closes, deep-linkable (`#…&ev=<sess>:<seq>`).
+- Rail groups: **LIVE** (Swimlane/Single/Race) · **ANALYZE**
+  (Trace/Stats/Compare) · **FIND** (Search) · **AGENTS** (per-lane toggles,
+  live dots, orchestrator-group semantics). Collapses to 52px (manual,
+  persisted; auto under 1100px).
+- **⌘K palette**: views, projects, newest 40 runs (verdict-marked).
+- **Drawer** (same `insp-*` surface for all detail): resizable, Esc closes,
+  optional action button ("open in Single", "compare with previous").
+- **URL hash state**: `view, project, run (trace pin), stats, a, b`.
 
-### 4.2 URL state
+### Layout invariants (hard-won — preserve in React)
 
-Extend the existing hash permalinks: `view`, `project`, `run`, `stats`, `a/b`,
-plus `q` (search query), `t` (replay position), `ev` (open drawer item),
-`agents` (lane visibility). Back/forward must restore all of it
-(`state-preservation`).
+- The app grid needs `grid-template-rows: minmax(0, 1fr)` and the main
+  column `min-height: 0`, or long content grows the row and pushes the
+  status bar off-screen.
+- `#content` is the one scroll container; autoscroll/near-bottom logic and
+  the virtualizer measure against it (not `window`).
 
-## 5. View-by-view redesign
+## 4. Data & behavioral contracts (the rules React must keep)
 
-### 5.1 Trace — flagship, LangSmith-style master–detail
+These encode every correctness lesson from the vanilla implementation:
 
-- **Two-pane**: left = span tree (indented rows: status icon, agent name,
-  model chip, duration); right = the time axis with bars. One scroll container;
-  tree column sticky-left. Clicking a row opens **span detail in the drawer**
-  (rollup, dispatch info, boot snapshot, slowest tools of that agent, "open in
-  Single" link) instead of silently jumping views.
-- **Time axis upgrades**: labeled gridlines (T+0 / 25 / 50 / 75 / 100%),
-  hover crosshair with timestamp, click-drag **brush zoom** (Honeycomb
-  pattern), tool calls rendered as tick marks inside agent bars, retries as
-  ↻ badges at their actual time.
-- **Replay scrubber** becomes a proper timeline control under the axis: play
-  button (auto-advance ×1/×4/×16), draggable cursor line over the chart,
-  "live" snap zone. Keyboard: ←/→ step events, space play/pause.
-- Run picker → searchable combobox (runs by name, verdict chip inline, grouped
-  by project) — the current `<select>` breaks past ~30 runs.
-- Empty state: skeleton waterfall + one-line instruction + copyable
-  `PI_OBS=1 ./run.sh …` snippet.
+1. **SSE resilience**: EventSource dies PERMANENTLY in Chrome when a retry
+   hits connection-refused (server restart) — recreate it on
+   `readyState === CLOSED` with a retry loop. After reconnect the server
+   replays its buffer: **dedupe by per-session monotonic `seq`**
+   (high-water mark per lane).
+2. **Verdicts are run-level annotations**: never create lanes/spans from
+   them, never let them extend time bounds or agent lists (a CLI/API score
+   can arrive days later on a synthetic `user` session). Last verdict by
+   `ts` wins.
+3. **Normalize root agents**: a parentless event's agent is the
+   orchestrator (older sinks put the session NAME in `agent`); the name
+   surfaces as the run name instead.
+4. **Lanes key by `cwd + agent + sessionId`** (parallel same-name instances
+   stay separate); **runs group by `runId`**; events of many runs
+   interleave in the shared sink.
+5. **Orchestrator groups**: a root lane (no parent) is a group; child lanes
+   attribute to the latest same-cwd root that started before them. A pi
+   `/reload` = same runId, new root session, new group. Default-visible
+   group per cwd = the running root, else the latest; explicit show/hide
+   overrides persist in-session.
+6. **Archive vs live**: the in-memory buffer is a ring; the sink file is
+   the archive. A non-live run renders from `/api/runs/:id/events` when the
+   archive holds more than the lanes (`archiveHasMore`). Archived runs are
+   never "running" — except during replay scrubbing, where as-of-T running
+   state is the point.
+7. **Replay vs zoom (Trace)**: replay filters events to `ts ≤ T`; zoom only
+   re-domains the x-axis. They compose independently. Replay/zoom reset on
+   run switch; reaching the end of playback snaps to live.
+8. **Turn cycles (Single)**: a cycle = `turn_start(turnIndex 0)` through
+   the turn before the next turn-0; alternating cycles band the background;
+   separators always render regardless of filters.
+9. **Context gauge**: `payload.context.percent` is % USED; the ring drains
+   to % remaining; colors ok ≥40% left / warn ≥15% / err below.
+10. **Stall heuristic**: an active lane quiet for `max(60s, 3× its avg
+    turn)` is stalled (amber); provider errors are red. Evaluated on a
+    ~500ms tick, not on events.
+11. **Search**: server scans raw sink lines (case-insensitive substring);
+    `run:/agent:/type:/project:` prefixes filter client-side; with only
+    prefixes, the first filter value doubles as the server query.
 
-### 5.2 Single — virtualized log view
+## 5. Views — shipped behavior (parity checklist for React)
 
-- Virtualize the feed (fixed row height; render viewport ±50 — removes the
-  4k cap honestly). Sticky day/turn separators ("Turn 3 · 14:02:11 · 41s").
-- Filter chips → one **filter bar**: severity-style quick filters
-  (`Errors only`), category multiselect, regex toggle on search.
-- Row anatomy: icon (sprite) · time (mono) · badge chip · one-line detail ·
-  right-aligned latency/tokens. Click → drawer (not inline expand).
-- Agent switcher: drawer-left list inside the view is replaced by the nav
-  rail's Agents section (single source of truth).
+| View | Shipped behavior |
+|---|---|
+| **Swimlane** | Live lane cards (header: dot, label, project, rollup meta; 14-row mini feed); orchestrator cards carry the group-hide ×; hidden-group chip bar; stalled = amber border + tooltip |
+| **Single** | Virtualized fixed-height rows (26px, ±30 buffer); defaults to the orchestrator lane; sticky stat header; turn separators + cycle banding; errors-only chip + regex search + category chips; row click → drawer (full args/result text); autoscroll with resume pill; context ring gauge |
+| **Race** | Turn-normalized tracks grouped by project→agent-group; collapsed turns expand on click; event cards (icon, type, tool pill, summary, time·seq) → drawer; setup column; click-outside zooms out |
+| **Trace** | Run combobox (sentinel "live (latest)" unless single run); ticks header + per-track gridlines; hover crosshair; drag-brush zoom (dblclick/button reset); span bars with tool ticks (err highlighted) + ↻ retry markers at their ts; playable replay (space, ←/→, ×1/4/16, slider); row → span drawer with rollup + "open in Single"; OTLP/JSONL export; skeleton while archive loads; hidden groups drop out |
+| **Stats** | Scope picker (all runs / one run); KPI tiles with vs-previous-run deltas (cost/wall/errors); latency percentiles; per-agent cost bars; sortable tool table; canvas cost-over-time (crosshair+tooltip); Run history: pass-rate strip, cost sparkline, sortable, row → run drawer with "compare with previous" |
+| **Compare** | A/B comboboxes (defaults: A=previous, B=latest); swap; headline A\|B\|Δ table; setup (boot) diff chips; shared-scale mini-waterfalls; per-agent and per-tool Δ tables ("only in A/B" tags) |
+| **Search** | Whole-sink substring + prefix filters; recent queries datalist; skeleton while scanning; sortable results; row → drawer, run link → Trace pinned |
 
-### 5.3 Swimlane — live wall
+## 6. Known gaps (= React requirements beyond parity)
 
-- Lane cards on an responsive grid (`minmax(340px, 1fr)`), status icon + ctx
-  meter as a thin progress bar under the header, mini-feed rows reduced to
-  icon + text + time. Stalled = amber left border + `⚠ stalled 3m` chip
-  (already computed). Card click → Single; card header dots get text pairing.
+Found in the 2026-06-12 end-to-end review (vanilla keeps them as-is):
 
-### 5.4 Race — keep the fun, lose the emoji
+1. **Partial URL state** — hash misses: search query, header run filter,
+   selected lane (Single), replay position, open drawer item. React should
+   make routes/query the single source of truth (`q`, `t`, `ev`, `agents`).
+2. **Header run filter shows on Compare/Search** where it's irrelevant
+   (condition only excludes trace/stats). Scope it to the lane views.
+3. **Picker inconsistencies** — header run filter lacks verdict marks and
+   date-aware labels; Stats still uses a native `<select>`. React: one Run
+   Combobox component everywhere.
+4. **Single is capped by the lane ring** (4000 events/lane) with no
+   indicator; older history silently missing. React: page older events in
+   from `/api/runs/:id/events` (the archive) when scrolling up.
+5. **ARIA depth** — the custom combobox/palette lack combobox/listbox
+   roles and active-descendant wiring; the drawer doesn't move focus.
+   React: use accessible primitives (Radix/cmdk or equivalent).
+6. **O(lanes×events) visibility recompute** — `applyVisibility` (group
+   assignment + run collection) runs per new lane and per session
+   start/end; fine at current scale, structural fix = memoized selectors.
+7. **No UI tests** — only the TS core is tested. React: component tests on
+   the derived stores + the contracts in §4.
 
-- Sprite icons in event cards; turn pills get a subtle stagger-in (30ms) under
-  reduced-motion guard. Expanded turn renders in a horizontal scroll-snap
-  strip. Everything else stays — it's the most original view in the product.
+## 7. React implementation plan
 
-### 5.5 Stats — dashboard grid
+### 7.1 Architecture
 
-- 12-col grid: KPI row (cost, tokens, turns, tools, errors, tok/s — `kpi`
-  component with delta-vs-previous-run arrows), then cards.
-- Replace the hand-rolled cost SVG with a small **uPlot-style canvas helper**
-  (~150 lines, ours): crosshair, tooltip, hover values. Reused by Compare and
-  Run history sparklines.
-- Tables become the shared sortable `table` component (tool leaderboard sorts
-  by any column, `aria-sort`).
-- **Run history** gains per-run sparkline (cost trend), verdict chips, and row
-  click → drawer run summary with "Compare with previous" button.
+- **Location**: `utils/obs/obs-app/` (Vite root) in this repo — so the app
+  can import the repo's **pure TS modules directly** instead of
+  reimplementing them: `obs-events.ts` (types/parsers), `obs-explain.ts`
+  (digest), plus ports of `rollup.js`/lane-derivation logic as shared TS.
+- **Stack**: Vite + React + TypeScript. TanStack Query (REST), TanStack
+  Virtual (feeds), Zustand (event store + UI state), Radix primitives or
+  cmdk (combobox/palette/drawer a11y), our tiny canvas chart helpers
+  (ported) or uPlot. Tailwind optional — if used, map its theme to the §2
+  tokens; otherwise ship `tokens.css` straight from §2.
+- **API**: types generated from the served spec
+  (`npx openapi-typescript http://127.0.0.1:7616/api/openapi.yaml`).
+  Endpoints: `/api/stream` (SSE), `/api/runs[…]`, `/api/search`,
+  `/api/summary`, `/api/runs/:id/digest|otel`, `POST /:id/verdict` (the
+  React app can score runs — the vanilla UI can't).
+- **Dev**: Vite proxy → `127.0.0.1:7616`. **Prod**: `vite build` →
+  `obs-app/dist`, served by obs-server at `/app` (one new static route,
+  same flat-name guard) — same single-binary feel, no CORS in prod.
 
-### 5.6 Compare — verdict-aware A/B
+### 7.2 Data layer (build first, UI-free)
 
-- A/B pickers become the same searchable combobox as Trace; swap button
-  animates a crossfade. Δ chips get arrows + tooltips ("$0.60 → $1.15").
-- New **side-by-side mini-waterfalls** card (one per run, same time scale) —
-  the visual diff Braintrust/Langfuse lack locally.
-- Boot-diff chips link to the drawer showing full before/after values.
+```
+src/data/
+  client.ts        // typed fetchers from openapi types
+  stream.ts        // EventSource wrapper: reconnect-on-CLOSED loop,
+                   // seq high-water dedupe, normalizeEvent (§4.1–3)
+  store.ts         // Zustand: lanes/runs/verdicts/groups, derived via
+                   // selectors (ports of rollup.js, assignGroups, stall calc)
+  derive/          // pure, unit-tested: rollup, traceNodes, runFacts,
+                   // analytics, cycles — ported from the vanilla modules
+```
 
-### 5.7 Search — query language lite
+The vanilla view modules contain the reference implementations:
+`buildTraceNodes` (trace.js), `collectRunFacts` (compare.js),
+`collectAnalytics` (stats.js), `assignGroups`/`laneStalled`
+(lanes.js/header.js), cycle banding (single.js). Port them as pure
+functions with tests — they encode every §4 contract.
 
-- Results in the shared table; matched text highlighted in `--warn`; row →
-  drawer; `run:` `agent:` `type:` prefixes parsed client-side and sent as
-  filters (server already returns full events — filter post-fetch first,
-  endpoint params later). Recent-queries dropdown (localStorage).
+### 7.3 Component map
 
-### 5.8 Header/status-bar details
+| Vanilla | React |
+|---|---|
+| shell.js + chrome.css | `<AppShell>` (Rail, Header, StatusBar, Drawer) |
+| palette.js | cmdk `<CommandPalette>` |
+| combobox.js | `<RunCombobox>` (one component, used by Trace/Stats/Compare/header) |
+| vlist.js | TanStack Virtual in `<EventFeed>` |
+| feed.js describe/iconFor | `<EventRow>` + `eventMeta.ts` |
+| trace.js render | `<TraceView>` (`<SpanTree>`, `<TimeAxis>`, `<ReplayControls>`) |
+| chart.js | `<LineChart>`/`<Sparkline>` (canvas, ported) |
+| stats/compare/find | `<StatsView>`/`<CompareView>`/`<SearchView>` |
+| hash sync (views.js) | router (TanStack Router or wouter) — full state incl. §6.1 params |
 
-- Live indicator: radio icon + "live" / "reconnecting…" text (not color-only).
-- Health chip in the status bar opens a popover listing stalled/erroring lanes
-  with jump links.
+### 7.4 Phases (each shippable)
 
-## 6. Cross-cutting work
+| Phase | Scope |
+|---|---|
+| **R0** | Scaffold, tokens.css, openapi types, data layer + derive/ ports **with tests for every §4 contract** |
+| **R1** | Shell: rail/header/statusbar/drawer/palette + router (full URL state) |
+| **R2** | Live views: Swimlane, Single (virtual + archive paging — closes §6.4), Race |
+| **R3** | Analyze views: Trace (parity incl. replay+zoom), Stats, Compare |
+| **R4** | Search, verdict scoring UI (POST /verdict), a11y pass (§6.5), perf pass |
+| **R5** | Serve from obs-server `/app`, side-by-side period, then decide the default |
 
-- **Keyboard**: `⌘K` palette; `1–7` view switch; `j/k` row navigation in any
-  list; `Enter` opens drawer; `Esc` closes; `/` focuses search; visible focus
-  rings everywhere; `tab-order = visual order`.
-- **A11y**: contrast pass per §3.1; `aria-live="polite"` on the status bar
-  totals; `role="alert"` for health degradation; icons get `<title>`/aria
-  labels; tables get `scope`/`aria-sort`; reduced-motion covered.
-- **Loading/empty**: skeleton cards (shimmer) for archived-run fetches, /runs,
-  search; every view's empty state = icon + sentence + action.
-- **Performance**: virtualized Single feed; `content-visibility: auto` on lane
-  cards; rAF-coalesced renders already exist — keep; canvas for charts; sprite
-  instead of font icons.
-- **Responsive floor**: usable at 1024px (rail collapses to icons, drawer
-  becomes overlay); readable read-only at 768px (rail hidden behind hamburger,
-  status bar scrolls). Phone support is explicitly out of scope.
+### 7.5 Non-goals
 
-## 7. Implementation plan (each phase ships usable)
+- No cloud/auth/multi-user. No light mode (revisit on demand). No phone
+  layout (1024px floor, 768px read-only). The **server stays stdlib-only**;
+  the build step is confined to `obs-app/`.
 
-| Phase | Scope | Touches |
-|---|---|---|
-| **P1 — Foundation** | Token layer (§3.1–3.3) mapped onto existing markup (old var names aliased to new), `styles.css` + `icons.svg` extracted from index.html, sans/mono split, chip/btn/table primitives, focus rings, reduced-motion guards | index.html → 3 files; no JS changes; pure re-skin |
-| **P2 — Shell** | Nav rail (+ agent section), slim header, bottom status bar, right drawer replacing inspector, command palette, extended hash state | new `shell.js`, `palette.js`, `drawer.js`; edits to views.js/main.js/header.js/lanes.js |
-| **P3 — Flagship views** | Trace master–detail + axis/zoom/scrubber upgrade; Single virtualization + filter bar; searchable run combobox (shared) | trace.js rewrite, single.js rewrite, new `combobox.js`, `vlist.js` |
-| **P4 — Analytics** | Stats grid + canvas chart helper + sortable tables; Compare upgrades + mini-waterfalls; Run-history drawer; Search prefixes | stats.js, compare.js, find.js, new `chart.js` |
-| **P5 — Polish** | Race sprite swap + stagger, skeletons everywhere, a11y audit (axe), 1024/768 responsive passes, screenshot regression set | all views, CSS |
+## 8. Inspiration map
 
-Sequencing notes: P1 is risk-free and immediately improves everything; P2 is
-the only structural break (do it in one PR with before/after screenshots);
-P3–P5 are independent per-view PRs. Existing JS module boundaries
-(state/lanes/views per-view files) survive the redesign — this is a re-skin +
-shell swap, not a rewrite of the data layer. The SSE/event model, archive,
-and server need **zero changes** except serving two new static files (already
-generic via `/scripts/`; add `/styles.css`, `/icons.svg` routes).
-
-## 8. Explicit non-goals
-
-- No framework, no bundler, no npm UI deps, no web fonts by default.
-- No light mode (dark-only is correct for this tool; revisit on demand).
-- No phone layout (read-only 768px floor is the limit).
-- No server-side rendering changes; the dashboard stays a static shell over SSE.
-
-## 9. Inspiration map (what we're borrowing from whom)
-
-| Pattern | Source | Lands in |
-|---|---|---|
-| Span tree + detail drawer | LangSmith / Langfuse trace view | Trace (P3) |
-| Left nav rail w/ grouped sections | Langfuse, Datadog, Grafana | Shell (P2) |
-| Command palette (⌘K) | Linear, Vercel, Datadog | Shell (P2) |
-| Bottom status bar | IDEs, Datadog | Shell (P2) |
-| Brush-zoom on timelines | Honeycomb, Grafana | Trace (P3) |
-| KPI row with deltas | Braintrust experiment view | Stats (P4) |
-| Side-by-side run diff | Braintrust / W&B compare | Compare (P4) |
-| Sortable dense tables, sticky headers | Datadog | Stats/Search (P4) |
-| Skeleton shimmer loading | every modern SaaS | All (P5) |
+| Pattern | Source |
+|---|---|
+| Span tree + detail drawer | LangSmith / Langfuse |
+| Nav rail with grouped sections | Langfuse, Datadog, Grafana |
+| Command palette | Linear, Vercel |
+| Bottom status bar | IDEs, Datadog |
+| Brush-zoom timelines | Honeycomb, Grafana |
+| KPI deltas vs previous run | Braintrust |
+| Side-by-side run diff | Braintrust / W&B |
+| Pass-rate run history | Braintrust experiments |
