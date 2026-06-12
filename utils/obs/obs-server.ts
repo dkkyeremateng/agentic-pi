@@ -399,6 +399,21 @@ function handleApi(
     }
     const seg = path.split("/").filter(Boolean); // ["api", ...]
 
+    // The machine-readable contract (utils/obs/openapi.yaml, served as-is).
+    if (path === "/api/openapi.yaml" && req.method === "GET") {
+        const file = join(HERE, "openapi.yaml");
+        if (!existsSync(file)) {
+            apiError(res, 404, "openapi.yaml not found");
+            return;
+        }
+        res.writeHead(200, {
+            "content-type": "application/yaml; charset=utf-8",
+            ...API_CORS,
+        });
+        res.end(readFileSync(file));
+        return;
+    }
+
     // GET /api — discovery + server meta
     if (seg.length === 1 && req.method === "GET") {
         apiJson(res, 200, {
@@ -409,6 +424,7 @@ function handleApi(
             uptimeMs: Date.now() - STARTED_AT,
             endpoints: [
                 "GET  /api",
+                "GET  /api/openapi.yaml",
                 "GET  /api/summary",
                 "GET  /api/events?limit=",
                 "GET  /api/runs?project=&since=&limit=",

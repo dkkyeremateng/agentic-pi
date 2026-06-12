@@ -17,6 +17,10 @@ bundled vanilla dashboard uses equivalent unprefixed legacy routes; treat
 Start the server: `npm run obs:server` (or `run.sh --server`). Data appears
 when workflows run with `PI_OBS=1`.
 
+A machine-readable **OpenAPI 3.0 spec** lives at `utils/obs/openapi.yaml` and
+is served live at `GET /api/openapi.yaml` — point Swagger UI, Postman, or a
+client generator at it.
+
 ## Endpoints
 
 ### `GET /api`
