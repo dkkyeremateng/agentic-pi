@@ -889,8 +889,27 @@
             #trace-axis b {
                 color: var(--fg);
             }
-            .trace-export {
+            /* replay scrubber — render the waterfall as-of a point in time */
+            #trace-replay {
                 margin-left: auto;
+                display: inline-flex;
+                align-items: center;
+                gap: 7px;
+            }
+            #trace-scrub {
+                width: 170px;
+                accent-color: var(--accent);
+                cursor: pointer;
+            }
+            #trace-scrub-t {
+                color: var(--dim);
+                font-size: 11px;
+                min-width: 52px;
+            }
+            #trace-scrub-t.scrubbing {
+                color: var(--warn);
+            }
+            .trace-export {
                 display: flex;
                 gap: 6px;
             }
@@ -1265,6 +1284,21 @@
                 color: var(--fg);
             }
 
+            /* lane health: stalled (amber) when active but quiet too long */
+            .lane.stalled {
+                border-color: var(--warn);
+            }
+            .lane.stalled .dot {
+                background: var(--warn);
+                box-shadow: 0 0 6px var(--warn);
+            }
+            #s-health.warn {
+                color: var(--warn);
+            }
+            #s-health.err {
+                color: var(--err);
+            }
+
             /* run verdicts (pass/fail/open) — pickers, axes, run history */
             .verd.pass {
                 color: var(--ok);
@@ -1286,6 +1320,64 @@
             }
             .runhist-head b {
                 color: var(--fg);
+            }
+
+            /* search — cross-run, whole-sink */
+            #find {
+                padding: 16px;
+            }
+            #find-bar {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 14px;
+                flex-wrap: wrap;
+            }
+            #find-q {
+                background: var(--panel2);
+                color: var(--fg);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 5px 10px;
+                font: inherit;
+                width: 320px;
+            }
+            #find-q:focus {
+                outline: none;
+                border-color: var(--accent);
+            }
+            #find-axis {
+                color: var(--dim);
+                font-size: 12px;
+            }
+            #find-axis b {
+                color: var(--fg);
+            }
+            #find-empty {
+                color: var(--dim);
+                padding: 30px 4px;
+            }
+            .find-row {
+                cursor: pointer;
+            }
+            .find-row:hover td {
+                background: rgba(255, 255, 255, 0.03);
+            }
+            .find-snip {
+                color: var(--dim);
+                max-width: 480px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .find-snip b {
+                color: var(--warn);
+            }
+            .find-run {
+                color: var(--accent);
+                cursor: pointer;
+            }
+            .find-run:hover {
+                text-decoration: underline;
             }
 
             /* event inspector (bottom dock) */
@@ -1387,6 +1479,7 @@
                 <button id="v-trace">Trace</button>
                 <button id="v-stats">Stats</button>
                 <button id="v-compare">Compare</button>
+                <button id="v-find">Search</button>
             </div>
             <select id="projfilter" title="filter by project">
                 <option value="">all projects</option>
@@ -1411,6 +1504,7 @@
             <span class="stat">tok/s <b id="s-tps">0</b></span>
             <span class="stat">errors <b id="s-errors">0</b></span>
             <span class="stat">elapsed <b id="s-elapsed">0s</b></span>
+            <span class="stat">health <b id="s-health">ok</b></span>
             <span id="conn">connecting…</span>
         </header>
         <div id="layout">
@@ -1481,6 +1575,16 @@
                             <select id="trace-run" title="select a run"></select>
                         </span>
                         <span id="trace-axis"></span>
+                        <span id="trace-replay" title="replay — drag to scrub the run as-of a point in time; far right = live">
+                            <input
+                                type="range"
+                                id="trace-scrub"
+                                min="0"
+                                max="1000"
+                                value="1000"
+                            />
+                            <span id="trace-scrub-t">live</span>
+                        </span>
                         <span class="trace-export">
                             <button
                                 id="trace-otlp"
@@ -1585,6 +1689,21 @@
                         </div>
                     </div>
                 </section>
+                <section id="find" class="view">
+                    <div id="find-bar">
+                        <input
+                            id="find-q"
+                            placeholder="search every run… (Enter)"
+                        />
+                        <button id="find-go" class="exp-btn">search</button>
+                        <span id="find-axis"></span>
+                    </div>
+                    <div id="find-empty">
+                        Search the whole sink — every run ever recorded. Try a
+                        file name, a tool, an error message, or a run id.
+                    </div>
+                    <div id="find-results"></div>
+                </section>
             </main>
         </div>
         <div id="inspector">
@@ -1628,6 +1747,7 @@
         <script src="/scripts/trace.js"></script>
         <script src="/scripts/stats.js"></script>
         <script src="/scripts/compare.js"></script>
+        <script src="/scripts/find.js"></script>
         <script src="/scripts/header.js"></script>
         <script src="/scripts/main.js"></script>
     </body>

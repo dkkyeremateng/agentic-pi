@@ -261,6 +261,52 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify(runIndex.runs()));
         return;
     }
+    // Full-sink substring search (case-insensitive, raw lines) — answers
+    // "which run touched X" across every run ever recorded. A full scan per
+    // query; local disk makes that cheap. Returns the most recent matches.
+    if (url === "/search") {
+        const q = (query.get("q") || "").toLowerCase();
+        const limit = Math.min(500, Number(query.get("limit")) || 200);
+        res.writeHead(200, { "content-type": "application/json" });
+        if (!q || !existsSync(SINK)) {
+            res.end("[]");
+            return;
+        }
+        const matches: ObsEvent[] = [];
+        const scanner = new LineScanner((line) => {
+            if (!line.toLowerCase().includes(q)) return;
+            const ev = parseEventLine(line);
+            if (!ev) return;
+            matches.push(ev);
+            if (matches.length > limit) matches.shift(); // keep the newest
+        });
+        try {
+            const fd = openSync(SINK, "r");
+            try {
+                const size = statSync(SINK).size;
+                const buf = Buffer.alloc(SCAN_CHUNK);
+                let pos = 0;
+                while (pos < size) {
+                    const n = readSync(
+                        fd,
+                        buf,
+                        0,
+                        Math.min(SCAN_CHUNK, size - pos),
+                        pos,
+                    );
+                    if (n <= 0) break;
+                    scanner.push(buf.subarray(0, n));
+                    pos += n;
+                }
+            } finally {
+                closeSync(fd);
+            }
+        } catch {
+            /* partial results are fine */
+        }
+        res.end(JSON.stringify(matches));
+        return;
+    }
     // ?run=<id> serves that run's full history from the sink file (beyond the
     // in-memory ring); without it, the recent live buffer as before.
     if (url === "/events") {

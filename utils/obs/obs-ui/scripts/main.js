@@ -41,26 +41,39 @@ $("v-trace").addEventListener("click", () => setView("trace"));
 $("trace-run").addEventListener("change", (e) => {
     traceRun = e.target.value;
     renderTrace();
+    syncHash();
+});
+$("trace-scrub").addEventListener("input", (e) => {
+    traceSetReplay(Number(e.target.value));
 });
 $("v-stats").addEventListener("click", () => setView("stats"));
 $("stats-run").addEventListener("change", (e) => {
     statsRun = e.target.value;
     renderStats();
+    syncHash();
 });
 $("v-compare").addEventListener("click", () => setView("compare"));
+$("v-find").addEventListener("click", () => setView("find"));
+$("find-go").addEventListener("click", runFind);
+$("find-q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") runFind();
+});
 $("cmp-a").addEventListener("change", (e) => {
     cmpA = e.target.value;
     renderCompare();
+    syncHash();
 });
 $("cmp-b").addEventListener("change", (e) => {
     cmpB = e.target.value;
     renderCompare();
+    syncHash();
 });
 $("cmp-swap").addEventListener("click", () => {
     const a = $("cmp-a").value;
     cmpA = $("cmp-b").value;
     cmpB = a;
     renderCompare();
+    syncHash();
 });
 
 // ── trace export ──────────────────────────────────────────────────────────────
@@ -114,6 +127,7 @@ $("projfilter").addEventListener("change", (e) => {
         /* ignore */
     }
     applyVisibility();
+    syncHash();
 });
 $("runfilter").addEventListener("change", (e) => {
     runFilter = e.target.value;
@@ -173,6 +187,8 @@ if (projectFilter) {
     $("projfilter").value = projectFilter;
 }
 updateRunFilter(); // show the run picker if a project was restored
+applyHash(); // permalink state (view/project/pinned runs) — beats localStorage
+window.addEventListener("hashchange", applyHash);
 setInterval(renderHeader, 500);
 connect();
 loadRunArchive(); // run history beyond the live buffer (sink-file index)

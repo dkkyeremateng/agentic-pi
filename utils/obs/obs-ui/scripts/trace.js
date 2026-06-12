@@ -6,6 +6,26 @@
 let traceRun = ""; // "" = follow the latest run; otherwise a pinned runId
 let traceCurrentRun = ""; // the runId actually rendered (for the export buttons)
 
+// Replay scrubber: when set, the waterfall renders as-of this absolute ts —
+// only events up to T feed the nodes, so bars, metrics, and running states
+// show the run as it was at that moment. null = live (no filter).
+let traceReplayT = null;
+let traceReplayRun = ""; // the run the scrub position belongs to
+let traceRunBounds = null; // [t0, t1] of the rendered run (for the slider math)
+
+// Slider input (0..1000 across the run's span); the far right means live.
+function traceSetReplay(v) {
+    if (!traceRunBounds) return;
+    const [t0, t1] = traceRunBounds;
+    traceReplayT = v >= 1000 ? null : t0 + (v / 1000) * Math.max(1, t1 - t0);
+    traceReplayRun = traceCurrentRun;
+    renderTrace();
+}
+
+function* eventsUpTo(source, t) {
+    for (const item of source) if (item.ev.ts <= t) yield item;
+}
+
 // Group every runId we've seen (within the active project) with its time bounds.
 function collectRuns() {
     const runs = new Map();
@@ -237,6 +257,26 @@ function renderTrace() {
     const traceDot = $("trace-run-dot");
     if (traceDot) traceDot.classList.toggle("on", live.has(run.id));
 
+    // Replay state belongs to one run — switching runs snaps back to live.
+    if (traceReplayRun && traceReplayRun !== run.id) {
+        traceReplayT = null;
+        traceReplayRun = "";
+    }
+    traceRunBounds = [run.firstTs, run.lastTs];
+    const scrubbing = traceReplayT != null;
+    const scrub = $("trace-scrub");
+    const scrubT = $("trace-scrub-t");
+    if (scrub && scrubT) {
+        const span0 = Math.max(1, run.lastTs - run.firstTs);
+        scrub.value = scrubbing
+            ? Math.round(((traceReplayT - run.firstTs) / span0) * 1000)
+            : 1000;
+        scrubT.textContent = scrubbing
+            ? "T+" + fmtDur(traceReplayT - run.firstTs)
+            : "live";
+        scrubT.classList.toggle("scrubbing", scrubbing);
+    }
+
     // Lanes may hold nothing (or just a stale tail) of a non-live run the sink
     // still has in full — render those from the fetched archive instead.
     const fromArchive =
@@ -247,13 +287,14 @@ function renderTrace() {
         $("trace-tree").innerHTML = "";
         return;
     }
-    const nodes = buildTraceNodes(
-        run.id,
-        fromArchive ? archiveRunEvents(run.id) : laneRunEvents(run.id),
-    );
-    // An archived run is finished by definition — never show it as running
-    // (a crashed agent may have left no session_end).
-    if (fromArchive) for (const n of nodes.values()) n.rollup.active = false;
+    let source = fromArchive ? archiveRunEvents(run.id) : laneRunEvents(run.id);
+    if (scrubbing) source = eventsUpTo(source, traceReplayT);
+    const nodes = buildTraceNodes(run.id, source);
+    // An archived run is finished by definition — never show it as running.
+    // While scrubbing, though, the whole point is the as-of-T running state,
+    // so the rollup's live picture is kept.
+    if (fromArchive && !scrubbing)
+        for (const n of nodes.values()) n.rollup.active = false;
     const t0 = run.firstTs;
     const span = Math.max(1, run.lastTs - run.firstTs);
 
@@ -301,6 +342,11 @@ function renderTrace() {
     for (const n of nodes.values())
         if (traceStatus(n) === "running") running++;
     $("trace-axis").innerHTML =
+        (scrubbing
+            ? '<span class="verd open">replay T+' +
+              fmtDur(traceReplayT - t0) +
+              "</span> · "
+            : "") +
         (byProject ? "project <b>" + run.project + "</b> · " : "") +
         "<b>" +
         nodes.size +
