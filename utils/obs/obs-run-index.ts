@@ -58,6 +58,14 @@ export class LineScanner {
     }
 }
 
+export interface RunVerdict {
+    status: string; // "pass" | "fail" | "open"
+    outcome?: string; // the precise workflow status ("shipped", "error", …)
+    note?: string;
+    source?: string; // "workflow" | "cli"
+    ts: number;
+}
+
 export interface RunSummary {
     runId: string;
     firstTs: number;
@@ -68,6 +76,7 @@ export interface RunSummary {
     name?: string; // the run's display name (root session name), if it was named
     costUsd: number;
     errors: number; // error events + tool errors
+    verdict?: RunVerdict; // last verdict wins (re-scoring overrides)
     // Byte range in the sink covering all of this run's lines. Runs interleave
     // in a shared sink, so the range may contain other runs' lines too — readers
     // filter by runId after seeking.
@@ -85,6 +94,7 @@ interface RunRec {
     name?: string;
     costUsd: number;
     errors: number;
+    verdict?: RunVerdict;
     startOffset: number;
     endOffset: number;
 }
@@ -131,14 +141,28 @@ export class RunIndexer {
             };
             this.byRun.set(ev.runId, r);
         }
+        r.events++;
+        r.endOffset = end; // lines arrive in file order — the last one wins
+        const p = ev.payload as any;
+        // Verdicts are run-level annotations, possibly appended LONG after the
+        // run (obs-cli score) by a synthetic "user" session — they must not join
+        // the agents list or stretch the run's time bounds.
+        if (ev.type === "verdict") {
+            if (p?.status)
+                r.verdict = {
+                    status: String(p.status),
+                    outcome: p.outcome ? String(p.outcome) : undefined,
+                    note: p.note ? String(p.note) : undefined,
+                    source: p.source ? String(p.source) : undefined,
+                    ts: ev.ts,
+                };
+            return;
+        }
         if (ev.ts < r.firstTs) r.firstTs = ev.ts;
         if (ev.ts > r.lastTs) r.lastTs = ev.ts;
-        r.events++;
         r.agents.add(ev.agent);
         if (!r.cwd && ev.cwd) r.cwd = ev.cwd;
         if (ev.name) r.name = ev.name; // root-only; last named value wins
-        r.endOffset = end; // lines arrive in file order — the last one wins
-        const p = ev.payload as any;
         if (ev.type === "turn_end") r.costUsd += Number(p?.costUsd ?? 0);
         if (ev.type === "error" || (ev.type === "tool_end" && p?.isError))
             r.errors++;
@@ -168,6 +192,7 @@ function toSummary(r: RunRec): RunSummary {
         name: r.name,
         costUsd: r.costUsd,
         errors: r.errors,
+        verdict: r.verdict,
         startOffset: r.startOffset,
         endOffset: r.endOffset,
     };

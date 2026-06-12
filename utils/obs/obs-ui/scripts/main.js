@@ -47,6 +47,21 @@ $("stats-run").addEventListener("change", (e) => {
     statsRun = e.target.value;
     renderStats();
 });
+$("v-compare").addEventListener("click", () => setView("compare"));
+$("cmp-a").addEventListener("change", (e) => {
+    cmpA = e.target.value;
+    renderCompare();
+});
+$("cmp-b").addEventListener("change", (e) => {
+    cmpB = e.target.value;
+    renderCompare();
+});
+$("cmp-swap").addEventListener("click", () => {
+    const a = $("cmp-a").value;
+    cmpA = $("cmp-b").value;
+    cmpB = a;
+    renderCompare();
+});
 
 // ── trace export ──────────────────────────────────────────────────────────────
 function downloadBlob(filename, text, mime) {

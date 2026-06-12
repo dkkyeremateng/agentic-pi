@@ -265,6 +265,15 @@ function passesFilter(ev) {
 
 // ── ingest ───────────────────────────────────────────────────────────────────
 function handle(ev) {
+    // Verdicts are run-level annotations, not session activity — record them
+    // (for pickers/run history) without ever creating a lane.
+    if (ev.type === "verdict") {
+        recordVerdict(ev.runId, { ...(ev.payload || {}), ts: ev.ts });
+        if (view === "trace") scheduleTrace();
+        if (view === "stats") scheduleStats();
+        if (view === "compare") scheduleCompare();
+        return;
+    }
     const a = ensureLane(ev);
     if (!a.runId && ev.runId) a.runId = ev.runId; // backfill if the first event lacked it
     a.count++;
@@ -295,6 +304,7 @@ function handle(ev) {
     if (view === "race") scheduleRace();
     if (view === "trace") scheduleTrace();
     if (view === "stats") scheduleStats();
+    if (view === "compare") scheduleCompare();
 }
 
 // Coalesce Race re-renders to one per animation frame under a busy stream.
@@ -330,6 +340,20 @@ function scheduleStats() {
         statsDirty = false;
         statsLast = Date.now();
         if (view === "stats") renderStats();
+    }, wait);
+}
+
+// Compare aggregates two whole runs — throttle like Stats.
+let cmpDirty = false;
+let cmpLast = 0;
+function scheduleCompare() {
+    if (cmpDirty) return;
+    cmpDirty = true;
+    const wait = Math.max(0, 1500 - (Date.now() - cmpLast));
+    setTimeout(() => {
+        cmpDirty = false;
+        cmpLast = Date.now();
+        if (view === "compare") renderCompare();
     }, wait);
 }
 

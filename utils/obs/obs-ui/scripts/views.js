@@ -38,7 +38,7 @@ function buildChips() {
 
 function setView(v) {
     view = v;
-    for (const k of ["swimlane", "single", "race", "trace", "stats"]) {
+    for (const k of ["swimlane", "single", "race", "trace", "stats", "compare"]) {
         $("v-" + k).classList.toggle("on", v === k);
         $(k).classList.toggle("on", v === k);
     }
@@ -52,7 +52,8 @@ function setView(v) {
     if (v === "race") renderRace();
     if (v === "trace") renderTrace();
     if (v === "stats") renderStats();
+    if (v === "compare") renderCompare();
     // Refresh the archive's run list when a run picker comes into view.
-    if (v === "trace" || v === "stats") loadRunArchive();
+    if (v === "trace" || v === "stats" || v === "compare") loadRunArchive();
 }
 

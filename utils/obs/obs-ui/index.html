@@ -1199,6 +1199,95 @@
                 display: block;
             }
 
+            /* compare — two runs side by side (A = baseline, B = candidate) */
+            #compare {
+                padding: 16px;
+            }
+            #compare-bar {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 14px;
+                flex-wrap: wrap;
+            }
+            #cmp-a,
+            #cmp-b {
+                background: var(--panel2);
+                color: var(--fg);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 4px 8px;
+                font: inherit;
+                cursor: pointer;
+                max-width: 340px;
+            }
+            #compare-axis {
+                color: var(--dim);
+                font-size: 12px;
+            }
+            #compare-axis b {
+                color: var(--fg);
+            }
+            #compare-empty {
+                color: var(--dim);
+                padding: 30px 4px;
+            }
+            .delta {
+                font-weight: 600;
+            }
+            .delta.up {
+                color: var(--err);
+            }
+            .delta.down {
+                color: var(--ok);
+            }
+            .delta.flat {
+                color: var(--dim);
+            }
+            .cmp-only {
+                color: var(--warn);
+                font-size: 10px;
+            }
+            .cmp-chg {
+                display: inline-block;
+                padding: 0 5px;
+                border-radius: 4px;
+                font-size: 11px;
+                line-height: 17px;
+                border: 1px solid var(--warn);
+                color: var(--warn);
+            }
+            .cmp-boot-row {
+                font-size: 12px;
+                margin-bottom: 7px;
+            }
+            .cmp-boot-row b {
+                color: var(--fg);
+            }
+
+            /* run verdicts (pass/fail/open) — pickers, axes, run history */
+            .verd.pass {
+                color: var(--ok);
+            }
+            .verd.fail {
+                color: var(--err);
+            }
+            .verd.open {
+                color: var(--warn);
+            }
+            #stats-runs-card {
+                margin-top: 12px;
+                display: none; /* shown once runs exist */
+            }
+            .runhist-head {
+                color: var(--dim);
+                font-size: 12px;
+                margin-bottom: 10px;
+            }
+            .runhist-head b {
+                color: var(--fg);
+            }
+
             /* event inspector (bottom dock) */
             #inspector {
                 position: fixed;
@@ -1297,6 +1386,7 @@
                 <button id="v-race">Race</button>
                 <button id="v-trace">Trace</button>
                 <button id="v-stats">Stats</button>
+                <button id="v-compare">Compare</button>
             </div>
             <select id="projfilter" title="filter by project">
                 <option value="">all projects</option>
@@ -1450,6 +1540,50 @@
                             </div>
                         </div>
                     </div>
+                    <div class="stats-card wide" id="stats-runs-card">
+                        <h3>Run history</h3>
+                        <div id="stats-runs"></div>
+                    </div>
+                </section>
+                <section id="compare" class="view">
+                    <div id="compare-bar">
+                        <span class="trace-lbl">A</span>
+                        <select id="cmp-a" title="baseline run"></select>
+                        <span class="trace-lbl">B</span>
+                        <select id="cmp-b" title="candidate run"></select>
+                        <button
+                            id="cmp-swap"
+                            class="exp-btn"
+                            title="swap A and B"
+                        >
+                            ⇄
+                        </button>
+                        <span id="compare-axis"></span>
+                    </div>
+                    <div id="compare-empty">
+                        Need at least two runs to compare — run a workflow with
+                        <b>PI_OBS=1</b> again, or pick an archived run.
+                    </div>
+                    <div id="compare-body">
+                        <div class="stats-grid">
+                            <div class="stats-card">
+                                <h3>Headline (A → B)</h3>
+                                <div id="cmp-headline"></div>
+                            </div>
+                            <div class="stats-card">
+                                <h3>Setup changes (boot snapshot)</h3>
+                                <div id="cmp-boot"></div>
+                            </div>
+                            <div class="stats-card wide">
+                                <h3>Per-agent</h3>
+                                <div id="cmp-agents"></div>
+                            </div>
+                            <div class="stats-card wide">
+                                <h3>Tools</h3>
+                                <div id="cmp-tools"></div>
+                            </div>
+                        </div>
+                    </div>
                 </section>
             </main>
         </div>
@@ -1493,6 +1627,7 @@
         <script src="/scripts/race.js"></script>
         <script src="/scripts/trace.js"></script>
         <script src="/scripts/stats.js"></script>
+        <script src="/scripts/compare.js"></script>
         <script src="/scripts/header.js"></script>
         <script src="/scripts/main.js"></script>
     </body>

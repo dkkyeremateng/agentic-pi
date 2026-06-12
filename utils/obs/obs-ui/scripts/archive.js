@@ -12,6 +12,7 @@ const ARCHIVED_RUNS_MAX = 8; // fetched-run cache size (evict oldest)
 function archiveRerender() {
     if (view === "trace") renderTrace();
     if (view === "stats") renderStats();
+    if (view === "compare") renderCompare();
 }
 
 // Refresh the run list. Cheap (summaries only) — called on init and whenever
@@ -21,7 +22,10 @@ function loadRunArchive() {
         .then((r) => r.json())
         .then((list) => {
             if (!Array.isArray(list)) return;
-            for (const s of list) archiveRuns.set(s.runId, s);
+            for (const s of list) {
+                archiveRuns.set(s.runId, s);
+                if (s.verdict) recordVerdict(s.runId, s.verdict);
+            }
             archiveRerender();
         })
         .catch(() => {
@@ -36,10 +40,11 @@ function fetchArchivedRun(runId) {
     fetch("/events?run=" + encodeURIComponent(runId))
         .then((r) => r.json())
         .then((evs) => {
-            archivedEvents.set(
-                runId,
-                (Array.isArray(evs) ? evs : []).map(normalizeEvent),
-            );
+            const list = (Array.isArray(evs) ? evs : []).map(normalizeEvent);
+            for (const ev of list)
+                if (ev.type === "verdict")
+                    recordVerdict(ev.runId, { ...(ev.payload || {}), ts: ev.ts });
+            archivedEvents.set(runId, list);
             while (archivedEvents.size > ARCHIVED_RUNS_MAX) {
                 archivedEvents.delete(archivedEvents.keys().next().value);
             }

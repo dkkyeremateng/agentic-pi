@@ -130,3 +130,37 @@ test("RunIndexer ignores a trailing partial line until its newline arrives", () 
     idx.feed(Buffer.from("\n"));
     assert.equal(idx.get("run-p")?.events, 1);
 });
+
+test("RunIndexer captures the run verdict (last one wins)", () => {
+    const f = makeFactory({
+        sessionId: "orc-v",
+        agent: "orchestrator",
+        runId: "run-v",
+    });
+    const cli = makeFactory({
+        sessionId: "score-1",
+        agent: "user",
+        runId: "run-v",
+    });
+    const idx = new RunIndexer();
+    idx.feed(
+        sinkOf([
+            f.next("session_start", {}, 1),
+            f.next(
+                "verdict",
+                { status: "open", outcome: "needs-review", source: "workflow" },
+                2,
+            ),
+            cli.next(
+                "verdict",
+                { status: "pass", note: "looks good", source: "cli" },
+                3,
+            ),
+        ]),
+    );
+    const v = idx.get("run-v")?.verdict;
+    assert.equal(v?.status, "pass"); // the later CLI score overrides
+    assert.equal(v?.note, "looks good");
+    assert.equal(v?.source, "cli");
+    assert.equal(v?.ts, 3);
+});

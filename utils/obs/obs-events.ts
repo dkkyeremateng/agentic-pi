@@ -30,6 +30,11 @@ export type ObsEventType =
     | "dispatch_start"
     | "dispatch_retry"
     | "dispatch_end"
+    // Run-level outcome: { status: "pass"|"fail"|"open", outcome?, note?, source:
+    // "workflow"|"cli", prUrl? }. Emitted by the orchestrator when a run reaches a
+    // terminal state, or appended later by `obs-cli score` (manual scoring; the
+    // last verdict for a run wins). Powers the dashboard's run-history view.
+    | "verdict"
     | "custom";
 
 export interface ObsEvent {

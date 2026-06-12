@@ -243,6 +243,13 @@ function activeMembers(s: OrchestratorState): string[] {
 function fail(s: OrchestratorState, label: string, output: string): RunResult {
     s.running = false;
     s.lastStatus = "error";
+    // Run-level verdict for the observability stream (no-op when PI_OBS is off).
+    obsEmit("verdict", {
+        status: "fail",
+        outcome: "error",
+        note: label,
+        source: "workflow",
+    });
     return failPhase(label, output);
 }
 
@@ -747,6 +754,22 @@ export async function runWorkflowCore(
         phases: [scoutP, planP, refinerP, implP, reviewerP, valP, shipP],
     });
     writeMetrics(h, cwd, metrics);
+
+    // Run-level verdict for the observability stream — the regression signal the
+    // dashboard's run history tracks. pass = the run landed; fail = retries
+    // exhausted; everything else (needs-review, paused-no-remote) stays open.
+    // `obs-cli score` can override it later (last verdict wins).
+    obsEmit("verdict", {
+        status:
+            status === "shipped" || status === "done"
+                ? "pass"
+                : status === "failed-after-retries"
+                  ? "fail"
+                  : "open",
+        outcome: status,
+        source: "workflow",
+        ...(prUrl ? { prUrl } : {}),
+    });
 
     h.ui.publishLogs();
     return { status, report };

@@ -37,6 +37,7 @@ function collectAnalytics(runId, fromArchive) {
     // Shared per-event accumulator — fed from the live lanes or, for a run
     // that only the sink archive still holds, from its fetched events.
     const add = (agent, ev) => {
+        if (ev.type === "verdict") return; // run-level, not agent activity
         if (a.firstTs === null || ev.ts < a.firstTs) a.firstTs = ev.ts;
         if (a.lastTs === null || ev.ts > a.lastTs) a.lastTs = ev.ts;
         a.agents.add(agent);
@@ -201,6 +202,7 @@ function renderStats() {
         const isLive = live.has(r.id);
         if (isLive) o.style.color = "var(--ok)";
         o.textContent =
+            verdictMark(r.id) +
             (r.name || fmtWhen(r.firstTs)) +
             " · " +
             r.agents.size +
@@ -215,6 +217,10 @@ function renderStats() {
     const statsDot = $("stats-run-dot");
     if (statsDot)
         statsDot.classList.toggle("on", scope ? live.has(scope) : live.size > 0);
+
+    // The run-history strip renders independently of the scoped analytics — it
+    // works off the server's run index, so it shows even when the lanes are empty.
+    renderRunHistory();
 
     // A non-live scoped run whose events only the sink archive holds in full —
     // fetch them once and aggregate those instead of the lanes.
@@ -248,7 +254,8 @@ function renderStats() {
         a.turns +
         "</b> turns · wall <b>" +
         fmtDur(wall) +
-        "</b>";
+        "</b>" +
+        (scope ? verdictBadge(scope) : "");
 
     // headline tiles
     const tiles = $("stats-tiles");
@@ -351,5 +358,91 @@ function renderStats() {
 
     // cost over time
     renderCostTimeline(a.costSeries, a.firstTs, a.lastTs);
+}
+
+// ── run history (regression strip over every recorded run) ──────────────────
+// Works off the server's run index (archiveRuns) + the verdict map: "last N
+// runs: X pass · Y fail · pass rate · median cost/duration", one row per run.
+// This is the eval loop's payoff — score runs (the workflow auto-emits, or
+// `obs-cli score`) and watch the pass rate and cost trend move.
+function renderRunHistory() {
+    const card = $("stats-runs-card");
+    const box = $("stats-runs");
+    if (!card || !box) return;
+    const rows = [];
+    for (const s of archiveRuns.values()) {
+        const project = projectName(s.cwd);
+        if (projectFilter && project !== projectFilter) continue;
+        rows.push({ s, project });
+    }
+    rows.sort((x, y) => y.s.firstTs - x.s.firstTs);
+    if (!rows.length) {
+        card.style.display = "none";
+        return;
+    }
+    card.style.display = "block"; // CSS default is none until runs exist
+    const recent = rows.slice(0, 12);
+
+    let pass = 0;
+    let fail = 0;
+    for (const { s } of recent) {
+        const v = runVerdicts.get(s.runId);
+        if (v && v.status === "pass") pass++;
+        else if (v && v.status === "fail") fail++;
+    }
+    const costs = recent.map(({ s }) => s.costUsd || 0).sort((a, b) => a - b);
+    const durs = recent
+        .map(({ s }) => s.lastTs - s.firstTs)
+        .sort((a, b) => a - b);
+    const scored = pass + fail;
+    let head = "last <b>" + recent.length + "</b> runs";
+    if (scored)
+        head +=
+            ' · <b class="verd pass">' +
+            pass +
+            ' pass</b> · <b class="verd fail">' +
+            fail +
+            " fail</b> · pass rate <b>" +
+            Math.round((pass / scored) * 100) +
+            "%</b>";
+    head +=
+        " · median cost <b>" +
+        fmtCost(percentile(costs, 50)) +
+        "</b> · median duration <b>" +
+        fmtDur(percentile(durs, 50)) +
+        "</b>";
+
+    const manyProjects = new Set(rows.map((r) => r.project)).size > 1;
+    let html = '<div class="runhist-head">' + head + "</div>";
+    html +=
+        '<table class="lead"><thead><tr><th>when</th>' +
+        (manyProjects ? "<th>project</th>" : "") +
+        '<th>run</th><th class="num">agents</th><th class="num">cost</th>' +
+        '<th class="num">duration</th><th class="num">errors</th>' +
+        "<th>verdict</th></tr></thead><tbody>";
+    for (const { s, project } of recent) {
+        const badge = verdictBadge(s.runId); // " · <span…>" or ""
+        html +=
+            "<tr><td>" +
+            fmtWhen(s.firstTs) +
+            "</td>" +
+            (manyProjects ? "<td>" + escHtml(project) + "</td>" : "") +
+            '<td class="tool">' +
+            escHtml(s.name || s.runId) +
+            '</td><td class="num">' +
+            (s.agents ? s.agents.length : 0) +
+            '</td><td class="num">' +
+            fmtCost(s.costUsd || 0) +
+            '</td><td class="num">' +
+            fmtDur(s.lastTs - s.firstTs) +
+            '</td><td class="num' +
+            (s.errors ? " err" : "") +
+            '">' +
+            (s.errors || "—") +
+            "</td><td>" +
+            (badge ? badge.slice(3) : '<span class="stats-muted">—</span>') +
+            "</td></tr>";
+    }
+    box.innerHTML = html + "</tbody></table>";
 }
 

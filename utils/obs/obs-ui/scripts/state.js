@@ -25,10 +25,62 @@ const $ = (id) => document.getElementById(id);
 // its agent as the session name (when the session was named) — normalize on
 // ingestion so agent lanes never show a session name; the name surfaces as the run
 // name instead. Mutates in place; applied to every event entering the dashboard.
+// Verdict events are exempt: they're run-level annotations (agent "user" when
+// scored via obs-cli), not sessions.
 function normalizeEvent(ev) {
-    if (ev && !ev.parent && ev.agent && ev.agent !== "orchestrator")
+    if (
+        ev &&
+        !ev.parent &&
+        ev.agent &&
+        ev.agent !== "orchestrator" &&
+        ev.type !== "verdict"
+    )
         ev.agent = "orchestrator";
     return ev;
+}
+
+// ── run verdicts (pass/fail/open, from the workflow or obs-cli score) ────────
+// Run-level, not lane-level: kept out of the lanes entirely. Sourced from live
+// verdict events, /runs summaries, and fetched archive runs; last verdict wins.
+const runVerdicts = new Map(); // runId -> { status, outcome?, note?, source?, ts }
+
+function recordVerdict(runId, v) {
+    if (!runId || !v || !v.status) return;
+    const cur = runVerdicts.get(runId);
+    if (cur && v.ts != null && cur.ts != null && v.ts < cur.ts) return;
+    runVerdicts.set(runId, v);
+}
+
+// Glyph for run pickers / history ("✓ " pass, "✗ " fail, "○ " open, "" none).
+function verdictMark(runId) {
+    const v = runVerdicts.get(runId);
+    if (!v) return "";
+    return v.status === "pass" ? "✓ " : v.status === "fail" ? "✗ " : "○ ";
+}
+
+// Inline HTML badge for axis lines, with the outcome/note/source as tooltip.
+function verdictBadge(runId) {
+    const v = runVerdicts.get(runId);
+    if (!v) return "";
+    const cls =
+        v.status === "pass" ? "pass" : v.status === "fail" ? "fail" : "open";
+    const glyph = cls === "pass" ? "✓" : cls === "fail" ? "✗" : "○";
+    const tip = [v.outcome, v.note, v.source ? "(" + v.source + ")" : ""]
+        .filter(Boolean)
+        .join(" · ")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;");
+    return (
+        ' · <span class="verd ' +
+        cls +
+        '" title="' +
+        tip +
+        '">' +
+        glyph +
+        " " +
+        v.status +
+        "</span>"
+    );
 }
 
 // ── lane identity (project + agent) ──────────────────────────────────────────

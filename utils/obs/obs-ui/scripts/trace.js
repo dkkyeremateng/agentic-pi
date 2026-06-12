@@ -98,6 +98,9 @@ function buildTraceNodes(runId, source) {
     };
     for (const { ev, laneKey } of source) {
         if (ev.runId !== runId) continue;
+        // Verdicts are run-level (a CLI score even rides its own tiny session) —
+        // they must not become spans or stretch one.
+        if (ev.type === "verdict") continue;
         // dispatch_* events ride on the ORCHESTRATOR lane but describe a child.
         // Record the annotation, but still let the event extend the emitting
         // (orchestrator) span so the root bar spans the whole run.
@@ -193,6 +196,7 @@ function renderTrace() {
         const isLive = live.has(r.id);
         if (isLive) o.style.color = "var(--ok)";
         o.textContent =
+            verdictMark(r.id) +
             (r.name || fmtWhen(r.firstTs)) +
             " · " +
             r.agents.size +
@@ -303,7 +307,8 @@ function renderTrace() {
         "</b> agents · span <b>" +
         fmtDur(span) +
         "</b>" +
-        (running ? " · <b>" + running + "</b> running" : "");
+        (running ? " · <b>" + running + "</b> running" : "") +
+        verdictBadge(run.id);
 
     const tree = $("trace-tree");
     tree.innerHTML = "";
