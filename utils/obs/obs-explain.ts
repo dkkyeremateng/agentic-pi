@@ -78,6 +78,26 @@ export interface RunDigest {
     anomalies: Anomaly[];
 }
 
+// Deterministic run-level verdict from the digest's own signals — used to
+// auto-resolve runs that ended without a verdict (interactive sessions, or runs
+// from before workflow auto-scoring). `null` = nothing to judge (an empty
+// session that did no work). A run FAILS on a hard/infra failure (provider or
+// dispatch error, a truncated turn); otherwise it ended cleanly → PASS. Routine
+// tool errors do not fail a run on their own. A manual score always overrides.
+export function runAutoVerdict(d: RunDigest): "pass" | "fail" | null {
+    const worked = d.totals.turns > 0 || d.totals.toolCalls > 0;
+    if (!worked) return null;
+    const hardFail =
+        d.totals.providerErrors > 0 ||
+        d.anomalies.some(
+            (a) =>
+                a.kind === "provider-error" ||
+                a.kind === "dispatch-error" ||
+                a.kind === "truncated",
+        );
+    return hardFail ? "fail" : "pass";
+}
+
 const cap = (s: string, n: number): string =>
     s.length > n ? s.slice(0, n - 1) + "…" : s;
 

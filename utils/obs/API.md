@@ -148,6 +148,18 @@ from their resolved outcome, and the failing agent on a hard error. The Trace
 view shows these with an "auto" tag; a manual score (`source: "api"`) overrides
 them — last verdict wins.
 
+### `POST /api/verdicts/backfill`
+Auto-score every run that has **ended** (quiet > 90s) but never got a verdict,
+from its digest (`source: "auto"`). A run **fails** on a hard/infra failure
+(provider or dispatch error, a truncated turn) and **passes** if it ended cleanly
+(routine tool errors don't fail it on their own); an empty no-op session is left
+unscored. Skips runs already scored and runs a workflow deliberately left `open`
+(needs-review). Manual scores still override. Response: `{ enabled, scored }`.
+
+The server also runs this **automatically** ~3s after startup and every 60s
+(idempotent — a scored run is no longer a candidate). Disable with
+`PI_OBS_AUTO_VERDICT=0`.
+
 ### `GET /api/search?q=&limit=`
 Case-insensitive substring search over the **entire sink** (every run ever
 recorded; raw-line match, so it covers payloads and envelopes). Returns the

@@ -33,6 +33,7 @@ import {
     sseComment,
     filterRuns,
     isEmptyFinishedRun,
+    RUN_QUIET_MS,
 } from "./obs-server-core";
 import {
     parseEventLine,
@@ -43,7 +44,7 @@ import {
 } from "./obs-events";
 import { eventsToOtlp } from "./obs-otel";
 import { LineScanner, RunIndexer, type RunSummary } from "./obs-run-index";
-import { buildRunDigest, formatRunDigest } from "./obs-explain";
+import { buildRunDigest, formatRunDigest, runAutoVerdict } from "./obs-explain";
 import { llmConfig, explainRun, summarizeText, loadRepoEnv } from "./obs-llm";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -212,6 +213,51 @@ function readRunEvents(runId: string): ObsEvent[] {
         closeSync(fd);
     }
     return events;
+}
+
+// ── auto-verdict backfill ─────────────────────────────────────────────────────
+// Resolve runs that ENDED (quiet > RUN_QUIET_MS) but never got a verdict by
+// scoring them from their digest (source "auto"; a manual/CLI score overrides
+// later). Skips runs already scored, runs a workflow deliberately left "open"
+// (needs-review), and empty no-op sessions. Idempotent — once scored a run has a
+// verdict and is no longer a candidate; the per-run lastTs guard avoids redoing
+// the digest each tick for runs we already inspected.
+const AUTO_VERDICT_ENABLED =
+    process.env.PI_OBS_AUTO_VERDICT !== "0" &&
+    process.env.PI_OBS_AUTO_VERDICT !== "false";
+const autoInspected = new Map<string, number>(); // runId -> lastTs we last checked
+
+function backfillVerdicts(now = Date.now()): number {
+    if (!AUTO_VERDICT_ENABLED) return 0;
+    ensureRunIndex();
+    let scored = 0;
+    for (const run of runIndex.runs()) {
+        // already decided, or a workflow left it open on purpose → leave it
+        const v = run.verdict;
+        if (v && (v.status !== "open" || v.source === "workflow")) continue;
+        if (now - run.lastTs <= RUN_QUIET_MS) continue; // not ended yet
+        if (autoInspected.get(run.runId) === run.lastTs) continue; // unchanged since last look
+        autoInspected.set(run.runId, run.lastTs);
+
+        const verdict = runAutoVerdict(buildRunDigest(readRunEvents(run.runId)));
+        if (!verdict) continue; // empty session — nothing to judge
+
+        const f = makeFactory({
+            sessionId: `auto-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+            agent: "auto",
+            cwd: run.cwd,
+            runId: run.runId,
+        });
+        const ev = f.next("verdict", { status: verdict, source: "auto" });
+        try {
+            appendFileSync(SINK, serializeEvent(ev) + "\n", "utf-8");
+            scored++;
+        } catch {
+            /* sink not writable — try again next tick */
+            autoInspected.delete(run.runId);
+        }
+    }
+    return scored;
 }
 
 // Case-insensitive substring scan over the whole sink's raw lines, newest
@@ -442,6 +488,7 @@ function handleApi(
                 "POST /api/runs/:id/verdict  {status, note?, agent?}  (agent scopes it to one agent's run)",
                 "GET  /api/search?q=&limit=",
                 "POST /api/summarize  {text, kind?}  (LLM; opt-in PI_OBS_LLM=1)",
+                "POST /api/verdicts/backfill  (auto-score ended, still-open runs)",
                 "GET  /api/stream  (SSE; ?run= filters)",
             ],
         });
@@ -452,6 +499,15 @@ function handleApi(
 
     if (a === "summary" && req.method === "GET") {
         apiJson(res, 200, store.summary());
+        return;
+    }
+    // Manually trigger the auto-verdict backfill for ended, still-open runs.
+    if (a === "verdicts" && seg[2] === "backfill" && req.method === "POST") {
+        if (!AUTO_VERDICT_ENABLED) {
+            apiJson(res, 200, { enabled: false, scored: 0, hint: "set PI_OBS_AUTO_VERDICT=1 to enable" });
+            return;
+        }
+        apiJson(res, 200, { enabled: true, scored: backfillVerdicts() });
         return;
     }
     if (a === "events" && seg.length === 2 && req.method === "GET") {
@@ -840,6 +896,12 @@ setInterval(() => {
 primeOffset(); // bound the startup replay to the file's tail
 readDelta(); // prime from recent events
 setInterval(readDelta, 250).unref();
+
+// Auto-score ended-but-unverdicted runs shortly after startup, then periodically.
+if (AUTO_VERDICT_ENABLED) {
+    setTimeout(backfillVerdicts, 3_000).unref();
+    setInterval(backfillVerdicts, 60_000).unref();
+}
 
 server.listen(opts.port, "127.0.0.1", () => {
     process.stdout.write(

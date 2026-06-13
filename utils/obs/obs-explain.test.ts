@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRunDigest, formatRunDigest } from "./obs-explain";
+import { buildRunDigest, formatRunDigest, runAutoVerdict } from "./obs-explain";
 import { makeFactory, type ObsEvent } from "./obs-events";
 
 // A small but eventful run: orchestrator + scout (retried once), a failing and
@@ -120,6 +120,29 @@ test("buildRunDigest routes agent-scoped verdicts into agentVerdicts, leaving th
     assert.equal(d.verdict?.status, "fail"); // whole-run verdict untouched
     assert.equal(d.agentVerdicts?.scout?.status, "pass"); // scout scored on its own
     assert.equal(d.agentVerdicts?.orchestrator, undefined); // others unscored
+});
+
+test("runAutoVerdict: hard failures fail, clean work passes, empty is null", () => {
+    // the fixture run had a provider/dispatch/truncated path → fail
+    assert.equal(runAutoVerdict(buildRunDigest(fixtures())), "fail");
+
+    // a clean run that did work with only a routine tool error → pass
+    const f = makeFactory({ sessionId: "s", agent: "orchestrator", runId: "ok", cwd: "/p" });
+    const clean = buildRunDigest([
+        f.next("session_start", { model: "m" }, 0),
+        f.next("tool_start", { tool: "bash", toolCallId: "t" }, 1),
+        f.next("tool_end", { tool: "bash", toolCallId: "t", isError: true }, 2), // routine tool error
+        f.next("turn_end", { turnIndex: 0, tokens: { total: 100 }, costUsd: 0.01 }, 3),
+        f.next("session_end", {}, 4),
+    ]);
+    assert.equal(runAutoVerdict(clean), "pass");
+
+    // a session that did no work → nothing to judge
+    const empty = buildRunDigest([
+        f.next("session_start", { model: "m" }, 0),
+        f.next("session_end", {}, 1),
+    ]);
+    assert.equal(runAutoVerdict(empty), null);
 });
 
 test("buildRunDigest detects the anomaly set", () => {
