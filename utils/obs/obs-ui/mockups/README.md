@@ -98,6 +98,13 @@ pass/fail feedback (Phoenix annotations → our `POST /verdict`).
 | Risk / build cost | low | medium | medium | medium |
 | Best for | continuity with vanilla | product polish, demos | all-day monitoring | eval workflows, familiarity |
 
+## Decision (2026-06-13)
+
+**Chosen: v2 Observe** as the foundation, with v4's span tree + I/O
+detail anatomy as the Trace tab and v3's run timeline strip as the runs
+inbox header. Rationale + the component/phase mapping live in
+[`../ui.md`](../ui.md) §7. v1/v3/v4 stay here as reference.
+
 ## Decision notes
 
 - The three are **composable**: e.g. v2's run-inbox IA + v3's timeline
