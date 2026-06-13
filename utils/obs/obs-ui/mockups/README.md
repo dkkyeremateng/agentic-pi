@@ -114,8 +114,13 @@ is the same decided language extended to **all four nav segments**, wired
 so the top-bar segmented control actually switches between them (the only
 JS in the mockups — a 6-line tab toggle):
 
-- **Runs** — runs inbox + timeline strip → run hero + v4 Trace anatomy →
-  digest pane (identical to `v5-decided.html`).
+- **Runs** — runs inbox + timeline strip → run hero + digest pane. The
+  run-detail body is itself tabbed (also clickable): **Trace** (span tree
+  + IO), **Timeline** (per-agent gantt lanes + replay scrubber),
+  **Events** (turn-grouped event log with filter chips), **Stats**
+  (this-run spend/tokens/tools/models charts — distinct from the cross-run
+  **Analytics** segment), and **Raw** (syntax-highlighted JSONL of the
+  `ObsEvent`s).
 - **Live** — the watching-it-happen wall: a grid of per-agent cards
   (status dot, ctx meter, streaming feed, cost/tok/tool/turn footer,
   stall badge) beside a **Live tail** with a throughput sparkline. Maps
