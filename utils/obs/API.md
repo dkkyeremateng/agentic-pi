@@ -64,10 +64,16 @@ Each run summary:
   "cwd": "/Users/you/projects/plp",
   "name": "fix flaky validator",
   "costUsd": 1.85, "tokens": 41280, "toolCalls": 36, "errors": 0,
+  "models": ["anthropic/claude-fable-5", "gateframe/gpt-5-nano"],
+  "modelCost": { "anthropic/claude-fable-5": 1.6, "gateframe/gpt-5-nano": 0.25 },
   "verdict": { "status": "pass", "source": "workflow", "ts": 1781233775100 },
   "startOffset": 91234, "endOffset": 287654
 }
 ```
+
+`modelCost` attributes each turn's cost to its session's model (from
+`session_start`), so spend is correct even when sub-agents run on different
+models from the orchestrator.
 
 (`startOffset`/`endOffset` are internal sink byte ranges — ignore them.)
 `tokens`/`toolCalls` let a UI spot a do-nothing run: the bundled dashboard hides

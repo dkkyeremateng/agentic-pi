@@ -167,6 +167,25 @@ test("RunIndexer captures the run verdict (last one wins)", () => {
     assert.equal(v?.ts, 3);
 });
 
+test("RunIndexer attributes per-session turn cost to each model", () => {
+    const orc = makeFactory({ sessionId: "orc", agent: "orchestrator", runId: "run-mc", cwd: "/p" });
+    const sub = makeFactory({ sessionId: "sub", agent: "implementer", parent: "orchestrator", runId: "run-mc", cwd: "/p" });
+    const idx = new RunIndexer();
+    idx.feed(
+        sinkOf([
+            orc.next("session_start", { model: "anthropic/claude-fable-5" }, 1),
+            orc.next("turn_end", { costUsd: 0.5, tokens: { total: 10 } }, 2),
+            sub.next("session_start", { model: "gateframe/gpt-5-nano" }, 3),
+            sub.next("turn_end", { costUsd: 0.2, tokens: { total: 5 } }, 4),
+            orc.next("turn_end", { costUsd: 0.3, tokens: { total: 8 } }, 5),
+        ]),
+    );
+    const r = idx.get("run-mc")!;
+    assert.deepEqual(r.models, ["anthropic/claude-fable-5", "gateframe/gpt-5-nano"]); // sorted
+    assert.ok(Math.abs(r.modelCost["anthropic/claude-fable-5"] - 0.8) < 1e-9); // 0.5 + 0.3
+    assert.ok(Math.abs(r.modelCost["gateframe/gpt-5-nano"] - 0.2) < 1e-9);
+});
+
 test("RunIndexer counts tool_start calls and flags an all-zero (empty) run", () => {
     const f = makeFactory({ sessionId: "orc", agent: "orchestrator", runId: "run-tools", cwd: "/p" });
     const e = makeFactory({ sessionId: "orc2", agent: "orchestrator", runId: "run-empty", cwd: "/p" });

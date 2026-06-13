@@ -77,6 +77,8 @@ export interface RunSummary {
     costUsd: number;
     tokens: number; // total tokens across turns
     toolCalls: number; // tool invocations (tool_start count)
+    models: string[]; // distinct models used in the run (sorted)
+    modelCost: Record<string, number>; // turn cost attributed to each model
     errors: number; // error events + tool errors
     verdict?: RunVerdict; // last verdict wins (re-scoring overrides)
     // Byte range in the sink covering all of this run's lines. Runs interleave
@@ -97,6 +99,9 @@ interface RunRec {
     costUsd: number;
     tokens: number;
     toolCalls: number;
+    models: Set<string>;
+    sessionModel: Map<string, string>; // sessionId -> its session_start model
+    modelCost: Map<string, number>;
     errors: number;
     verdict?: RunVerdict;
     startOffset: number;
@@ -141,6 +146,9 @@ export class RunIndexer {
                 costUsd: 0,
                 tokens: 0,
                 toolCalls: 0,
+                models: new Set(),
+                sessionModel: new Map(),
+                modelCost: new Map(),
                 errors: 0,
                 startOffset: start,
                 endOffset: end,
@@ -172,9 +180,21 @@ export class RunIndexer {
         r.agents.add(ev.agent);
         if (!r.cwd && ev.cwd) r.cwd = ev.cwd;
         if (ev.name) r.name = ev.name; // root-only; last named value wins
+        // Map each session to its model (from session_start) so turn cost can be
+        // attributed to the right model even across sub-agents on different models.
+        if (ev.type === "session_start" && typeof p?.model === "string") {
+            r.models.add(p.model);
+            r.sessionModel.set(ev.sessionId, p.model);
+        }
         if (ev.type === "turn_end") {
-            r.costUsd += Number(p?.costUsd ?? 0);
+            const cost = Number(p?.costUsd ?? 0);
+            r.costUsd += cost;
             r.tokens += Number(p?.tokens?.total ?? 0);
+            const m = r.sessionModel.get(ev.sessionId) ?? (typeof p?.model === "string" ? p.model : "");
+            if (m) {
+                r.models.add(m);
+                r.modelCost.set(m, (r.modelCost.get(m) ?? 0) + cost);
+            }
         }
         if (ev.type === "tool_start") r.toolCalls++;
         if (ev.type === "error" || (ev.type === "tool_end" && p?.isError))
@@ -206,6 +226,8 @@ function toSummary(r: RunRec): RunSummary {
         costUsd: r.costUsd,
         tokens: r.tokens,
         toolCalls: r.toolCalls,
+        models: [...r.models].sort(),
+        modelCost: Object.fromEntries(r.modelCost),
         errors: r.errors,
         verdict: r.verdict,
         startOffset: r.startOffset,
