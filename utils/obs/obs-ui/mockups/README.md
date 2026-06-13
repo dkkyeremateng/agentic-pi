@@ -102,8 +102,9 @@ pass/fail feedback (Phoenix annotations → our `POST /verdict`).
 
 **Chosen: v2 Observe** as the foundation, with v4's span tree + I/O
 detail anatomy as the Trace tab and v3's run timeline strip as the runs
-inbox header. Rationale + the component/phase mapping live in
-[`../ui.md`](../ui.md) §7. v1/v3/v4 stay here as reference.
+inbox header. **`v5-decided.html` renders the full blend in one frame —
+the canonical visual reference for R1.** Rationale + the component/phase
+mapping live in [`../ui.md`](../ui.md) §7. v1/v3/v4 stay as reference.
 
 ## Decision notes
 
