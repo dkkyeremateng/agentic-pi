@@ -9,6 +9,7 @@ open utils/obs/obs-ui/mockups/v1-evolution.html
 open utils/obs/obs-ui/mockups/v2-observe.html
 open utils/obs/obs-ui/mockups/v3-mission.html
 open utils/obs/obs-ui/mockups/v4-platform.html
+open utils/obs/obs-ui/mockups/v5-decided-all.html   # the chosen blend, all 4 segments (clickable)
 ```
 
 They are **concept frames, not implementations** — no JS, hand-positioned
@@ -105,6 +106,31 @@ detail anatomy as the Trace tab and v3's run timeline strip as the runs
 inbox header. **`v5-decided.html` renders the full blend in one frame —
 the canonical visual reference for R1.** Rationale + the component/phase
 mapping live in [`../ui.md`](../ui.md) §7. v1/v3/v4 stay as reference.
+
+### `v5-decided-all.html` — all four segments, clickable
+
+`v5-decided.html` shows only the **Runs** segment. `v5-decided-all.html`
+is the same decided language extended to **all four nav segments**, wired
+so the top-bar segmented control actually switches between them (the only
+JS in the mockups — a 6-line tab toggle):
+
+- **Runs** — runs inbox + timeline strip → run hero + v4 Trace anatomy →
+  digest pane (identical to `v5-decided.html`).
+- **Live** — the watching-it-happen wall: a grid of per-agent cards
+  (status dot, ctx meter, streaming feed, cost/tok/tool/turn footer,
+  stall badge) beside a **Live tail** with a throughput sparkline. Maps
+  to `/api/stream` (SSE).
+- **Analytics** — Stats + Compare in one: a 6-card KPI band with deltas,
+  a bar+line **throughput & cost** chart, **spend by agent** bars, a
+  **Compare A↔B** card (mini-waterfalls + delta table), and a **slowest
+  tools** p50/p95 table. Aggregates derive client-side from `/api/runs`;
+  Compare = two `/api/runs/:id`.
+- **Search** — cross-run search: a query bar with `tool:`/`status:`/
+  `agent:`/`model:`/`run:` prefixes, a facet rail (event type / agent /
+  verdict counts), and a results list with highlighted match snippets.
+  Maps to `/api/search`.
+
+Open it and click **Runs · Live · Analytics · Search** in the top bar.
 
 ## Decision notes
 
