@@ -10,6 +10,13 @@ bundled vanilla dashboard uses equivalent unprefixed legacy routes; treat
   it to pages and apps on the same machine.
 - **Auth**: none (localhost-only by design).
 - **Content type**: `application/json` unless noted.
+- **Sink aggregation**: when tailing the shared global sink
+  (`~/.pi/agent/obs/events.jsonl`, the no-arg default), the server also reads
+  every per-project sink beside it (`<dir>/*/events.jsonl`), so `/runs`,
+  `/summary`, `/search`, digests, etc. span all projects. Auto-on for the global
+  sink; force with `PI_OBS_AGGREGATE=1`, disable with `PI_OBS_AGGREGATE=0`. Each
+  run's events are read from the file that holds them. `GET /api` reports
+  `aggregate` + the `sinks` list when active.
 - **Run ids**: every `:id` accepts the full runId or any **unique prefix**
   (`404` with an explanatory error when missing or ambiguous).
 - **Errors**: non-2xx responses are `{ "error": "<message>" }`.
