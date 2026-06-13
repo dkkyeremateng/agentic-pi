@@ -110,6 +110,18 @@ test("buildRunDigest aggregates totals and bounds (verdict excluded from bounds)
     assert.equal(d.agents[1].maxContextPct, 82);
 });
 
+test("buildRunDigest routes agent-scoped verdicts into agentVerdicts, leaving the run verdict alone", () => {
+    const cli = makeFactory({ sessionId: "score-2", agent: "user", runId: "run-x" });
+    const evs = [
+        ...fixtures(), // already carries a run-level "fail" verdict
+        cli.next("verdict", { status: "pass", agent: "scout", source: "api" }, 1_000_000),
+    ];
+    const d = buildRunDigest(evs);
+    assert.equal(d.verdict?.status, "fail"); // whole-run verdict untouched
+    assert.equal(d.agentVerdicts?.scout?.status, "pass"); // scout scored on its own
+    assert.equal(d.agentVerdicts?.orchestrator, undefined); // others unscored
+});
+
 test("buildRunDigest detects the anomaly set", () => {
     const d = buildRunDigest(fixtures());
     const kinds = d.anomalies.map((a) => a.kind);

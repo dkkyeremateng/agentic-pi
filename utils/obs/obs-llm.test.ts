@@ -1,0 +1,111 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { llmConfig, compactRun, parseResult, explainRun, summarizeText, loadRepoEnv, type RunPi } from "./obs-llm";
+import { buildRunDigest } from "./obs-explain";
+import { makeFactory, type ObsEvent } from "./obs-events";
+
+function fixtures(): ObsEvent[] {
+    const f = makeFactory({ sessionId: "orch-1", agent: "orchestrator", runId: "run-x", cwd: "/home/me/proj" });
+    return [
+        f.next("session_start", { model: "claude-fable-5" }, 0),
+        f.next("tool_start", { tool: "bash", toolCallId: "t1" }, 10),
+        f.next("tool_end", { tool: "bash", toolCallId: "t1", isError: true, summary: "exit 1 — 1 failing", ms: 31700 }, 40),
+        f.next("turn_end", { turnIndex: 0, tokens: { total: 12000 }, costUsd: 0.21 }, 60),
+        f.next("dispatch_start", { agent: "reviewer", task: "review the diff" }, 70),
+    ];
+}
+
+test("loadRepoEnv loads keys (strips inline comments), shell env still wins", () => {
+    const dir = mkdtempSync(join(tmpdir(), "obsenv-"));
+    const f = join(dir, ".env");
+    writeFileSync(
+        f,
+        ["# a comment", "PI_OBS_LLM=1", "PI_OBS_LLM_MODEL=anthropic/claude-haiku-4-5   # inline note", 'QUOTED="has space"', "ALREADY=fromfile"].join("\n"),
+    );
+    const env: NodeJS.ProcessEnv = { ALREADY: "fromshell" };
+    loadRepoEnv(f, env);
+    assert.equal(env.PI_OBS_LLM, "1");
+    assert.equal(env.PI_OBS_LLM_MODEL, "anthropic/claude-haiku-4-5"); // inline comment stripped
+    assert.equal(env.QUOTED, "has space");
+    assert.equal(env.ALREADY, "fromshell"); // real env wins over the file
+    // a missing file is a silent no-op
+    loadRepoEnv(join(dir, "nope.env"), env);
+});
+
+test("summarizeText runs pi with the summary prompt and caches by content hash", async () => {
+    const cfg = llmConfig({ PI_OBS_LLM: "1" });
+    let calls = 0;
+    let sawSystem = "";
+    const fakePi: RunPi = async (_model, system, prompt) => {
+        calls++;
+        sawSystem = system;
+        assert.match(prompt, /input of a tool call/);
+        return "Fetches Jira ticket TTP-10962 via the atlassian CLI";
+    };
+    const r1 = await summarizeText("atlassian ticket TTP-10962 | jq …", "input", cfg, fakePi);
+    assert.equal(r1.summary, "Fetches Jira ticket TTP-10962 via the atlassian CLI");
+    assert.match(sawSystem, /ONE short, plain sentence/);
+    assert.equal(r1.cached, undefined);
+    const r2 = await summarizeText("atlassian ticket TTP-10962 | jq …", "input", cfg, fakePi);
+    assert.equal(r2.cached, true); // same text+kind → cached, pi not re-invoked
+    assert.equal(calls, 1);
+});
+
+test("llmConfig is off by default and resolves the model from env", () => {
+    assert.equal(llmConfig({}).enabled, false);
+    // explicit obs model wins
+    assert.equal(llmConfig({ PI_OBS_LLM: "1", PI_OBS_LLM_MODEL: "anthropic/claude-opus-4-8" }).model, "anthropic/claude-opus-4-8");
+    // else falls back to the workflow model
+    assert.equal(llmConfig({ PI_OBS_LLM: "true", PI_WORKFLOW_MODEL: "gateframe/gpt-5-nano" }).model, "gateframe/gpt-5-nano");
+    // else EMPTY → the pi spawn omits --model and inherits the primary session's model
+    assert.equal(llmConfig({ PI_OBS_LLM: "1" }).model, "");
+});
+
+test("compactRun renders bounded facts from the digest", () => {
+    const text = compactRun(buildRunDigest(fixtures()), fixtures());
+    assert.match(text, /run run-x/);
+    assert.match(text, /project proj/);
+    assert.match(text, /tool errors/);
+    assert.match(text, /bash/);
+    assert.match(text, /notable events:/);
+});
+
+test("parseResult handles bare JSON, fenced JSON, and raw-text fallback", () => {
+    assert.deepEqual(parseResult('{"narrative":"all good","recommendations":["x"]}'), {
+        narrative: "all good",
+        recommendations: ["x"],
+    });
+    assert.deepEqual(parseResult('```json\n{"narrative":"fenced","recommendations":[]}\n```'), {
+        narrative: "fenced",
+        recommendations: [],
+    });
+    assert.deepEqual(parseResult("just prose, no json"), { narrative: "just prose, no json", recommendations: [] });
+});
+
+test("explainRun calls pi with the configured model and caches by runId+endTs", async () => {
+    const digest = buildRunDigest(fixtures());
+    const cfg = llmConfig({ PI_OBS_LLM: "1", PI_OBS_LLM_MODEL: "anthropic/claude-haiku-4-5" });
+    let calls = 0;
+    let sawModel = "";
+    let sawSystem = "";
+    const fakePi: RunPi = async (model, system, prompt) => {
+        calls++;
+        sawModel = model;
+        sawSystem = system;
+        assert.match(prompt, /run run-x/); // gets the compacted digest
+        return '{"narrative":"the bash test failed once then the run continued","recommendations":["fix the flaky test"]}';
+    };
+    const r1 = await explainRun("run-x", digest, fixtures(), cfg, fakePi);
+    assert.equal(r1.model, "anthropic/claude-haiku-4-5");
+    assert.equal(sawModel, "anthropic/claude-haiku-4-5");
+    assert.match(sawSystem, /ONLY a JSON object/);
+    assert.equal(r1.recommendations[0], "fix the flaky test");
+    assert.equal(r1.cached, undefined);
+    // second call for the same runId+endTs is served from cache (pi not invoked)
+    const r2 = await explainRun("run-x", digest, fixtures(), cfg, fakePi);
+    assert.equal(r2.cached, true);
+    assert.equal(calls, 1);
+});

@@ -45,10 +45,13 @@ Live rollup of the in-memory buffer (recent activity, not full history):
 The recent live buffer (ring of the last ~5000 events), oldest-first.
 `limit` returns only the newest N.
 
-### `GET /api/runs?project=&since=&limit=`
-Every run ever recorded in the sink (byte-range indexed, latest-first).
-Filters: `project` (basename of the run's cwd, e.g. `proj-alpha`), `since`
-(epoch ms or ISO date — runs that *started* at/after it), `limit` (newest N).
+### `GET /api/runs?project=&since=&limit=&includeEmpty=`
+Every run recorded in the sink (byte-range indexed, latest-first), **except
+finished no-op runs** — those with `costUsd`, `tokens`, and `toolCalls` all `0`
+that have been quiet for >90s are omitted (a still-live all-zero run is kept).
+Pass `includeEmpty=1` to get them too. Filters: `project` (basename of the run's
+cwd, e.g. `proj-alpha`), `since` (epoch ms or ISO date — runs that *started*
+at/after it), `limit` (newest N).
 
 Each run summary:
 
@@ -60,13 +63,16 @@ Each run summary:
   "agents": ["orchestrator", "scout", "implementer"],
   "cwd": "/Users/you/projects/plp",
   "name": "fix flaky validator",
-  "costUsd": 1.85, "errors": 0,
+  "costUsd": 1.85, "tokens": 41280, "toolCalls": 36, "errors": 0,
   "verdict": { "status": "pass", "source": "workflow", "ts": 1781233775100 },
   "startOffset": 91234, "endOffset": 287654
 }
 ```
 
 (`startOffset`/`endOffset` are internal sink byte ranges — ignore them.)
+`tokens`/`toolCalls` let a UI spot a do-nothing run: the bundled dashboard hides
+runs with `costUsd`, `tokens`, and `toolCalls` all `0` once they've gone quiet
+(a live run that hasn't taken its first turn is kept).
 
 ### `GET /api/runs/:id`
 One run's summary (shape above).
@@ -85,17 +91,62 @@ detail }] }`. Anomaly kinds: `retry · dispatch-error · truncated · tool-error
 provider-error · slow-tool · slow-turn · cost-outlier · compaction · context`.
 `format=text` returns the human/LLM-ready markdown rendering instead.
 
+### `GET /api/runs/:id/explain`
+An **optional** LLM narrative of the run — a 2-4 sentence plain-language summary
+plus up to 3 recommendations, built on top of the deterministic `/digest`.
+**Off by default.** When disabled it returns `{ "enabled": false, "hint": … }`
+(a 200, not an error, so a UI can show a "configure me" state). When enabled it
+returns `{ "enabled": true, "narrative", "recommendations": [string], "model",
+"ts", "cached"? }`. Results are cached by `runId + endTs`.
+
+It runs the **`pi` CLI** one-shot (`pi --mode text -p --no-tools --no-session
+--no-skills --no-extensions --model <model> …`), so it reuses pi's own provider
+auth and the same model strings the workflow uses — no separate API key, no SDK
+dependency. Server-side config (env, all opt-in):
+
+| Env var | Default | Notes |
+|---|---|---|
+| `PI_OBS_LLM` | _(off)_ | `1`/`true` to enable |
+| `PI_OBS_LLM_MODEL` | `PI_WORKFLOW_MODEL`, else the primary session's model | any pi model id; unset → the spawn omits `--model` so it inherits the running agent's own model (no forced third-party default) |
+| `PI_OBS_LLM_TIMEOUT_MS` | `60000` | kill the pi spawn after this |
+
+Requires `pi` on the server's PATH.
+
+### `POST /api/summarize`
+A one-sentence LLM summary of an arbitrary trace chunk — the Trace view uses it
+to summarize a single I/O block (tool args or a tool result) on demand. Body:
+`{ "text": string, "kind"?: string }` (`kind` is a label like `"input"` /
+`"output"`, ≤40 chars, used only to shape the prompt). Same opt-in and config as
+`/explain` (`PI_OBS_LLM*`, the `pi` CLI, the configured model). **Off by
+default** → `{ "enabled": false, "hint": … }` (a 200). When enabled →
+`{ "enabled": true, "summary": string, "cached"? }`; a provider/spawn failure
+returns `{ "enabled": true, "error": string }` (still a 200, so the UI can show
+it). Results are cached by `kind + sha256(text)`. Body is capped at 256 KB and
+the text is truncated to 6000 chars before the model sees it.
+
 ### `GET /api/runs/:id/otel`
 The run as an OTLP/JSON trace (OpenTelemetry GenAI semantic conventions) —
 POST it to any OTel backend. (Live forwarding also exists server-side via
 `PI_OBS_OTLP_ENDPOINT`.)
 
 ### `POST /api/runs/:id/verdict`
-Score a run. Body: `{ "status": "pass" | "fail" | "open", "note"?: string }`.
-Appends a verdict event to the sink (source `"api"`); the tailer broadcasts it,
-so open dashboards update live. **The last verdict for a run wins** — this
-overrides the workflow's auto-verdict or an earlier score. Response:
+Score a run. Body: `{ "status": "pass" | "fail" | "open", "note"?: string,
+"agent"?: string }`. Appends a verdict event to the sink (source `"api"`); the
+tailer broadcasts it, so open dashboards update live. **The last verdict wins** —
+this overrides the workflow's auto-verdict or an earlier score. Response:
 `{ ok, runId, verdict, previous }`.
+
+Pass **`agent`** to scope the verdict to a single agent's run *within* this run
+(e.g. score the `implementer` independently of the orchestrator). Agent-scoped
+verdicts are surfaced separately in the digest as `agentVerdicts[agent]` and do
+**not** set the run-level `verdict` (so run cards/inbox stay driven by the
+whole-run score). Last verdict per agent wins.
+
+The workflow auto-scores each agent as it finishes (`source: "auto"`): scout /
+planner / refiner pass on completion, implementer / validator / reviewer / shipper
+from their resolved outcome, and the failing agent on a hard error. The Trace
+view shows these with an "auto" tag; a manual score (`source: "api"`) overrides
+them — last verdict wins.
 
 ### `GET /api/search?q=&limit=`
 Case-insensitive substring search over the **entire sink** (every run ever

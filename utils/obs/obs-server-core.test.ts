@@ -5,6 +5,7 @@ import {
     summarize,
     sseFrame,
     filterRuns,
+    isEmptyFinishedRun,
 } from "./obs-server-core";
 import { makeFactory, type ObsEvent } from "./obs-events";
 
@@ -115,4 +116,20 @@ test("filterRuns scopes by project basename, since, and limit", () => {
         ["b"],
     );
     assert.equal(filterRuns(runs, {}).length, 3);
+});
+
+test("isEmptyFinishedRun hides only quiet all-zero runs", () => {
+    const NOW = 1_000_000;
+    const quiet = NOW - 200_000; // older than RUN_QUIET_MS (90s)
+    const recent = NOW - 1_000;
+    // quiet + all zero → hidden
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, tokens: 0, toolCalls: 0, lastTs: quiet }, NOW), true);
+    // still live (recent) → kept, even though all-zero
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, tokens: 0, toolCalls: 0, lastTs: recent }, NOW), false);
+    // quiet but did real work → kept
+    assert.equal(isEmptyFinishedRun({ costUsd: 0.2, tokens: 0, toolCalls: 0, lastTs: quiet }, NOW), false);
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, tokens: 100, toolCalls: 0, lastTs: quiet }, NOW), false);
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, tokens: 0, toolCalls: 3, lastTs: quiet }, NOW), false);
+    // missing tokens/toolCalls (older server shape) treated as 0
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, lastTs: quiet }, NOW), true);
 });

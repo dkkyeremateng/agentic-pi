@@ -84,6 +84,8 @@ test("RunIndexer indexes interleaved runs with correct ranges", () => {
     assert.deepEqual(ra.agents, ["orchestrator"]);
     assert.equal(ra.cwd, "/proj/run-a");
     assert.equal(ra.costUsd, 0.5);
+    assert.equal(ra.tokens, 10); // summed from turn_end tokens.total
+    assert.equal(ra.toolCalls, 0); // no tool_start in this fixture
     assert.equal(ra.errors, 1); // the failing tool_end
     assert.equal(ra.firstTs, 1000);
     assert.equal(ra.lastTs, 1030);
@@ -163,4 +165,44 @@ test("RunIndexer captures the run verdict (last one wins)", () => {
     assert.equal(v?.note, "looks good");
     assert.equal(v?.source, "cli");
     assert.equal(v?.ts, 3);
+});
+
+test("RunIndexer counts tool_start calls and flags an all-zero (empty) run", () => {
+    const f = makeFactory({ sessionId: "orc", agent: "orchestrator", runId: "run-tools", cwd: "/p" });
+    const e = makeFactory({ sessionId: "orc2", agent: "orchestrator", runId: "run-empty", cwd: "/p" });
+    const idx = new RunIndexer();
+    idx.feed(
+        sinkOf([
+            f.next("session_start", {}, 1),
+            f.next("tool_start", { tool: "bash" }, 2),
+            f.next("tool_end", {}, 3),
+            f.next("tool_start", { tool: "grep" }, 4),
+            f.next("turn_end", { costUsd: 0.1, tokens: { total: 5 } }, 5),
+            // a do-nothing run: only session start/end, no turns/tools/cost
+            e.next("session_start", {}, 6),
+            e.next("session_end", {}, 7),
+        ]),
+    );
+    const tools = idx.get("run-tools")!;
+    assert.equal(tools.toolCalls, 2); // two tool_start events
+    assert.equal(tools.tokens, 5);
+
+    const empty = idx.get("run-empty")!;
+    assert.equal(empty.costUsd, 0);
+    assert.equal(empty.tokens, 0);
+    assert.equal(empty.toolCalls, 0); // ← the dashboard hides this once it's quiet
+});
+
+test("agent-scoped verdicts do not become the run-level verdict", () => {
+    const f = makeFactory({ sessionId: "orc-av", agent: "orchestrator", runId: "run-av" });
+    const cli = makeFactory({ sessionId: "score-av", agent: "user", runId: "run-av" });
+    const idx = new RunIndexer();
+    idx.feed(
+        sinkOf([
+            f.next("session_start", {}, 1),
+            // a verdict targeting just the implementer's run — must be ignored at run level
+            cli.next("verdict", { status: "fail", agent: "implementer", source: "api" }, 2),
+        ]),
+    );
+    assert.equal(idx.get("run-av")?.verdict, undefined); // run stays unscored
 });

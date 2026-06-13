@@ -240,10 +240,49 @@ function activeMembers(s: OrchestratorState): string[] {
     );
 }
 
+// Emit a persisted, agent-scoped auto-verdict on the obs stream (scoped via
+// payload.agent; a manual UI/CLI score overrides it later — last verdict wins).
+// No-op when PI_OBS is off or the phase didn't run.
+function emitAgentVerdict(
+    phase: PhaseState | undefined,
+    status: "pass" | "fail" | "open",
+    outcome?: string,
+): void {
+    if (!phase) return;
+    obsEmit("verdict", {
+        status,
+        agent: phase.agent,
+        source: "auto",
+        ...(outcome ? { outcome } : {}),
+    });
+}
+
+// fail() only carries a human label — map it back to the agent that failed so
+// the agent-scoped verdict points at the right span.
+const FAIL_AGENT: Record<string, string> = {
+    Scouting: "scout",
+    Planning: "planner",
+    Refining: "refiner",
+    Implementing: "implementer",
+    Review: "reviewer",
+    Validation: "validator",
+    Shipping: "shipper",
+};
+
 function fail(s: OrchestratorState, label: string, output: string): RunResult {
     s.running = false;
     s.lastStatus = "error";
-    // Run-level verdict for the observability stream (no-op when PI_OBS is off).
+    // Per-agent auto-verdict for the failing agent (scoped), then the run-level
+    // verdict. Both are no-ops when PI_OBS is off.
+    const agent = FAIL_AGENT[label];
+    if (agent)
+        obsEmit("verdict", {
+            status: "fail",
+            agent,
+            outcome: "error",
+            note: label,
+            source: "auto",
+        });
     obsEmit("verdict", {
         status: "fail",
         outcome: "error",
@@ -434,6 +473,7 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!scoutRes.ok) return fail(s, "Scouting", scoutRes.output);
+        emitAgentVerdict(scoutP, "pass", "completed");
         scoutFindings = scoutRes.output;
         runArtifacts.recon = scoutFindings;
     }
@@ -449,6 +489,7 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!plan.ok) return fail(s, "Planning", plan.output);
+        emitAgentVerdict(planP, "pass", "completed");
         // The planner's message IS the plan (reliable model output). Strip any
         // conversational preamble, then persist it to .agent/plan.md — the file the
         // refiner and downstream agents read. (We do NOT trust a file the agent may
@@ -471,6 +512,7 @@ export async function runWorkflowCore(
             cwd,
         );
         if (!refine.ok) return fail(s, "Refining", refine.output);
+        emitAgentVerdict(refinerP, "pass", "completed");
         // The refiner's message is the full hardened plan — it becomes THE plan;
         // strip any preamble and persist it (overwriting the planner's draft).
         plan = refine;
@@ -754,6 +796,30 @@ export async function runWorkflowCore(
         phases: [scoutP, planP, refinerP, implP, reviewerP, valP, shipP],
     });
     writeMetrics(h, cwd, metrics);
+
+    // Per-agent auto-verdicts (scoped to each agent's run) for the gated agents,
+    // from their resolved outcomes. Linear phases were scored at their own
+    // completion above; the failing agent (if any) is scored in fail(). A manual
+    // UI/CLI score overrides any of these later (last verdict wins).
+    emitAgentVerdict(
+        implP,
+        passed ? "pass" : verdict === "fail" ? "fail" : "open",
+        status,
+    );
+    if (reviewerP)
+        emitAgentVerdict(
+            reviewerP,
+            reviewVerdict === "revise" ? "open" : "pass",
+            `review:${reviewVerdict}`,
+        );
+    if (valP)
+        emitAgentVerdict(
+            valP,
+            verdict === "pass" ? "pass" : verdict === "fail" ? "fail" : "open",
+            `verdict:${verdict}`,
+        );
+    if (shipP && passed)
+        emitAgentVerdict(shipP, status === "shipped" ? "pass" : "open", status);
 
     // Run-level verdict for the observability stream — the regression signal the
     // dashboard's run history tracks. pass = the run landed; fail = retries

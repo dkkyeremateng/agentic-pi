@@ -75,6 +75,8 @@ export interface RunSummary {
     cwd?: string; // first seen — runs are per-project in practice
     name?: string; // the run's display name (root session name), if it was named
     costUsd: number;
+    tokens: number; // total tokens across turns
+    toolCalls: number; // tool invocations (tool_start count)
     errors: number; // error events + tool errors
     verdict?: RunVerdict; // last verdict wins (re-scoring overrides)
     // Byte range in the sink covering all of this run's lines. Runs interleave
@@ -93,6 +95,8 @@ interface RunRec {
     cwd?: string;
     name?: string;
     costUsd: number;
+    tokens: number;
+    toolCalls: number;
     errors: number;
     verdict?: RunVerdict;
     startOffset: number;
@@ -135,6 +139,8 @@ export class RunIndexer {
                 events: 0,
                 agents: new Set(),
                 costUsd: 0,
+                tokens: 0,
+                toolCalls: 0,
                 errors: 0,
                 startOffset: start,
                 endOffset: end,
@@ -148,6 +154,9 @@ export class RunIndexer {
         // run (obs-cli score) by a synthetic "user" session — they must not join
         // the agents list or stretch the run's time bounds.
         if (ev.type === "verdict") {
+            // agent-scoped verdicts annotate one agent's run, not the whole run —
+            // they must not become the run-level verdict shown on run cards.
+            if (p?.agent) return;
             if (p?.status)
                 r.verdict = {
                     status: String(p.status),
@@ -163,7 +172,11 @@ export class RunIndexer {
         r.agents.add(ev.agent);
         if (!r.cwd && ev.cwd) r.cwd = ev.cwd;
         if (ev.name) r.name = ev.name; // root-only; last named value wins
-        if (ev.type === "turn_end") r.costUsd += Number(p?.costUsd ?? 0);
+        if (ev.type === "turn_end") {
+            r.costUsd += Number(p?.costUsd ?? 0);
+            r.tokens += Number(p?.tokens?.total ?? 0);
+        }
+        if (ev.type === "tool_start") r.toolCalls++;
         if (ev.type === "error" || (ev.type === "tool_end" && p?.isError))
             r.errors++;
     }
@@ -191,6 +204,8 @@ function toSummary(r: RunRec): RunSummary {
         cwd: r.cwd,
         name: r.name,
         costUsd: r.costUsd,
+        tokens: r.tokens,
+        toolCalls: r.toolCalls,
         errors: r.errors,
         verdict: r.verdict,
         startOffset: r.startOffset,

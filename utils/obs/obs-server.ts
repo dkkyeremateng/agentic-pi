@@ -32,6 +32,7 @@ import {
     sseFrame,
     sseComment,
     filterRuns,
+    isEmptyFinishedRun,
 } from "./obs-server-core";
 import {
     parseEventLine,
@@ -43,8 +44,13 @@ import {
 import { eventsToOtlp } from "./obs-otel";
 import { LineScanner, RunIndexer, type RunSummary } from "./obs-run-index";
 import { buildRunDigest, formatRunDigest } from "./obs-explain";
+import { llmConfig, explainRun, summarizeText, loadRepoEnv } from "./obs-llm";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+// pi's extensions load the repo .env into the pi process; the server is a sibling
+// process that doesn't, so load it here too (real env wins). Lets PI_OBS_LLM* live
+// in .env like every other setting. HERE = <repo>/utils/obs → repo root is ../../.
+loadRepoEnv(join(HERE, "..", "..", ".env"));
 const UI_DIR = join(HERE, "obs-ui");
 
 function parseArgs(argv: string[]) {
@@ -427,13 +433,15 @@ function handleApi(
                 "GET  /api/openapi.yaml",
                 "GET  /api/summary",
                 "GET  /api/events?limit=",
-                "GET  /api/runs?project=&since=&limit=",
+                "GET  /api/runs?project=&since=&limit=&includeEmpty=  (hides finished no-op runs unless includeEmpty=1)",
                 "GET  /api/runs/:id",
                 "GET  /api/runs/:id/events",
                 "GET  /api/runs/:id/digest?format=json|text",
+                "GET  /api/runs/:id/explain  (LLM narrative; opt-in PI_OBS_LLM=1)",
                 "GET  /api/runs/:id/otel",
-                "POST /api/runs/:id/verdict  {status, note?}",
+                "POST /api/runs/:id/verdict  {status, note?, agent?}  (agent scopes it to one agent's run)",
                 "GET  /api/search?q=&limit=",
+                "POST /api/summarize  {text, kind?}  (LLM; opt-in PI_OBS_LLM=1)",
                 "GET  /api/stream  (SSE; ?run= filters)",
             ],
         });
@@ -458,6 +466,40 @@ function handleApi(
         }
         const limit = Math.min(500, Number(query.get("limit")) || 200);
         apiJson(res, 200, searchSink(q, limit));
+        return;
+    }
+    // Optional one-sentence LLM summary of an arbitrary chunk (a tool's input
+    // args or output result), for the trace I/O panel's raw/AI toggle. Opt-in,
+    // runs the pi CLI like /explain; disabled is a 200 with {enabled:false}.
+    if (a === "summarize" && req.method === "POST") {
+        const cfg = llmConfig();
+        if (!cfg.enabled) {
+            apiJson(res, 200, { enabled: false, hint: "set PI_OBS_LLM=1 to enable AI summaries" });
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", () => {
+            let parsed: { text?: unknown; kind?: unknown };
+            try {
+                parsed = JSON.parse(body || "{}");
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+                return;
+            }
+            const text = typeof parsed.text === "string" ? parsed.text : "";
+            const kind = (typeof parsed.kind === "string" ? parsed.kind : "content").slice(0, 40);
+            if (!text.trim()) {
+                apiError(res, 400, "missing text");
+                return;
+            }
+            summarizeText(text, kind, cfg)
+                .then((r) => apiJson(res, 200, { enabled: true, ...r }))
+                .catch((e) => apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e).slice(0, 400) }));
+        });
         return;
     }
     if (a === "stream" && req.method === "GET") {
@@ -491,10 +533,16 @@ function handleApi(
                     return;
                 }
             }
+            // Drop finished no-op runs (no cost/tokens/tools, gone quiet) before
+            // applying project/since/limit. `?includeEmpty=1` returns them too.
+            const includeEmpty = query.get("includeEmpty") === "1";
+            const all = includeEmpty
+                ? runIndex.runs()
+                : runIndex.runs().filter((r) => !isEmptyFinishedRun(r));
             apiJson(
                 res,
                 200,
-                filterRuns(runIndex.runs(), {
+                filterRuns(all, {
                     project: query.get("project") || undefined,
                     since,
                     limit: Number(query.get("limit")) || undefined,
@@ -553,6 +601,33 @@ function handleApi(
             );
             return;
         }
+        // Optional LLM narrative — opt-in (PI_OBS_LLM=1). Runs the `pi` CLI with
+        // the configured model (pi owns provider auth), so no key lives here.
+        // Disabled is a 200 with {enabled:false} so the UI can show a hint
+        // rather than treating it as an error.
+        if (sub === "explain" && req.method === "GET") {
+            const cfg = llmConfig();
+            if (!cfg.enabled) {
+                apiJson(res, 200, {
+                    enabled: false,
+                    hint: "set PI_OBS_LLM=1 to enable AI summaries (uses the pi CLI + PI_OBS_LLM_MODEL / PI_WORKFLOW_MODEL)",
+                });
+                return;
+            }
+            const evs = readRunEvents(run.runId);
+            explainRun(run.runId, buildRunDigest(evs), evs, cfg)
+                .then((r) => apiJson(res, 200, { enabled: true, ...r }))
+                // Best-effort enrichment: a model/usage/spawn failure is surfaced
+                // as a 200 with `error` so the UI can show the actionable message
+                // (e.g. a provider usage-limit hint) instead of a generic failure.
+                .catch((e) =>
+                    apiJson(res, 200, {
+                        enabled: true,
+                        error: String((e as Error)?.message || e).slice(0, 400),
+                    }),
+                );
+            return;
+        }
         // Score a run. Appends a verdict line to the sink — the tailer picks
         // it up, so open dashboards update live; the last verdict wins.
         if (sub === "verdict" && req.method === "POST") {
@@ -586,11 +661,17 @@ function handleApi(
                     cwd: run.cwd,
                     runId: run.runId,
                 });
+                // Optional `agent` scopes the verdict to a single agent's run
+                // within this run, instead of the whole run.
+                const agent = parsed.agent
+                    ? String(parsed.agent).slice(0, 80)
+                    : undefined;
                 const ev = f.next("verdict", {
                     status,
                     ...(parsed.note
                         ? { note: String(parsed.note).slice(0, 500) }
                         : {}),
+                    ...(agent ? { agent } : {}),
                     source: "api",
                 });
                 try {
@@ -602,8 +683,9 @@ function handleApi(
                 apiJson(res, 200, {
                     ok: true,
                     runId: run.runId,
+                    ...(agent ? { agent } : {}),
                     verdict: ev.payload,
-                    previous: run.verdict ?? null,
+                    previous: agent ? null : run.verdict ?? null,
                 });
             });
             return;

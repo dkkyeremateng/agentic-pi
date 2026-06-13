@@ -59,6 +59,9 @@ export interface RunDigest {
     endTs: number;
     wallMs: number;
     verdict?: { status: string; outcome?: string; note?: string; source?: string };
+    // verdicts scoped to a single agent's run (keyed by agent name); separate
+    // from the run-level `verdict` above.
+    agentVerdicts?: Record<string, { status: string; outcome?: string; note?: string; source?: string }>;
     totals: {
         costUsd: number;
         tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
@@ -153,13 +156,20 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
         if (!d.cwd && ev.cwd) d.cwd = ev.cwd;
         if (ev.name) d.name = ev.name;
         if (ev.type === "verdict") {
-            if (p.status)
-                d.verdict = {
+            if (p.status) {
+                const v = {
                     status: String(p.status),
                     outcome: p.outcome ? String(p.outcome) : undefined,
                     note: p.note ? String(p.note) : undefined,
                     source: p.source ? String(p.source) : undefined,
                 };
+                if (p.agent) {
+                    // scoped to one agent's run — last verdict per agent wins
+                    (d.agentVerdicts ??= {})[String(p.agent)] = v;
+                } else {
+                    d.verdict = v; // whole-run verdict
+                }
+            }
             continue; // never counts as agent activity / time bounds
         }
         if (!d.startTs || ev.ts < d.startTs) d.startTs = ev.ts;

@@ -1318,6 +1318,102 @@ describe("runWorkflowCore re-entry guard", () => {
     });
 });
 
+// ── runWorkflowCore — per-agent auto-verdicts ────
+
+describe("runWorkflowCore agent-scoped auto-verdicts", () => {
+    // a structurally valid plan, so the post-planner plan check passes
+    const PLAN = [
+        "## Phase 1: Implement the toggle",
+        "Edit `src/theme.ts` to add a dark-mode toggle.",
+        "",
+        "## Acceptance Criteria",
+        "- The toggle switches themes.",
+        "",
+        "## Critical Files",
+        "- src/theme.ts",
+    ].join("\n");
+
+    it("emits a scoped verdict per agent plus the run-level verdict on a passing run", async () => {
+        const names = ["scout", "planner", "implementer", "validator", "shipper"];
+        const agents = new Map<string, AgentDef>();
+        for (const n of names) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "obs-av-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+
+        const events: { type: string; payload: any }[] = [];
+        setObsEmit((type, payload) => events.push({ type, payload }));
+        let result;
+        try {
+            const host = mkHost({
+                setup: { loadAgents: () => agents, setupSessions: () => {}, prepareRun: () => {} },
+                execution: {
+                    // route by phase.agent: planner emits a real plan, validator passes, shipper ships
+                    runPhase: async (phase: PhaseState) => {
+                        if (phase.agent === "planner") return { output: PLAN, ok: true };
+                        if (phase.agent === "validator") return { output: "VERDICT: PASS", ok: true };
+                        if (phase.agent === "shipper") return { output: "SHIP: SHIPPED\nhttps://x/pull/7", ok: true };
+                        return { output: `${phase.agent} did substantive work, well over forty characters of it`, ok: true };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents, { teams: { team: names }, activeTeamName: "team" });
+            result = await runWorkflowCore(st, host, "implement the dark-mode toggle", 2, { cwd });
+        } finally {
+            setObsEmit(undefined);
+        }
+        assert.equal(result!.status, "shipped");
+
+        const verdicts = events.filter((e) => e.type === "verdict");
+        // every agent got its own scoped, source:"auto" pass
+        const byAgent = new Map(
+            verdicts.filter((v) => v.payload.agent).map((v) => [v.payload.agent, v.payload]),
+        );
+        for (const a of names) {
+            assert.equal(byAgent.get(a)?.status, "pass", `${a} should be auto-passed`);
+            assert.equal(byAgent.get(a)?.source, "auto");
+        }
+        // exactly one run-level verdict (no agent), source:"workflow", pass
+        const runLevel = verdicts.filter((v) => !v.payload.agent);
+        assert.equal(runLevel.length, 1);
+        assert.equal(runLevel[0].payload.status, "pass");
+        assert.equal(runLevel[0].payload.source, "workflow");
+    });
+
+    it("emits a scoped fail for the agent whose phase errors out", async () => {
+        const names = ["scout", "planner", "implementer", "validator"];
+        const agents = new Map<string, AgentDef>();
+        for (const n of names) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "obs-av-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+
+        const events: { type: string; payload: any }[] = [];
+        setObsEmit((type, payload) => events.push({ type, payload }));
+        try {
+            const host = mkHost({
+                setup: { loadAgents: () => agents, setupSessions: () => {}, prepareRun: () => {} },
+                execution: {
+                    // the implementer phase hard-fails (ok:false)
+                    runPhase: async (phase: PhaseState) => {
+                        if (phase.agent === "planner") return { output: PLAN, ok: true };
+                        if (phase.agent === "implementer") return { output: "blew up", ok: false };
+                        return { output: `${phase.agent} did substantive work, well over forty characters of it`, ok: true };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents, { teams: { team: names }, activeTeamName: "team" });
+            await runWorkflowCore(st, host, "implement the dark-mode toggle", 2, { cwd });
+        } finally {
+            setObsEmit(undefined);
+        }
+        const verdicts = events.filter((e) => e.type === "verdict");
+        const implV = verdicts.find((v) => v.payload.agent === "implementer");
+        assert.equal(implV?.payload.status, "fail");
+        assert.equal(implV?.payload.source, "auto");
+        // scout still recorded its pass before the failure
+        assert.equal(verdicts.find((v) => v.payload.agent === "scout")?.payload.status, "pass");
+    });
+});
+
 // ── runWorkflowCore — re-entry guard (spec-shaped team) ──
 
 describe("runWorkflowCore re-entry guard", () => {

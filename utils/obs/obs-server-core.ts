@@ -175,6 +175,20 @@ export function filterRuns<T extends { cwd?: string; firstTs: number }>(
     return out;
 }
 
+// A run silent this long with no spend/tokens/tools is a finished no-op (a
+// trivial ping or aborted run) — excluded from the run listing by default.
+export const RUN_QUIET_MS = 90_000;
+
+export function isEmptyFinishedRun(
+    r: { costUsd: number; tokens?: number; toolCalls?: number; lastTs: number },
+    now = Date.now(),
+    quietMs = RUN_QUIET_MS,
+): boolean {
+    const empty =
+        r.costUsd === 0 && (r.tokens ?? 0) === 0 && (r.toolCalls ?? 0) === 0;
+    return empty && now - r.lastTs > quietMs;
+}
+
 // ── SSE framing ──────────────────────────────────────────────────────────────
 
 export function sseFrame(ev: ObsEvent): string {
