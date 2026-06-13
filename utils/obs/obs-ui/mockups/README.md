@@ -1,6 +1,6 @@
 # React app — design explorations
 
-Three static, pixel-real mockups for the React observability app
+Four static, pixel-real mockups for the React observability app
 (`ui.md` §7). Each is a single self-contained HTML file with fake-but-
 realistic data — open directly in a browser:
 
@@ -8,6 +8,7 @@ realistic data — open directly in a browser:
 open utils/obs/obs-ui/mockups/v1-evolution.html
 open utils/obs/obs-ui/mockups/v2-observe.html
 open utils/obs/obs-ui/mockups/v3-mission.html
+open utils/obs/obs-ui/mockups/v4-platform.html
 ```
 
 They are **concept frames, not implementations** — no JS, hand-positioned
@@ -59,19 +60,43 @@ alerts list + a dense tail-style **event log table**. Bottom: ticker.
   pixel, least hand-holding.
 - **IA**: time-centric — the timeline strip is the primary navigation.
 
+## v4 — Platform (`v4-platform.html`)
+
+**The LangSmith × Arize Phoenix homage — evals-first platform.** Slate
+blue-gray with a pragmatic-SaaS feel. Top: project switcher + section
+tabs (Traces · Monitor · Evals · Search) and a **monitoring strip** of
+sparkline metric cards (runs/day, p50 latency, error rate, cost/day —
+LangSmith's monitoring page in miniature). Left: a **runs table** with
+input previews and a Phoenix-style **Evals column** (verdict pills +
+5-dot score bars). Right: LangSmith's trace anatomy — a **typed span
+tree** (AGENT/LLM/TOOL chips, per-span latency bars, error icons) beside
+a detail panel with **Input/Output blocks** rendered as message cards,
+eval chips (verdict, tests, retry rate, cost vs p50), and thumbs-style
+pass/fail feedback (Phoenix annotations → our `POST /verdict`).
+
+- **References**: LangSmith (runs table, span tree, IO panel, monitoring
+  charts), Arize Phoenix (eval pills, score bars, annotation feedback).
+- **Character**: the "industry standard" look — instantly legible to
+  anyone who has used LangSmith/Phoenix; most table-dense of the four.
+- **IA**: table-centric — filter bar → runs table → trace → span detail.
+- **Mapping notes**: the Evals column = our verdicts (+ future per-run
+  eval scores); LLM spans = `turn_*` events; the monitoring strip needs
+  daily aggregates (derivable client-side from `/api/runs`).
+
 ---
 
 ## Comparison
 
-| | v1 Evolution | v2 Observe | v3 Mission |
-|---|---|---|---|
-| Primary entity | view | **run** | **time window** |
-| Palette | Tokyo Night | zinc + violet/cyan | graphite + amber |
-| Material | flat cards | glass, gradients | hairline grid, no cards |
-| Density | medium | medium-low | **high** |
-| AI digest | drawer card | **dedicated pane** | DIGEST button |
-| Risk / build cost | low | medium | medium |
-| Best for | continuity with vanilla | product polish, demos | all-day monitoring |
+| | v1 Evolution | v2 Observe | v3 Mission | v4 Platform |
+|---|---|---|---|---|
+| Primary entity | view | **run** | **time window** | **runs table** |
+| Palette | Tokyo Night | zinc + violet/cyan | graphite + amber | slate + blue/teal |
+| Material | flat cards | glass, gradients | hairline grid, no cards | SaaS panels + tables |
+| Density | medium | medium-low | **high** | high (tabular) |
+| AI digest | drawer card | **dedicated pane** | DIGEST button | Evals tab |
+| Evals/feedback | score buttons | score buttons | SCORE button | **first-class column + IO feedback** |
+| Risk / build cost | low | medium | medium | medium |
+| Best for | continuity with vanilla | product polish, demos | all-day monitoring | eval workflows, familiarity |
 
 ## Decision notes
 

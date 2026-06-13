@@ -192,11 +192,12 @@ Found in the 2026-06-12 end-to-end review (vanilla keeps them as-is):
 
 ## 7. React implementation plan
 
-> **Visual direction**: three static concept mockups live in
+> **Visual direction**: four static concept mockups live in
 > [`mockups/`](mockups/README.md) — v1 Evolution (vanilla matured),
 > v2 Observe (run-centric, glass + AI-digest pane), v3 Mission Control
-> (full-bleed ops console). Pick or blend one before R1, then update this
-> section.
+> (full-bleed ops console), v4 Platform (LangSmith × Phoenix: runs table,
+> eval pills, span tree + I/O panel). Pick or blend one before R1, then
+> update this section.
 
 ### 7.1 Architecture
 
