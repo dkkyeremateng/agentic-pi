@@ -32,6 +32,7 @@ import {
     delimiter as pathDelimiter,
 } from "path";
 import { fileURLToPath } from "url";
+import { defaultSkillRoots } from "../guards/path-guard";
 import {
     secs,
     isModelFailure,
@@ -214,6 +215,15 @@ export function selectedWorkflowExtension(): string | null {
 export function isActiveWorkflow(selfName: string): boolean {
     const sel = selectedWorkflowExtension();
     return sel ? sel === selfName : selfName === "agent-workflow";
+}
+
+// True when extensions/agent-workflow.ts is among the loaded `-e` extensions. Lets
+// the workflow's companion extensions (footer, revert, lsp-panel) gate themselves
+// so they activate ONLY alongside agent-workflow. argv-based — known at load time,
+// so there's no session_start ordering or globalThis timing to coordinate. Unlike
+// isActiveWorkflow() this never defaults to true: no agent-workflow `-e`, no go.
+export function agentWorkflowLoaded(): boolean {
+    return selectedWorkflowExtension() === "agent-workflow";
 }
 
 // ── .env loader ──────────────────────────────────
@@ -551,10 +561,30 @@ export function appendLiveLog(
     for (let i = shown.length; i < bodyRows; i++) lines.push("");
 }
 
-// Render the footer line: "◆ <model> · <self> <status>      [bar] <pct>". Shared
-// by both extensions — they differ only in self-name and how the model string is
-// derived, so those are passed in. pi-tui helpers are injected (core stays
-// pi-tui-free). `contextUsage` returns the primary session's usage (or undefined).
+// Live orchestration inputs the agent-workflow extension publishes for the footer
+// to render. Bridged through globalThis (keyed by WORKFLOW_FOOTER_GLOBAL) so the
+// footer can live in its own `pi -e` extension (extensions/footer.ts) yet still
+// reflect the orchestrator's running state, cost, and model. agent-workflow.ts
+// installs a getter that closes over its live state; the footer calls it per frame.
+export interface WorkflowFooterState {
+    model: string;
+    running: boolean;
+    lastStatus: string;
+    iteration: number;
+    maxLoopsRef: number;
+    dispatchMode: boolean;
+    phases: PhaseState[];
+    dispatchElapsedMs: number;
+    runElapsedMs: number;
+    primaryCostUsd: number;
+    contextUsage: () => any;
+}
+export const WORKFLOW_FOOTER_GLOBAL = "__piWorkflowFooterState";
+
+// Render the footer line: "◆ <model> · <self> <status>      [bar] <pct>", with a
+// dim pwd + git branch line above it. The pure renderer — pi-tui helpers and all
+// live state are injected, so it stays pi-tui-free and unit-testable.
+// `contextUsage` returns the primary session's usage (or undefined).
 export function renderWorkflowFooter(opts: {
     width: number;
     theme: any;
@@ -581,11 +611,6 @@ export function renderWorkflowFooter(opts: {
     // USD cost of the primary (orchestrator) session itself, folded into the
     // footer total alongside the sub-agent phase costs. Optional (defaults to 0).
     primaryCostUsd?: number;
-    // Project language servers, shown inline as `LSP: ✓ <server> <exts> …` between
-    // the model and the agent name. Typed structurally (not LspServerInfo) to avoid
-    // a workflow-core ↔ workflow-widgets import cycle. Omitted when empty; clipped so
-    // it can never crowd out the cost/context readout on the right.
-    lspServers?: { server: string; extensions: string[]; installed: boolean }[];
     contextUsage: () => any;
     visibleWidth: (s: string) => number;
     truncateToWidth: (s: string, w: number, ellipsis?: string) => string;
@@ -607,7 +632,6 @@ export function renderWorkflowFooter(opts: {
         dispatchElapsedMs,
         runElapsedMs,
         primaryCostUsd = 0,
-        lspServers = [],
         contextUsage,
         visibleWidth,
         truncateToWidth,
@@ -699,11 +723,14 @@ export function renderWorkflowFooter(opts: {
               : lastStatus;
 
     const modelPart = theme.fg("dim", ` ◆ ${model}`);
-    const namePart =
-        theme.fg("muted", " · ") +
-        theme.fg("accent", selfName) +
-        theme.fg("dim", " ") +
-        theme.fg(statusColor, statusText);
+    // The `· <self> <status>` segment is workflow-specific. Omitted when selfName is
+    // empty (the footer's standalone mode) — leaving just model · cost · context.
+    const namePart = selfName
+        ? theme.fg("muted", " · ") +
+          theme.fg("accent", selfName) +
+          theme.fg("dim", " ") +
+          theme.fg(statusColor, statusText)
+        : "";
     // Total spend = the primary (orchestrator) session's own cost plus this run's
     // sub-agent phases (each prices its own model). Always shown — $0.00 when
     // nothing priced has run yet — so the field is never mistaken for "missing".
@@ -713,53 +740,7 @@ export function renderWorkflowFooter(opts: {
     const costStr = theme.fg("muted", `${formatCostUsd(totalCostUsd)} · `);
     const right = costStr + theme.fg("dim", `[${bar}] ${pctStr} `);
 
-    // Inline LSP segment, between the model and the agent name. Built plain first so
-    // we can budget/clip by visible width, then colored. Dropped entirely when there
-    // are no relevant servers, or when there isn't room for it after the model, name,
-    // and cost/context — so it never cannibalizes the right side.
-    let lspPart = "";
-    if (lspServers.length) {
-        const sepRaw = " · ";
-        const lspRaw =
-            "LSP: " +
-            lspServers
-                .map(
-                    (s) =>
-                        `${s.installed ? "✓" : "○"} ${s.server}${s.extensions.length ? "  " + s.extensions.join(" ") : ""}`,
-                )
-                .join("  ");
-        const budget =
-            width -
-            visibleWidth(modelPart) -
-            visibleWidth(namePart) -
-            visibleWidth(right) -
-            sepRaw.length;
-        if (budget >= 8) {
-            const sep = theme.fg("muted", sepRaw);
-            if (lspRaw.length <= budget) {
-                // Fits: render with the success/dim marks colored per server.
-                const marks = lspServers
-                    .map(
-                        (s) =>
-                            (s.installed
-                                ? theme.fg("success", "✓")
-                                : theme.fg("dim", "○")) +
-                            " " +
-                            theme.fg("dim", s.server) +
-                            (s.extensions.length
-                                ? "  " + theme.fg("dim", s.extensions.join(" "))
-                                : ""),
-                    )
-                    .join("  ");
-                lspPart = sep + theme.fg("muted", "LSP: ") + marks;
-            } else {
-                // Crowded: clip the plain string with an ellipsis, all dim.
-                lspPart = sep + theme.fg("dim", truncateToWidth(lspRaw, budget, "…"));
-            }
-        }
-    }
-
-    const left = modelPart + lspPart + namePart;
+    const left = modelPart + namePart;
     const pad = " ".repeat(
         Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
     );
@@ -2798,22 +2779,13 @@ export function subagentExtArgs(tools: string): string[] {
     };
     if (process.env.PI_CONFINE_CWD === "1") {
         // Tell the guard which skill roots read-only tools may reach even though
-        // they sit outside the cwd. Resolved here in the parent (reliable) and
-        // inherited by the spawn's env as a path-delimited list:
-        //   1. the bundled skills shipped with this repo (sibling of extensions/)
-        //   2. pi's GLOBAL skills — getAgentDir()/skills, i.e. $PI_CODING_AGENT_DIR
-        //      (tilde-expanded) or ~/.pi/agent, plus the legacy ~/.pi/skills.
-        const expand = (p: string) =>
-            p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
-        const agentDir = process.env.PI_CODING_AGENT_DIR
-            ? expand(process.env.PI_CODING_AGENT_DIR)
-            : join(homedir(), ".pi", "agent");
-        const skillRoots = [
+        // they sit outside the cwd: the bundled skills (sibling of extensions/) plus
+        // pi's global skills. Resolved here in the parent (reliable) and inherited by
+        // the spawn's env as a path-delimited list. defaultSkillRoots() is the shared
+        // source of truth — cwd-guard.ts falls back to it when run standalone.
+        process.env.PI_SKILLS_DIR = defaultSkillRoots(
             join(extDir, "..", "skills"),
-            join(agentDir, "skills"),
-            join(homedir(), ".pi", "skills"),
-        ];
-        process.env.PI_SKILLS_DIR = skillRoots.join(pathDelimiter);
+        ).join(pathDelimiter);
         add("cwd-guard.ts");
     }
     if (/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))

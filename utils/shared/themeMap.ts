@@ -27,7 +27,7 @@ export const THEME_MAP: Record<string, string> = {
     "coms-net": "ocean-breeze", // peer-to-peer messaging, cross-boundary
     "cross-agent": "ocean-breeze", // cross-boundary, connecting
     "damage-control": "gruvbox", // grounded, earthy safety
-    minimal: "synthwave", // synthwave by default now!
+    footer: "synthwave", // standalone (no-workflow) minimal footer; ex-minimal.ts
     "pi-pi": "rose-pine", // warm creative meta-agent
     "pure-focus": "everforest", // calm, distraction-free
     "purpose-gate": "tokyo-night", // intentional, sharp focus
@@ -42,7 +42,7 @@ export const THEME_MAP: Record<string, string> = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-/** Derive the extension name (e.g. "minimal") from its import.meta.url. */
+/** Derive the extension name (e.g. "footer") from its import.meta.url. */
 function extensionName(fileUrl: string): string {
     const filePath = fileUrl.startsWith("file://")
         ? fileURLToPath(fileUrl)

@@ -39,21 +39,17 @@ import {
     Text,
     Container,
     Markdown,
-    truncateToWidth,
     visibleWidth,
 } from "@mariozechner/pi-tui";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { execFileSync, execFile } from "child_process";
+import { execFileSync } from "child_process";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
 import { secs } from "../utils/workflow/workflow-utils";
 import { emitNotification } from "../utils/shared/notify";
 import {
-    type Checkpoint,
     createCheckpoint,
-    revertCommands,
-    describeCheckpoint,
     ensureWorkBranch,
 } from "../utils/workflow/checkpoint";
 import {
@@ -63,7 +59,6 @@ import {
     renderEmptyAgentMessage,
     renderRichCard,
     renderTodos,
-    type LspServerInfo,
     MAX_CARD_WIDTH,
 } from "../utils/workflow/workflow-widgets";
 import {
@@ -86,7 +81,8 @@ import {
     statusBadge,
     appendLiveLog as appendLiveLogCore,
     LOG_PANEL_RESERVE,
-    renderWorkflowFooter,
+    WORKFLOW_FOOTER_GLOBAL,
+    type WorkflowFooterState,
     teamsBlock as teamsBlockCore,
     chooseTeam as chooseTeamCore,
     inferWorkflowTeam,
@@ -203,28 +199,6 @@ export default function (pi: ExtensionAPI) {
     // each assistant message's usage.cost (the provider already priced it). The
     // footer adds this to the sub-agent phase total so it reflects all spend.
     let primaryCostUsd = 0;
-    // The checkpoint taken before the most recent workflow run (for /revert).
-    let lastCheckpoint: Checkpoint | null = null;
-    // Cached working-tree cleanliness for the footer's branch mark (✔ clean / ✘
-    // dirty). Recomputed off the render path — at most once per GIT_DIRTY_TTL_MS,
-    // asynchronously — so the footer never spawns git per frame. null = unknown or
-    // not a git repo (no mark shown); the next frame after the check picks it up.
-    let gitDirty: boolean | null = null;
-    let gitDirtyCheckedAt = 0;
-    const GIT_DIRTY_TTL_MS = 1500;
-    const refreshGitDirty = (cwd: string) => {
-        const now = Date.now();
-        if (now - gitDirtyCheckedAt < GIT_DIRTY_TTL_MS) return;
-        gitDirtyCheckedAt = now;
-        execFile(
-            "git",
-            ["status", "--porcelain"],
-            { cwd },
-            (err, stdout) => {
-                gitDirty = err ? null : stdout.trim().length > 0;
-            },
-        );
-    };
     // Run a git command in `cwd`, returning trimmed stdout (throws on failure).
     const git =
         (cwd: string) =>
@@ -253,41 +227,6 @@ export default function (pi: ExtensionAPI) {
     };
     let sessionDir = "";
     let currentProc: any = null;
-    // Language servers relevant to the project's files (the idle "LSP Servers"
-    // panel). Detected once per session via the lsp skill; empty until then and
-    // when no source files match a known server.
-    let lspServers: LspServerInfo[] = [];
-    let lspDetected = false;
-
-    // Ask the lsp skill which servers the project's files need and whether each is
-    // installed. Run SYNCHRONOUSLY before the first widget paint: detecting async
-    // and refreshing afterwards grows the widget by a few rows mid-session, and pi's
-    // sticky widget leaves a stale (ghost) frame above the new one. A single paint at
-    // the final height avoids that. Bounded (the scan is shallow) and best-effort —
-    // a missing python3 or skill just leaves the panel empty.
-    const detectLspServers = (cwd: string) => {
-        if (lspDetected) return;
-        lspDetected = true;
-        const lspPy = join(
-            dirname(fileURLToPath(import.meta.url)),
-            "..",
-            "skills",
-            "lsp",
-            "lsp.py",
-        );
-        if (!existsSync(lspPy)) return;
-        try {
-            const stdout = execFileSync("python3", [lspPy, "servers"], {
-                cwd,
-                timeout: 2000,
-                maxBuffer: 1 << 20,
-                stdio: ["ignore", "pipe", "ignore"],
-                encoding: "utf8",
-            });
-            const parsed = JSON.parse(stdout);
-            if (Array.isArray(parsed?.servers)) lspServers = parsed.servers;
-        } catch {}
-    };
 
     // Callbacks + config the shared orchestration delegates back to.
     const host: OrchestratorHost = {
@@ -1195,64 +1134,9 @@ export default function (pi: ExtensionAPI) {
             },
         });
 
-    // ── /revert — restore the workspace to the pre-run checkpoint ──
-    if (active)
-        pi.registerCommand("revert", {
-            description:
-                "Revert the workspace to the checkpoint taken before the last workflow run (current state is backed up to a git stash first)",
-            handler: async (_args: string, ctx: any) => {
-                let cp = lastCheckpoint;
-                if (!cp) {
-                    try {
-                        cp = JSON.parse(
-                            readFileSync(checkpointPath(ctx.cwd), "utf8"),
-                        ) as Checkpoint;
-                    } catch {
-                        cp = null;
-                    }
-                }
-                if (!cp) {
-                    ctx.ui.notify(
-                        "No checkpoint found — run a workflow first.",
-                        "info",
-                    );
-                    return;
-                }
-                const run = git(ctx.cwd);
-                const choice = await ctx.ui.select(
-                    `Revert workspace to ${describeCheckpoint(cp)}? Current state is backed up to a stash first.`,
-                    ["Revert", "Cancel"],
-                );
-                if (choice !== "Revert") {
-                    ctx.ui.notify("Revert cancelled.", "info");
-                    return;
-                }
-                let backup = "";
-                try {
-                    backup = run(["stash", "create"]);
-                } catch {}
-                try {
-                    for (const cmd of revertCommands(cp)) run(cmd);
-                    updateWidget();
-                    ctx.ui.notify(
-                        `Reverted to ${describeCheckpoint(cp)}.` +
-                            (backup
-                                ? ` Previous state backed up — restore with: git stash apply ${backup.slice(0, 12)}`
-                                : "") +
-                            " Any untracked files the run created were left in place.",
-                        "info",
-                    );
-                } catch (e: any) {
-                    ctx.ui.notify(
-                        `Revert failed: ${e?.message || e}.` +
-                            (backup
-                                ? ` Your state is safe (backup ${backup.slice(0, 12)}).`
-                                : ""),
-                        "error",
-                    );
-                }
-            },
-        });
+    // /revert lives in its own extension (extensions/revert.ts) — it reads the
+    // checkpoint this run persists to .agent/checkpoints/latest.json, so it needs
+    // none of the orchestrator's in-memory state.
 
     // ── Tool — let the primary agent invoke the workflow ──
 
@@ -1326,7 +1210,6 @@ export default function (pi: ExtensionAPI) {
                 try {
                     const cp = createCheckpoint(git(ctx.cwd), request);
                     if (cp) {
-                        lastCheckpoint = cp;
                         mkdirSync(dirname(checkpointPath(ctx.cwd)), {
                             recursive: true,
                         });
@@ -1621,10 +1504,6 @@ export default function (pi: ExtensionAPI) {
             return;
         }
 
-        // Detect the project's language servers BEFORE the first paint (TUI only —
-        // no chrome in print/json) so the dashboard renders once at its final height
-        // with the LSP panel already on top, instead of growing and ghosting.
-        if (ctx.hasUI) detectLspServers(ctx.cwd);
         // Show the idle team dashboard (grid of agents + their models).
         updateWidget();
         (globalThis as any).__piKillWorkflowProc = (): boolean => {
@@ -1672,49 +1551,24 @@ export default function (pi: ExtensionAPI) {
             }
         }
 
-        // Footer: workflow status + the PRIMARY (orchestrator) agent's model and its
-        // own context usage. The per-agent models and context bars live on the
-        // dashboard cards; the footer shows only the primary session's, since that
-        // is the model running the orchestrator that pi was loaded with. TUI/RPC
-        // only — skip the chrome in print/json modes.
-        if (ctx.hasUI)
-            ctx.ui.setFooter?.((_tui: any, theme: any, footerData: any) => ({
-                dispose: () => {},
-                invalidate() {},
-                render(width: number): string[] {
-                    // Primary (orchestrator) agent's model — tracked live so it
-                    // follows /model changes.
-                    const primaryFull = primaryModelStr();
-                    const cwd = ctx.cwd ?? process.cwd();
-                    // Refresh the cached clean/dirty flag (throttled, async) so the
-                    // branch mark stays current without blocking the render.
-                    refreshGitDirty(cwd);
-                    return renderWorkflowFooter({
-                        width,
-                        theme,
-                        selfName: "agent-workflow",
-                        model: primaryFull,
-                        // pwd + git branch on a dim line above the status. pi caches
-                        // the branch (with a git watcher) on footerData; cwd is the
-                        // session's working directory. gitDirty drives the ✔/✘ mark.
-                        cwd,
-                        gitBranch: footerData?.getGitBranch?.() ?? null,
-                        gitDirty,
-                        lspServers,
-                        running: st.running,
-                        lastStatus: st.lastStatus,
-                        iteration: st.iteration,
-                        maxLoopsRef: st.maxLoopsRef,
-                        dispatchMode: st.dispatchMode,
-                        phases: st.phases,
-                        dispatchElapsedMs: st.dispatchElapsedMs,
-                        runElapsedMs: st.runElapsedMs,
-                        primaryCostUsd,
-                        contextUsage: () => ctx.getContextUsage?.(),
-                        visibleWidth,
-                        truncateToWidth,
-                    });
-                },
-            }));
+        // Footer: the status line (workflow status + the PRIMARY/orchestrator model
+        // and its context usage) is rendered by the standalone extensions/footer.ts.
+        // We only publish the live orchestration state for it to read; the getter
+        // closes over `st` (mutated in place), `primaryCostUsd` (a live let), and
+        // primaryModelStr()/ctx, so it always returns fresh values per frame. Bridged
+        // via globalThis so the footer can be its own `pi -e` extension.
+        (globalThis as any)[WORKFLOW_FOOTER_GLOBAL] = (): WorkflowFooterState => ({
+            model: primaryModelStr(),
+            running: st.running,
+            lastStatus: st.lastStatus,
+            iteration: st.iteration,
+            maxLoopsRef: st.maxLoopsRef,
+            dispatchMode: st.dispatchMode,
+            phases: st.phases,
+            dispatchElapsedMs: st.dispatchElapsedMs,
+            runElapsedMs: st.runElapsedMs,
+            primaryCostUsd,
+            contextUsage: () => ctx.getContextUsage?.(),
+        });
     });
 }
