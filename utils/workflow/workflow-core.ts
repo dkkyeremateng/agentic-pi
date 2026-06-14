@@ -139,6 +139,11 @@ export interface AgentDef {
     contextWindow: number; // 0 when not declared in frontmatter
     systemPrompt: string;
     aliases?: string[]; // alternate names the agent can be dispatched as
+    // `read-only-bash: true` in frontmatter — the agent has `write`/`edit` (so the
+    // default read-only-agent heuristic skips it) but its `bash` must stay read-only.
+    // The spawn loads readonly-guard.ts for it so mutating git/gh shell commands are
+    // blocked even though file writes (e.g. .agent/plan.md) are allowed.
+    readOnlyBash?: boolean;
 }
 
 export interface PhaseState {
@@ -1017,6 +1022,10 @@ export function parseAgentFile(filePath: string): AgentDef | null {
                       .map((a) => a.trim())
                       .filter(Boolean)
                 : undefined,
+            readOnlyBash:
+                fm["read-only-bash"] === "true" ||
+                fm["readonly-bash"] === "true" ||
+                undefined,
         };
         // Env-level overrides of the frontmatter: PI_AGENT_<NAME>={model, contextWindow}.
         // (model is still subject to the resolveAgentModel precedence — the more
@@ -2771,7 +2780,7 @@ export function shouldApproveProjectForSpawn(cwd: string): boolean {
 //   PI_CONFINE_CWD=1 (it loads into every sub-agent, so it is gated to stay safe).
 // - dispatch.ts registers dispatch_agent/dispatch_parallel/select_agents, needed
 //   only by agents whose tools include one of them.
-export function subagentExtArgs(tools: string): string[] {
+export function subagentExtArgs(tools: string, readOnlyBash = false): string[] {
     const extDir = join(UTILS_DIR, "..", "extensions");
     const args: string[] = [];
     const add = (name: string) => {
@@ -2792,12 +2801,16 @@ export function subagentExtArgs(tools: string): string[] {
     if (/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))
         add("dispatch.ts");
     // readonly-guard.ts keeps a read-only agent read-only: it blocks mutating `gh`
-    // and `git` commands. Loaded for agents that can run bash but cannot write files
-    // (scout, reviewer, validator) — they query GitHub and inspect the repo but must
-    // never mutate state. Agents that may write (e.g. the shipper, which opens PRs)
-    // keep full access by not loading it.
+    // and `git` shell commands (not file writes). Loaded for agents that run bash but
+    // cannot write files (scout, reviewer, validator) — they query GitHub and inspect
+    // the repo but must never mutate state — AND for write-capable agents that opt in
+    // with `read-only-bash: true` (planner, refiner: they write only .agent/plan.md,
+    // so their bash must stay read-only). Agents that legitimately mutate (the
+    // implementer, the shipper which opens PRs) load nothing and keep full access.
     const t = tools || "";
-    if (/\bbash\b/.test(t) && !/\b(write|edit)\b/.test(t)) add("readonly-guard.ts");
+    const hasBash = /\bbash\b/.test(t);
+    const canWrite = /\b(write|edit)\b/.test(t);
+    if (hasBash && (!canWrite || readOnlyBash)) add("readonly-guard.ts");
     // Live observability: when PI_OBS=1, every sub-agent emits ObsEvents to the
     // shared sink so the dashboard shows the whole pipeline. PI_OBS_AGENT (set on
     // the spawn env) labels which agent's lane the events land in.
@@ -3087,7 +3100,7 @@ function spawnAgentWithModelFallback(
         "--name",
         spawnSessionName(cwd, agentDef.name),
         ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
-        ...subagentExtArgs(agentDef.tools),
+        ...subagentExtArgs(agentDef.tools, agentDef.readOnlyBash),
     ];
 
     const cleanModel = model?.trim();
@@ -3315,7 +3328,7 @@ export function spawnAgentWithModel(
         "--name",
         spawnSessionName(cwd, agentDef.name),
         ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
-        ...subagentExtArgs(agentDef.tools),
+        ...subagentExtArgs(agentDef.tools, agentDef.readOnlyBash),
     ];
     // Pass --model via spawnModelArg: a two-or-more-slash string keeps its
     // provider (provider/<slashed id>), a single-slash string drops the leading

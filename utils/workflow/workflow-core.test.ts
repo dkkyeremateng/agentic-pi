@@ -1102,6 +1102,20 @@ describe("subagentExtArgs", () => {
         assert.equal(a[0], "-e");
         assert.ok(a[1].endsWith("extensions/dispatch.ts"), a[1]);
     });
+    const hasReadonlyGuard = (a: string[]) =>
+        a.some((x) => x.endsWith("readonly-guard.ts"));
+    it("adds readonly-guard.ts for a bash agent with no write/edit", () => {
+        assert.ok(hasReadonlyGuard(subagentExtArgs("read,bash,grep")));
+    });
+    it("skips readonly-guard.ts for a write-capable bash agent by default", () => {
+        assert.ok(!hasReadonlyGuard(subagentExtArgs("read,write,bash")));
+    });
+    it("adds readonly-guard.ts for a write agent that opts into read-only-bash", () => {
+        assert.ok(hasReadonlyGuard(subagentExtArgs("read,write,bash", true)));
+    });
+    it("never adds readonly-guard.ts to an agent without bash", () => {
+        assert.ok(!hasReadonlyGuard(subagentExtArgs("read,write", true)));
+    });
     it("adds cwd-guard.ts only when PI_CONFINE_CWD=1", () => {
         const saved = process.env.PI_CONFINE_CWD;
         try {
