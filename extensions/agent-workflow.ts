@@ -23,7 +23,7 @@
  * Set PI_WORKFLOW_MODEL as a global fallback for all agents.
  *
  * Commands:
- *   /agent-workflow <request>   — run the full lifecycle on a request
+ *   /agent-workflow <request>   — pick a team (or name one first), then run it
  *   /agent-workflow-clear       — clear the progress widget
  *
  * Tool:
@@ -892,7 +892,7 @@ export default function (pi: ExtensionAPI) {
     if (active)
         pi.registerCommand("agent-workflow", {
             description:
-                "Run a workflow: '/agent-workflow <request>' for full lifecycle, '/agent-workflow spec <request>' for implementation spec only",
+                "Run a workflow: '/agent-workflow <request>' to pick a team then run; name a team first to skip the picker (e.g. '/agent-workflow spec <request>')",
             handler: async (args, ctx) => {
                 widgetCtx = ctx;
                 if (st.running) {
@@ -927,9 +927,9 @@ export default function (pi: ExtensionAPI) {
                         rawArgs.slice(loopsMatch.index! + loopsMatch[0].length)
                     ).trim();
                 }
-                // The first token may name a team (e.g. `/agent-workflow building
+                // The first token may name a team (e.g. `/agent-workflow spec
                 // <request>`); otherwise show the Select Team picker. The chosen
-                // team's roster IS the pipeline — there is no spec/full mode.
+                // team's roster IS the pipeline — the team is the only "mode".
                 const firstTok = rawArgs.split(/\s+/)[0] || "";
                 const namedTeam = st.teams[firstTok] ? firstTok : "";
 

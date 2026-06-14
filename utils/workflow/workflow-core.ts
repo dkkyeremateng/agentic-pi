@@ -78,7 +78,7 @@ export const REQUIRED_AGENTS = [
 export const DEFAULT_MAX_LOOPS = 3;
 
 // Build a concise session display name for pi.setSessionName, e.g.
-// "agent-workflow · building · add CSV export". Omits the team when there isn't one.
+// "agent-workflow · plan-build · add CSV export". Omits the team when there isn't one.
 export function sessionLabel(
     prefix: string,
     team: string,
@@ -2400,8 +2400,9 @@ export function mkPhase(
 }
 
 // The canonical pipeline order. A team runs exactly the subsequence of these
-// phases that its roster contains, in this order — there is no spec/full mode,
-// the team's membership IS the pipeline.
+// phases that its roster contains, in this order — there is no separate execution
+// "mode"; the team's membership IS the pipeline (e.g. the `spec` team is just
+// scout -> planner -> refiner).
 export const PIPELINE_ORDER = [
     "scout",
     "planner",
