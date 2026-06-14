@@ -28,6 +28,29 @@ import {
     type WorkflowFooterState,
 } from "../utils/workflow/workflow-core";
 
+// Render OTHER extensions' status lines (set via ctx.ui.setStatus) — most notably
+// the context pruner's "prune: N pending" / "summarizing…" / stats line. pi's
+// built-in footer renders these from footerData.getExtensionStatuses(), but our
+// setFooter override REPLACES that footer, so without re-rendering them here they'd
+// be invisible (the pruner's queued/loaded toasts still show; its summarize feedback
+// would not). Skip "agent-workflow" — our own status line already represents it.
+function extensionStatusLine(footerData: any, theme: any, width: number): string {
+    const m: ReadonlyMap<string, string> | undefined =
+        footerData?.getExtensionStatuses?.();
+    if (!m || m.size === 0) return "";
+    const parts = Array.from(m.entries())
+        .filter(([k]) => k !== "agent-workflow")
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, v]) => String(v).replace(/[\r\n\t]+/g, " ").trim())
+        .filter(Boolean);
+    if (parts.length === 0) return "";
+    return truncateToWidth(
+        theme.fg("dim", " " + parts.join("   ")),
+        width,
+        theme.fg("dim", "…"),
+    );
+}
+
 export default function (pi: ExtensionAPI) {
     const workflow = agentWorkflowLoaded();
 
@@ -51,6 +74,12 @@ export default function (pi: ExtensionAPI) {
         // async git check below request a repaint so its result actually lands on
         // screen — an idle session has nothing else to trigger a re-render.
         let tui: any = null;
+
+        // Was the context pruner mid-flush on the previous render? pi-context-prune
+        // only toasts when batches QUEUE, not when they flush — so we watch its
+        // status line leave the in-progress state ("pending"/"summarizing…") and
+        // emit a one-time completion toast ourselves.
+        let pruneBusy = false;
 
         // Cached working-tree cleanliness for the branch mark (✔ clean / ✘ dirty).
         // Recomputed off the render path — at most once per TTL, asynchronously — so
@@ -87,6 +116,23 @@ export default function (pi: ExtensionAPI) {
                     // Refresh the cached clean/dirty flag (throttled, async) so the
                     // branch mark stays current without blocking the render.
                     refreshGitDirty(cwd);
+                    // Toast once when a pruner flush completes: its status leaves the
+                    // in-progress state ("pending"/"summarizing…") back to a stats
+                    // line. Deferred off the render path so notify() isn't a render
+                    // side effect. (No-op when the pruner / its status line is off.)
+                    const prune =
+                        footerData?.getExtensionStatuses?.()?.get("context-prune") ??
+                        "";
+                    const busy = /pending|summari[sz]/i.test(prune);
+                    if (pruneBusy && !busy && prune) {
+                        const tail = prune.includes("│")
+                            ? " " + prune.slice(prune.indexOf("│"))
+                            : "";
+                        queueMicrotask(() =>
+                            ctx.ui?.notify?.(`pruner: flushed${tail}`, "info"),
+                        );
+                    }
+                    pruneBusy = busy;
                     // Live orchestration state, published by agent-workflow.ts
                     // (workflow mode only). Absent in standalone mode — the status
                     // segment is then dropped (empty selfName) and we use the
@@ -94,7 +140,7 @@ export default function (pi: ExtensionAPI) {
                     const wf: WorkflowFooterState | undefined = workflow
                         ? (globalThis as any)[WORKFLOW_FOOTER_GLOBAL]?.()
                         : undefined;
-                    return renderWorkflowFooter({
+                    const lines = renderWorkflowFooter({
                         width,
                         theme,
                         // Empty in standalone mode ⇒ no `· agent-workflow <status>`.
@@ -123,6 +169,11 @@ export default function (pi: ExtensionAPI) {
                         visibleWidth,
                         truncateToWidth,
                     });
+                    // Append other extensions' status lines (e.g. the pruner's),
+                    // which our footer override would otherwise hide.
+                    const ext = extensionStatusLine(footerData, theme, width);
+                    if (ext) lines.push(ext);
+                    return lines;
                 },
             };
         });
