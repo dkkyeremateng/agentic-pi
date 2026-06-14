@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    name: Unit tests + syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      # The unit suite is the source of truth (see AGENTS.md). tsx erases the
+      # type-only pi imports at runtime, so no pi install or type-linking is needed —
+      # we run tsx directly rather than `npm test`, whose pretest hook links pi types
+      # for `tsc` (which AGENTS.md says not to run; the types aren't installed here).
+      - name: Unit tests
+        run: npx tsx --test utils/*/*.test.ts
+      # Parse-only check of every extension + util. `node --check` does no module
+      # resolution, so it needs no pi packages either.
+      - name: Syntax check
+        run: find extensions utils -name '*.ts' -print0 | xargs -0 -n1 node --experimental-strip-types --check
+
+  python:
+    name: Python skill tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Stdlib-only unittest suites for the linear and atlassian skills.
+      - run: python3 -m unittest discover -s skills/linear -p "test_*.py"
+      - run: python3 -m unittest discover -s skills/atlassian -p "test_*.py"
