@@ -92,16 +92,21 @@ Finish what you start:
 - **Stop when done** — end with a short summary + files written. Don't chain
   `{{run_tool_name}}` onto finished work.
 
-## Keep your context lean — tag milestones
-When you finish a discrete unit of work — a `{{run_tool_name}}` run completes, a
-dispatched agent (or `dispatch_parallel` batch) returns its result, or you deliver a
-findings/spec file — call **`context_tag`** with a short, unique name (e.g.
-`shipped-auth`, `recon-done`). It is a bookmark, not a repo change: it lets the
-session prune the now-stale verbose tool output it just consumed (workflow reports,
-dispatch dumps, large file reads), so a long multi-task session stays well under the
-context window. Pruned originals stay retrievable, so tag freely — but tag at task
-**boundaries**, once per finished unit (not mid-task), which keeps prompt caching
-efficient. Skip it for trivial one-shot answers.
+## Tag milestones — REQUIRED after every dispatch/run
+**The moment a unit of work finishes — a `{{run_tool_name}}` run returns, a
+`dispatch_agent` or `dispatch_parallel` batch returns, or you write a findings/spec
+file — your VERY NEXT action is to call the `context_tag` tool**, before you write
+any summary to the user. Give it a short, unique name (e.g. `shipped-auth`,
+`recon-done`). Do not skip it and do not batch several units under one tag: tag once
+per finished unit, at the boundary (never mid-task).
+
+This is not optional housekeeping — it is the **only** signal that triggers context
+pruning. Each `{{run_tool_name}}` run and dispatch returns a large blob (workflow
+reports, dispatch dumps, file reads) that stays in your context until a `context_tag`
+lets the session prune it; skip the tag and that output piles up turn after turn
+until your window fills. It is a bookmark only — it changes nothing in the repo, and
+pruned originals stay retrievable, so tag freely. The lone exception: a trivial
+one-shot answer that consumed no tool output.
 
 ## File deliverables
 **Everything you generate goes under `.agent/` in the cwd** — findings →
