@@ -404,7 +404,7 @@ function renderCompare() {
     const labelFor = (r) =>
         verdictMark(r.id) +
         (manyProjects ? r.project + " · " : "") +
-        (r.name || fmtWhen(r.firstTs)) +
+        runName(r) +
         " · " +
         r.agents.size +
         " agents · " +
@@ -431,7 +431,7 @@ function renderCompare() {
 
     const A = collectRunFacts(evA);
     const B = collectRunFacts(evB);
-    const label = (r) => r.name || fmtWhen(r.firstTs);
+    const label = (r) => runName(r);
     $("compare-axis").innerHTML =
         "<b>A</b> " +
         escHtml(label(runA)) +
@@ -474,7 +474,7 @@ function renderCmpWaterfalls(runA, runB, evA, evB) {
             "<b>" +
             tag +
             "</b> " +
-            escHtml(run.name || fmtWhen(run.firstTs)) +
+            escHtml(runName(run)) +
             ' <span class="cmp-wf-dur">' +
             fmtDur(run.lastTs - run.firstTs) +
             "</span>";

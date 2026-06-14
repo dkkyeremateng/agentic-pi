@@ -889,8 +889,12 @@ const server = createServer((req, res) => {
     // agents, cost, and event counts — the dashboard's archive picker.
     if (url === "/runs") {
         ensureRunIndex();
+        // Hide finished no-op runs (no cost/tokens/tools, gone quiet) — matches
+        // /api/runs and the React dashboard. `?includeEmpty=1` returns them too.
+        const includeEmpty = query.get("includeEmpty") === "1";
+        const runs = includeEmpty ? allRuns() : allRuns().filter((r) => !isEmptyFinishedRun(r));
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(allRuns()));
+        res.end(JSON.stringify(runs));
         return;
     }
     // Full-sink substring search (case-insensitive, raw lines) — answers

@@ -25,18 +25,29 @@ function singleList() {
     return singleVList;
 }
 
-// One virtualized row (item = { ev, odd } — `odd` is the turn-CYCLE parity:
-// a cycle runs from a turn 0 start to the last turn before the next turn 0,
-// i.e. one user-request round; alternating cycles get a tinted background).
+// Stable hue per agent name so interleaved agents are visually separable.
+function agentHue(name) {
+    let h = 0;
+    const s = String(name || "");
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return h % 360;
+}
+
+// One virtualized row (item = { ev, lane, agent, odd } — `odd` is the turn-CYCLE
+// parity: a cycle runs from a turn 0 start to the next, i.e. one user-request
+// round; alternating cycles get a tinted background). The Events feed interleaves
+// every agent in the run, so each row carries its agent tag.
 function makeVRow(item) {
     const ev = item.ev;
     const galt = item.odd ? " galt" : "";
+    const hue = agentHue(item.agent);
     if (ev.type === "turn_start") {
         const sep = document.createElement("div");
         const idx = ev.payload?.turnIndex ?? "";
         sep.className = "vsep" + galt + (idx === 0 ? " g0" : "");
         const lbl = document.createElement("span");
-        lbl.textContent = "turn " + idx + " · " + clock(ev.ts);
+        lbl.textContent =
+            (item.agent ? item.agent + " · " : "") + "turn " + idx + " · " + clock(ev.ts);
         sep.appendChild(lbl);
         return sep;
     }
@@ -46,6 +57,11 @@ function makeVRow(item) {
     const t = document.createElement("span");
     t.className = "t";
     t.textContent = clock(ev.ts);
+    const ag = document.createElement("span");
+    ag.className = "vag";
+    ag.style.color = "hsl(" + hue + " 60% 70%)";
+    ag.textContent = item.agent || "";
+    ag.title = item.agent || "";
     const em = iconEl(ev);
     const b = document.createElement("span");
     b.className = "badge " + kls;
@@ -53,7 +69,7 @@ function makeVRow(item) {
     const d = document.createElement("span");
     d.className = "d";
     d.textContent = detail.split("\n")[0];
-    row.append(t, em, b, d);
+    row.append(t, ag, em, b, d);
     // right-aligned extras: tool latency / turn cost+duration
     const p = ev.payload || {};
     let extra = "";
@@ -71,52 +87,50 @@ function makeVRow(item) {
     row.addEventListener("click", () => {
         const sel = window.getSelection && String(window.getSelection());
         if (sel) return;
-        openInspector(ev, selected ? lanes.get(selected) : null);
+        openInspector(ev, item.lane || null);
     });
     return row;
 }
 
-// The lane to show when nothing is selected: the orchestrator (the run's root),
-// else the first visible lane.
-function defaultSingleLane() {
-    let first = null;
-    for (const l of lanes.values()) {
-        if (!laneVisible(l)) continue;
-        if (l.agent === "orchestrator") return l;
-        if (!first) first = l;
-    }
-    return first;
+// Every in-scope lane of the open run (the Events feed spans all of them).
+function singleRunLanes() {
+    const out = [];
+    for (const l of lanes.values()) if (laneInScope(l)) out.push(l);
+    return out.sort((x, y) => (x.firstTs ?? 0) - (y.firstTs ?? 0));
 }
 
 function renderSingle() {
-    let a = selected && lanes.get(selected);
-    // Default to the orchestrator when nothing (valid) is selected, so opening
-    // Single lands on the run's root instead of a blank pane.
-    if (!a || !laneVisible(a)) {
-        a = defaultSingleLane();
-        selected = a ? a.key : null;
-    }
-    $("single-empty").style.display = a ? "none" : "block";
-    $("single-agent").textContent = a ? a.label : "—";
-    $("single-proj").textContent = a ? a.project : "";
-    $("single-model").textContent = a && a.rollup.model ? a.rollup.model : "";
+    const ls = singleRunLanes();
+    const has = ls.length > 0;
+    const rid = activeRunScope();
+    const rmeta = rid && typeof archiveRuns !== "undefined" ? archiveRuns.get(rid) : null;
+    $("single-empty").style.display = has ? "none" : "block";
+    $("single-agent").textContent = has ? (rmeta && rmeta.name) || rid || "all agents" : "—";
+    $("single-proj").textContent = ls[0] ? ls[0].project : "";
+    $("single-model").textContent = has
+        ? ls.length + " agent" + (ls.length === 1 ? "" : "s")
+        : "";
     const dot = document.querySelector(".single-dot");
-    if (dot) dot.classList.toggle("active", !!(a && a.rollup.active));
+    if (dot) dot.classList.toggle("active", ls.some((l) => l.rollup.active));
     const list = singleList();
-    if (!a) {
+    if (!has) {
         list.setItems([], makeVRow);
-        renderStatbar();
+        renderStatbar(ls);
         return;
     }
+    // merge every agent's events into one time-ordered feed
+    const merged = [];
+    for (const l of ls) for (const ev of l.events) merged.push({ ev, lane: l });
+    merged.sort((x, y) => x.ev.ts - y.ev.ts || (x.ev.seq || 0) - (y.ev.seq || 0));
     const items = [];
     singleCycle = 0; // turn-cycle counter (a turn 0 start begins a new cycle)
-    for (const ev of a.events) {
-        if (isCycleStart(ev)) singleCycle++;
-        if (ev.type === "turn_start" || passesFilter(ev))
-            items.push({ ev, odd: singleCycle % 2 === 1 });
+    for (const m of merged) {
+        if (isCycleStart(m.ev)) singleCycle++;
+        if (m.ev.type === "turn_start" || passesFilter(m.ev))
+            items.push({ ev: m.ev, lane: m.lane, agent: m.lane.label, odd: singleCycle % 2 === 1 });
     }
     list.setItems(items, makeVRow);
-    renderStatbar();
+    renderStatbar(ls);
     if (autoscroll) $("content").scrollTop = $("content").scrollHeight;
 }
 
@@ -126,45 +140,69 @@ function isCycleStart(ev) {
 }
 let singleCycle = 0; // parity source for live appends (set by renderSingle)
 
-// Live tail: append without rebuilding the whole window.
-function singleAppend(ev) {
+// Live tail: append without rebuilding the whole window. `lane` is the agent the
+// event belongs to (the feed spans the whole run).
+function singleAppend(ev, lane) {
     if (!singleVList) return renderSingle();
     if (isCycleStart(ev)) singleCycle++;
-    singleVList.append({ ev, odd: singleCycle % 2 === 1 });
+    singleVList.append({
+        ev,
+        lane: lane || null,
+        agent: lane ? lane.label : "",
+        odd: singleCycle % 2 === 1,
+    });
     if (autoscroll) $("content").scrollTop = $("content").scrollHeight;
 }
 
-function renderStatbar() {
+// Run-level totals for the Events tab: aggregate the live lanes, then fold in
+// the run's indexed summary (which covers the WHOLE run, even agents/events that
+// scrolled out of the live buffer) via max — so the numbers reflect the run, not
+// just whichever agents are currently buffered.
+function renderStatbar(ls) {
     const bar = $("statbar");
-    const a = selected && lanes.get(selected);
-    if (!a) {
+    ls = ls || singleRunLanes();
+    const rid = activeRunScope();
+    const s = rid && typeof archiveRuns !== "undefined" ? archiveRuns.get(rid) : null;
+    if (!ls.length && !s) {
         bar.innerHTML = "";
-        renderCtxWidget(null);
         return;
     }
-    const r = a.rollup;
-    let first = null,
-        last = null;
-    for (const ev of a.events) {
-        if (first === null || ev.ts < first) first = ev.ts;
-        if (last === null || ev.ts > last) last = ev.ts;
+    let events = 0,
+        first = null,
+        last = null,
+        cost = 0,
+        tokens = 0,
+        tools = 0,
+        errs = 0;
+    for (const a of ls) {
+        const r = a.rollup;
+        events += a.events.length;
+        cost += r.costUsd;
+        tokens += r.tokens;
+        tools += r.toolCalls;
+        errs += r.toolErrors + r.errors;
+        if (a.firstTs != null && (first === null || a.firstTs < first)) first = a.firstTs;
+        if (a.lastTs != null && (last === null || a.lastTs > last)) last = a.lastTs;
     }
-    const tps = r.turnMs > 0 ? Math.round((r.outTok / r.turnMs) * 1000) : 0;
-    const prefill =
-        r.prefillCount > 0
-            ? fmtMs(Math.round(r.prefillSum / r.prefillCount))
-            : "—";
+    let agents = ls.length;
+    if (s) {
+        events = Math.max(events, s.events || 0);
+        cost = Math.max(cost, s.costUsd || 0);
+        tokens = Math.max(tokens, s.tokens || 0);
+        tools = Math.max(tools, s.toolCalls || 0);
+        errs = Math.max(errs, s.errors || 0);
+        agents = Math.max(agents, (s.agents || []).length);
+        if (s.firstTs != null && (first === null || s.firstTs < first)) first = s.firstTs;
+        if (s.lastTs != null && (last === null || s.lastTs > last)) last = s.lastTs;
+    }
     const pills = [
-        ["events", a.events.length],
+        ["events", events],
         ["duration", fmtDur((last || 0) - (first || 0))],
-        ["cost", fmtCost(r.costUsd), "cost"],
-        ["in", fmtTok(r.inTok)],
-        ["out", fmtTok(r.outTok)],
-        ["cache r", fmtTok(r.cacheRead)],
-        ["cache w", fmtTok(r.cacheWrite)],
-        ["~tps", tps],
-        ["prefill", prefill],
-        ["errors", r.toolErrors + r.errors],
+        ["cost", fmtCost(cost), "cost"],
+        ["tokens", fmtTok(tokens)],
+        ["tools", tools],
+        ["agents", agents],
+        ["errors", errs],
     ];
     bar.innerHTML = "";
     for (const [k, v, cls] of pills) {
@@ -174,7 +212,6 @@ function renderStatbar() {
         el.querySelector("b").textContent = v;
         bar.appendChild(el);
     }
-    renderCtxWidget(r.context);
 }
 
 // The ring gauge drains as the window fills: arc length = % remaining, with
@@ -182,6 +219,7 @@ function renderStatbar() {
 const CTX_RING_C = 2 * Math.PI * 15.5; // circumference at r=15.5
 
 function renderCtxWidget(ctx) {
+    if (!$("ctxwidget")) return; // removed from the Events header
     const used = ctx && ctx.tokens != null ? ctx.tokens : null;
     const win = ctx && ctx.window ? ctx.window : null;
     const pct = ctx && ctx.percent != null ? ctx.percent : null; // % USED

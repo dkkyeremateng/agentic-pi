@@ -268,8 +268,11 @@ function buildRaceTrack(parent, a, b, cardLabel) {
 
 function renderRace() {
     const tracks = $("race-tracks");
+    // when a run is open, show all its agents (ignore swimlane's group auto-hide);
+    // otherwise fall back to the visible lanes.
+    const run = activeRunScope();
     const list = [...lanes.values()].filter(
-        (a) => a.events.length && laneVisible(a),
+        (a) => a.events.length && (run ? laneInScope(a) : laneVisible(a)),
     );
     if (!list.length) {
         $("race-empty").style.display = "block";

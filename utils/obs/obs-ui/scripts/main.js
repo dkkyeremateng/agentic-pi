@@ -48,9 +48,9 @@ function connect() {
 
 // ── init ─────────────────────────────────────────────────────────────────────
 $("v-swimlane").addEventListener("click", () => setView("swimlane"));
-$("v-single").addEventListener("click", () => setView("single"));
-$("v-race").addEventListener("click", () => setView("race"));
-$("v-trace").addEventListener("click", () => setView("trace"));
+// Trace / Race / Single are tabs of the run-detail page (#runtabs)
+for (const tb of document.querySelectorAll("#runtabs .runtab"))
+    tb.addEventListener("click", () => setView(tb.dataset.view));
 // (the trace run picker is a combobox now — wired in trace.js)
 $("trace-scrub").addEventListener("input", (e) => {
     traceSetReplay(Number(e.target.value));
@@ -181,11 +181,17 @@ document.addEventListener("click", (e) => {
     if (changed) renderRace();
 });
 buildChips();
-// restore the project filter from a previous session
+// restore the project filter from a previous session — a saved value (including
+// "" for an explicit "all projects") is an explicit choice, so it pins the auto
+// default off; only a never-set filter auto-scopes to the active project.
 try {
-    projectFilter = localStorage.getItem("obs.projectFilter") || "";
+    const saved = localStorage.getItem("obs.projectFilter");
+    if (saved !== null) {
+        projectFilter = saved;
+        projectFilterAuto = false;
+    }
 } catch {
-    projectFilter = "";
+    /* ignore — projectFilter stays "" with auto on */
 }
 if (projectFilter) maybeAddProject(projectFilter); // ensure the option exists
 renderProjectFilter(); // paint the project combo (incl. its restored selection)

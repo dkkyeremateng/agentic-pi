@@ -23,8 +23,15 @@ let search = "";
 let searchRegex = false; // Single: treat `search` as a regular expression
 let errorsOnly = false; // Single: only errors / failed tools / retries
 let projectFilter = ""; // "" = all projects
+// when true, the project filter defaults to the active project (so the agent
+// rail + views scope to it) until the user explicitly picks one — including
+// "all projects". Mirrors runFilterAuto.
+let projectFilterAuto = true;
 let runFilter = ""; // "" = all runs; scopes swimlane/single/race to one run (single project only)
 let runFilterAuto = true; // when true, the run filter follows the live (or last) run
+// true only when the Trace run was pinned from the TOP picker (combo / permalink),
+// not from a left-rail click — so a rail click navigates without collapsing the rail.
+let traceRunByCombo = false;
 // Header dropdowns are comboboxes (uniform with Trace/Stats/Compare). Created in
 // main.js init (after combobox.js loads); their update fns live in lanes.js.
 let projfilterCombo = null;
@@ -62,6 +69,12 @@ function recordVerdict(runId, v) {
     const cur = runVerdicts.get(runId);
     if (cur && v.ts != null && cur.ts != null && v.ts < cur.ts) return;
     runVerdicts.set(runId, v);
+}
+
+// A run's display name: its given name, else the runId (never a date). Accepts
+// either shape — collectRuns/trace runs use `id`, archive summaries use `runId`.
+function runName(r) {
+    return (r && (r.name || r.id || r.runId)) || "";
 }
 
 // Glyph for run pickers / history ("✓ " pass, "✗ " fail, "○ " open, "" none).

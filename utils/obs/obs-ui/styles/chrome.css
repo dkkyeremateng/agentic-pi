@@ -109,10 +109,12 @@ body {
     color: var(--accent);
 }
 .rail-agents {
-    margin-top: auto; /* pin the agent list to the rail's bottom half */
+    flex: 1 1 auto; /* fill the space below Analyze; the list scrolls internally */
     min-height: 0;
 }
 #sbtns {
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -257,6 +259,10 @@ header {
     overflow-y: auto;
     overflow-x: auto; /* wide tables/tracks scroll when the drawer squeezes us */
     position: relative;
+    /* column so the run-tab bar + a fill-height view (Trace) stack cleanly;
+       block views still scroll the page as before */
+    display: flex;
+    flex-direction: column;
 }
 
 #statusbar {
@@ -291,6 +297,46 @@ header {
 }
 .view.on {
     display: block;
+}
+
+/* run-detail tab bar (Trace / Race / Single) — sticky atop the content scroll */
+#runtabs {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    display: flex;
+    gap: 2px;
+    padding: 8px 14px 0;
+    margin-bottom: 6px;
+    background: var(--surface-1);
+    border-bottom: 1px solid var(--border);
+}
+#runtabs[hidden] {
+    display: none;
+}
+.runtab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border: 0;
+    background: none;
+    color: var(--text-lo);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+}
+.runtab:hover {
+    color: var(--text-hi);
+}
+.runtab.on {
+    color: var(--text-hi);
+    border-bottom-color: var(--accent);
+}
+.runtab .icon {
+    width: 15px;
+    height: 15px;
 }
 
 /* ── command palette overlay ────────────────────────────────────────────── */

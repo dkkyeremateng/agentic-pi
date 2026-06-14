@@ -36,6 +36,10 @@ function buildChips() {
     wrap.append(all, none);
 }
 
+// Trace / Timeline / Race / Events are tabs of the run-detail page; the rest are
+// rail views. (view keys: spans=Trace, trace=Timeline, race=Race, single=Events.)
+const RUN_VIEWS = ["spans", "trace", "race", "single"];
+
 function setView(v) {
     view = v;
     for (const k of [
@@ -43,26 +47,42 @@ function setView(v) {
         "single",
         "race",
         "trace",
+        "spans",
         "stats",
         "compare",
         "find",
     ]) {
-        $("v-" + k).classList.toggle("on", v === k);
+        const vb = $("v-" + k); // rail button (run views no longer have one)
+        if (vb) vb.classList.toggle("on", v === k);
         $(k).classList.toggle("on", v === k);
     }
+    // run-detail tab bar — visible only on the Trace/Race/Single tabs
+    const isRun = RUN_VIEWS.includes(v);
+    $("runtabs").hidden = !isRun;
+    for (const rv of RUN_VIEWS) {
+        const tb = $("rt-" + rv);
+        if (tb) {
+            tb.classList.toggle("on", v === rv);
+            tb.setAttribute("aria-selected", String(v === rv));
+        }
+    }
     if (v === "single") {
+        // default to the run's orchestrator when no agent is picked yet
         const cur = selected && lanes.get(selected);
-        if (cur && !laneVisible(cur)) selected = null;
+        if (!cur || !laneVisible(cur)) selected = defaultRunAgent();
         renderSingle();
     }
     updateSidebarState();
+    syncRunsRail(); // reflect the active view / pinned run in the rail highlight
     updateRunFilter(); // shown only on the lane views (swimlane/single/race)
     if (v === "race") renderRace();
     if (v === "trace") renderTrace();
+    if (v === "spans") renderSpans();
     if (v === "stats") renderStats();
     if (v === "compare") renderCompare();
     // Refresh the archive's run list when a run picker comes into view.
-    if (v === "trace" || v === "stats" || v === "compare") loadRunArchive();
+    if (v === "trace" || v === "spans" || v === "stats" || v === "compare")
+        loadRunArchive();
     syncHash();
 }
 
@@ -93,16 +113,20 @@ function applyHash() {
         const proj = p.get("project");
         if (proj) {
             projectFilter = proj;
+            projectFilterAuto = false; // a permalinked project is explicit
             maybeAddProject(proj); // ensure the option exists
             renderProjectFilter(); // reflect the selection in the combo
             applyVisibility();
         }
-        if (p.get("run")) traceRun = p.get("run");
+        if (p.get("run")) {
+            traceRun = p.get("run");
+            traceRunByCombo = true; // a permalinked run is an explicit selection
+        }
         if (p.get("stats")) statsRun = p.get("stats");
         if (p.get("a")) cmpA = p.get("a");
         if (p.get("b")) cmpB = p.get("b");
         const v = p.get("view");
-        if (v && $("v-" + v)) setView(v);
+        if (v && (RUN_VIEWS.includes(v) || $("v-" + v))) setView(v);
     } finally {
         hashApplying = false;
     }

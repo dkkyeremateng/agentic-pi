@@ -8,9 +8,9 @@ function palSources() {
     const items = [];
     const VIEWS = [
         ["swimlane", "Swimlane"],
-        ["single", "Single"],
+        ["trace", "Timeline"],
         ["race", "Race"],
-        ["trace", "Trace"],
+        ["single", "Events"],
         ["stats", "Stats"],
         ["compare", "Compare"],
         ["find", "Search"],

@@ -14,6 +14,14 @@ let traceReplayRun = ""; // the run the scrub position belongs to
 let traceRunBounds = null; // [t0, t1] of the rendered run (slider math)
 let tracePlayTimer = null; // interval handle while playing
 let traceSpeed = 4; // playback multiplier (×1 / ×4 / ×16)
+let traceLoop = false; // restart at the end instead of snapping back to live
+const TRACE_SPEEDS = [1, 4, 16];
+
+// Replay markers + step targets for the current run, rebuilt each render.
+// `traceMarkers` = notable moments shown on the axis (errors / dispatches /
+// turns); `traceMoments` = the sorted timestamps ←/→ snaps between.
+let traceMarkers = [];
+let traceMoments = [];
 
 // Zoom: the axis DOMAIN only (absolute ts window); replay filters events,
 // zoom just re-scales the x axis. null = the full run.
@@ -33,6 +41,73 @@ function* eventsUpTo(source, t) {
     for (const item of source) if (item.ev.ts <= t) yield item;
 }
 
+// Scan a run's full event stream for replay markers (errors / dispatches /
+// turns, drawn on the axis) and step moments (every notable boundary ←/→ snaps
+// between). Always over the UNFILTERED run, so you can see and jump to events
+// that are still ahead of the playhead.
+function collectTraceMarkers(runId, fromArchive) {
+    const src = fromArchive ? archiveRunEvents(runId) : laneRunEvents(runId);
+    const markers = [];
+    const moments = new Set();
+    for (const { ev } of src) {
+        if (ev.runId !== runId || ev.type === "verdict") continue;
+        const p = ev.payload || {};
+        let m = null;
+        if (ev.type === "error") m = { ts: ev.ts, kind: "error", label: p.message || p.status || "error" };
+        else if (ev.type === "tool_end" && p.isError) m = { ts: ev.ts, kind: "error", label: (p.tool || "tool") + " error" };
+        else if (ev.type === "dispatch_retry") m = { ts: ev.ts, kind: "error", label: "re-dispatched" };
+        else if (ev.type === "dispatch_start") m = { ts: ev.ts, kind: "dispatch", label: "→ " + (p.agent || "agent") };
+        else if (ev.type === "turn_start") m = { ts: ev.ts, kind: "turn", label: "turn " + (p.turnIndex ?? "") };
+        if (m) markers.push(m);
+        // step targets: marker moments + every tool/session boundary
+        if (m || ev.type === "tool_start" || ev.type === "tool_end" || ev.type === "session_start" || ev.type === "session_end")
+            moments.add(ev.ts);
+    }
+    markers.sort((a, b) => a.ts - b.ts);
+    return { markers, moments: [...moments].sort((a, b) => a - b) };
+}
+
+// Park the playhead at an absolute timestamp (clamped just inside the run).
+function traceSeek(ts) {
+    if (!traceRunBounds) return;
+    const [t0, t1] = traceRunBounds;
+    traceReplayT = ts >= t1 ? t1 - 1 : Math.max(t0, ts);
+    traceReplayRun = traceCurrentRun;
+    traceStopPlay();
+    renderTrace();
+}
+
+// Snap the playhead to the previous / next step moment (dir = -1 / +1).
+function traceStep(dir) {
+    if (!traceRunBounds) return;
+    const [t0, t1] = traceRunBounds;
+    const cur = traceReplayT == null ? t1 : traceReplayT;
+    let next = null;
+    if (dir > 0) {
+        for (const m of traceMoments) if (m > cur + 0.5) { next = m; break; }
+        next = next ?? t1;
+    } else {
+        for (let i = traceMoments.length - 1; i >= 0; i--)
+            if (traceMoments[i] < cur - 0.5) { next = traceMoments[i]; break; }
+        next = next ?? t0;
+    }
+    traceStopPlay();
+    traceReplayT = next >= t1 ? null : Math.max(t0, next);
+    traceReplayRun = traceCurrentRun;
+    renderTrace();
+}
+
+// A finished run that spent nothing (no cost, tokens, or tools) and has gone
+// quiet is a no-op (a trivial ping or aborted run) — hidden from the pickers,
+// matching the server's /runs filter and the React dashboard. Live/recent runs
+// (which read all-zero before their first turn) are kept.
+const RUN_QUIET_MS = 90_000;
+function isRunEmptyFinished(r, now) {
+    const empty =
+        (r.costUsd || 0) === 0 && (r.tokens || 0) === 0 && (r.toolCalls || 0) === 0;
+    return empty && now - r.lastTs > RUN_QUIET_MS;
+}
+
 // Group every runId we've seen (within the active project) with its time bounds.
 function collectRuns() {
     const runs = new Map();
@@ -49,6 +124,10 @@ function collectRuns() {
                     lastTs: ev.ts,
                     agents: new Set(),
                     count: 0, // lane-held events, vs the archive's full count
+                    costUsd: 0,
+                    tokens: 0,
+                    toolCalls: 0,
+                    errors: 0,
                 };
                 runs.set(ev.runId, r);
             }
@@ -57,6 +136,17 @@ function collectRuns() {
             r.agents.add(ev.agent);
             if (ev.name) r.name = ev.name; // root-only run name (if named)
             r.count++;
+            // tally spend so quiet no-op runs can be filtered out below
+            if (ev.type === "turn_end" && ev.payload) {
+                r.costUsd += ev.payload.costUsd || 0;
+                if (ev.payload.tokens) r.tokens += ev.payload.tokens.total || 0;
+            } else if (ev.type === "tool_start") {
+                r.toolCalls++;
+            } else if (ev.type === "error") {
+                r.errors++;
+            } else if (ev.type === "tool_end" && ev.payload && ev.payload.isError) {
+                r.errors++;
+            }
         }
     }
     // Merge in archived runs the live buffer never (or no longer) held. Bounds
@@ -74,9 +164,17 @@ function collectRuns() {
             agents: new Set(s.agents || []),
             name: s.name,
             count: 0,
+            costUsd: s.costUsd || 0,
+            tokens: s.tokens || 0,
+            toolCalls: s.toolCalls || 0,
+            errors: s.errors || 0,
             archived: true,
         });
     }
+    // Drop finished no-op runs (the server already filters /runs, but the live
+    // buffer can still hold a quiet all-zero run).
+    const now = Date.now();
+    for (const [id, r] of runs) if (isRunEmptyFinished(r, now)) runs.delete(id);
     return runs;
 }
 
@@ -194,7 +292,7 @@ function traceStatus(n) {
 function traceRunLabel(r, live) {
     return (
         verdictMark(r.id) +
-        (r.name || fmtWhen(r.firstTs)) +
+        runName(r) +
         " · " +
         r.agents.size +
         " agents · " +
@@ -255,7 +353,7 @@ function openSpanDrawer(n, runId) {
     const act = $("insp-action");
     if (n.laneKey) {
         act.hidden = false;
-        act.textContent = "open in Single";
+        act.textContent = "open in Events";
         act.onclick = () => selectLane(n.laneKey);
     } else {
         act.hidden = true;
@@ -341,6 +439,11 @@ function renderTrace() {
         $("trace-ticks").innerHTML = "";
         return;
     }
+    // replay markers + step moments for this run (over the full, unfiltered run)
+    const mk = collectTraceMarkers(run.id, fromArchive);
+    traceMarkers = mk.markers;
+    traceMoments = mk.moments;
+
     let source = fromArchive ? archiveRunEvents(run.id) : laneRunEvents(run.id);
     if (scrubbing) source = eventsUpTo(source, traceReplayT);
     const nodes = buildTraceNodes(run.id, source);
@@ -392,9 +495,22 @@ function renderTrace() {
     };
     for (const r of roots) walk(r, 0);
 
+    // Run totals (as-of-T when scrubbing, since nodes are built from events ≤ T).
     let running = 0;
-    for (const n of nodes.values())
+    let cost = 0;
+    let tokens = 0;
+    let tools = 0;
+    let turns = 0;
+    let errors = 0;
+    for (const n of nodes.values()) {
         if (traceStatus(n) === "running") running++;
+        const r = n.rollup;
+        cost += r.costUsd || 0;
+        tokens += r.tokens || 0;
+        tools += r.toolCalls || 0;
+        turns += r.turns || 0;
+        errors += (r.errors || 0) + (r.toolErrors || 0);
+    }
     $("trace-axis").innerHTML =
         (scrubbing
             ? '<span class="verd open">replay T+' +
@@ -413,7 +529,18 @@ function renderTrace() {
         nodes.size +
         "</b> agents · span <b>" +
         fmtDur(run.lastTs - run.firstTs) +
-        "</b>" +
+        "</b> · <b>" +
+        turns +
+        "</b> turns · <b>" +
+        fmtTok(tokens) +
+        "</b> tok · <b>" +
+        fmtCost(cost) +
+        "</b> · <b>" +
+        tools +
+        "</b> tools" +
+        (errors
+            ? ' · <b style="color:var(--err)">' + errors + "</b> errors"
+            : "") +
         (running ? " · <b>" + running + "</b> running" : "") +
         verdictBadge(run.id);
 
@@ -431,6 +558,31 @@ function renderTrace() {
         t.style.left = f * 100 + "%";
         t.textContent = "T+" + fmtDur(dom0 + f * span - run.firstTs);
         tk.appendChild(t);
+    }
+    // clickable replay markers — jump straight to the moment it dispatched/failed
+    for (const m of traceMarkers) {
+        const x = xOf(m.ts);
+        if (x < 0 || x > 100) continue;
+        const el = document.createElement("span");
+        el.className = "trace-marker " + m.kind;
+        el.style.left = x + "%";
+        el.title = "T+" + fmtDur(m.ts - run.firstTs) + " · " + m.label;
+        el.addEventListener("mousedown", (e) => e.stopPropagation()); // don't start a brush
+        el.addEventListener("click", (e) => {
+            e.stopPropagation();
+            traceSeek(m.ts);
+        });
+        tk.appendChild(el);
+    }
+    // playhead position on the axis while scrubbing
+    if (scrubbing) {
+        const x = xOf(traceReplayT);
+        if (x >= 0 && x <= 100) {
+            const ph = document.createElement("span");
+            ph.className = "trace-playhead";
+            ph.style.left = x + "%";
+            tk.appendChild(ph);
+        }
     }
     const sp2 = document.createElement("div");
     sp2.className = "trace-meta-sp";
@@ -561,8 +713,12 @@ function traceTogglePlay() {
     tracePlayTimer = setInterval(() => {
         traceReplayT += 250 * traceSpeed;
         if (traceReplayT >= traceRunBounds[1]) {
-            traceReplayT = null; // reached the end — snap back to live
-            traceStopPlay();
+            if (traceLoop) {
+                traceReplayT = traceRunBounds[0]; // wrap to the start and keep going
+            } else {
+                traceReplayT = null; // reached the end — snap back to live
+                traceStopPlay();
+            }
         }
         renderTrace();
     }, 250);
@@ -651,20 +807,36 @@ function traceTrackRect() {
 })();
 
 // ── controls + keyboard ──────────────────────────────────────────────────────
-const traceCombo = makeCombo({
-    input: $("trace-run-q"),
-    list: $("trace-run-list"),
-    onPick: (v) => {
-        traceRun = v;
-        renderTrace();
-        syncHash();
-    },
-});
+// The run is chosen from the left runs rail now — no in-page run picker. Keep a
+// no-op stub so the render path's traceCombo.update(...) calls stay harmless.
+const traceCombo = $("trace-run-q")
+    ? makeCombo({
+          input: $("trace-run-q"),
+          list: $("trace-run-list"),
+          onPick: (v) => {
+              traceRun = v;
+              traceRunByCombo = true;
+              renderTrace();
+              syncRunsRail();
+              syncHash();
+          },
+      })
+    : { update: () => {} };
 
 $("trace-play").addEventListener("click", traceTogglePlay);
-$("trace-speed").addEventListener("click", () => {
-    traceSpeed = traceSpeed === 1 ? 4 : traceSpeed === 4 ? 16 : 1;
+function traceSetSpeed(dir) {
+    const i = TRACE_SPEEDS.indexOf(traceSpeed);
+    const ni = dir
+        ? Math.min(TRACE_SPEEDS.length - 1, Math.max(0, i + dir))
+        : (i + 1) % TRACE_SPEEDS.length;
+    traceSpeed = TRACE_SPEEDS[ni];
     $("trace-speed").textContent = "×" + traceSpeed;
+}
+$("trace-speed").addEventListener("click", () => traceSetSpeed(0));
+$("trace-loop").addEventListener("click", () => {
+    traceLoop = !traceLoop;
+    $("trace-loop").classList.toggle("on", traceLoop);
+    $("trace-loop").setAttribute("aria-pressed", String(traceLoop));
 });
 $("trace-zoom-reset").addEventListener("click", () => {
     traceZoom = null;
@@ -672,26 +844,42 @@ $("trace-zoom-reset").addEventListener("click", () => {
     renderTrace();
 });
 
-// space = play/pause · ←/→ = nudge the replay cursor (shift = coarse)
+// space = play/pause · ←/→ = snap to prev/next event (shift = coarse time nudge)
+// Home/End = jump to start/live · ↑/↓ = speed
 window.addEventListener("keydown", (e) => {
     if (view !== "trace") return;
     const t = e.target;
     if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
     if (!$("palette").hidden) return;
+    if (!traceRunBounds && e.key !== " ") return;
     if (e.key === " ") {
         e.preventDefault();
         traceTogglePlay();
-    } else if (
-        (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
-        traceRunBounds
-    ) {
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
-        const [t0, t1] = traceRunBounds;
-        const step = ((t1 - t0) / 100) * (e.shiftKey ? 10 : 1);
-        const cur = traceReplayT == null ? t1 : traceReplayT;
-        const next = cur + (e.key === "ArrowRight" ? step : -step);
-        traceReplayT = next >= t1 ? null : Math.max(t0, next);
-        traceReplayRun = traceCurrentRun;
+        const dir = e.key === "ArrowRight" ? 1 : -1;
+        if (e.shiftKey) {
+            // coarse: nudge by 10% of the run span
+            const [t0, t1] = traceRunBounds;
+            const cur = traceReplayT == null ? t1 : traceReplayT;
+            const next = cur + dir * ((t1 - t0) / 10);
+            traceStopPlay();
+            traceReplayT = next >= t1 ? null : Math.max(t0, next);
+            traceReplayRun = traceCurrentRun;
+            renderTrace();
+        } else {
+            traceStep(dir);
+        }
+    } else if (e.key === "Home") {
+        e.preventDefault();
+        traceSeek(traceRunBounds[0]);
+    } else if (e.key === "End") {
+        e.preventDefault();
+        traceStopPlay();
+        traceReplayT = null; // back to live
         renderTrace();
+    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        traceSetSpeed(e.key === "ArrowUp" ? 1 : -1);
     }
 });
