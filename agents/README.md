@@ -17,7 +17,7 @@ available there.
 | `implementer.md` | Applies the plan exactly **and writes the tests that prove it (TDD)**; reports a precise change summary |
 | `reviewer.md` | Reviews the implementation against the plan — finds bugs, regressions, missed criteria; sends the implementer back to fix them |
 | `validator.md` | Independent gate — runs the full suite, judges the implementer's tests, confirms acceptance criteria, loops back to the implementer on FAIL |
-| `teams.yaml` | Selectable teams for the workflow extensions. A team's roster IS the pipeline — the workflow runs exactly its members in canonical order (`scout → planner → refiner → implementer → reviewer → validator → shipper`). No spec/full mode; e.g. `full` (all), `spec` (planner), `plan-build`, `building`. Each agent updates the docs/comments its own work touches — there is no separate documenter. |
+| `teams.yaml` | Selectable teams for the workflow extensions. A team's roster IS the pipeline — the workflow runs exactly its members in canonical order (`scout → planner → refiner → implementer → reviewer → validator → shipper`). The defined teams are `plan-build` (the full pipeline), `soft-plan-build` (no validator), `spec` (scout → planner → refiner, plan only), and `build` (resume from an existing `.agent/plan.md` — no planner). Each agent updates the docs/comments its own work touches — there is no separate documenter. |
 
 Also present are **specialist** agents that are not linear pipeline phases —
 `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets).
@@ -53,10 +53,10 @@ recon pass runs first and feeds the planner.
 
 - `/agent-workflow [request]` — run the lifecycle; each agent runs on its own model (its `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `models.yaml`, falling back to the session model). See `../extensions/README.md`.
 - `/agent-model [<agent> <model>]` — change an agent's model on the fly for this session (in memory, resets on restart); no args lists effective models, `reset` clears one or (bare) all. A runtime override outranks the env var, `.md` `model:`, and `models.yaml`.
-- Name a team as the first token to skip the picker (e.g. `/agent-workflow building …`), or add `loops=N` to override the retry limit.
+- Name a team as the first token to skip the picker (e.g. `/agent-workflow plan-build …`), or add `loops=N` to override the retry limit.
 
-For plan-only work (no code change), pick the `spec` team (planner) — it produces a
-plan under `.agent/plan.md`. A team's roster determines exactly which pipeline phases
+For plan-only work (no code change), pick the `spec` team (scout → planner →
+refiner) — it produces a hardened plan under `.agent/plan.md` and writes no code. A team's roster determines exactly which pipeline phases
 run; non-pipeline specialists added to a team are ignored — dispatch those ad-hoc
 through the orchestrator instead. Documentation is the implementer's job (it updates
 the docs its change touches), so there is no documenter phase.

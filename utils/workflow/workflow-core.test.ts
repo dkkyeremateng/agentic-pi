@@ -1243,8 +1243,8 @@ describe("loadSkills", () => {
 describe("sessionLabel", () => {
     it("includes the team and request", () => {
         assert.equal(
-            sessionLabel("agent-workflow", "building", "add CSV export"),
-            "agent-workflow · building · add CSV export",
+            sessionLabel("agent-workflow", "plan-build", "add CSV export"),
+            "agent-workflow · plan-build · add CSV export",
         );
     });
     it("omits the team when none / 'none'", () => {

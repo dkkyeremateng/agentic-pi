@@ -233,9 +233,10 @@ rather than an irrelevant team grid.
 
 Running `/agent-workflow` opens a **Select Team** dialog first — the team you pick
 decides exactly which agents run. Skip the dialog by naming a team as the first
-token (e.g. `/agent-workflow building add CSV export` runs the `building` team).
+token (e.g. `/agent-workflow plan-build add CSV export` runs the `plan-build` team).
 
-If the chosen team includes the **`scout`** agent (the default `full` team does),
+If the chosen team includes the **`scout`** agent (`plan-build`, `soft-plan-build`,
+and `spec` all do),
 a read-only **Scout** recon phase runs first and its concise findings (structure,
 patterns, key entry points) are fed into the planner to ground the plan. Scout
 never modifies files; it appears as the first card in the flow and gets its own
@@ -322,7 +323,7 @@ pi -e .pi/extensions/dispatch.ts -e .pi/extensions/agent-workflow.ts
 
 - **`/agent-workflow [request]`** — opens a **Select Team** dialog (the team decides
   exactly which agents run), then runs it. Prompts for the request if omitted.
-  Skip the dialog by naming a team as the first token (`/agent-workflow building add
+  Skip the dialog by naming a team as the first token (`/agent-workflow plan-build add
   CSV export`); cap retries with a `loops=N` token (`/agent-workflow loops=5 fix the
   bug`).
 - **`/agent-model [<agent> <model>]`** — swap a sub-agent's model for the current
@@ -378,7 +379,7 @@ until the agent runs), the **model it will run** (`◆ <model>`), and its
 description:
 
 ```
- agent-workflow  ·  team full (7/7 agents)
+ agent-workflow  ·  team plan-build (7/7 agents)
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
 │ Scout        │ │ Planner      │ │ Implementer  │ │ Reviewer     │
 │ ○ idle       │ │ ○ idle       │ │ ○ idle       │ │ ○ idle       │
@@ -397,7 +398,7 @@ selected agents show `◌ queued` before any of them runs, and the badge counts
 completions (`0/3`):
 
 ```
- agent-workflow  ·  selected from full (3/7 agents)  ·  ◌ queued: 0/3
+ agent-workflow  ·  selected from plan-build (3/7 agents)  ·  ◌ queued: 0/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
 │ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Implementer      │
 │ ◌ queued           │ │ ◌ queued           │ │ ◌ queued           │
@@ -412,7 +413,7 @@ As it then dispatches each agent (`dispatch_agent`), the cards update in place �
 (`◌ queued: 0/3` → `● working: 1/3` → `✓ done: 3/3`):
 
 ```
- agent-workflow  ·  selected from full (3/7 agents)  ·  ● working: 1/3
+ agent-workflow  ·  selected from plan-build (3/7 agents)  ·  ● working: 1/3
 ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
 │ ▸ Scout            │ │ ▸ Planner          │ │ ▸ Implementer      │
 │ ✓ done 4s          │ │ ● running 9s       │ │ ◌ queued           │
@@ -425,11 +426,12 @@ As it then dispatches each agent (`dispatch_agent`), the cards update in place �
 Teams are defined in `.pi/agents/teams.yaml` (a flat `team:` → `- member` list).
 A team's roster **is** the pipeline: the workflow runs exactly its members in the
 canonical order `scout → planner → refiner → implementer → reviewer → validator →
-ship`. There is no spec/full mode — `full` (all of them) runs the whole pipeline,
-`building` (implementer + validator + shipper) builds and ships,
-`plan-build` (planner + implementer + reviewer + validator) plans and builds, and so
-on. Running `/agent-workflow` opens a **Select Team** dialog
-first; name a team as the first token to skip it (`/agent-workflow building …`).
+ship`. The defined teams are `plan-build` (the full pipeline, independently
+validated), `soft-plan-build` (same minus the validator — faster/cheaper), `spec`
+(scout → planner → refiner — a plan only, no code), and `build` (implementer →
+reviewer → validator → shipper — resumes from an existing `.agent/plan.md`, no
+planner). Running `/agent-workflow` opens a **Select Team** dialog first; name a
+team as the first token to skip it (`/agent-workflow plan-build …`).
 
 The footer (rendered by the separate **`extensions/footer.ts`**, which reads the
 workflow's published state — see [Companion extensions](#companion-extensions--footer-revert-lsp-panel))
