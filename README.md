@@ -75,7 +75,7 @@ downstream agents, so it is never re-threaded through the context.
 
 ```bash
 cp example.env .env          # then fill in your models / API keys
-./run.sh                     # loads dispatch + interactive + agent-workflow extensions
+./run.sh                     # loads dispatch + interactive + agent-workflow + footer + revert
 ```
 
 `run.sh` loads the extensions resolved relative to itself, so you never edit pi's

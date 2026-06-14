@@ -582,9 +582,10 @@ export interface WorkflowFooterState {
 export const WORKFLOW_FOOTER_GLOBAL = "__piWorkflowFooterState";
 
 // Render the footer line: "◆ <model> · <self> <status>      [bar] <pct>", with a
-// dim pwd + git branch line above it. The pure renderer — pi-tui helpers and all
-// live state are injected, so it stays pi-tui-free and unit-testable.
-// `contextUsage` returns the primary session's usage (or undefined).
+// dim pwd + git branch line above it. An empty `selfName` drops the `· <self>
+// <status>` segment (the footer extension's standalone mode). The pure renderer —
+// pi-tui helpers and all live state are injected, so it stays pi-tui-free and
+// unit-testable. `contextUsage` returns the primary session's usage (or undefined).
 export function renderWorkflowFooter(opts: {
     width: number;
     theme: any;

@@ -172,7 +172,8 @@ const MIN_DISPATCH_OUTPUT_CHARS = 40;
 
 export default function (pi: ExtensionAPI) {
     // Shared run/session state — mutated by orchestrator-core, read by this
-    // extension's widget/footer/hooks.
+    // extension's widget and hooks, and published for the footer extension
+    // (extensions/footer.ts) via WORKFLOW_FOOTER_GLOBAL.
     const st = newOrchestratorState();
     // Extension-local: live ctx, session dir, subprocess.
     let widgetCtx: any;
@@ -196,8 +197,9 @@ export default function (pi: ExtensionAPI) {
     let modelRegistry: any;
     // Running USD cost of the PRIMARY (orchestrator) session this session. pi's
     // getContextUsage() exposes tokens but no cost, so accumulate it ourselves from
-    // each assistant message's usage.cost (the provider already priced it). The
-    // footer adds this to the sub-agent phase total so it reflects all spend.
+    // each assistant message's usage.cost (the provider already priced it). Published
+    // for the footer extension, which adds it to the sub-agent phase total so the
+    // footer reflects all spend.
     let primaryCostUsd = 0;
     // Run a git command in `cwd`, returning trimmed stdout (throws on failure).
     const git =
@@ -1329,7 +1331,9 @@ export default function (pi: ExtensionAPI) {
                 total > 0
             ) {
                 primaryCostUsd += total;
-                updateWidget(); // refresh the footer with the new total
+                // Repaint the dashboard with the new total; the footer extension
+                // reads primaryCostUsd live, so it refreshes on the same redraw.
+                updateWidget();
             }
         });
 
@@ -1498,7 +1502,7 @@ export default function (pi: ExtensionAPI) {
 
         // Only the active workflow extension owns the chrome. When both are
         // auto-discovered, the inactive one clears its widget and bows out so it
-        // never stacks a second dashboard, footer, or cancellation hook.
+        // never stacks a second dashboard or cancellation hook.
         if (!isActiveWorkflow()) {
             ctx.ui.setWidget("agent-workflow", undefined);
             return;

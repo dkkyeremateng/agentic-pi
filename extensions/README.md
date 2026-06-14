@@ -95,6 +95,30 @@ The default keeps behaviour single-level; opt into deeper trees with
 `PI_DISPATCH_MAX_DEPTH=2+`. The bundled agents are all single-level — only add an
 agent with `dispatch_agent`/`dispatch_parallel` in its frontmatter to need this.
 
+### Companion extensions — footer, revert, lsp-panel
+
+The footer, the `/revert` command, and the LSP panel are **separate `pi -e`
+extensions** rather than part of `agent-workflow.ts`. Each gates itself on
+agent-workflow being loaded (`agentWorkflowLoaded()`, an argv check) so it only
+activates alongside the workflow — loaded on their own they cleanly do nothing
+(except the footer, which has a standalone mode, below).
+
+- **`footer.ts`** — the status bar. With agent-workflow loaded it shows the
+  workflow status line; agent-workflow publishes its live state (model, cost,
+  running phases) to `globalThis` (`WORKFLOW_FOOTER_GLOBAL`) and the footer reads
+  it per frame, adding the cwd + git branch/dirty mark itself. **Standalone**
+  (`pi -e .pi/extensions/footer.ts`, no agent-workflow) it drops the workflow
+  segment and shows just `~/path: branch ✔` + `◆ <model>   $<cost> · [bar] <ctx%>`
+  for the current session (this absorbs the former `minimal.ts`).
+- **`revert.ts`** — the `/revert` command. It reads the on-disk checkpoint
+  agent-workflow writes before each run (`.agent/checkpoints/latest.json`), so it
+  needs none of the orchestrator's in-memory state.
+- **`lsp-panel.ts`** — an idle widget listing the project's language servers
+  (`✓ ready` / `○ missing`). Opt-in via `-e` (not loaded by `run.sh` by default).
+
+`run.sh` loads `footer.ts` and `revert.ts` alongside the workflow; add
+`-e .pi/extensions/lsp-panel.ts` yourself to enable the LSP panel.
+
 ## Use it
 
 ```bash
@@ -222,7 +246,7 @@ Commands:
 - `/agent-workflow [request]` — pick a team (Select Team dialog), then run the lifecycle (prompts for the request if omitted). Add a `loops=N` token (e.g. `/agent-workflow loops=5 fix the bug`) to override the retry limit for this run.
 - `/agent-model [<agent> <model>]` — change a sub-agent's model **on the fly** for this session only (held in memory, resets on restart). No args lists every agent's effective model (overrides flagged `*`); `/agent-model <agent> <model>` sets one; `/agent-model <agent> reset` clears one; `/agent-model reset` clears all. The `<model>` position tab-completes the available models (from the model registry). A runtime override wins over `PI_AGENT_<NAME>_MODEL`, the `.md` `model:`, and `models.yaml`.
 - `/agent-workflow-clear` — clear the progress widget
-- `/revert` — restore the workspace to the checkpoint taken before the **last `run_agent_workflow` run** (HEAD + a `git stash create` of pre-run uncommitted work, saved to `.agent/checkpoints/latest.json`). Asks to confirm, backs up the current state to a stash first, then `git reset --hard` + re-applies the pre-run changes. Untracked files the run created are left in place. No-op if there's no checkpoint or it isn't a git repo.
+- `/revert` — restore the workspace to the checkpoint taken before the **last `run_agent_workflow` run** (HEAD + a `git stash create` of pre-run uncommitted work, saved to `.agent/checkpoints/latest.json`). Asks to confirm, backs up the current state to a stash first, then `git reset --hard` + re-applies the pre-run changes. Untracked files the run created are left in place. No-op if there's no checkpoint or it isn't a git repo. (Lives in its own `extensions/revert.ts` — see [Companion extensions](#companion-extensions--footer-revert-lsp-panel).)
 
 Tools & UX:
 - **`ask_user`** (tool, primary session) — the agent asks you a clarifying question and waits: a pick-list (`options`) via the select dialog, or free text. Use it instead of guessing on ambiguity, or to confirm a destructive/outward-facing action. In a non-interactive context (a spawned sub-agent, print/json mode) it returns guidance to proceed with a default rather than hang. Loaded from `extensions/interactive.ts`.
@@ -407,9 +431,12 @@ ship`. There is no spec/full mode — `full` (all of them) runs the whole pipeli
 on. Running `/agent-workflow` opens a **Select Team** dialog
 first; name a team as the first token to skip it (`/agent-workflow building …`).
 
-The footer shows the **workflow status**, the **primary (orchestrator) agent's
-model** (`◆ <model>` — the model pi was loaded with), and that primary agent's own
-**context-usage bar** (`[##########] %`). The *per-agent* models and context bars
+The footer (rendered by the separate **`extensions/footer.ts`**, which reads the
+workflow's published state — see [Companion extensions](#companion-extensions--footer-revert-lsp-panel))
+shows the **workflow status**, the **primary (orchestrator) agent's model**
+(`◆ <model>` — the model pi was loaded with), and that primary agent's own
+**context-usage bar** (`[##########] %`), plus a dim `~/path: branch ✔` line above
+it (cwd + git branch + clean/dirty mark). The *per-agent* models and context bars
 live on the dashboard cards; the footer carries only the primary session's, so you
 can see what model is driving the orchestrator and how full its context is. The
 status tracks both paths: a workflow run reads `running`/`shipped`/`failed`, and
@@ -441,12 +468,19 @@ Extensions can't be `tsc`'d against installed types without this link step, so r
 
 ## Code layout
 
-Both extensions share their stateless guts via `.pi/utils/workflow/workflow-core.ts`
-(types, constants, the agent/team/`.env` loaders, and the prompt templates) and
-`.pi/utils/workflow/workflow-utils.ts` (verdict/digest helpers). These live in `.pi/utils/`
-— **not** `.pi/extensions/` — so pi doesn't try to auto-load them as extensions.
-Only the model-aware orchestration, rendering, and per-extension identity stay
-in `agent-workflow.ts`.
+The workflow's stateless guts live in `.pi/utils/workflow/workflow-core.ts`
+(types, constants, the agent/team/`.env` loaders, the prompt templates, and the
+pure `renderWorkflowFooter`) and `.pi/utils/workflow/workflow-utils.ts`
+(verdict/digest helpers). These live in `.pi/utils/` — **not** `.pi/extensions/` —
+so pi doesn't try to auto-load them as extensions. The model-aware orchestration,
+the dashboard rendering, and per-extension identity stay in `agent-workflow.ts`.
+
+The footer, `/revert`, and the LSP panel are factored into their own thin
+extensions (`footer.ts`, `revert.ts`, `lsp-panel.ts`) — see
+[Companion extensions](#companion-extensions--footer-revert-lsp-panel). They read
+what they need (the published footer state, the on-disk checkpoint) rather than
+sharing `agent-workflow.ts`'s in-memory state, so the orchestrator file stays
+focused on running the pipeline.
 
 ## Portability — moving the folder
 
@@ -468,7 +502,7 @@ New machine / new location — config only, no code changes:
    itself (no per-machine pi config needed):
 
    ```bash
-   ./run.sh          # loads dispatch.ts + agent-workflow.ts
+   ./run.sh          # loads dispatch + interactive + agent-workflow + footer + revert
    ```
 
 5. *Optional:* `bash skills/linear/install.sh` for the `linear` CLI;
