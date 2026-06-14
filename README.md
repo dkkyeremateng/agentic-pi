@@ -59,17 +59,19 @@ downstream agents, so it is never re-threaded through the context.
 - Optional per-language tools you want the agents to use: language servers for
   `lsp` (pyright, gopls, typescript-language-server, intelephense), `gh` for
   GitHub, Playwright browsers for `bowser`.
-- **Context-pruning packages (recommended)** — two third-party `pi` packages power
-  the [context management](#context-management) below. Install once; they register
-  in pi's global config and load automatically (including in sub-agents):
+- **Context-pruning package (recommended)** — `pi-context-prune` powers the
+  [context management](#context-management) below. Install once; it registers in
+  pi's global config and loads automatically (including in sub-agents):
 
   ```bash
-  pi install npm:pi-context        # provides the context_tag tool
-  pi install npm:pi-context-prune  # prunes stale tool output on each tag
+  pi install npm:pi-context-prune  # prunes stale tool output (recommended mode: agent-message)
+  pi install npm:pi-context        # OPTIONAL — only for on-context-tag mode (the context_tag tool)
   ```
 
-  Without them the agents' `context_tag` milestone calls are inert — the workflow
-  still runs, relying only on pi's built-in compaction.
+  Without `pi-context-prune` the workflow still runs, relying only on pi's built-in
+  compaction. `pi-context` is needed **only** if you switch the pruner to
+  `on-context-tag` mode; in the default `agent-message` mode the agents'
+  `context_tag` calls are just harmless bookmarks.
 
 ## Quick start
 
@@ -247,23 +249,38 @@ Long runs are kept inside the model's context window by two complementary layers
    output, sub-agent dumps) once it has been used. Originals stay retrievable via the
    `context_tree_query` tool, and the session file on disk is never modified.
 
-This config drives the second layer in **`on-context-tag`** mode: a prune flushes
-when an agent calls **`context_tag`** (from the `pi-context` package). The agents tag
-at natural milestones, so each flush reclaims a batch of now-stale output with a
-single cache-friendly rewrite:
+**Recommended mode: `agent-message`** (the package default). A prune flushes
+automatically after each final agent reply — no agent has to remember to do
+anything — batching a whole tool-using run and pruning it once, so the next request
+becomes cacheable again. This is the most robust choice for a multi-agent workflow:
+it behaves the same for the orchestrator and every headless sub-agent, with **no
+reliance on a model calling a tool**. For the workflow's bursty requests (one ask
+triggers many back-to-back dispatch/read rounds), pair it with `batchingMode:
+agent-message` so all those rounds merge into one cohesive summary:
 
-- the **implementer** tags after each completed phase (alongside the
-  `.agent/progress.md` update), so a phase's reads/commands are pruned before the
-  next phase — keeping a long implement run well under the window;
-- the **orchestrator** tags at task boundaries — a `run_agent_workflow` run, a
-  dispatch, or a delivered file completes — to keep a long multi-task session lean.
+```
+/pruner prune-on agent-message
+/pruner batching agent-message
+```
 
-Because both `pi-context` and `pi-context-prune` are registered in pi's global config
-(`packages` in `~/.pi/agent/settings.json`), they load in **every** pi process,
-including the spawned sub-agents. Pruning settings (enable/disable, trigger mode,
-summarizer model) live in pi's global config at
+**Alternative: `on-context-tag`** — prunes only when an agent calls **`context_tag`**
+(from the optional `pi-context` package), batching by explicit milestone. The agents
+are prompted to tag at natural boundaries — the **implementer** after each completed
+phase (alongside the `.agent/progress.md` update), the **orchestrator** after each
+`run_agent_workflow` run / dispatch / delivered file — so this can be marginally more
+cache-friendly *when tagging is reliable*. The catch is that it depends on the model:
+a session whose agent skips `context_tag` never prunes (the footer just shows
+"N turns queued — will summarize on next context_tag"). Prefer `agent-message` unless
+you specifically want milestone batching. (`every-turn` busts prompt caches and is
+debug-only; `agentic-auto` and `on-demand` exist too — see `/pruner help`.)
+
+Because `pi-context-prune` (and, for `on-context-tag`, `pi-context`) are registered in
+pi's global config (`packages` in `~/.pi/agent/settings.json`), they load in **every**
+pi process, including the spawned sub-agents. Pruning settings (enable/disable,
+trigger mode, batching, summarizer model) live in pi's global config at
 `~/.pi/agent/context-prune/settings.json` — **not** this folder's `.env`. Inside pi,
 `/pruner` views or changes them and `/pruner stats` shows how much it has reclaimed.
+A cheaper summarizer model (`/pruner settings`) cuts the per-flush LLM cost.
 
 ## Observability
 
