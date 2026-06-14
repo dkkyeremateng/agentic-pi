@@ -1147,7 +1147,7 @@ export default function (pi: ExtensionAPI) {
             name: "run_agent_workflow",
             label: "Run Workflow (Team)",
             description:
-                "Run the plan -> refine -> implement -> review -> validate -> ship lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself. Pass `team` when the user names one (e.g. 'use the plan-build team'); omit it to run the full default pipeline. When the user asks to build or implement an existing plan ('build the plan', 'implement the plan/spec', or when .agent/plan.md already exists), pass team='build' — it skips planning, keeps the saved .agent/plan.md, and resumes the implementer from the first unfinished phase.",
+                "Run the plan -> refine -> implement -> review -> validate -> ship lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself. Pass `team` when the user names one (e.g. 'use the plan-build team'); omit it to auto-select from the request — the full pipeline by default, or the `build` team when the request asks to implement an existing plan. When the user asks to build or implement an existing plan ('build the plan', 'implement the plan/spec', or when .agent/plan.md already exists), pass team='build' — it skips planning, keeps the saved .agent/plan.md, and resumes the implementer from the first unfinished phase.",
             parameters: Type.Object({
                 request: Type.String({
                     description: "The bug, feature, or app to deliver",
@@ -1155,7 +1155,7 @@ export default function (pi: ExtensionAPI) {
                 team: Type.Optional(
                     Type.String({
                         description:
-                            "Optional team name from teams.yaml whose roster defines which pipeline phases run (e.g. when the user says 'use the X team'). Omit to run the full default pipeline (every agent).",
+                            "Optional team name from teams.yaml whose roster defines which pipeline phases run (e.g. when the user says 'use the X team'). Omit to auto-select from the request: the full pipeline by default, or the `build` team when the request asks to implement an existing plan.",
                     }),
                 ),
                 max_loops: Type.Optional(
@@ -1193,7 +1193,7 @@ export default function (pi: ExtensionAPI) {
                             content: [
                                 {
                                     type: "text",
-                                    text: `Unknown team "${team}". Available teams: ${Object.keys(st.teams).join(", ") || "(none defined)"}. Omit team to run the full default pipeline.`,
+                                    text: `Unknown team "${team}". Available teams: ${Object.keys(st.teams).join(", ") || "(none defined)"}. Omit team to auto-select (full pipeline, or the build team for an "implement the plan" request).`,
                                 },
                             ],
                             details: undefined,
