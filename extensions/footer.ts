@@ -75,6 +75,12 @@ export default function (pi: ExtensionAPI) {
         // screen — an idle session has nothing else to trigger a re-render.
         let tui: any = null;
 
+        // Was the context pruner mid-flush on the previous render? pi-context-prune
+        // only toasts when batches QUEUE, not when they flush — so we watch its
+        // status line leave the in-progress state ("pending"/"summarizing…") and
+        // emit a one-time completion toast ourselves.
+        let pruneBusy = false;
+
         // Cached working-tree cleanliness for the branch mark (✔ clean / ✘ dirty).
         // Recomputed off the render path — at most once per TTL, asynchronously — so
         // the footer never spawns git per frame. null = unknown / not a git repo.
@@ -110,6 +116,23 @@ export default function (pi: ExtensionAPI) {
                     // Refresh the cached clean/dirty flag (throttled, async) so the
                     // branch mark stays current without blocking the render.
                     refreshGitDirty(cwd);
+                    // Toast once when a pruner flush completes: its status leaves the
+                    // in-progress state ("pending"/"summarizing…") back to a stats
+                    // line. Deferred off the render path so notify() isn't a render
+                    // side effect. (No-op when the pruner / its status line is off.)
+                    const prune =
+                        footerData?.getExtensionStatuses?.()?.get("context-prune") ??
+                        "";
+                    const busy = /pending|summari[sz]/i.test(prune);
+                    if (pruneBusy && !busy && prune) {
+                        const tail = prune.includes("│")
+                            ? " " + prune.slice(prune.indexOf("│"))
+                            : "";
+                        queueMicrotask(() =>
+                            ctx.ui?.notify?.(`pruner: flushed${tail}`, "info"),
+                        );
+                    }
+                    pruneBusy = busy;
                     // Live orchestration state, published by agent-workflow.ts
                     // (workflow mode only). Absent in standalone mode — the status
                     // segment is then dropped (empty selfName) and we use the
