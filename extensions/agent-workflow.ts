@@ -45,7 +45,7 @@ import {
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { execFileSync } from "child_process";
+import { execFileSync, execFile } from "child_process";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
 import { secs } from "../utils/workflow/workflow-utils";
 import { emitNotification } from "../utils/shared/notify";
@@ -205,6 +205,26 @@ export default function (pi: ExtensionAPI) {
     let primaryCostUsd = 0;
     // The checkpoint taken before the most recent workflow run (for /revert).
     let lastCheckpoint: Checkpoint | null = null;
+    // Cached working-tree cleanliness for the footer's branch mark (✔ clean / ✘
+    // dirty). Recomputed off the render path — at most once per GIT_DIRTY_TTL_MS,
+    // asynchronously — so the footer never spawns git per frame. null = unknown or
+    // not a git repo (no mark shown); the next frame after the check picks it up.
+    let gitDirty: boolean | null = null;
+    let gitDirtyCheckedAt = 0;
+    const GIT_DIRTY_TTL_MS = 1500;
+    const refreshGitDirty = (cwd: string) => {
+        const now = Date.now();
+        if (now - gitDirtyCheckedAt < GIT_DIRTY_TTL_MS) return;
+        gitDirtyCheckedAt = now;
+        execFile(
+            "git",
+            ["status", "--porcelain"],
+            { cwd },
+            (err, stdout) => {
+                gitDirty = err ? null : stdout.trim().length > 0;
+            },
+        );
+    };
     // Run a git command in `cwd`, returning trimmed stdout (throws on failure).
     const git =
         (cwd: string) =>
@@ -1658,18 +1678,28 @@ export default function (pi: ExtensionAPI) {
         // is the model running the orchestrator that pi was loaded with. TUI/RPC
         // only — skip the chrome in print/json modes.
         if (ctx.hasUI)
-            ctx.ui.setFooter?.((_tui: any, theme: any, _data: any) => ({
+            ctx.ui.setFooter?.((_tui: any, theme: any, footerData: any) => ({
                 dispose: () => {},
                 invalidate() {},
                 render(width: number): string[] {
                     // Primary (orchestrator) agent's model — tracked live so it
                     // follows /model changes.
                     const primaryFull = primaryModelStr();
+                    const cwd = ctx.cwd ?? process.cwd();
+                    // Refresh the cached clean/dirty flag (throttled, async) so the
+                    // branch mark stays current without blocking the render.
+                    refreshGitDirty(cwd);
                     return renderWorkflowFooter({
                         width,
                         theme,
                         selfName: "agent-workflow",
                         model: primaryFull,
+                        // pwd + git branch on a dim line above the status. pi caches
+                        // the branch (with a git watcher) on footerData; cwd is the
+                        // session's working directory. gitDirty drives the ✔/✘ mark.
+                        cwd,
+                        gitBranch: footerData?.getGitBranch?.() ?? null,
+                        gitDirty,
                         lspServers,
                         running: st.running,
                         lastStatus: st.lastStatus,

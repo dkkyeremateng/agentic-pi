@@ -560,6 +560,16 @@ export function renderWorkflowFooter(opts: {
     theme: any;
     selfName: string;
     model: string;
+    // Working directory + git branch, shown as a dim line above the status line
+    // (like pi's stock footer). cwd is home-collapsed to `~`; branch is appended in
+    // parens when the session sits in a git repo. Both optional — omit cwd and the
+    // pwd line is skipped entirely, leaving the single status line as before.
+    cwd?: string;
+    gitBranch?: string | null;
+    // Working-tree cleanliness, rendered as a mark beside the branch: green ✔ when
+    // clean, red ✘ when there are uncommitted changes. null/undefined ⇒ no mark
+    // (status unknown, or not a git repo).
+    gitDirty?: boolean | null;
     running: boolean;
     lastStatus: string;
     iteration: number;
@@ -585,6 +595,9 @@ export function renderWorkflowFooter(opts: {
         theme,
         selfName,
         model,
+        cwd,
+        gitBranch,
+        gitDirty,
         running,
         lastStatus,
         iteration,
@@ -750,7 +763,38 @@ export function renderWorkflowFooter(opts: {
     const pad = " ".repeat(
         Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
     );
-    return [truncateToWidth(left + pad + right, width)];
+    const statusLine = truncateToWidth(left + pad + right, width);
+
+    // Optional pwd line above the status line: `~/path: branch ✔`, leading space to
+    // align under the ` ◆ model`. Home is collapsed to `~`; the branch and its
+    // clean/dirty mark are shown only inside a git repo (non-git sessions get just
+    // the path). The path/colon stay dim, the branch name takes the same `accent`
+    // theme color as `agent-workflow` on the status line below, and the mark is
+    // colored — green ✔ clean, red ✘ dirty.
+    if (cwd) {
+        const home = homedir();
+        let pwd = cwd;
+        if (home && (cwd === home || cwd.startsWith(home + "/")))
+            pwd = "~" + cwd.slice(home.length);
+        let pwdSegment: string;
+        if (gitBranch) {
+            const mark =
+                gitDirty == null
+                    ? ""
+                    : gitDirty
+                      ? theme.fg("error", " ✘")
+                      : theme.fg("success", " ✔");
+            pwdSegment =
+                theme.fg("dim", ` ${pwd}: `) +
+                theme.fg("accent", gitBranch) +
+                mark;
+        } else {
+            pwdSegment = theme.fg("dim", ` ${pwd}`);
+        }
+        const pwdLine = truncateToWidth(pwdSegment, width, theme.fg("dim", "…"));
+        return [pwdLine, statusLine];
+    }
+    return [statusLine];
 }
 
 // ── Shared tool renderers ───────────────────────
