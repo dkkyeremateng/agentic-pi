@@ -28,6 +28,29 @@ import {
     type WorkflowFooterState,
 } from "../utils/workflow/workflow-core";
 
+// Render OTHER extensions' status lines (set via ctx.ui.setStatus) — most notably
+// the context pruner's "prune: N pending" / "summarizing…" / stats line. pi's
+// built-in footer renders these from footerData.getExtensionStatuses(), but our
+// setFooter override REPLACES that footer, so without re-rendering them here they'd
+// be invisible (the pruner's queued/loaded toasts still show; its summarize feedback
+// would not). Skip "agent-workflow" — our own status line already represents it.
+function extensionStatusLine(footerData: any, theme: any, width: number): string {
+    const m: ReadonlyMap<string, string> | undefined =
+        footerData?.getExtensionStatuses?.();
+    if (!m || m.size === 0) return "";
+    const parts = Array.from(m.entries())
+        .filter(([k]) => k !== "agent-workflow")
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, v]) => String(v).replace(/[\r\n\t]+/g, " ").trim())
+        .filter(Boolean);
+    if (parts.length === 0) return "";
+    return truncateToWidth(
+        theme.fg("dim", " " + parts.join("   ")),
+        width,
+        theme.fg("dim", "…"),
+    );
+}
+
 export default function (pi: ExtensionAPI) {
     const workflow = agentWorkflowLoaded();
 
@@ -94,7 +117,7 @@ export default function (pi: ExtensionAPI) {
                     const wf: WorkflowFooterState | undefined = workflow
                         ? (globalThis as any)[WORKFLOW_FOOTER_GLOBAL]?.()
                         : undefined;
-                    return renderWorkflowFooter({
+                    const lines = renderWorkflowFooter({
                         width,
                         theme,
                         // Empty in standalone mode ⇒ no `· agent-workflow <status>`.
@@ -123,6 +146,11 @@ export default function (pi: ExtensionAPI) {
                         visibleWidth,
                         truncateToWidth,
                     });
+                    // Append other extensions' status lines (e.g. the pruner's),
+                    // which our footer override would otherwise hide.
+                    const ext = extensionStatusLine(footerData, theme, width);
+                    if (ext) lines.push(ext);
+                    return lines;
                 },
             };
         });
