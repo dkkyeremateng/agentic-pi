@@ -71,21 +71,13 @@
                         <svg class="icon"><use href="#i-layers" /></svg>
                         <span>Swimlane</span>
                     </button>
-                    <button id="v-single" aria-label="Single view" class="rail-item">
-                        <svg class="icon"><use href="#i-list" /></svg>
-                        <span>Single</span>
-                    </button>
-                    <button id="v-race" aria-label="Race view" class="rail-item">
-                        <svg class="icon"><use href="#i-zap" /></svg>
-                        <span>Race</span>
-                    </button>
+                </div>
+                <div class="rail-group rail-agents">
+                    <span class="rail-label">Runs</span>
+                    <div id="sbtns"></div>
                 </div>
                 <div class="rail-group">
                     <span class="rail-label">Analyze</span>
-                    <button id="v-trace" aria-label="Trace view" class="rail-item">
-                        <svg class="icon"><use href="#i-branch" /></svg>
-                        <span>Trace</span>
-                    </button>
                     <button id="v-stats" aria-label="Stats view" class="rail-item">
                         <svg class="icon"><use href="#i-chart" /></svg>
                         <span>Stats</span>
@@ -101,10 +93,6 @@
                         <svg class="icon"><use href="#i-search" /></svg>
                         <span>Search</span>
                     </button>
-                </div>
-                <div class="rail-group rail-agents">
-                    <span class="rail-label">Agents</span>
-                    <div id="sbtns"></div>
                 </div>
             </nav>
             <div id="main-col">
@@ -140,6 +128,24 @@
                     <span id="conn">connecting…</span>
                 </header>
                 <main id="content">
+                <nav id="runtabs" role="tablist" aria-label="Run views" hidden>
+                    <button id="rt-spans" class="runtab" data-view="spans" role="tab">
+                        <svg class="icon"><use href="#i-branch" /></svg>
+                        <span>Trace</span>
+                    </button>
+                    <button id="rt-trace" class="runtab" data-view="trace" role="tab">
+                        <svg class="icon"><use href="#i-chart" /></svg>
+                        <span>Timeline</span>
+                    </button>
+                    <button id="rt-race" class="runtab" data-view="race" role="tab">
+                        <svg class="icon"><use href="#i-zap" /></svg>
+                        <span>Race</span>
+                    </button>
+                    <button id="rt-single" class="runtab" data-view="single" role="tab">
+                        <svg class="icon"><use href="#i-list" /></svg>
+                        <span>Events</span>
+                    </button>
+                </nav>
                 <section id="swimlane" class="view on">
                     <div id="hidden-bar" hidden></div>
                     <div id="empty">
@@ -185,43 +191,6 @@
                             </span>
                         </span>
                         <div id="statbar"></div>
-                        <div
-                            id="ctxwidget"
-                            title="context window — the ring drains as it fills"
-                        >
-                            <svg class="ctx-ring" viewBox="0 0 36 36">
-                                <circle
-                                    class="ctx-ring-track"
-                                    cx="18"
-                                    cy="18"
-                                    r="15.5"
-                                />
-                                <circle
-                                    class="ctx-ring-fill"
-                                    id="ctx-ring"
-                                    cx="18"
-                                    cy="18"
-                                    r="15.5"
-                                />
-                                <text
-                                    id="ctx-ring-pct"
-                                    x="18"
-                                    y="21"
-                                    text-anchor="middle"
-                                >
-                                    —
-                                </text>
-                            </svg>
-                            <span class="ctx-text">
-                                <span class="ctx-nums"
-                                    ><b id="ctx-used">—</b> /
-                                    <span id="ctx-win">—</span></span
-                                >
-                                <span class="ctx-sub"
-                                    >context · <b id="ctx-pct">—</b> left</span
-                                >
-                            </span>
-                        </div>
                     </div>
                     </div>
                     <div id="single-empty">
@@ -238,23 +207,31 @@
                     </div>
                     <div id="race-tracks"></div>
                 </section>
+                <section id="spans" class="view">
+                    <div id="spans-empty">
+                        Waiting for a run… dispatch agents with
+                        <b>PI_OBS=1</b> and the span tree appears here.
+                    </div>
+                    <div id="spans-grid">
+                        <div id="spans-tree-col">
+                            <div id="spans-head">
+                                <span class="t">Spans</span>
+                                <span class="sub" id="spans-count">0</span>
+                            </div>
+                            <div id="spans-tree"></div>
+                        </div>
+                        <div
+                            id="spans-divider"
+                            title="drag to resize"
+                            aria-label="resize panes"
+                        ></div>
+                        <div id="spans-detail">
+                            <div class="span-detail-empty">Select a span.</div>
+                        </div>
+                    </div>
+                </section>
                 <section id="trace" class="view">
                     <div id="trace-bar">
-                        <span class="trace-lbl">RUN</span>
-                        <span class="runsel combo">
-                            <span class="dot" id="trace-run-dot"></span>
-                            <input
-                                id="trace-run-q"
-                                autocomplete="off"
-                                spellcheck="false"
-                                title="select a run (type to filter)"
-                            />
-                            <div
-                                class="combo-list"
-                                id="trace-run-list"
-                                hidden
-                            ></div>
-                        </span>
                         <span id="trace-axis"></span>
                         <span id="trace-replay">
                             <button
@@ -268,9 +245,18 @@
                             <button
                                 id="trace-speed"
                                 class="exp-btn"
-                                title="playback speed"
+                                title="playback speed (↑/↓)"
                             >
                                 ×4
+                            </button>
+                            <button
+                                id="trace-loop"
+                                class="exp-btn"
+                                title="loop the replay"
+                                aria-label="loop the replay"
+                                aria-pressed="false"
+                            >
+                                <svg class="icon"><use href="#i-refresh" /></svg>
                             </button>
                             <input
                                 type="range"
@@ -531,6 +517,7 @@
         <script src="/scripts/combobox.js"></script>
         <script src="/scripts/chart.js"></script>
         <script src="/scripts/trace.js"></script>
+        <script src="/scripts/spans.js"></script>
         <script src="/scripts/stats.js"></script>
         <script src="/scripts/compare.js"></script>
         <script src="/scripts/find.js"></script>

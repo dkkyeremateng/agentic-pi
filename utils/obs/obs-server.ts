@@ -23,6 +23,7 @@ import {
     closeSync,
     readFileSync,
     appendFileSync,
+    readdirSync,
 } from "fs";
 import { join, resolve as resolvePath, dirname } from "path";
 import { homedir } from "os";
@@ -32,6 +33,8 @@ import {
     sseFrame,
     sseComment,
     filterRuns,
+    isEmptyFinishedRun,
+    RUN_QUIET_MS,
 } from "./obs-server-core";
 import {
     parseEventLine,
@@ -42,9 +45,14 @@ import {
 } from "./obs-events";
 import { eventsToOtlp } from "./obs-otel";
 import { LineScanner, RunIndexer, type RunSummary } from "./obs-run-index";
-import { buildRunDigest, formatRunDigest } from "./obs-explain";
+import { buildRunDigest, formatRunDigest, runAutoVerdict } from "./obs-explain";
+import { llmConfig, explainRun, summarizeText, loadRepoEnv } from "./obs-llm";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+// pi's extensions load the repo .env into the pi process; the server is a sibling
+// process that doesn't, so load it here too (real env wins). Lets PI_OBS_LLM* live
+// in .env like every other setting. HERE = <repo>/utils/obs → repo root is ../../.
+loadRepoEnv(join(HERE, "..", "..", ".env"));
 const UI_DIR = join(HERE, "obs-ui");
 
 function parseArgs(argv: string[]) {
@@ -75,107 +83,186 @@ function resolveSink(o: ReturnType<typeof parseArgs>): string {
 
 const opts = parseArgs(process.argv.slice(2));
 const SINK = resolveSink(opts);
+// When tailing the shared global sink, also aggregate every per-project sink
+// (sibling <dir>/*/events.jsonl). Auto-on for the global sink; force with
+// PI_OBS_AGGREGATE=1, disable with PI_OBS_AGGREGATE=0.
+const IS_GLOBAL = !opts.sink && !process.env.PI_OBS_SINK && !opts.project;
+const AGGREGATE =
+    process.env.PI_OBS_AGGREGATE === "1" ||
+    (process.env.PI_OBS_AGGREGATE !== "0" && IS_GLOBAL);
+
 const store = new EventStore();
 // SSE clients; the value carries an optional runId filter (/api/stream?run=).
 const clients = new Map<import("http").ServerResponse, { run?: string }>();
 const STARTED_AT = Date.now();
-
-// ── file tailing (poll-based; robust for appends across platforms) ───────────
-
-let offset = 0;
-let leftover = "";
-
-// On startup, don't replay an unbounded historical file (the shared sink grows
-// across runs). Start near the end; the first partial line is discarded by the
-// JSON parse. Recent events still populate the ring buffer.
+const SCAN_CHUNK = 1 << 20;
 const PRIME_TAIL_BYTES = 2 * 1024 * 1024;
-function primeOffset(): void {
-    if (!existsSync(SINK)) return;
-    try {
-        const size = statSync(SINK).size;
-        if (size > PRIME_TAIL_BYTES) offset = size - PRIME_TAIL_BYTES;
-    } catch {
-        /* ignore */
+
+// ── multi-sink tailing + indexing ────────────────────────────────────────────
+// Each sink file has its own live-tail cursor and its own RunIndexer (byte
+// offsets are per-file). A run's events live entirely in one file, so the merged
+// view just unions per-sink run summaries and remembers which file holds each.
+
+interface Sink {
+    path: string;
+    index: RunIndexer;
+    offset: number; // live-tail byte cursor
+    leftover: string;
+}
+const sinks = new Map<string, Sink>();
+function getSink(path: string): Sink {
+    let s = sinks.get(path);
+    if (!s) {
+        s = { path, index: new RunIndexer(), offset: 0, leftover: "" };
+        sinks.set(path, s);
     }
+    return s;
+}
+
+// The sink files to read: the primary sink + (when aggregating) every
+// events.jsonl one directory deep beside it. Re-scanned each tick so new
+// project folders are picked up live.
+function discoverSinks(): string[] {
+    const out = [SINK];
+    if (AGGREGATE) {
+        const dir = dirname(SINK);
+        try {
+            for (const e of readdirSync(dir, { withFileTypes: true })) {
+                if (!e.isDirectory()) continue;
+                const f = join(dir, e.name, "events.jsonl");
+                if (f !== SINK && existsSync(f)) out.push(f);
+            }
+        } catch {
+            /* ignore */
+        }
+    }
+    return out;
 }
 
 function ingest(line: string): void {
     const ev = parseEventLine(line);
     if (!ev) return;
-    if (store.add(ev)) broadcast(ev);
+    if (store.add(ev)) broadcast(ev); // store dedupes by sessionId#seq across sinks
 }
 
-function readDelta(): void {
-    if (!existsSync(SINK)) return;
+// On startup, bound the replay to each file's tail (the shared sink grows large).
+function primeOffset(): void {
+    for (const path of discoverSinks()) {
+        const s = getSink(path);
+        try {
+            const size = statSync(path).size;
+            if (size > PRIME_TAIL_BYTES) s.offset = size - PRIME_TAIL_BYTES;
+        } catch {
+            /* ignore */
+        }
+    }
+}
+
+function readDeltaOne(s: Sink): void {
+    if (!existsSync(s.path)) return;
     let size: number;
     try {
-        size = statSync(SINK).size;
+        size = statSync(s.path).size;
     } catch {
         return;
     }
-    if (size < offset) {
-        // truncated/rotated — restart from the top (dedupe guards repeats)
-        offset = 0;
-        leftover = "";
+    if (size < s.offset) {
+        s.offset = 0;
+        s.leftover = "";
     }
-    if (size === offset) return;
-    const fd = openSync(SINK, "r");
+    if (size === s.offset) return;
+    const fd = openSync(s.path, "r");
     try {
-        const len = size - offset;
+        const len = size - s.offset;
         const buf = Buffer.alloc(len);
-        const n = readSync(fd, buf, 0, len, offset);
-        offset += n;
-        leftover += buf.toString("utf-8", 0, n);
+        const n = readSync(fd, buf, 0, len, s.offset);
+        s.offset += n;
+        s.leftover += buf.toString("utf-8", 0, n);
     } finally {
         closeSync(fd);
     }
-    const lines = leftover.split("\n");
-    leftover = lines.pop() ?? ""; // keep trailing partial line
+    const lines = s.leftover.split("\n");
+    s.leftover = lines.pop() ?? "";
     for (const line of lines) ingest(line);
 }
-
-// ── run history (index over the WHOLE sink, not just the in-memory tail) ─────
-// The ring buffer + tail priming bound live memory, so older runs fall out of
-// /events and the SSE replay. The run index makes the JSONL file itself the
-// archive: it remembers every run's time bounds and byte range, and /runs +
-// /events?run=<id> serve history straight from the file.
-
-const runIndex = new RunIndexer();
-const SCAN_CHUNK = 1 << 20;
-
-// Bring the index up to date with the file — full scan on the first call, then
-// just the appended delta; rebuild from the top after truncation/rotation.
-function ensureRunIndex(): void {
-    if (!existsSync(SINK)) return;
-    let size: number;
-    try {
-        size = statSync(SINK).size;
-    } catch {
-        return;
-    }
-    if (size < runIndex.scannedTo) runIndex.reset();
-    if (size === runIndex.scannedTo) return;
-    const fd = openSync(SINK, "r");
-    try {
-        const buf = Buffer.alloc(SCAN_CHUNK);
-        let pos = runIndex.scannedTo;
-        while (pos < size) {
-            const n = readSync(fd, buf, 0, Math.min(SCAN_CHUNK, size - pos), pos);
-            if (n <= 0) break;
-            runIndex.feed(buf.subarray(0, n));
-            pos += n;
-        }
-    } finally {
-        closeSync(fd);
-    }
+function readDelta(): void {
+    for (const path of discoverSinks()) readDeltaOne(getSink(path));
 }
 
-// One run's events, read straight from the sink via its indexed byte range.
-// Runs interleave in a shared sink, so the range is filtered by runId.
+// ── run history index (per-sink, merged by runId) ────────────────────────────
+let mergedRuns: RunSummary[] = [];
+const runSink = new Map<string, string>(); // runId -> sink path holding its events
+
+function laterVerdict(a: RunSummary["verdict"], b: RunSummary["verdict"]) {
+    if (!a) return b;
+    if (!b) return a;
+    return (a.ts ?? 0) >= (b.ts ?? 0) ? a : b;
+}
+
+// Update each sink's index from its file delta, then merge into one run list.
+function ensureRunIndex(): void {
+    for (const path of discoverSinks()) {
+        const s = getSink(path);
+        if (!existsSync(path)) continue;
+        let size: number;
+        try {
+            size = statSync(path).size;
+        } catch {
+            continue;
+        }
+        if (size < s.index.scannedTo) s.index.reset();
+        if (size === s.index.scannedTo) continue;
+        const fd = openSync(path, "r");
+        try {
+            const buf = Buffer.alloc(SCAN_CHUNK);
+            let pos = s.index.scannedTo;
+            while (pos < size) {
+                const n = readSync(fd, buf, 0, Math.min(SCAN_CHUNK, size - pos), pos);
+                if (n <= 0) break;
+                s.index.feed(buf.subarray(0, n));
+                pos += n;
+            }
+        } finally {
+            closeSync(fd);
+        }
+    }
+    const byId = new Map<string, RunSummary>();
+    runSink.clear();
+    for (const s of sinks.values()) {
+        for (const r of s.index.runs()) {
+            const prev = byId.get(r.runId);
+            if (!prev) {
+                byId.set(r.runId, r);
+                runSink.set(r.runId, s.path);
+                continue;
+            }
+            // same runId in two files: keep the record with more events for the
+            // time bounds/totals, but take the most recent verdict from either.
+            const main = r.events >= prev.events ? r : prev;
+            const verdict = laterVerdict(r.verdict, prev.verdict);
+            byId.set(r.runId, verdict === main.verdict ? main : { ...main, verdict });
+            if (r.events >= prev.events) runSink.set(r.runId, s.path);
+        }
+    }
+    mergedRuns = [...byId.values()].sort((a, b) => b.firstTs - a.firstTs);
+}
+
+function allRuns(): RunSummary[] {
+    ensureRunIndex();
+    return mergedRuns;
+}
+
+// the sink file that holds a run's events (for reads + verdict appends)
+function sinkForRun(runId: string): string {
+    return runSink.get(runId) ?? SINK;
+}
+
+// One run's events, read from the sink file that holds it (its indexed range).
 function readRunEvents(runId: string): ObsEvent[] {
     ensureRunIndex();
-    const run = runIndex.get(runId);
-    if (!run) return [];
+    const s = sinks.get(sinkForRun(runId));
+    const run = s?.index.get(runId);
+    if (!s || !run) return [];
     const events: ObsEvent[] = [];
     const scanner = new LineScanner((line) => {
         const ev = parseEventLine(line);
@@ -183,7 +270,7 @@ function readRunEvents(runId: string): ObsEvent[] {
     }, run.startOffset);
     let fd: number;
     try {
-        fd = openSync(SINK, "r");
+        fd = openSync(s.path, "r");
     } catch {
         return [];
     }
@@ -191,13 +278,7 @@ function readRunEvents(runId: string): ObsEvent[] {
         const buf = Buffer.alloc(SCAN_CHUNK);
         let pos = run.startOffset;
         while (pos < run.endOffset) {
-            const n = readSync(
-                fd,
-                buf,
-                0,
-                Math.min(SCAN_CHUNK, run.endOffset - pos),
-                pos,
-            );
+            const n = readSync(fd, buf, 0, Math.min(SCAN_CHUNK, run.endOffset - pos), pos);
             if (n <= 0) break;
             scanner.push(buf.subarray(0, n));
             pos += n;
@@ -208,43 +289,86 @@ function readRunEvents(runId: string): ObsEvent[] {
     return events;
 }
 
+// ── auto-verdict backfill ─────────────────────────────────────────────────────
+// Resolve runs that ENDED (quiet > RUN_QUIET_MS) but never got a verdict by
+// scoring them from their digest (source "auto"; a manual/CLI score overrides
+// later). Skips runs already scored, runs a workflow deliberately left "open"
+// (needs-review), and empty no-op sessions. Idempotent — once scored a run has a
+// verdict and is no longer a candidate; the per-run lastTs guard avoids redoing
+// the digest each tick for runs we already inspected.
+const AUTO_VERDICT_ENABLED =
+    process.env.PI_OBS_AUTO_VERDICT !== "0" &&
+    process.env.PI_OBS_AUTO_VERDICT !== "false";
+const autoInspected = new Map<string, number>(); // runId -> lastTs we last checked
+
+function backfillVerdicts(now = Date.now()): number {
+    if (!AUTO_VERDICT_ENABLED) return 0;
+    ensureRunIndex();
+    let scored = 0;
+    for (const run of allRuns()) {
+        // already decided, or a workflow left it open on purpose → leave it
+        const v = run.verdict;
+        if (v && (v.status !== "open" || v.source === "workflow")) continue;
+        if (now - run.lastTs <= RUN_QUIET_MS) continue; // not ended yet
+        if (autoInspected.get(run.runId) === run.lastTs) continue; // unchanged since last look
+        autoInspected.set(run.runId, run.lastTs);
+
+        const verdict = runAutoVerdict(buildRunDigest(readRunEvents(run.runId)));
+        if (!verdict) continue; // empty session — nothing to judge
+
+        const f = makeFactory({
+            sessionId: `auto-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+            agent: "auto",
+            cwd: run.cwd,
+            runId: run.runId,
+        });
+        const ev = f.next("verdict", { status: verdict, source: "auto" });
+        try {
+            appendFileSync(sinkForRun(run.runId), serializeEvent(ev) + "\n", "utf-8");
+            scored++;
+        } catch {
+            /* sink not writable — try again next tick */
+            autoInspected.delete(run.runId);
+        }
+    }
+    return scored;
+}
+
 // Case-insensitive substring scan over the whole sink's raw lines, newest
 // `limit` matches kept. Shared by /search (dashboard) and /api/search.
 function searchSink(q: string, limit: number): ObsEvent[] {
-    if (!q || !existsSync(SINK)) return [];
+    if (!q) return [];
     const matches: ObsEvent[] = [];
-    const scanner = new LineScanner((line) => {
-        if (!line.toLowerCase().includes(q)) return;
-        const ev = parseEventLine(line);
-        if (!ev) return;
-        matches.push(ev);
-        if (matches.length > limit) matches.shift(); // keep the newest
-    });
-    try {
-        const fd = openSync(SINK, "r");
+    for (const path of discoverSinks()) {
+        if (!existsSync(path)) continue;
+        const scanner = new LineScanner((line) => {
+            if (!line.toLowerCase().includes(q)) return;
+            const ev = parseEventLine(line);
+            if (!ev) return;
+            matches.push(ev);
+        });
         try {
-            const size = statSync(SINK).size;
-            const buf = Buffer.alloc(SCAN_CHUNK);
-            let pos = 0;
-            while (pos < size) {
-                const n = readSync(
-                    fd,
-                    buf,
-                    0,
-                    Math.min(SCAN_CHUNK, size - pos),
-                    pos,
-                );
-                if (n <= 0) break;
-                scanner.push(buf.subarray(0, n));
-                pos += n;
+            const fd = openSync(path, "r");
+            try {
+                const size = statSync(path).size;
+                const buf = Buffer.alloc(SCAN_CHUNK);
+                let pos = 0;
+                while (pos < size) {
+                    const n = readSync(fd, buf, 0, Math.min(SCAN_CHUNK, size - pos), pos);
+                    if (n <= 0) break;
+                    scanner.push(buf.subarray(0, n));
+                    pos += n;
+                }
+            } finally {
+                closeSync(fd);
             }
-        } finally {
-            closeSync(fd);
+        } catch {
+            /* partial results are fine */
         }
-    } catch {
-        /* partial results are fine */
     }
-    return matches;
+    // newest across all sinks, capped
+    matches.sort((a, b) => a.ts - b.ts);
+    return matches.slice(-limit);
 }
 
 // ── OTLP push (optional live forwarder) ──────────────────────────────────────
@@ -278,11 +402,11 @@ async function otlpTick(): Promise<void> {
     if (!otlpSeeded) {
         // First tick: everything already quiet predates this server — skip it.
         otlpSeeded = true;
-        for (const r of runIndex.runs())
+        for (const r of allRuns())
             if (now - r.lastTs > OTLP_QUIET_MS) otlpDone.add(r.runId);
         return;
     }
-    for (const r of runIndex.runs()) {
+    for (const r of allRuns()) {
         if (otlpDone.has(r.runId)) continue;
         if (now - r.lastTs < OTLP_QUIET_MS) continue; // still running
         const events = readRunEvents(r.runId);
@@ -377,7 +501,7 @@ function apiError(res: Res, status: number, message: string): void {
 // Exact runId, or a unique prefix (friendly for hand-typed ids).
 function findRun(id: string): RunSummary | { ambiguous: number } | undefined {
     ensureRunIndex();
-    const runs = runIndex.runs();
+    const runs = allRuns();
     const exact = runs.find((r) => r.runId === id);
     if (exact) return exact;
     const pre = runs.filter((r) => r.runId.startsWith(id));
@@ -420,6 +544,7 @@ function handleApi(
             name: "pi-agent-obs",
             schema: OBS_SCHEMA,
             sink: SINK,
+            ...(AGGREGATE ? { aggregate: true, sinks: discoverSinks() } : {}),
             bufferedEvents: store.size(),
             uptimeMs: Date.now() - STARTED_AT,
             endpoints: [
@@ -427,13 +552,16 @@ function handleApi(
                 "GET  /api/openapi.yaml",
                 "GET  /api/summary",
                 "GET  /api/events?limit=",
-                "GET  /api/runs?project=&since=&limit=",
+                "GET  /api/runs?project=&since=&limit=&includeEmpty=  (hides finished no-op runs unless includeEmpty=1)",
                 "GET  /api/runs/:id",
                 "GET  /api/runs/:id/events",
                 "GET  /api/runs/:id/digest?format=json|text",
+                "GET  /api/runs/:id/explain  (LLM narrative; opt-in PI_OBS_LLM=1)",
                 "GET  /api/runs/:id/otel",
-                "POST /api/runs/:id/verdict  {status, note?}",
+                "POST /api/runs/:id/verdict  {status, note?, agent?}  (agent scopes it to one agent's run)",
                 "GET  /api/search?q=&limit=",
+                "POST /api/summarize  {text, kind?}  (LLM; opt-in PI_OBS_LLM=1)",
+                "POST /api/verdicts/backfill  (auto-score ended, still-open runs)",
                 "GET  /api/stream  (SSE; ?run= filters)",
             ],
         });
@@ -444,6 +572,15 @@ function handleApi(
 
     if (a === "summary" && req.method === "GET") {
         apiJson(res, 200, store.summary());
+        return;
+    }
+    // Manually trigger the auto-verdict backfill for ended, still-open runs.
+    if (a === "verdicts" && seg[2] === "backfill" && req.method === "POST") {
+        if (!AUTO_VERDICT_ENABLED) {
+            apiJson(res, 200, { enabled: false, scored: 0, hint: "set PI_OBS_AUTO_VERDICT=1 to enable" });
+            return;
+        }
+        apiJson(res, 200, { enabled: true, scored: backfillVerdicts() });
         return;
     }
     if (a === "events" && seg.length === 2 && req.method === "GET") {
@@ -458,6 +595,40 @@ function handleApi(
         }
         const limit = Math.min(500, Number(query.get("limit")) || 200);
         apiJson(res, 200, searchSink(q, limit));
+        return;
+    }
+    // Optional one-sentence LLM summary of an arbitrary chunk (a tool's input
+    // args or output result), for the trace I/O panel's raw/AI toggle. Opt-in,
+    // runs the pi CLI like /explain; disabled is a 200 with {enabled:false}.
+    if (a === "summarize" && req.method === "POST") {
+        const cfg = llmConfig();
+        if (!cfg.enabled) {
+            apiJson(res, 200, { enabled: false, hint: "set PI_OBS_LLM=1 to enable AI summaries" });
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", () => {
+            let parsed: { text?: unknown; kind?: unknown };
+            try {
+                parsed = JSON.parse(body || "{}");
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+                return;
+            }
+            const text = typeof parsed.text === "string" ? parsed.text : "";
+            const kind = (typeof parsed.kind === "string" ? parsed.kind : "content").slice(0, 40);
+            if (!text.trim()) {
+                apiError(res, 400, "missing text");
+                return;
+            }
+            summarizeText(text, kind, cfg)
+                .then((r) => apiJson(res, 200, { enabled: true, ...r }))
+                .catch((e) => apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e).slice(0, 400) }));
+        });
         return;
     }
     if (a === "stream" && req.method === "GET") {
@@ -491,10 +662,16 @@ function handleApi(
                     return;
                 }
             }
+            // Drop finished no-op runs (no cost/tokens/tools, gone quiet) before
+            // applying project/since/limit. `?includeEmpty=1` returns them too.
+            const includeEmpty = query.get("includeEmpty") === "1";
+            const all = includeEmpty
+                ? allRuns()
+                : allRuns().filter((r) => !isEmptyFinishedRun(r));
             apiJson(
                 res,
                 200,
-                filterRuns(runIndex.runs(), {
+                filterRuns(all, {
                     project: query.get("project") || undefined,
                     since,
                     limit: Number(query.get("limit")) || undefined,
@@ -553,6 +730,33 @@ function handleApi(
             );
             return;
         }
+        // Optional LLM narrative — opt-in (PI_OBS_LLM=1). Runs the `pi` CLI with
+        // the configured model (pi owns provider auth), so no key lives here.
+        // Disabled is a 200 with {enabled:false} so the UI can show a hint
+        // rather than treating it as an error.
+        if (sub === "explain" && req.method === "GET") {
+            const cfg = llmConfig();
+            if (!cfg.enabled) {
+                apiJson(res, 200, {
+                    enabled: false,
+                    hint: "set PI_OBS_LLM=1 to enable AI summaries (uses the pi CLI + PI_OBS_LLM_MODEL / PI_WORKFLOW_MODEL)",
+                });
+                return;
+            }
+            const evs = readRunEvents(run.runId);
+            explainRun(run.runId, buildRunDigest(evs), evs, cfg)
+                .then((r) => apiJson(res, 200, { enabled: true, ...r }))
+                // Best-effort enrichment: a model/usage/spawn failure is surfaced
+                // as a 200 with `error` so the UI can show the actionable message
+                // (e.g. a provider usage-limit hint) instead of a generic failure.
+                .catch((e) =>
+                    apiJson(res, 200, {
+                        enabled: true,
+                        error: String((e as Error)?.message || e).slice(0, 400),
+                    }),
+                );
+            return;
+        }
         // Score a run. Appends a verdict line to the sink — the tailer picks
         // it up, so open dashboards update live; the last verdict wins.
         if (sub === "verdict" && req.method === "POST") {
@@ -586,15 +790,21 @@ function handleApi(
                     cwd: run.cwd,
                     runId: run.runId,
                 });
+                // Optional `agent` scopes the verdict to a single agent's run
+                // within this run, instead of the whole run.
+                const agent = parsed.agent
+                    ? String(parsed.agent).slice(0, 80)
+                    : undefined;
                 const ev = f.next("verdict", {
                     status,
                     ...(parsed.note
                         ? { note: String(parsed.note).slice(0, 500) }
                         : {}),
+                    ...(agent ? { agent } : {}),
                     source: "api",
                 });
                 try {
-                    appendFileSync(SINK, serializeEvent(ev) + "\n", "utf-8");
+                    appendFileSync(sinkForRun(run.runId), serializeEvent(ev) + "\n", "utf-8");
                 } catch (e: any) {
                     apiError(res, 500, `could not append verdict: ${e?.message}`);
                     return;
@@ -602,8 +812,9 @@ function handleApi(
                 apiJson(res, 200, {
                     ok: true,
                     runId: run.runId,
+                    ...(agent ? { agent } : {}),
                     verdict: ev.payload,
-                    previous: run.verdict ?? null,
+                    previous: agent ? null : run.verdict ?? null,
                 });
             });
             return;
@@ -678,8 +889,12 @@ const server = createServer((req, res) => {
     // agents, cost, and event counts — the dashboard's archive picker.
     if (url === "/runs") {
         ensureRunIndex();
+        // Hide finished no-op runs (no cost/tokens/tools, gone quiet) — matches
+        // /api/runs and the React dashboard. `?includeEmpty=1` returns them too.
+        const includeEmpty = query.get("includeEmpty") === "1";
+        const runs = includeEmpty ? allRuns() : allRuns().filter((r) => !isEmptyFinishedRun(r));
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(runIndex.runs()));
+        res.end(JSON.stringify(runs));
         return;
     }
     // Full-sink substring search (case-insensitive, raw lines) — answers
@@ -759,12 +974,18 @@ primeOffset(); // bound the startup replay to the file's tail
 readDelta(); // prime from recent events
 setInterval(readDelta, 250).unref();
 
+// Auto-score ended-but-unverdicted runs shortly after startup, then periodically.
+if (AUTO_VERDICT_ENABLED) {
+    setTimeout(backfillVerdicts, 3_000).unref();
+    setInterval(backfillVerdicts, 60_000).unref();
+}
+
 server.listen(opts.port, "127.0.0.1", () => {
     process.stdout.write(
         `\nAgent observability — live\n` +
             `  dashboard  http://127.0.0.1:${opts.port}/\n` +
             `  api        http://127.0.0.1:${opts.port}/api (see utils/obs/API.md)\n` +
-            `  tailing    ${SINK}\n` +
+            `  tailing    ${SINK}${AGGREGATE ? ` (+ ${discoverSinks().length - 1} project sink(s))` : ""}\n` +
             `  history    /runs · /events?run=<id> · /otel?run=<id>\n` +
             (OTLP_ENDPOINT ? `  otlp push  ${OTLP_ENDPOINT}\n` : "") +
             `  (run a workflow with PI_OBS=1 to see events; Ctrl-C to stop)\n\n`,

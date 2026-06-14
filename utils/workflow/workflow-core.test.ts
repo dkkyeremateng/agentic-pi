@@ -1049,67 +1049,6 @@ describe("renderWorkflowFooter", () => {
         assert.ok(line.includes("+2"));
         assert.ok(!line.includes("∥ E"));
     });
-
-    // The inline LSP segment.
-    function footerWith(opts: {
-        lspServers?: {
-            server: string;
-            extensions: string[];
-            installed: boolean;
-        }[];
-        width?: number;
-    }): string {
-        return renderWorkflowFooter({
-            width: opts.width ?? 200,
-            theme,
-            selfName: "agent-workflow",
-            model: "m",
-            running: false,
-            lastStatus: "idle",
-            iteration: 1,
-            maxLoopsRef: 3,
-            dispatchMode: true,
-            phases: [],
-            dispatchElapsedMs: 0,
-            runElapsedMs: 0,
-            lspServers: opts.lspServers,
-            contextUsage: () => undefined,
-            visibleWidth: (s) => s.length,
-            truncateToWidth: (s, w, e = "") =>
-                s.length <= w ? s : s.slice(0, Math.max(0, w - e.length)) + e,
-        })[0];
-    }
-
-    it("omits the LSP segment when there are no relevant servers", () => {
-        assert.ok(!footerWith({}).includes("LSP"));
-        assert.ok(!footerWith({ lspServers: [] }).includes("LSP"));
-    });
-
-    it("shows LSP with its install mark and extensions when there's room", () => {
-        const line = footerWith({
-            lspServers: [
-                {
-                    server: "typescript-language-server",
-                    extensions: [".js"],
-                    installed: true,
-                },
-            ],
-        });
-        assert.match(line, /LSP: ✓ typescript-language-server/);
-        assert.ok(line.includes(".js"));
-    });
-
-    it("clips the LSP segment (…) instead of crowding out the cost/context", () => {
-        const many = Array.from({ length: 6 }, (_, i) => ({
-            server: `language-server-number-${i}`,
-            extensions: [".aaa", ".bbb"],
-            installed: true,
-        }));
-        const line = footerWith({ lspServers: many });
-        assert.ok(line.includes("LSP:"));
-        assert.ok(line.includes("…")); // clipped
-        assert.ok(line.includes("$0.00")); // cost preserved on the right
-    });
 });
 
 describe("parseAgentFile aliases", () => {
@@ -1155,6 +1094,19 @@ describe("parseAgentFile aliases", () => {
 });
 
 describe("subagentExtArgs", () => {
+    // subagentExtArgs reads PI_CONFINE_CWD from the ambient env; a project .env
+    // (PI_CONFINE_CWD=1) would otherwise inject cwd-guard.ts and break the
+    // default-case assertions. Pin it unset per test; the dedicated toggle test
+    // sets and restores it within its own try/finally.
+    let savedConfine: string | undefined;
+    beforeEach(() => {
+        savedConfine = process.env.PI_CONFINE_CWD;
+        delete process.env.PI_CONFINE_CWD;
+    });
+    afterEach(() => {
+        if (savedConfine === undefined) delete process.env.PI_CONFINE_CWD;
+        else process.env.PI_CONFINE_CWD = savedConfine;
+    });
     it("returns [] for an agent without a dispatch tool", () => {
         assert.deepEqual(subagentExtArgs("read,write,grep,find,ls"), []);
     });
@@ -1162,6 +1114,20 @@ describe("subagentExtArgs", () => {
         const a = subagentExtArgs("read,dispatch_agent,ls");
         assert.equal(a[0], "-e");
         assert.ok(a[1].endsWith("extensions/dispatch.ts"), a[1]);
+    });
+    const hasReadonlyGuard = (a: string[]) =>
+        a.some((x) => x.endsWith("readonly-guard.ts"));
+    it("adds readonly-guard.ts for a bash agent with no write/edit", () => {
+        assert.ok(hasReadonlyGuard(subagentExtArgs("read,bash,grep")));
+    });
+    it("skips readonly-guard.ts for a write-capable bash agent by default", () => {
+        assert.ok(!hasReadonlyGuard(subagentExtArgs("read,write,bash")));
+    });
+    it("adds readonly-guard.ts for a write agent that opts into read-only-bash", () => {
+        assert.ok(hasReadonlyGuard(subagentExtArgs("read,write,bash", true)));
+    });
+    it("never adds readonly-guard.ts to an agent without bash", () => {
+        assert.ok(!hasReadonlyGuard(subagentExtArgs("read,write", true)));
     });
     it("adds cwd-guard.ts only when PI_CONFINE_CWD=1", () => {
         const saved = process.env.PI_CONFINE_CWD;
@@ -1277,8 +1243,8 @@ describe("loadSkills", () => {
 describe("sessionLabel", () => {
     it("includes the team and request", () => {
         assert.equal(
-            sessionLabel("agent-workflow", "building", "add CSV export"),
-            "agent-workflow · building · add CSV export",
+            sessionLabel("agent-workflow", "plan-build", "add CSV export"),
+            "agent-workflow · plan-build · add CSV export",
         );
     });
     it("omits the team when none / 'none'", () => {

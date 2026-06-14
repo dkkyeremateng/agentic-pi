@@ -32,6 +32,7 @@ import {
     delimiter as pathDelimiter,
 } from "path";
 import { fileURLToPath } from "url";
+import { defaultSkillRoots } from "../guards/path-guard";
 import {
     secs,
     isModelFailure,
@@ -77,7 +78,7 @@ export const REQUIRED_AGENTS = [
 export const DEFAULT_MAX_LOOPS = 3;
 
 // Build a concise session display name for pi.setSessionName, e.g.
-// "agent-workflow · building · add CSV export". Omits the team when there isn't one.
+// "agent-workflow · plan-build · add CSV export". Omits the team when there isn't one.
 export function sessionLabel(
     prefix: string,
     team: string,
@@ -138,6 +139,11 @@ export interface AgentDef {
     contextWindow: number; // 0 when not declared in frontmatter
     systemPrompt: string;
     aliases?: string[]; // alternate names the agent can be dispatched as
+    // `read-only-bash: true` in frontmatter — the agent has `write`/`edit` (so the
+    // default read-only-agent heuristic skips it) but its `bash` must stay read-only.
+    // The spawn loads readonly-guard.ts for it so mutating git/gh shell commands are
+    // blocked even though file writes (e.g. .agent/plan.md) are allowed.
+    readOnlyBash?: boolean;
 }
 
 export interface PhaseState {
@@ -214,6 +220,15 @@ export function selectedWorkflowExtension(): string | null {
 export function isActiveWorkflow(selfName: string): boolean {
     const sel = selectedWorkflowExtension();
     return sel ? sel === selfName : selfName === "agent-workflow";
+}
+
+// True when extensions/agent-workflow.ts is among the loaded `-e` extensions. Lets
+// the workflow's companion extensions (footer, revert, lsp-panel) gate themselves
+// so they activate ONLY alongside agent-workflow. argv-based — known at load time,
+// so there's no session_start ordering or globalThis timing to coordinate. Unlike
+// isActiveWorkflow() this never defaults to true: no agent-workflow `-e`, no go.
+export function agentWorkflowLoaded(): boolean {
+    return selectedWorkflowExtension() === "agent-workflow";
 }
 
 // ── .env loader ──────────────────────────────────
@@ -551,15 +566,46 @@ export function appendLiveLog(
     for (let i = shown.length; i < bodyRows; i++) lines.push("");
 }
 
-// Render the footer line: "◆ <model> · <self> <status>      [bar] <pct>". Shared
-// by both extensions — they differ only in self-name and how the model string is
-// derived, so those are passed in. pi-tui helpers are injected (core stays
-// pi-tui-free). `contextUsage` returns the primary session's usage (or undefined).
+// Live orchestration inputs the agent-workflow extension publishes for the footer
+// to render. Bridged through globalThis (keyed by WORKFLOW_FOOTER_GLOBAL) so the
+// footer can live in its own `pi -e` extension (extensions/footer.ts) yet still
+// reflect the orchestrator's running state, cost, and model. agent-workflow.ts
+// installs a getter that closes over its live state; the footer calls it per frame.
+export interface WorkflowFooterState {
+    model: string;
+    running: boolean;
+    lastStatus: string;
+    iteration: number;
+    maxLoopsRef: number;
+    dispatchMode: boolean;
+    phases: PhaseState[];
+    dispatchElapsedMs: number;
+    runElapsedMs: number;
+    primaryCostUsd: number;
+    contextUsage: () => any;
+}
+export const WORKFLOW_FOOTER_GLOBAL = "__piWorkflowFooterState";
+
+// Render the footer line: "◆ <model> · <self> <status>      [bar] <pct>", with a
+// dim pwd + git branch line above it. An empty `selfName` drops the `· <self>
+// <status>` segment (the footer extension's standalone mode). The pure renderer —
+// pi-tui helpers and all live state are injected, so it stays pi-tui-free and
+// unit-testable. `contextUsage` returns the primary session's usage (or undefined).
 export function renderWorkflowFooter(opts: {
     width: number;
     theme: any;
     selfName: string;
     model: string;
+    // Working directory + git branch, shown as a dim line above the status line
+    // (like pi's stock footer). cwd is home-collapsed to `~`; branch is appended in
+    // parens when the session sits in a git repo. Both optional — omit cwd and the
+    // pwd line is skipped entirely, leaving the single status line as before.
+    cwd?: string;
+    gitBranch?: string | null;
+    // Working-tree cleanliness, rendered as a mark beside the branch: green ✔ when
+    // clean, red ✘ when there are uncommitted changes. null/undefined ⇒ no mark
+    // (status unknown, or not a git repo).
+    gitDirty?: boolean | null;
     running: boolean;
     lastStatus: string;
     iteration: number;
@@ -571,11 +617,6 @@ export function renderWorkflowFooter(opts: {
     // USD cost of the primary (orchestrator) session itself, folded into the
     // footer total alongside the sub-agent phase costs. Optional (defaults to 0).
     primaryCostUsd?: number;
-    // Project language servers, shown inline as `LSP: ✓ <server> <exts> …` between
-    // the model and the agent name. Typed structurally (not LspServerInfo) to avoid
-    // a workflow-core ↔ workflow-widgets import cycle. Omitted when empty; clipped so
-    // it can never crowd out the cost/context readout on the right.
-    lspServers?: { server: string; extensions: string[]; installed: boolean }[];
     contextUsage: () => any;
     visibleWidth: (s: string) => number;
     truncateToWidth: (s: string, w: number, ellipsis?: string) => string;
@@ -585,6 +626,9 @@ export function renderWorkflowFooter(opts: {
         theme,
         selfName,
         model,
+        cwd,
+        gitBranch,
+        gitDirty,
         running,
         lastStatus,
         iteration,
@@ -594,7 +638,6 @@ export function renderWorkflowFooter(opts: {
         dispatchElapsedMs,
         runElapsedMs,
         primaryCostUsd = 0,
-        lspServers = [],
         contextUsage,
         visibleWidth,
         truncateToWidth,
@@ -686,11 +729,14 @@ export function renderWorkflowFooter(opts: {
               : lastStatus;
 
     const modelPart = theme.fg("dim", ` ◆ ${model}`);
-    const namePart =
-        theme.fg("muted", " · ") +
-        theme.fg("accent", selfName) +
-        theme.fg("dim", " ") +
-        theme.fg(statusColor, statusText);
+    // The `· <self> <status>` segment is workflow-specific. Omitted when selfName is
+    // empty (the footer's standalone mode) — leaving just model · cost · context.
+    const namePart = selfName
+        ? theme.fg("muted", " · ") +
+          theme.fg("accent", selfName) +
+          theme.fg("dim", " ") +
+          theme.fg(statusColor, statusText)
+        : "";
     // Total spend = the primary (orchestrator) session's own cost plus this run's
     // sub-agent phases (each prices its own model). Always shown — $0.00 when
     // nothing priced has run yet — so the field is never mistaken for "missing".
@@ -700,57 +746,42 @@ export function renderWorkflowFooter(opts: {
     const costStr = theme.fg("muted", `${formatCostUsd(totalCostUsd)} · `);
     const right = costStr + theme.fg("dim", `[${bar}] ${pctStr} `);
 
-    // Inline LSP segment, between the model and the agent name. Built plain first so
-    // we can budget/clip by visible width, then colored. Dropped entirely when there
-    // are no relevant servers, or when there isn't room for it after the model, name,
-    // and cost/context — so it never cannibalizes the right side.
-    let lspPart = "";
-    if (lspServers.length) {
-        const sepRaw = " · ";
-        const lspRaw =
-            "LSP: " +
-            lspServers
-                .map(
-                    (s) =>
-                        `${s.installed ? "✓" : "○"} ${s.server}${s.extensions.length ? "  " + s.extensions.join(" ") : ""}`,
-                )
-                .join("  ");
-        const budget =
-            width -
-            visibleWidth(modelPart) -
-            visibleWidth(namePart) -
-            visibleWidth(right) -
-            sepRaw.length;
-        if (budget >= 8) {
-            const sep = theme.fg("muted", sepRaw);
-            if (lspRaw.length <= budget) {
-                // Fits: render with the success/dim marks colored per server.
-                const marks = lspServers
-                    .map(
-                        (s) =>
-                            (s.installed
-                                ? theme.fg("success", "✓")
-                                : theme.fg("dim", "○")) +
-                            " " +
-                            theme.fg("dim", s.server) +
-                            (s.extensions.length
-                                ? "  " + theme.fg("dim", s.extensions.join(" "))
-                                : ""),
-                    )
-                    .join("  ");
-                lspPart = sep + theme.fg("muted", "LSP: ") + marks;
-            } else {
-                // Crowded: clip the plain string with an ellipsis, all dim.
-                lspPart = sep + theme.fg("dim", truncateToWidth(lspRaw, budget, "…"));
-            }
-        }
-    }
-
-    const left = modelPart + lspPart + namePart;
+    const left = modelPart + namePart;
     const pad = " ".repeat(
         Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
     );
-    return [truncateToWidth(left + pad + right, width)];
+    const statusLine = truncateToWidth(left + pad + right, width);
+
+    // Optional pwd line above the status line: `~/path: branch ✔`, leading space to
+    // align under the ` ◆ model`. Home is collapsed to `~`; the branch and its
+    // clean/dirty mark are shown only inside a git repo (non-git sessions get just
+    // the path). The path/colon stay dim, the branch name takes the same `accent`
+    // theme color as `agent-workflow` on the status line below, and the mark is
+    // colored — green ✔ clean, red ✘ dirty.
+    if (cwd) {
+        const home = homedir();
+        let pwd = cwd;
+        if (home && (cwd === home || cwd.startsWith(home + "/")))
+            pwd = "~" + cwd.slice(home.length);
+        let pwdSegment: string;
+        if (gitBranch) {
+            const mark =
+                gitDirty == null
+                    ? ""
+                    : gitDirty
+                      ? theme.fg("error", " ✘")
+                      : theme.fg("success", " ✔");
+            pwdSegment =
+                theme.fg("dim", ` ${pwd}: `) +
+                theme.fg("accent", gitBranch) +
+                mark;
+        } else {
+            pwdSegment = theme.fg("dim", ` ${pwd}`);
+        }
+        const pwdLine = truncateToWidth(pwdSegment, width, theme.fg("dim", "…"));
+        return [pwdLine, statusLine];
+    }
+    return [statusLine];
 }
 
 // ── Shared tool renderers ───────────────────────
@@ -991,6 +1022,10 @@ export function parseAgentFile(filePath: string): AgentDef | null {
                       .map((a) => a.trim())
                       .filter(Boolean)
                 : undefined,
+            readOnlyBash:
+                fm["read-only-bash"] === "true" ||
+                fm["readonly-bash"] === "true" ||
+                undefined,
         };
         // Env-level overrides of the frontmatter: PI_AGENT_<NAME>={model, contextWindow}.
         // (model is still subject to the resolveAgentModel precedence — the more
@@ -2365,8 +2400,9 @@ export function mkPhase(
 }
 
 // The canonical pipeline order. A team runs exactly the subsequence of these
-// phases that its roster contains, in this order — there is no spec/full mode,
-// the team's membership IS the pipeline.
+// phases that its roster contains, in this order — there is no separate execution
+// "mode"; the team's membership IS the pipeline (e.g. the `spec` team is just
+// scout -> planner -> refiner).
 export const PIPELINE_ORDER = [
     "scout",
     "planner",
@@ -2745,7 +2781,7 @@ export function shouldApproveProjectForSpawn(cwd: string): boolean {
 //   PI_CONFINE_CWD=1 (it loads into every sub-agent, so it is gated to stay safe).
 // - dispatch.ts registers dispatch_agent/dispatch_parallel/select_agents, needed
 //   only by agents whose tools include one of them.
-export function subagentExtArgs(tools: string): string[] {
+export function subagentExtArgs(tools: string, readOnlyBash = false): string[] {
     const extDir = join(UTILS_DIR, "..", "extensions");
     const args: string[] = [];
     const add = (name: string) => {
@@ -2754,33 +2790,28 @@ export function subagentExtArgs(tools: string): string[] {
     };
     if (process.env.PI_CONFINE_CWD === "1") {
         // Tell the guard which skill roots read-only tools may reach even though
-        // they sit outside the cwd. Resolved here in the parent (reliable) and
-        // inherited by the spawn's env as a path-delimited list:
-        //   1. the bundled skills shipped with this repo (sibling of extensions/)
-        //   2. pi's GLOBAL skills — getAgentDir()/skills, i.e. $PI_CODING_AGENT_DIR
-        //      (tilde-expanded) or ~/.pi/agent, plus the legacy ~/.pi/skills.
-        const expand = (p: string) =>
-            p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
-        const agentDir = process.env.PI_CODING_AGENT_DIR
-            ? expand(process.env.PI_CODING_AGENT_DIR)
-            : join(homedir(), ".pi", "agent");
-        const skillRoots = [
+        // they sit outside the cwd: the bundled skills (sibling of extensions/) plus
+        // pi's global skills. Resolved here in the parent (reliable) and inherited by
+        // the spawn's env as a path-delimited list. defaultSkillRoots() is the shared
+        // source of truth — cwd-guard.ts falls back to it when run standalone.
+        process.env.PI_SKILLS_DIR = defaultSkillRoots(
             join(extDir, "..", "skills"),
-            join(agentDir, "skills"),
-            join(homedir(), ".pi", "skills"),
-        ];
-        process.env.PI_SKILLS_DIR = skillRoots.join(pathDelimiter);
+        ).join(pathDelimiter);
         add("cwd-guard.ts");
     }
     if (/\b(dispatch_agent|dispatch_parallel|select_agents)\b/.test(tools || ""))
         add("dispatch.ts");
     // readonly-guard.ts keeps a read-only agent read-only: it blocks mutating `gh`
-    // and `git` commands. Loaded for agents that can run bash but cannot write files
-    // (scout, reviewer, validator) — they query GitHub and inspect the repo but must
-    // never mutate state. Agents that may write (e.g. the shipper, which opens PRs)
-    // keep full access by not loading it.
+    // and `git` shell commands (not file writes). Loaded for agents that run bash but
+    // cannot write files (scout, reviewer, validator) — they query GitHub and inspect
+    // the repo but must never mutate state — AND for write-capable agents that opt in
+    // with `read-only-bash: true` (planner, refiner: they write only .agent/plan.md,
+    // so their bash must stay read-only). Agents that legitimately mutate (the
+    // implementer, the shipper which opens PRs) load nothing and keep full access.
     const t = tools || "";
-    if (/\bbash\b/.test(t) && !/\b(write|edit)\b/.test(t)) add("readonly-guard.ts");
+    const hasBash = /\bbash\b/.test(t);
+    const canWrite = /\b(write|edit)\b/.test(t);
+    if (hasBash && (!canWrite || readOnlyBash)) add("readonly-guard.ts");
     // Live observability: when PI_OBS=1, every sub-agent emits ObsEvents to the
     // shared sink so the dashboard shows the whole pipeline. PI_OBS_AGENT (set on
     // the spawn env) labels which agent's lane the events land in.
@@ -3070,7 +3101,7 @@ function spawnAgentWithModelFallback(
         "--name",
         spawnSessionName(cwd, agentDef.name),
         ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
-        ...subagentExtArgs(agentDef.tools),
+        ...subagentExtArgs(agentDef.tools, agentDef.readOnlyBash),
     ];
 
     const cleanModel = model?.trim();
@@ -3298,7 +3329,7 @@ export function spawnAgentWithModel(
         "--name",
         spawnSessionName(cwd, agentDef.name),
         ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
-        ...subagentExtArgs(agentDef.tools),
+        ...subagentExtArgs(agentDef.tools, agentDef.readOnlyBash),
     ];
     // Pass --model via spawnModelArg: a two-or-more-slash string keeps its
     // provider (provider/<slashed id>), a single-slash string drops the leading

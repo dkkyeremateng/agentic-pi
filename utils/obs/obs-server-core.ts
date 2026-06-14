@@ -81,6 +81,10 @@ export function summarize(events: ObsEvent[]): LiveSummary {
     let lastTs: number | undefined;
 
     for (const ev of events) {
+        // Verdicts are annotations authored by a synthetic "user" session, not
+        // agent activity — skip them so scoring a run doesn't conjure a "user"
+        // agent lane (matches buildTrace / buildRunDigest / RunIndexer).
+        if (ev.type === "verdict") continue;
         sessions.add(ev.sessionId);
         if (firstTs === undefined || ev.ts < firstTs) firstTs = ev.ts;
         if (lastTs === undefined || ev.ts > lastTs) lastTs = ev.ts;
@@ -143,7 +147,11 @@ export function summarize(events: ObsEvent[]): LiveSummary {
         totalTokens,
         totalCostUsd: totalCost,
         totalErrors,
-        agents: [...byAgent.values()].sort((x, y) => x.lastTs - y.lastTs),
+        // drop finished no-op sessions (ended with no turns/tools/cost) so the
+        // live wall isn't cluttered with start→quit shells; keep active agents.
+        agents: [...byAgent.values()]
+            .filter((a) => a.active || a.turns > 0 || a.toolCalls > 0 || a.costUsd > 0)
+            .sort((x, y) => x.lastTs - y.lastTs),
         firstTs,
         lastTs,
     };
@@ -173,6 +181,20 @@ export function filterRuns<T extends { cwd?: string; firstTs: number }>(
         out = out.filter((r) => r.firstTs >= (f.since as number));
     if (f.limit && f.limit > 0) out = out.slice(0, f.limit);
     return out;
+}
+
+// A run silent this long with no spend/tokens/tools is a finished no-op (a
+// trivial ping or aborted run) — excluded from the run listing by default.
+export const RUN_QUIET_MS = 90_000;
+
+export function isEmptyFinishedRun(
+    r: { costUsd: number; tokens?: number; toolCalls?: number; lastTs: number },
+    now = Date.now(),
+    quietMs = RUN_QUIET_MS,
+): boolean {
+    const empty =
+        r.costUsd === 0 && (r.tokens ?? 0) === 0 && (r.toolCalls ?? 0) === 0;
+    return empty && now - r.lastTs > quietMs;
 }
 
 // ── SSE framing ──────────────────────────────────────────────────────────────

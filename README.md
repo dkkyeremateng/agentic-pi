@@ -75,7 +75,7 @@ downstream agents, so it is never re-threaded through the context.
 
 ```bash
 cp example.env .env          # then fill in your models / API keys
-./run.sh                     # loads dispatch + interactive + agent-workflow extensions
+./run.sh                     # loads dispatch + interactive + agent-workflow + footer + revert
 ```
 
 `run.sh` loads the extensions resolved relative to itself, so you never edit pi's
@@ -378,7 +378,7 @@ globally-installed pi (the exact version you run) into `node_modules`:
 
 ```bash
 npm run setup:types     # link pi types (auto-runs before typecheck/test)
-npm test                # unit tests (tsx) — utils/*.test.ts — the source of truth
+npm test                # unit tests (tsx) — utils/*/*.test.ts — the source of truth
 npm run typecheck       # tsc --noEmit — best-effort; see note below
 npm run test:linear     # Python tests for the linear skill
 npm run test:atlassian  # Python tests for the atlassian skill

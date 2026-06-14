@@ -11,6 +11,7 @@ const ARCHIVED_RUNS_MAX = 8; // fetched-run cache size (evict oldest)
 
 function archiveRerender() {
     if (view === "trace") renderTrace();
+    if (view === "spans") renderSpans();
     if (view === "stats") renderStats();
     if (view === "compare") renderCompare();
 }

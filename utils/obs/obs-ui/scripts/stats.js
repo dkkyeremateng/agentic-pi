@@ -13,10 +13,9 @@ function percentile(sorted, p) {
     return sorted[idx];
 }
 
-// Walk events into aggregates — the visible lanes (optionally scoped to a
-// runId), or a fetched archive run's events when `fromArchive` is set.
-function collectAnalytics(runId, fromArchive) {
-    const a = {
+// Empty analytics accumulator.
+function newAnalytics() {
+    return {
         firstTs: null,
         lastTs: null,
         agents: new Set(),
@@ -34,70 +33,130 @@ function collectAnalytics(runId, fromArchive) {
         perTool: new Map(), // tool -> {calls, totalMs, errors}
         costSeries: [], // {ts, cost} per turn_end, in time order
     };
-    // Shared per-event accumulator — fed from the live lanes or, for a run
-    // that only the sink archive still holds, from its fetched events.
-    const add = (agent, ev) => {
-        if (ev.type === "verdict") return; // run-level, not agent activity
-        if (a.firstTs === null || ev.ts < a.firstTs) a.firstTs = ev.ts;
-        if (a.lastTs === null || ev.ts > a.lastTs) a.lastTs = ev.ts;
-        a.agents.add(agent);
-        const p = ev.payload || {};
-        const ag =
-            a.perAgent.get(agent) || { cost: 0, tokens: 0, turns: 0, tools: 0 };
-        switch (ev.type) {
-            case "turn_end": {
-                a.turns++;
-                ag.turns++;
-                if (p.durationMs) a.turnDur.push(p.durationMs);
-                if (p.prefillMs) a.prefills.push(p.prefillMs);
-                a.turnMs += p.durationMs || 0;
-                if (p.tokens) {
-                    a.tokens += p.tokens.total || 0;
-                    a.outTok += p.tokens.output || 0;
-                    ag.tokens += p.tokens.total || 0;
-                }
-                a.cost += p.costUsd || 0;
-                ag.cost += p.costUsd || 0;
-                a.costSeries.push({ ts: ev.ts, cost: p.costUsd || 0 });
-                break;
+}
+
+// Fold one event into an analytics accumulator.
+function statAddEvent(a, agent, ev) {
+    if (ev.type === "verdict") return; // run-level, not agent activity
+    if (a.firstTs === null || ev.ts < a.firstTs) a.firstTs = ev.ts;
+    if (a.lastTs === null || ev.ts > a.lastTs) a.lastTs = ev.ts;
+    a.agents.add(agent);
+    const p = ev.payload || {};
+    const ag = a.perAgent.get(agent) || { cost: 0, tokens: 0, turns: 0, tools: 0 };
+    switch (ev.type) {
+        case "turn_end": {
+            a.turns++;
+            ag.turns++;
+            if (p.durationMs) a.turnDur.push(p.durationMs);
+            if (p.prefillMs) a.prefills.push(p.prefillMs);
+            a.turnMs += p.durationMs || 0;
+            if (p.tokens) {
+                a.tokens += p.tokens.total || 0;
+                a.outTok += p.tokens.output || 0;
+                ag.tokens += p.tokens.total || 0;
             }
-            case "tool_start": {
-                a.toolCalls++;
-                ag.tools++;
-                break;
-            }
-            case "tool_end": {
-                const t =
-                    a.perTool.get(p.toolName || "?") ||
-                    { calls: 0, totalMs: 0, errors: 0 };
-                t.calls++;
-                t.totalMs += p.durationMs || 0;
-                if (p.isError) {
-                    t.errors++;
-                    a.toolErrors++;
-                }
-                a.perTool.set(p.toolName || "?", t);
-                break;
-            }
-            case "error":
-                a.errors++;
-                break;
+            a.cost += p.costUsd || 0;
+            ag.cost += p.costUsd || 0;
+            a.costSeries.push({ ts: ev.ts, cost: p.costUsd || 0 });
+            break;
         }
-        a.perAgent.set(agent, ag);
-    };
+        case "tool_start": {
+            a.toolCalls++;
+            ag.tools++;
+            break;
+        }
+        case "tool_end": {
+            const t = a.perTool.get(p.toolName || "?") || {
+                calls: 0,
+                totalMs: 0,
+                errors: 0,
+            };
+            t.calls++;
+            t.totalMs += p.durationMs || 0;
+            if (p.isError) {
+                t.errors++;
+                a.toolErrors++;
+            }
+            a.perTool.set(p.toolName || "?", t);
+            break;
+        }
+        case "error":
+            a.errors++;
+            break;
+    }
+    a.perAgent.set(agent, ag);
+}
+
+// Walk events into aggregates — the visible lanes (optionally scoped to a
+// runId), or a fetched archive run's events when `fromArchive` is set.
+function collectAnalytics(runId, fromArchive) {
+    const a = newAnalytics();
     if (fromArchive) {
-        for (const ev of archivedEvents.get(runId) || []) add(ev.agent, ev);
+        for (const ev of archivedEvents.get(runId) || []) statAddEvent(a, ev.agent, ev);
     } else {
         for (const lane of lanes.values()) {
             if (!laneInProject(lane)) continue;
             if (!laneGroupVisible(lane)) continue; // hidden orchestrator groups drop from stats
             for (const ev of lane.events) {
                 if (runId && ev.runId !== runId) continue;
-                add(lane.agent, ev);
+                statAddEvent(a, lane.agent, ev);
             }
         }
     }
     a.costSeries.sort((x, y) => x.ts - y.ts);
+    return a;
+}
+
+// ── all-runs detail aggregation ──────────────────────────────────────────────
+// The headline tiles come from per-run summaries, but the detail cards (latency,
+// per-agent, tools, cost-over-time) need events. For the all-runs view we fetch
+// the recent runs' events (lazily, capped) and fold them all into one analytics.
+const aggEvents = new Map(); // runId -> events[]
+const aggPending = new Set();
+const AGG_RUN_CAP = 50; // most-recent runs to deep-aggregate
+
+function ensureAggEvents(runId) {
+    if (aggEvents.has(runId) || aggPending.has(runId) || archivedEvents.has(runId)) return;
+    aggPending.add(runId);
+    fetch("/events?run=" + encodeURIComponent(runId))
+        .then((r) => r.json())
+        .then((evs) => {
+            aggEvents.set(runId, (Array.isArray(evs) ? evs : []).map(normalizeEvent));
+            while (aggEvents.size > AGG_RUN_CAP)
+                aggEvents.delete(aggEvents.keys().next().value);
+            if (view === "stats") renderStats();
+        })
+        .catch(() => {
+            /* leave unfetched; a later render retries */
+        })
+        .finally(() => aggPending.delete(runId));
+}
+
+// Deep analytics across the recent runs: live runs from their lanes, finished
+// runs from fetched events (kicked off on demand). `pending`/`capped` flag an
+// incomplete picture so the UI can note it.
+function collectAllRunsDetail(runList, live) {
+    const a = newAnalytics();
+    let pending = 0;
+    for (const r of runList.slice(0, AGG_RUN_CAP)) {
+        if (live.has(r.id)) {
+            for (const lane of lanes.values()) {
+                if (lane.runId !== r.id) continue;
+                if (!laneInProject(lane) || !laneGroupVisible(lane)) continue;
+                for (const ev of lane.events) statAddEvent(a, lane.agent, ev);
+            }
+        } else {
+            const evs = aggEvents.get(r.id) || archivedEvents.get(r.id);
+            if (evs) for (const ev of evs) statAddEvent(a, ev.agent, ev);
+            else {
+                ensureAggEvents(r.id);
+                pending++;
+            }
+        }
+    }
+    a.costSeries.sort((x, y) => x.ts - y.ts);
+    a.pending = pending;
+    a.capped = runList.length > AGG_RUN_CAP;
     return a;
 }
 
@@ -165,6 +224,47 @@ function renderCostTimeline(series, span0, span1) {
         " turns";
 }
 
+// "All runs" aggregate from the per-run summaries (collectRuns carries every
+// run's cost/tokens/tools/errors/agents). The live lanes only hold the current
+// run's tail, so summing summaries is the only way the headline tiles reflect
+// the whole project. Event-derived detail (latency, per-agent, tools, cost
+// series) isn't in the summaries — those cards show their empty state; pick a
+// run for the full breakdown.
+function summaryAggregate(runList) {
+    const a = {
+        firstTs: null,
+        lastTs: null,
+        agents: new Set(),
+        turns: 0,
+        turnDur: [],
+        prefills: [],
+        outTok: 0,
+        turnMs: 0,
+        tokens: 0,
+        cost: 0,
+        toolCalls: 0,
+        toolErrors: 0,
+        errors: 0,
+        perAgent: new Map(),
+        perTool: new Map(),
+        costSeries: [],
+        summary: true,
+        runCount: runList.length,
+        wallSum: 0,
+    };
+    for (const r of runList) {
+        if (a.firstTs === null || r.firstTs < a.firstTs) a.firstTs = r.firstTs;
+        if (a.lastTs === null || r.lastTs > a.lastTs) a.lastTs = r.lastTs;
+        for (const ag of r.agents) a.agents.add(ag);
+        a.cost += r.costUsd || 0;
+        a.tokens += r.tokens || 0;
+        a.toolCalls += r.toolCalls || 0;
+        a.errors += r.errors || 0;
+        a.wallSum += Math.max(0, r.lastTs - r.firstTs);
+    }
+    return a;
+}
+
 function renderStats() {
     const runs = collectRuns();
     const runList = [...runs.values()].sort((x, y) => y.lastTs - x.lastTs);
@@ -185,7 +285,7 @@ function renderStats() {
     // Run-picker combobox: "all runs" (when several) + every run.
     const statsLabel = (r) =>
         verdictMark(r.id) +
-        (r.name || fmtWhen(r.firstTs)) +
+        runName(r) +
         " · " +
         r.agents.size +
         " agents" +
@@ -227,7 +327,11 @@ function renderStats() {
         return;
     }
 
-    const a = collectAnalytics(scope, fromArchive);
+    // "all runs" → tiles from per-run summaries; a single run → walk its events.
+    // The detail cards always need events, so for all-runs they come from `det`
+    // (a deep aggregation across the recent runs, fetched lazily).
+    const a = scope ? collectAnalytics(scope, fromArchive) : summaryAggregate(runList);
+    const det = scope ? a : collectAllRunsDetail(runList, live);
     const has = a.firstTs !== null && a.agents.size > 0;
     $("stats-empty").style.display = has ? "none" : "block";
     $("stats-body").style.display = has ? "" : "none";
@@ -236,15 +340,18 @@ function renderStats() {
         return;
     }
 
-    const wall = (a.lastTs || 0) - (a.firstTs || 0);
+    const wall = a.summary ? a.wallSum : (a.lastTs || 0) - (a.firstTs || 0);
     $("stats-axis").innerHTML =
         "<b>" +
         a.agents.size +
-        "</b> agents · <b>" +
-        a.turns +
-        "</b> turns · wall <b>" +
+        "</b> agents · " +
+        (a.summary
+            ? "<b>" + a.runCount + "</b> runs"
+            : "<b>" + a.turns + "</b> turns") +
+        " · wall <b>" +
         fmtDur(wall) +
         "</b>" +
+        (a.summary && det.pending ? " · aggregating…" : "") +
         (scope ? verdictBadge(scope) : "");
 
     // headline tiles — with vs-previous-run deltas when scoped to one run
@@ -261,10 +368,12 @@ function renderStats() {
     }
     const tiles = $("stats-tiles");
     tiles.innerHTML = "";
-    const avgTps = a.turnMs > 0 ? Math.round((a.outTok / a.turnMs) * 1000) : 0;
+    // turns / avg tok/s aren't in the run summaries — take them from the event
+    // aggregation (`det`) for the all-runs view.
+    const avgTps = det.turnMs > 0 ? Math.round((det.outTok / det.turnMs) * 1000) : 0;
     tile(tiles, "cost", fmtCost(a.cost), "ok", prev && deltaVs(a.cost, prev.costUsd));
     tile(tiles, "tokens", fmtTok(a.tokens));
-    tile(tiles, "turns", a.turns);
+    tile(tiles, "turns", det.turns || (a.summary ? "—" : 0));
     tile(tiles, "tool calls", a.toolCalls);
     tile(
         tiles,
@@ -280,11 +389,11 @@ function renderStats() {
         fmtDur(wall),
         prev && deltaVs(wall, prev.lastTs - prev.firstTs),
     );
-    tile(tiles, "avg tok/s", avgTps);
+    tile(tiles, "avg tok/s", a.summary && !det.turns ? "—" : avgTps);
 
     // latency percentiles
-    const dur = a.turnDur.slice().sort((x, y) => x - y);
-    const pre = a.prefills.slice().sort((x, y) => x - y);
+    const dur = det.turnDur.slice().sort((x, y) => x - y);
+    const pre = det.prefills.slice().sort((x, y) => x - y);
     const lat = $("stats-latency");
     const latCells = [
         ["turn p50", fmtMs(percentile(dur, 50)) || "—"],
@@ -309,7 +418,7 @@ function renderStats() {
     // per-agent cost/token bars (sorted by cost)
     const agentBox = $("stats-agents");
     agentBox.innerHTML = "";
-    const agentRows = [...a.perAgent.entries()].sort(
+    const agentRows = [...det.perAgent.entries()].sort(
         (x, y) => y[1].cost - x[1].cost,
     );
     const maxCost = agentRows.reduce((m, [, v]) => Math.max(m, v.cost), 0) || 1;
@@ -333,7 +442,7 @@ function renderStats() {
 
     // tool leaderboard (by total time)
     const toolBox = $("stats-tools");
-    const toolRows = [...a.perTool.entries()]
+    const toolRows = [...det.perTool.entries()]
         .sort((x, y) => y[1].totalMs - x[1].totalMs)
         .slice(0, 12);
     if (!toolRows.length) {
@@ -365,7 +474,7 @@ function renderStats() {
     }
 
     // cost over time
-    renderCostTimeline(a.costSeries, a.firstTs, a.lastTs);
+    renderCostTimeline(det.costSeries, det.firstTs || a.firstTs, det.lastTs || a.lastTs);
 }
 
 // ── run history (regression strip over every recorded run) ──────────────────

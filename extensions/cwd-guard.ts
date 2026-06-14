@@ -19,24 +19,33 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "url";
 import { dirname, resolve, delimiter as pathDelimiter } from "path";
-import { isOutsideCwd, isWithinAny } from "../utils/guards/path-guard";
+import {
+    isOutsideCwd,
+    isWithinAny,
+    defaultSkillRoots,
+} from "../utils/guards/path-guard";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 const WRITE_TOOLS = ["edit", "write"] as const;
 
 // Skill roots read-only tools may reach even outside the cwd. Prefer the list the
 // spawn passes via PI_SKILLS_DIR (path-delimited: bundled skills + pi's global
-// skills, resolved reliably in the parent); fall back to resolving the bundled
-// skills dir from this file's own location.
+// skills, resolved reliably in the parent). When run standalone (`pi -e cwd-guard.ts`,
+// no PI_SKILLS_DIR) fall back to resolving the same roots ourselves — the bundled
+// skills (sibling of extensions/) plus pi's global skills — so an exclusively-loaded
+// guard exempts exactly what the spawned one does.
 const skillRoots: string[] = (process.env.PI_SKILLS_DIR || "")
     .split(pathDelimiter)
     .map((p) => p.trim())
     .filter(Boolean);
 if (skillRoots.length === 0) {
     try {
-        skillRoots.push(
-            resolve(dirname(fileURLToPath(import.meta.url)), "..", "skills"),
+        const bundled = resolve(
+            dirname(fileURLToPath(import.meta.url)),
+            "..",
+            "skills",
         );
+        skillRoots.push(...defaultSkillRoots(bundled));
     } catch {
         // no exemption if we can't locate ourselves
     }

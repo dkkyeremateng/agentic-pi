@@ -5,6 +5,7 @@ import {
     summarize,
     sseFrame,
     filterRuns,
+    isEmptyFinishedRun,
 } from "./obs-server-core";
 import { makeFactory, type ObsEvent } from "./obs-events";
 
@@ -73,6 +74,36 @@ test("summarize rolls up per-agent turns, tools, tokens and cost", () => {
     assert.equal(impl?.tokens, 900);
 });
 
+test("summarize drops finished no-op sessions but keeps active ones", () => {
+    const worked = evs("scout");
+    const noop = makeFactory({ sessionId: "orch-1", agent: "orchestrator" });
+    const justStarted = makeFactory({ sessionId: "orch-2", agent: "seeker" });
+    const sum = summarize([
+        worked.start,
+        worked.turn(100, 0.01),
+        // orchestrator: session start → end, no turns/tools/cost → hidden
+        noop.next("session_start", { model: "m" }, 1),
+        noop.next("session_end", { reason: "quit" }, 2),
+        // seeker: started, no end yet → still active → kept
+        justStarted.next("session_start", { model: "m" }, 3),
+    ]);
+    const names = sum.agents.map((a) => a.agent).sort();
+    assert.deepEqual(names, ["scout", "seeker"]); // no "orchestrator" no-op
+});
+
+test("summarize ignores verdict events (no synthetic 'user' agent)", () => {
+    const a = evs("scout");
+    const scorer = makeFactory({ sessionId: "score-1", agent: "user" });
+    const sum = summarize([
+        a.start,
+        a.turn(100, 0.01),
+        scorer.next("verdict", { status: "pass", source: "api" }, 5),
+    ]);
+    assert.equal(sum.agents.find((x) => x.agent === "user"), undefined); // not an agent
+    assert.deepEqual(sum.agents.map((x) => x.agent), ["scout"]);
+    assert.equal(sum.sessions, 1); // the scorer session doesn't count either
+});
+
 test("summarize counts provider error events per agent and in total", () => {
     const f = makeFactory({ sessionId: "s", agent: "scout" });
     const all = [
@@ -115,4 +146,20 @@ test("filterRuns scopes by project basename, since, and limit", () => {
         ["b"],
     );
     assert.equal(filterRuns(runs, {}).length, 3);
+});
+
+test("isEmptyFinishedRun hides only quiet all-zero runs", () => {
+    const NOW = 1_000_000;
+    const quiet = NOW - 200_000; // older than RUN_QUIET_MS (90s)
+    const recent = NOW - 1_000;
+    // quiet + all zero → hidden
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, tokens: 0, toolCalls: 0, lastTs: quiet }, NOW), true);
+    // still live (recent) → kept, even though all-zero
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, tokens: 0, toolCalls: 0, lastTs: recent }, NOW), false);
+    // quiet but did real work → kept
+    assert.equal(isEmptyFinishedRun({ costUsd: 0.2, tokens: 0, toolCalls: 0, lastTs: quiet }, NOW), false);
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, tokens: 100, toolCalls: 0, lastTs: quiet }, NOW), false);
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, tokens: 0, toolCalls: 3, lastTs: quiet }, NOW), false);
+    // missing tokens/toolCalls (older server shape) treated as 0
+    assert.equal(isEmptyFinishedRun({ costUsd: 0, lastTs: quiet }, NOW), true);
 });

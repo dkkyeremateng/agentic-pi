@@ -192,6 +192,34 @@ Found in the 2026-06-12 end-to-end review (vanilla keeps them as-is):
 
 ## 7. React implementation plan
 
+> **Visual direction — DECIDED (2026-06-13): v2 Observe, with two
+> transplants.** Four concept mockups live in
+> [`mockups/`](mockups/README.md); the chosen blend is:
+>
+> - **Foundation: v2 Observe** (`v2-observe.html`) — run-centric IA
+>   (runs inbox → run hero page with view tabs), zinc near-black +
+>   single violet→cyan gradient accent, glass panels, and the
+>   **AI-digest pane** (`/api/runs/:id/digest`) as the signature right
+>   panel with pass/fail scoring.
+> - **Transplant 1 (from v4 Platform)**: the trace detail anatomy —
+>   typed span tree (`AGENT`/`LLM`/`TOOL` kind chips, per-span latency
+>   bars, error icons) beside **Input/Output message blocks** — becomes
+>   the Trace tab inside the run page.
+> - **Transplant 2 (from v3 Mission)**: the **run timeline strip**
+>   (verdict-colored run blocks over real time, brushable) as the runs
+>   inbox header — glance navigation for "what happened today".
+>
+> Rationale: the run is this tool's natural unit of work (solo-scale
+> inbox, not fleet console or eval-campaign tables); the digest pane is
+> the capability no competitor has locally; the safe/familiar option
+> already exists as the bundled vanilla app. Discipline rule: ONE
+> gradient accent (brand gem, primary button, running bars) — everything
+> else stays quiet. v1/v3/v4 remain in `mockups/` as reference.
+>
+> The shell still includes a **Live** section (segmented nav) carrying
+> the swimlane/race-style live wall — the inbox is for runs as records,
+> Live is for watching them happen.
+
 ### 7.1 Architecture
 
 - **Location**: `utils/obs/obs-app/` (Vite root) in this repo — so the app
@@ -231,29 +259,32 @@ The vanilla view modules contain the reference implementations:
 (lanes.js/header.js), cycle banding (single.js). Port them as pure
 functions with tests — they encode every §4 contract.
 
-### 7.3 Component map
+### 7.3 Component map (Observe IA)
 
-| Vanilla | React |
+| Concern (vanilla reference) | React |
 |---|---|
-| shell.js + chrome.css | `<AppShell>` (Rail, Header, StatusBar, Drawer) |
-| palette.js | cmdk `<CommandPalette>` |
-| combobox.js | `<RunCombobox>` (one component, used by Trace/Stats/Compare/header) |
-| vlist.js | TanStack Virtual in `<EventFeed>` |
+| shell (top bar, segmented nav) | `<AppShell>` (TopBar with segmented Runs/Live/Analytics/Search, ⌘K trigger, streaming chip) |
+| runs inbox — *new* | `<RunsInbox>` (`<RunCard>` w/ status chip, agent dots, sparkline) + `<RunTimelineStrip>` (v3 transplant, brushable) |
+| run page — *new* | `<RunHero>` (title, KPI band w/ deltas, actions) + view tabs (Trace · Timeline · Events · Stats · Raw) |
+| digest pane — *new* | `<DigestPane>` (`/api/runs/:id/digest`: narrative + `<AnomalyCard>`s + `<ScoreControl>` → POST /verdict) |
+| trace.js render | `<TraceTab>` = v4 transplant: `<SpanTree>` (AGENT/LLM/TOOL chips, latency bars) + `<IOPanel>` (Input/Output blocks) + `<ReplayControls>` (parity: replay+zoom) |
+| swimlane/race (live wall) | `<LiveView>` under the Live segment (lanes + race tracks) |
+| vlist.js | TanStack Virtual in `<EventFeed>` (Events tab; archive paging closes §6.4) |
 | feed.js describe/iconFor | `<EventRow>` + `eventMeta.ts` |
-| trace.js render | `<TraceView>` (`<SpanTree>`, `<TimeAxis>`, `<ReplayControls>`) |
 | chart.js | `<LineChart>`/`<Sparkline>` (canvas, ported) |
-| stats/compare/find | `<StatsView>`/`<CompareView>`/`<SearchView>` |
+| stats/compare/find | `<StatsTab>`, `<CompareView>` (Analytics segment), `<SearchView>` |
+| palette.js / combobox.js | cmdk `<CommandPalette>` / `<RunCombobox>` |
 | hash sync (views.js) | router (TanStack Router or wouter) — full state incl. §6.1 params |
 
 ### 7.4 Phases (each shippable)
 
 | Phase | Scope |
 |---|---|
-| **R0** | Scaffold, tokens.css, openapi types, data layer + derive/ ports **with tests for every §4 contract** |
-| **R1** | Shell: rail/header/statusbar/drawer/palette + router (full URL state) |
-| **R2** | Live views: Swimlane, Single (virtual + archive paging — closes §6.4), Race |
-| **R3** | Analyze views: Trace (parity incl. replay+zoom), Stats, Compare |
-| **R4** | Search, verdict scoring UI (POST /verdict), a11y pass (§6.5), perf pass |
+| **R0** | Scaffold, tokens.css (v2 Observe palette), openapi types, data layer + derive/ ports **with tests for every §4 contract** |
+| **R1** | Shell: top bar + segmented nav, runs inbox + timeline strip, run hero page skeleton, router (full URL state), ⌘K |
+| **R2** | Run page depth: Trace tab (span tree + I/O panel, replay+zoom parity), Events tab (virtual + archive paging — closes §6.4), digest pane + scoring (POST /verdict) |
+| **R3** | Live segment (swimlane/race wall, stall badges) + Analytics segment (Stats, Compare) |
+| **R4** | Search segment, a11y pass (§6.5), perf pass, polish (skeletons, empty states) |
 | **R5** | Serve from obs-server `/app`, side-by-side period, then decide the default |
 
 ### 7.5 Non-goals

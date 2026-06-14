@@ -15,8 +15,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Text, Markdown } from "@mariozechner/pi-tui";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import { Text, Markdown } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { appendFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";

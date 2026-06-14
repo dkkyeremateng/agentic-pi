@@ -94,10 +94,14 @@ command -v pi >/dev/null 2>&1 || {
 
 # dispatch.ts first (the workflow depends on it for dispatch_agent/select_agents).
 # interactive.ts adds the ask_user tool for the primary session.
+# footer.ts renders the status bar from the state agent-workflow.ts publishes, so
+# it loads after it (order isn't critical — the state is read per render frame).
 EXT=(
     -e "$DIR/extensions/dispatch.ts"
     -e "$DIR/extensions/interactive.ts"
     -e "$DIR/extensions/agent-workflow.ts"
+    -e "$DIR/extensions/footer.ts"
+    -e "$DIR/extensions/revert.ts"
 )
 
 # Live observability (Phase 2): the orchestrator and every sub-agent emit

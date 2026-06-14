@@ -1,8 +1,9 @@
 // ABOUTME: Tiny, dependency-light helper for confining file access to a cwd.
 // Used by extensions/cwd-guard.ts (loaded into sub-agents) — kept separate from
-// workflow-core so the guard stays lightweight (only imports `path`).
+// workflow-core so the guard stays lightweight (only imports `path`/`os`).
 
-import { isAbsolute, resolve, relative, sep } from "path";
+import { isAbsolute, join, resolve, relative, sep } from "path";
+import { homedir } from "os";
 
 // True if `p` resolves to a location OUTSIDE `cwd` (a parent, sibling, or absolute
 // path elsewhere). Relative paths are resolved against `cwd`. Lexical only — it does
@@ -24,4 +25,24 @@ export function isOutsideCwd(cwd: string, p: string): boolean {
 // root (the cwd) for the membership test.
 export function isWithinAny(roots: (string | undefined)[], p: string): boolean {
     return roots.some((r) => !!r && !isOutsideCwd(r, p));
+}
+
+// The skill roots read-only tools may reach even when they sit outside the cwd:
+// the repo's bundled skills (`bundledSkillsDir`) plus pi's GLOBAL skills —
+// getAgentDir()/skills ($PI_CODING_AGENT_DIR, tilde-expanded, or ~/.pi/agent) and
+// the legacy ~/.pi/skills. Single source of truth shared by the sub-agent spawn
+// (workflow-core.subagentExtArgs, which exports them via PI_SKILLS_DIR) and
+// extensions/cwd-guard.ts (which falls back to this when run standalone, with no
+// PI_SKILLS_DIR set) — so the two can never drift.
+export function defaultSkillRoots(bundledSkillsDir: string): string[] {
+    const expand = (p: string) =>
+        p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+    const agentDir = process.env.PI_CODING_AGENT_DIR
+        ? expand(process.env.PI_CODING_AGENT_DIR)
+        : join(homedir(), ".pi", "agent");
+    return [
+        bundledSkillsDir,
+        join(agentDir, "skills"),
+        join(homedir(), ".pi", "skills"),
+    ];
 }

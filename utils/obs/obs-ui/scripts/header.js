@@ -1,5 +1,6 @@
 // ── header ───────────────────────────────────────────────────────────────────
-// Header totals reflect the selected project (or all projects when none).
+// Footer totals reflect the run selected in the top panel; else the selected
+// project (or all projects when none).
 
 // Lane health, evaluated on the header tick (so it moves without new events):
 // an ACTIVE lane gone quiet for 3× its own average turn time (min 60s) is
@@ -24,8 +25,12 @@ function renderHeader() {
         stalled = 0,
         trouble = 0;
     const now = Date.now();
+    // the run the current view is scoped to (run-detail tabs / pickers)
+    const selRun = typeof currentRunId === "function" ? currentRunId() : "";
     for (const a of lanes.values()) {
-        if (!laneVisible(a)) {
+        // Footer totals span the selected run, else the whole selected project
+        // (every run + group), else all projects — not just the visible lanes.
+        if (!laneInProject(a) || (selRun && a.runId !== selRun)) {
             if (a.card) a.card.el.classList.remove("stalled");
             continue;
         }
@@ -53,6 +58,20 @@ function renderHeader() {
             else a.card.el.removeAttribute("title");
         }
     }
+    // selected run not in the live buffer (archived) — use its indexed summary
+    if (selRun && agents === 0 && typeof archiveRuns !== "undefined") {
+        const s = archiveRuns.get(selRun);
+        if (s) {
+            agents = (s.agents || []).length;
+            count = s.events || 0;
+            tok = s.tokens || 0;
+            cost = s.costUsd || 0;
+            errs = s.errors || 0;
+            first = s.firstTs;
+            last = s.lastTs;
+            if (s.errors > 0) trouble = 1;
+        }
+    }
     $("s-agents").textContent = agents;
     $("s-events").textContent = count;
     $("s-tokens").textContent = fmtTok(tok);
@@ -75,5 +94,7 @@ function renderHeader() {
             health.className = "";
         }
     }
+    // keep the left runs rail in step with the live run set
+    syncRunsRail();
 }
 

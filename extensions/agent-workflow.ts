@@ -23,7 +23,7 @@
  * Set PI_WORKFLOW_MODEL as a global fallback for all agents.
  *
  * Commands:
- *   /agent-workflow <request>   — run the full lifecycle on a request
+ *   /agent-workflow <request>   — pick a team (or name one first), then run it
  *   /agent-workflow-clear       — clear the progress widget
  *
  * Tool:
@@ -33,16 +33,15 @@
  * definitions straight from .pi/agents/. Drop it in .pi/extensions/ and it loads.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
     Text,
     Container,
     Markdown,
-    truncateToWidth,
     visibleWidth,
-} from "@mariozechner/pi-tui";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { execFileSync } from "child_process";
@@ -50,10 +49,7 @@ import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
 import { secs } from "../utils/workflow/workflow-utils";
 import { emitNotification } from "../utils/shared/notify";
 import {
-    type Checkpoint,
     createCheckpoint,
-    revertCommands,
-    describeCheckpoint,
     ensureWorkBranch,
 } from "../utils/workflow/checkpoint";
 import {
@@ -63,7 +59,6 @@ import {
     renderEmptyAgentMessage,
     renderRichCard,
     renderTodos,
-    type LspServerInfo,
     MAX_CARD_WIDTH,
 } from "../utils/workflow/workflow-widgets";
 import {
@@ -86,7 +81,8 @@ import {
     statusBadge,
     appendLiveLog as appendLiveLogCore,
     LOG_PANEL_RESERVE,
-    renderWorkflowFooter,
+    WORKFLOW_FOOTER_GLOBAL,
+    type WorkflowFooterState,
     teamsBlock as teamsBlockCore,
     chooseTeam as chooseTeamCore,
     inferWorkflowTeam,
@@ -176,7 +172,8 @@ const MIN_DISPATCH_OUTPUT_CHARS = 40;
 
 export default function (pi: ExtensionAPI) {
     // Shared run/session state — mutated by orchestrator-core, read by this
-    // extension's widget/footer/hooks.
+    // extension's widget and hooks, and published for the footer extension
+    // (extensions/footer.ts) via WORKFLOW_FOOTER_GLOBAL.
     const st = newOrchestratorState();
     // Extension-local: live ctx, session dir, subprocess.
     let widgetCtx: any;
@@ -200,11 +197,10 @@ export default function (pi: ExtensionAPI) {
     let modelRegistry: any;
     // Running USD cost of the PRIMARY (orchestrator) session this session. pi's
     // getContextUsage() exposes tokens but no cost, so accumulate it ourselves from
-    // each assistant message's usage.cost (the provider already priced it). The
-    // footer adds this to the sub-agent phase total so it reflects all spend.
+    // each assistant message's usage.cost (the provider already priced it). Published
+    // for the footer extension, which adds it to the sub-agent phase total so the
+    // footer reflects all spend.
     let primaryCostUsd = 0;
-    // The checkpoint taken before the most recent workflow run (for /revert).
-    let lastCheckpoint: Checkpoint | null = null;
     // Run a git command in `cwd`, returning trimmed stdout (throws on failure).
     const git =
         (cwd: string) =>
@@ -233,41 +229,6 @@ export default function (pi: ExtensionAPI) {
     };
     let sessionDir = "";
     let currentProc: any = null;
-    // Language servers relevant to the project's files (the idle "LSP Servers"
-    // panel). Detected once per session via the lsp skill; empty until then and
-    // when no source files match a known server.
-    let lspServers: LspServerInfo[] = [];
-    let lspDetected = false;
-
-    // Ask the lsp skill which servers the project's files need and whether each is
-    // installed. Run SYNCHRONOUSLY before the first widget paint: detecting async
-    // and refreshing afterwards grows the widget by a few rows mid-session, and pi's
-    // sticky widget leaves a stale (ghost) frame above the new one. A single paint at
-    // the final height avoids that. Bounded (the scan is shallow) and best-effort —
-    // a missing python3 or skill just leaves the panel empty.
-    const detectLspServers = (cwd: string) => {
-        if (lspDetected) return;
-        lspDetected = true;
-        const lspPy = join(
-            dirname(fileURLToPath(import.meta.url)),
-            "..",
-            "skills",
-            "lsp",
-            "lsp.py",
-        );
-        if (!existsSync(lspPy)) return;
-        try {
-            const stdout = execFileSync("python3", [lspPy, "servers"], {
-                cwd,
-                timeout: 2000,
-                maxBuffer: 1 << 20,
-                stdio: ["ignore", "pipe", "ignore"],
-                encoding: "utf8",
-            });
-            const parsed = JSON.parse(stdout);
-            if (Array.isArray(parsed?.servers)) lspServers = parsed.servers;
-        } catch {}
-    };
 
     // Callbacks + config the shared orchestration delegates back to.
     const host: OrchestratorHost = {
@@ -931,7 +892,7 @@ export default function (pi: ExtensionAPI) {
     if (active)
         pi.registerCommand("agent-workflow", {
             description:
-                "Run a workflow: '/agent-workflow <request>' for full lifecycle, '/agent-workflow spec <request>' for implementation spec only",
+                "Run a workflow: '/agent-workflow <request>' to pick a team then run; name a team first to skip the picker (e.g. '/agent-workflow spec <request>')",
             handler: async (args, ctx) => {
                 widgetCtx = ctx;
                 if (st.running) {
@@ -966,9 +927,9 @@ export default function (pi: ExtensionAPI) {
                         rawArgs.slice(loopsMatch.index! + loopsMatch[0].length)
                     ).trim();
                 }
-                // The first token may name a team (e.g. `/agent-workflow building
+                // The first token may name a team (e.g. `/agent-workflow spec
                 // <request>`); otherwise show the Select Team picker. The chosen
-                // team's roster IS the pipeline — there is no spec/full mode.
+                // team's roster IS the pipeline — the team is the only "mode".
                 const firstTok = rawArgs.split(/\s+/)[0] || "";
                 const namedTeam = st.teams[firstTok] ? firstTok : "";
 
@@ -1175,64 +1136,9 @@ export default function (pi: ExtensionAPI) {
             },
         });
 
-    // ── /revert — restore the workspace to the pre-run checkpoint ──
-    if (active)
-        pi.registerCommand("revert", {
-            description:
-                "Revert the workspace to the checkpoint taken before the last workflow run (current state is backed up to a git stash first)",
-            handler: async (_args: string, ctx: any) => {
-                let cp = lastCheckpoint;
-                if (!cp) {
-                    try {
-                        cp = JSON.parse(
-                            readFileSync(checkpointPath(ctx.cwd), "utf8"),
-                        ) as Checkpoint;
-                    } catch {
-                        cp = null;
-                    }
-                }
-                if (!cp) {
-                    ctx.ui.notify(
-                        "No checkpoint found — run a workflow first.",
-                        "info",
-                    );
-                    return;
-                }
-                const run = git(ctx.cwd);
-                const choice = await ctx.ui.select(
-                    `Revert workspace to ${describeCheckpoint(cp)}? Current state is backed up to a stash first.`,
-                    ["Revert", "Cancel"],
-                );
-                if (choice !== "Revert") {
-                    ctx.ui.notify("Revert cancelled.", "info");
-                    return;
-                }
-                let backup = "";
-                try {
-                    backup = run(["stash", "create"]);
-                } catch {}
-                try {
-                    for (const cmd of revertCommands(cp)) run(cmd);
-                    updateWidget();
-                    ctx.ui.notify(
-                        `Reverted to ${describeCheckpoint(cp)}.` +
-                            (backup
-                                ? ` Previous state backed up — restore with: git stash apply ${backup.slice(0, 12)}`
-                                : "") +
-                            " Any untracked files the run created were left in place.",
-                        "info",
-                    );
-                } catch (e: any) {
-                    ctx.ui.notify(
-                        `Revert failed: ${e?.message || e}.` +
-                            (backup
-                                ? ` Your state is safe (backup ${backup.slice(0, 12)}).`
-                                : ""),
-                        "error",
-                    );
-                }
-            },
-        });
+    // /revert lives in its own extension (extensions/revert.ts) — it reads the
+    // checkpoint this run persists to .agent/checkpoints/latest.json, so it needs
+    // none of the orchestrator's in-memory state.
 
     // ── Tool — let the primary agent invoke the workflow ──
 
@@ -1241,7 +1147,7 @@ export default function (pi: ExtensionAPI) {
             name: "run_agent_workflow",
             label: "Run Workflow (Team)",
             description:
-                "Run the plan -> refine -> implement -> review -> validate -> ship lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself. Pass `team` when the user names one (e.g. 'use the plan-build team'); omit it to run the full default pipeline. When the user asks to build or implement an existing plan ('build the plan', 'implement the plan/spec', or when .agent/plan.md already exists), pass team='build' — it skips planning, keeps the saved .agent/plan.md, and resumes the implementer from the first unfinished phase.",
+                "Run the plan -> refine -> implement -> review -> validate -> ship lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself. Pass `team` when the user names one (e.g. 'use the plan-build team'); omit it to auto-select from the request — the full pipeline by default, or the `build` team when the request asks to implement an existing plan. When the user asks to build or implement an existing plan ('build the plan', 'implement the plan/spec', or when .agent/plan.md already exists), pass team='build' — it skips planning, keeps the saved .agent/plan.md, and resumes the implementer from the first unfinished phase.",
             parameters: Type.Object({
                 request: Type.String({
                     description: "The bug, feature, or app to deliver",
@@ -1249,7 +1155,7 @@ export default function (pi: ExtensionAPI) {
                 team: Type.Optional(
                     Type.String({
                         description:
-                            "Optional team name from teams.yaml whose roster defines which pipeline phases run (e.g. when the user says 'use the X team'). Omit to run the full default pipeline (every agent).",
+                            "Optional team name from teams.yaml whose roster defines which pipeline phases run (e.g. when the user says 'use the X team'). Omit to auto-select from the request: the full pipeline by default, or the `build` team when the request asks to implement an existing plan.",
                     }),
                 ),
                 max_loops: Type.Optional(
@@ -1287,7 +1193,7 @@ export default function (pi: ExtensionAPI) {
                             content: [
                                 {
                                     type: "text",
-                                    text: `Unknown team "${team}". Available teams: ${Object.keys(st.teams).join(", ") || "(none defined)"}. Omit team to run the full default pipeline.`,
+                                    text: `Unknown team "${team}". Available teams: ${Object.keys(st.teams).join(", ") || "(none defined)"}. Omit team to auto-select (full pipeline, or the build team for an "implement the plan" request).`,
                                 },
                             ],
                             details: undefined,
@@ -1306,7 +1212,6 @@ export default function (pi: ExtensionAPI) {
                 try {
                     const cp = createCheckpoint(git(ctx.cwd), request);
                     if (cp) {
-                        lastCheckpoint = cp;
                         mkdirSync(dirname(checkpointPath(ctx.cwd)), {
                             recursive: true,
                         });
@@ -1426,7 +1331,9 @@ export default function (pi: ExtensionAPI) {
                 total > 0
             ) {
                 primaryCostUsd += total;
-                updateWidget(); // refresh the footer with the new total
+                // Repaint the dashboard with the new total; the footer extension
+                // reads primaryCostUsd live, so it refreshes on the same redraw.
+                updateWidget();
             }
         });
 
@@ -1595,16 +1502,12 @@ export default function (pi: ExtensionAPI) {
 
         // Only the active workflow extension owns the chrome. When both are
         // auto-discovered, the inactive one clears its widget and bows out so it
-        // never stacks a second dashboard, footer, or cancellation hook.
+        // never stacks a second dashboard or cancellation hook.
         if (!isActiveWorkflow()) {
             ctx.ui.setWidget("agent-workflow", undefined);
             return;
         }
 
-        // Detect the project's language servers BEFORE the first paint (TUI only —
-        // no chrome in print/json) so the dashboard renders once at its final height
-        // with the LSP panel already on top, instead of growing and ghosting.
-        if (ctx.hasUI) detectLspServers(ctx.cwd);
         // Show the idle team dashboard (grid of agents + their models).
         updateWidget();
         (globalThis as any).__piKillWorkflowProc = (): boolean => {
@@ -1652,39 +1555,24 @@ export default function (pi: ExtensionAPI) {
             }
         }
 
-        // Footer: workflow status + the PRIMARY (orchestrator) agent's model and its
-        // own context usage. The per-agent models and context bars live on the
-        // dashboard cards; the footer shows only the primary session's, since that
-        // is the model running the orchestrator that pi was loaded with. TUI/RPC
-        // only — skip the chrome in print/json modes.
-        if (ctx.hasUI)
-            ctx.ui.setFooter?.((_tui: any, theme: any, _data: any) => ({
-                dispose: () => {},
-                invalidate() {},
-                render(width: number): string[] {
-                    // Primary (orchestrator) agent's model — tracked live so it
-                    // follows /model changes.
-                    const primaryFull = primaryModelStr();
-                    return renderWorkflowFooter({
-                        width,
-                        theme,
-                        selfName: "agent-workflow",
-                        model: primaryFull,
-                        lspServers,
-                        running: st.running,
-                        lastStatus: st.lastStatus,
-                        iteration: st.iteration,
-                        maxLoopsRef: st.maxLoopsRef,
-                        dispatchMode: st.dispatchMode,
-                        phases: st.phases,
-                        dispatchElapsedMs: st.dispatchElapsedMs,
-                        runElapsedMs: st.runElapsedMs,
-                        primaryCostUsd,
-                        contextUsage: () => ctx.getContextUsage?.(),
-                        visibleWidth,
-                        truncateToWidth,
-                    });
-                },
-            }));
+        // Footer: the status line (workflow status + the PRIMARY/orchestrator model
+        // and its context usage) is rendered by the standalone extensions/footer.ts.
+        // We only publish the live orchestration state for it to read; the getter
+        // closes over `st` (mutated in place), `primaryCostUsd` (a live let), and
+        // primaryModelStr()/ctx, so it always returns fresh values per frame. Bridged
+        // via globalThis so the footer can be its own `pi -e` extension.
+        (globalThis as any)[WORKFLOW_FOOTER_GLOBAL] = (): WorkflowFooterState => ({
+            model: primaryModelStr(),
+            running: st.running,
+            lastStatus: st.lastStatus,
+            iteration: st.iteration,
+            maxLoopsRef: st.maxLoopsRef,
+            dispatchMode: st.dispatchMode,
+            phases: st.phases,
+            dispatchElapsedMs: st.dispatchElapsedMs,
+            runElapsedMs: st.runElapsedMs,
+            primaryCostUsd,
+            contextUsage: () => ctx.getContextUsage?.(),
+        });
     });
 }

@@ -235,6 +235,14 @@
     color: var(--text-faint);
     font-size: 11px;
 }
+/* per-agent tag in the run-wide Events feed (colour set inline by agent) */
+.vrow .vag {
+    flex: none;
+    width: 92px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font: 11px/1 var(--font-mono);
+}
 /* turn separators */
 .vsep {
     display: flex;
