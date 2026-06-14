@@ -51,8 +51,8 @@ branch (or pausing if there is no remote). The implementer updates any docs its 
 touches as part of implementing. If the chosen team includes `scout`, a read-only
 recon pass runs first and feeds the planner.
 
-- `/agent-workflow [request]` — run the lifecycle; each agent runs on its own model (its `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `models.yaml`, falling back to the session model). See `../extensions/README.md`.
-- `/agent-model [<agent> <model>]` — change an agent's model on the fly for this session (in memory, resets on restart); no args lists effective models, `reset` clears one or (bare) all. A runtime override outranks the env var, `.md` `model:`, and `models.yaml`.
+- `/agent-workflow [request]` — run the lifecycle; each agent runs on its own model (`PI_AGENT_<NAME>_MODEL` or its `.md` `model:`, falling back to `PI_WORKFLOW_MODEL` / the session model). See `../extensions/README.md`.
+- `/agent-model [<agent> <model>]` — change an agent's model on the fly for this session (in memory, resets on restart); no args lists effective models, `reset` clears one or (bare) all. A runtime override outranks `PI_AGENT_<NAME>_MODEL` and the `.md` `model:`.
 - Name a team as the first token to skip the picker (e.g. `/agent-workflow plan-build …`), or add `loops=N` to override the retry limit.
 
 For plan-only work (no code change), pick the `spec` team (scout → planner →
@@ -125,8 +125,8 @@ Agents are auto-discovered from files — adding one needs **no TypeScript chang
 
 3. Per-agent model + context window: set `PI_AGENT_<NAME>={"model":"…","contextWindow":…}`
    (the recommended single-source form; loose unquoted JSON also parses). The
-   model-only shorthand `PI_AGENT_<NAME>_MODEL=…` and a `<name>: <model>` line in
-   `.pi/agents/models.yaml` still work too. Agents without any of these fall back to
+   model-only shorthand `PI_AGENT_<NAME>_MODEL=…` and the agent's `.md` `model:`
+   frontmatter also work. Agents without any of these fall back to
    `PI_WORKFLOW_MODEL` / the session model (and show no context-bar denominator
    until live usage arrives).
 

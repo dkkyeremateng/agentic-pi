@@ -55,8 +55,8 @@ extension loads automatically — no registration. It reads the agent definition
 from `.pi/agents/` (scout, planner, refiner, implementer, reviewer, validator, shipper).
 
 `agent-workflow.ts` is the single workflow extension. It runs each agent on its own
-model (the agent's `.md` `model:`, `PI_AGENT_<NAME>_MODEL`, or `.pi/agents/models.yaml`,
-falling back to `PI_WORKFLOW_MODEL` / the session model) with a per-agent session.
+model (`PI_AGENT_<NAME>_MODEL` or the agent's `.md` `model:`, falling back to
+`PI_WORKFLOW_MODEL` / the session model) with a per-agent session.
 Launch it with `pi -e .pi/extensions/agent-workflow.ts`, or rely on auto-discovery.
 
 ### `dispatch.ts` — required by the workflow
@@ -245,7 +245,7 @@ never modifies files; it appears as the first card in the flow and gets its own
 
 Commands:
 - `/agent-workflow [request]` — pick a team (Select Team dialog), then run the lifecycle (prompts for the request if omitted). Add a `loops=N` token (e.g. `/agent-workflow loops=5 fix the bug`) to override the retry limit for this run.
-- `/agent-model [<agent> <model>]` — change a sub-agent's model **on the fly** for this session only (held in memory, resets on restart). No args lists every agent's effective model (overrides flagged `*`); `/agent-model <agent> <model>` sets one; `/agent-model <agent> reset` clears one; `/agent-model reset` clears all. The `<model>` position tab-completes the available models (from the model registry). A runtime override wins over `PI_AGENT_<NAME>_MODEL`, the `.md` `model:`, and `models.yaml`.
+- `/agent-model [<agent> <model>]` — change a sub-agent's model **on the fly** for this session only (held in memory, resets on restart). No args lists every agent's effective model (overrides flagged `*`); `/agent-model <agent> <model>` sets one; `/agent-model <agent> reset` clears one; `/agent-model reset` clears all. The `<model>` position tab-completes the available models (from the model registry). A runtime override wins over `PI_AGENT_<NAME>_MODEL` and the `.md` `model:`.
 - `/agent-workflow-clear` — clear the progress widget
 - `/revert` — restore the workspace to the checkpoint taken before the **last `run_agent_workflow` run** (HEAD + a `git stash create` of pre-run uncommitted work, saved to `.agent/checkpoints/latest.json`). Asks to confirm, backs up the current state to a stash first, then `git reset --hard` + re-applies the pre-run changes. Untracked files the run created are left in place. No-op if there's no checkpoint or it isn't a git repo. (Lives in its own `extensions/revert.ts` — see [Companion extensions](#companion-extensions--footer-revert-lsp-panel).)
 
@@ -255,7 +255,7 @@ Tools & UX:
 
 ## Config
 
-- **Model & context window** — each agent runs on its **own model**, set per agent via `PI_AGENT_<NAME>={"model":"…","contextWindow":…}` (single source for both). Also supported: the model-only `PI_AGENT_<NAME>_MODEL`, a `<name>: <model>` line in `.pi/agents/models.yaml`, or the agent's `.md` `model:` frontmatter (env wins). Agents without any fall back to `PI_WORKFLOW_MODEL`, then the current session's model. `contextWindow` only sets the dashboard usage-bar denominator (until the provider reports its own).
+- **Model & context window** — each agent runs on its **own model**, set per agent via `PI_AGENT_<NAME>={"model":"…","contextWindow":…}` (single source for both). Also supported: the model-only `PI_AGENT_<NAME>_MODEL`, or the agent's `.md` `model:` frontmatter (env wins). Agents without any fall back to `PI_WORKFLOW_MODEL`, then the current session's model. `contextWindow` only sets the dashboard usage-bar denominator (until the provider reports its own).
 - `PI_WORKFLOW_AGENT_TIMEOUT` — optional watchdog (in minutes). If set, any agent that runs longer is killed and the phase fails with a clear "timed out" note. `0`/unset disables it.
 - `PI_AGENT_TRANSIENT_RETRIES` (default 2, clamped 0–5) / `PI_AGENT_TRANSIENT_BACKOFF_MS` (default 1000) — on a **transient** agent failure (interrupted stream like "Stream ended without finish_reason", dropped connection, 429/503/504/529) the same model is retried with linear backoff before the phase fails. Model-config failures (which fall back to another model), logical failures, and the watchdog timeout are not retried.
 - `run_agent_workflow { request, max_loops }` — `max_loops` overrides the retry limit per call
@@ -303,8 +303,7 @@ PI_AGENT_SHIPPER_MODEL=anthropic/claude-haiku-4-5
 ```
 
 `export KEY=value` lines and `# comments` are both accepted. Add `.env` to your
-`.gitignore` if it holds anything sensitive. (The `.pi/agents/models.yaml` file
-described below is an alternative for the per-agent model config specifically.)
+`.gitignore` if it holds anything sensitive.
 
 ## Per-agent models and teams
 
@@ -342,22 +341,16 @@ pi -e .pi/extensions/dispatch.ts -e .pi/extensions/agent-workflow.ts
 
 ### Per-agent models
 
-Per-agent models come from either source (env wins over the file):
+Per-agent models come from two sources (env wins):
 
 - **Env vars** — `PI_AGENT_<NAME>_MODEL` for any pipeline agent: `PI_AGENT_SCOUT_MODEL`,
   `PI_AGENT_PLANNER_MODEL`, `PI_AGENT_REFINER_MODEL`, `PI_AGENT_IMPLEMENTER_MODEL`,
-  `PI_AGENT_REVIEWER_MODEL`, `PI_AGENT_VALIDATOR_MODEL`, `PI_AGENT_SHIPPER_MODEL`.
-  These only work if they're **exported in the shell that launches pi** — if you
-  start pi from an IDE/GUI or forget to `export`, they won't be visible.
-- **`.pi/agents/models.yaml`** — a flat `agent: model` file, robust regardless of
-  how pi is launched. An optional `default:` covers any unset agent:
-
-  ```yaml
-  scout: anthropic/claude-haiku-4-5
-  planner: anthropic/claude-opus-4-8
-  reviewer: anthropic/claude-opus-4-8
-  default: anthropic/claude-haiku-4-5
-  ```
+  `PI_AGENT_REVIEWER_MODEL`, `PI_AGENT_VALIDATOR_MODEL`, `PI_AGENT_SHIPPER_MODEL`. Put
+  them in the folder-root **`.env`** (loaded by the extensions on every launch — see
+  the [`.env` file](#env-file-recommended) section above) so they work regardless of
+  how pi is started, not just from a shell that `export`ed them.
+- **The agent's `.md` `model:` frontmatter** — a per-agent default committed with the
+  agent definition; the env var for that agent overrides it when set.
 
 `PI_WORKFLOW_MODEL` is the global env fallback for any agent left unset.
 
@@ -444,7 +437,7 @@ can see what model is driving the orchestrator and how full its context is. The
 status tracks both paths: a workflow run reads `running`/`shipped`/`failed`, and
 ad-hoc dispatch reads `dispatching` while a dispatched agent is working, then
 `dispatch done` — so it never reads `idle` while the team is busy. Set scout's
-model with `PI_AGENT_SCOUT_MODEL` or a `scout:` line in `models.yaml` — a
+model with `PI_AGENT_SCOUT_MODEL` or its `.md` `model:` — a
 fast/cheap model is a good fit for read-only recon.
 
 (Commands and orchestrator tools are listed under [Using it](#using-it) above.)
