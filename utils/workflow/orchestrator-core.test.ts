@@ -1012,9 +1012,13 @@ describe("dispatchParallelCore", () => {
     });
 
     it("refuses the batch when the depth limit is reached", async () => {
-        const saved = process.env.PI_DISPATCH_DEPTH;
+        const savedDepth = process.env.PI_DISPATCH_DEPTH;
+        const savedMax = process.env.PI_DISPATCH_MAX_DEPTH;
         try {
-            process.env.PI_DISPATCH_DEPTH = "1"; // default max depth = 1
+            // Pin BOTH vars so an ambient .env (e.g. PI_DISPATCH_MAX_DEPTH=2)
+            // can't shift the limit out from under the assertion.
+            process.env.PI_DISPATCH_MAX_DEPTH = "1";
+            process.env.PI_DISPATCH_DEPTH = "1"; // at the limit ⇒ refuse
             const agents = new Map<string, AgentDef>();
             agents.set("scout", mkAgent("scout"));
             const host = parallelHost(
@@ -1034,8 +1038,10 @@ describe("dispatchParallelCore", () => {
                 ),
             );
         } finally {
-            if (saved === undefined) delete process.env.PI_DISPATCH_DEPTH;
-            else process.env.PI_DISPATCH_DEPTH = saved;
+            if (savedDepth === undefined) delete process.env.PI_DISPATCH_DEPTH;
+            else process.env.PI_DISPATCH_DEPTH = savedDepth;
+            if (savedMax === undefined) delete process.env.PI_DISPATCH_MAX_DEPTH;
+            else process.env.PI_DISPATCH_MAX_DEPTH = savedMax;
         }
     });
 });

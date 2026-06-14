@@ -1094,6 +1094,19 @@ describe("parseAgentFile aliases", () => {
 });
 
 describe("subagentExtArgs", () => {
+    // subagentExtArgs reads PI_CONFINE_CWD from the ambient env; a project .env
+    // (PI_CONFINE_CWD=1) would otherwise inject cwd-guard.ts and break the
+    // default-case assertions. Pin it unset per test; the dedicated toggle test
+    // sets and restores it within its own try/finally.
+    let savedConfine: string | undefined;
+    beforeEach(() => {
+        savedConfine = process.env.PI_CONFINE_CWD;
+        delete process.env.PI_CONFINE_CWD;
+    });
+    afterEach(() => {
+        if (savedConfine === undefined) delete process.env.PI_CONFINE_CWD;
+        else process.env.PI_CONFINE_CWD = savedConfine;
+    });
     it("returns [] for an agent without a dispatch tool", () => {
         assert.deepEqual(subagentExtArgs("read,write,grep,find,ls"), []);
     });

@@ -12,7 +12,7 @@
  * Usage: pi -e extensions/revert.ts
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { join } from "path";

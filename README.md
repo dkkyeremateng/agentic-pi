@@ -378,7 +378,7 @@ globally-installed pi (the exact version you run) into `node_modules`:
 
 ```bash
 npm run setup:types     # link pi types (auto-runs before typecheck/test)
-npm test                # unit tests (tsx) — utils/*.test.ts — the source of truth
+npm test                # unit tests (tsx) — utils/*/*.test.ts — the source of truth
 npm run typecheck       # tsc --noEmit — best-effort; see note below
 npm run test:linear     # Python tests for the linear skill
 npm run test:atlassian  # Python tests for the atlassian skill

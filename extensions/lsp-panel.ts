@@ -15,8 +15,8 @@
  * Usage: pi -e extensions/lsp-panel.ts
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Container, Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { execFileSync } from "child_process";
 import { existsSync } from "fs";
 import { dirname, join } from "path";
