@@ -66,6 +66,7 @@ import {
     DEFAULT_MAX_LOOPS,
     WORKFLOW_REPORT_TYPE,
     WORKFLOW_REPORT_MAX,
+    WORKFLOW_TOOL_REPORT_MAX,
     WORKFLOW_LOG_TYPE,
     setupSessions as setupSessionsCore,
     publishReport as publishReportCore,
@@ -1258,8 +1259,8 @@ export default function (pi: ExtensionAPI) {
                 st.activeTeamName = "";
                 updateWidget();
                 const truncated =
-                    result.report.length > 8000
-                        ? result.report.slice(0, 8000) +
+                    result.report.length > WORKFLOW_TOOL_REPORT_MAX
+                        ? result.report.slice(0, WORKFLOW_TOOL_REPORT_MAX) +
                           "\n\n... [truncated — see workflow-report.md]"
                         : result.report;
                 return {
@@ -1363,7 +1364,9 @@ export default function (pi: ExtensionAPI) {
             if (st.dispatchedThisTurn || st.pipelineRanThisTurn) {
                 updateWidget();
                 // Ping the user when real agent work finishes — these runs are long
-                // and often unattended. Trivial reply-only turns are skipped.
+                // and often unattended. Trivial reply-only turns are skipped. A
+                // cancelled/failed run also pings (intended): `st.lastStatus` carries
+                // the outcome, so the notification is still informative.
                 const what = st.pipelineRanThisTurn
                     ? `workflow ${st.lastStatus}`
                     : "dispatch done";
@@ -1510,14 +1513,30 @@ export default function (pi: ExtensionAPI) {
 
         // Show the idle team dashboard (grid of agents + their models).
         updateWidget();
+        // Cross-extension bridges via globalThis (also WORKFLOW_FOOTER_GLOBAL below).
+        // These are single global slots, so they assume ONE pi session per process
+        // (pi's model) — two sessions sharing a process would collide on them.
         (globalThis as any).__piKillWorkflowProc = (): boolean => {
-            // Kill the running agent subprocess so a cancelled workflow doesn't
-            // keep running detached in the background.
-            if (currentProc) {
+            // Kill the running agent subprocess so a cancelled workflow doesn't keep
+            // running detached. The pipeline runs phases SEQUENTIALLY, so at most one
+            // sub-agent proc is live at a time — a single `currentProc` ref suffices.
+            // (Parallel dispatch is owned by extensions/dispatch.ts, which tracks every
+            // proc in a Set and kills them all; this hook only covers the pipeline.)
+            const proc = currentProc;
+            currentProc = null;
+            if (proc) {
                 try {
-                    currentProc.kill("SIGTERM");
+                    proc.kill("SIGTERM");
+                    // Escalate to SIGKILL if it ignores SIGTERM and is still alive.
+                    // Unref the timer so it can't keep the process alive; killing an
+                    // already-exited proc is a harmless no-op.
+                    setTimeout(() => {
+                        try {
+                            if (proc.exitCode == null && proc.signalCode == null)
+                                proc.kill("SIGKILL");
+                        } catch {}
+                    }, 2000).unref?.();
                 } catch {}
-                currentProc = null;
             }
             st.running = false;
             return true;

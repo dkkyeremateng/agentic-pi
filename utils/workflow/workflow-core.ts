@@ -127,6 +127,11 @@ export const STDERR_TAIL_CAP = 2000; // bound the captured stderr tail used in f
 // Custom message types + size cap for the inline report and activity-log cards.
 export const WORKFLOW_REPORT_TYPE = "workflow-report";
 export const WORKFLOW_REPORT_MAX = 50000; // max chars to render inline (markdown is long)
+// Separate, smaller cap for the report echoed back in the run_agent_workflow TOOL
+// RESULT (what the orchestrator model re-reads) — distinct from WORKFLOW_REPORT_MAX
+// (the inline conversation card). Kept tight so a long report doesn't bloat the
+// orchestrator's context; the full report is always on disk in workflow-report.md.
+export const WORKFLOW_TOOL_REPORT_MAX = 8000;
 export const WORKFLOW_LOG_TYPE = "workflow-log";
 
 // ── Types ────────────────────────────────────────
