@@ -233,6 +233,9 @@ header {
 #projfilter-q {
     width: 200px;
 }
+#datefilter-q {
+    width: 110px;
+}
 #runfilter-q {
     width: 240px;
 }

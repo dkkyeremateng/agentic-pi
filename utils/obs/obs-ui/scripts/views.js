@@ -96,6 +96,7 @@ function syncHash() {
     const p = new URLSearchParams();
     if (view !== "swimlane") p.set("view", view);
     if (projectFilter) p.set("project", projectFilter);
+    if (dateFilter && dateFilter !== "max") p.set("since", dateFilter);
     if (typeof traceRun === "string" && traceRun) p.set("run", traceRun);
     if (typeof statsRun === "string" && statsRun) p.set("stats", statsRun);
     if (typeof cmpA === "string" && cmpA) p.set("a", cmpA);
@@ -121,6 +122,11 @@ function applyHash() {
         if (p.get("run")) {
             traceRun = p.get("run");
             traceRunByCombo = true; // a permalinked run is an explicit selection
+        }
+        const since = p.get("since");
+        if (since === "max" || DATE_WINDOWS[since]) {
+            dateFilter = since;
+            renderDateFilter();
         }
         if (p.get("stats")) statsRun = p.get("stats");
         if (p.get("a")) cmpA = p.get("a");

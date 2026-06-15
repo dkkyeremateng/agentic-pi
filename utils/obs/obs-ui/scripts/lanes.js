@@ -66,6 +66,65 @@ function setProjectFilter(p) {
     syncHash();
 }
 
+// ── date (recency) filter ─────────────────────────────────────────────────────
+// A static combobox in the header that caps the run set to a recency window.
+// It feeds collectRuns(), so the rail and every run picker honour it at once.
+const DATE_FILTER_OPTS = [
+    { value: "1d", label: "1 day" },
+    { value: "1w", label: "1 week" },
+    { value: "1m", label: "1 month" },
+    { value: "max", label: "max" },
+];
+function dateFilterLabel(d) {
+    const o = DATE_FILTER_OPTS.find((x) => x.value === d);
+    return o ? o.label : "max";
+}
+function renderDateFilter() {
+    if (!datefilterCombo) return;
+    // A window is offered only when it's both non-empty and non-redundant: at
+    // least one run falls WITHIN it (so it isn't empty) AND at least one run is
+    // OLDER than it (so it excludes something — otherwise same as "max"). "max"
+    // always shows. Ages come from the date-unfiltered run set.
+    const now = Date.now();
+    const ages = [];
+    for (const r of collectRuns({ skipDateFilter: true }).values())
+        ages.push(now - r.lastTs);
+    const opts = DATE_FILTER_OPTS.filter(
+        (o) =>
+            o.value === "max" ||
+            (DATE_WINDOWS[o.value] &&
+                ages.some((a) => a <= DATE_WINDOWS[o.value]) &&
+                ages.some((a) => a > DATE_WINDOWS[o.value])),
+    );
+    // The active window may have aged out of the offered set — fall back to "max"
+    // so we never sit on an empty, hidden selection.
+    if (dateFilter !== "max" && !opts.some((o) => o.value === dateFilter)) {
+        dateFilter = "max";
+        try {
+            localStorage.setItem("obs.dateFilter", "max");
+        } catch {
+            /* ignore */
+        }
+    }
+    // With only "max" left there's nothing to scope — hide the control entirely.
+    const wrap = $("datefilter-wrap");
+    if (wrap) wrap.style.display = opts.length > 1 ? "inline-flex" : "none";
+    datefilterCombo.update(opts, dateFilterLabel(dateFilter), dateFilter);
+}
+// Apply a new recency window: persist, re-scope the views + rail, permalink it.
+function setDateFilter(d) {
+    dateFilter = d;
+    try {
+        localStorage.setItem("obs.dateFilter", d);
+    } catch {
+        /* ignore */
+    }
+    renderDateFilter();
+    applyVisibility(); // re-scope the swimlane run filter + active view
+    syncRunsRail(); // rebuild the rail to the new window
+    syncHash();
+}
+
 // Run-picker option label, shared by the header run filter:
 // "<run name> · <n> agents[ · live]".
 function runLabel(r, live) {
@@ -466,6 +525,7 @@ function refreshRunsRailState() {
 // When a run is selected in the top panel, collapse the rail to only that run.
 function syncRunsRail() {
     if (!$("sbtns")) return;
+    renderDateFilter(); // keep the offered windows in step with the run set
     const all = [...collectRuns().values()].sort((a, b) => b.lastTs - a.lastTs);
     // a run is always selected — default to the most recent when none is (or the
     // selected one has gone).

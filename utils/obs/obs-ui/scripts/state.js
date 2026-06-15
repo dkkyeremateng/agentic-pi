@@ -29,6 +29,10 @@ let projectFilter = ""; // "" = all projects
 let projectFilterAuto = true;
 let runFilter = ""; // "" = all runs; scopes swimlane/single/race to one run (single project only)
 let runFilterAuto = true; // when true, the run filter follows the live (or last) run
+// Recency window for the run set (rail + every run picker). "max" = all time;
+// the rest cap runs to those whose last activity is within the window.
+let dateFilter = "max"; // "1d" | "1w" | "1m" | "max"
+const DATE_WINDOWS = { "1d": 86_400_000, "1w": 604_800_000, "1m": 2_592_000_000 };
 // true only when the Trace run was pinned from the TOP picker (combo / permalink),
 // not from a left-rail click — so a rail click navigates without collapsing the rail.
 let traceRunByCombo = false;
@@ -36,6 +40,7 @@ let traceRunByCombo = false;
 // main.js init (after combobox.js loads); their update fns live in lanes.js.
 let projfilterCombo = null;
 let runfilterCombo = null;
+let datefilterCombo = null;
 let autoscroll = true;
 let laneOrd = 0; // creation order, for stable #n suffixing of same-agent instances
 
