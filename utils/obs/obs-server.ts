@@ -46,7 +46,8 @@ import {
 import { eventsToOtlp } from "./obs-otel";
 import { LineScanner, RunIndexer, type RunSummary } from "./obs-run-index";
 import { buildRunDigest, formatRunDigest, runAutoVerdict } from "./obs-explain";
-import { llmConfig, explainRun, summarizeText, loadRepoEnv } from "./obs-llm";
+import { llmConfig, explainRun, judgeRun, summarizeText, runPlayground, loadRepoEnv } from "./obs-llm";
+import { buildPromptRegistry } from "./obs-prompts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // pi's extensions load the repo .env into the pi process; the server is a sibling
@@ -557,10 +558,14 @@ function handleApi(
                 "GET  /api/runs/:id/events",
                 "GET  /api/runs/:id/digest?format=json|text",
                 "GET  /api/runs/:id/explain  (LLM narrative; opt-in PI_OBS_LLM=1)",
+                "GET  /api/runs/:id/judge  (LLM-as-judge rubric score; opt-in PI_OBS_LLM=1)",
                 "GET  /api/runs/:id/otel",
                 "POST /api/runs/:id/verdict  {status, note?, agent?}  (agent scopes it to one agent's run)",
                 "GET  /api/search?q=&limit=",
+                "GET  /api/prompts  (per-agent boot-config registry, versioned)",
                 "POST /api/summarize  {text, kind?}  (LLM; opt-in PI_OBS_LLM=1)",
+                "POST /api/notify  {url, payload}  (relay monitor alerts to a webhook)",
+                "POST /api/playground  {system, input, model?}  (safe one-shot prompt sandbox; opt-in PI_OBS_LLM=1)",
                 "POST /api/verdicts/backfill  (auto-score ended, still-open runs)",
                 "GET  /api/stream  (SSE; ?run= filters)",
             ],
@@ -595,6 +600,91 @@ function handleApi(
         }
         const limit = Math.min(500, Number(query.get("limit")) || 200);
         apiJson(res, 200, searchSink(q, limit));
+        return;
+    }
+    // Prompt/config registry — per-agent boot snapshots (system-prompt hash/size,
+    // model, tools, skills) versioned across every run on the sink.
+    if (a === "prompts" && req.method === "GET") {
+        ensureRunIndex();
+        const boots: ObsEvent[] = [];
+        for (const r of allRuns()) {
+            for (const e of readRunEvents(r.runId)) {
+                if (e.type === "boot" || e.type === "session_start") boots.push(e);
+            }
+        }
+        apiJson(res, 200, buildPromptRegistry(boots));
+        return;
+    }
+    // Webhook forwarder for monitor alerts — the dashboard evaluates monitors
+    // client-side, then POSTs new alerts here; the server relays them to the
+    // user's webhook (server-side fetch avoids browser CORS). Local tool: only
+    // http/https targets are allowed.
+    if (a === "notify" && req.method === "POST") {
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", () => {
+            let parsed: { url?: unknown; payload?: unknown };
+            try {
+                parsed = JSON.parse(body || "{}");
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+                return;
+            }
+            const url = typeof parsed.url === "string" ? parsed.url : "";
+            if (!/^https?:\/\//i.test(url)) {
+                apiError(res, 400, "url must be http(s)");
+                return;
+            }
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 10_000);
+            fetch(url, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(parsed.payload ?? {}),
+                signal: ctrl.signal,
+            })
+                .then((r) => apiJson(res, 200, { ok: r.ok, status: r.status }))
+                .catch((e) => apiJson(res, 200, { ok: false, error: String((e as Error)?.message || e).slice(0, 300) }))
+                .finally(() => clearTimeout(timer));
+        });
+        return;
+    }
+    // Prompt playground — a safe one-shot completion (no tools/session/skills)
+    // for iterating on prompt wording. Opt-in like /explain.
+    if (a === "playground" && req.method === "POST") {
+        const baseCfg = llmConfig();
+        if (!baseCfg.enabled) {
+            apiJson(res, 200, { enabled: false, hint: "set PI_OBS_LLM=1 to enable the prompt playground" });
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", () => {
+            let parsed: { system?: unknown; input?: unknown; model?: unknown };
+            try {
+                parsed = JSON.parse(body || "{}");
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+                return;
+            }
+            const system = typeof parsed.system === "string" ? parsed.system : "";
+            const input = typeof parsed.input === "string" ? parsed.input : "";
+            if (!input.trim()) {
+                apiError(res, 400, "missing input");
+                return;
+            }
+            const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
+            const cfg = model ? { ...baseCfg, model } : baseCfg;
+            runPlayground(system, input, cfg)
+                .then((r) => apiJson(res, 200, { enabled: true, ...r }))
+                .catch((e) => apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e).slice(0, 400) }));
+        });
         return;
     }
     // Optional one-sentence LLM summary of an arbitrary chunk (a tool's input
@@ -749,6 +839,28 @@ function handleApi(
                 // Best-effort enrichment: a model/usage/spawn failure is surfaced
                 // as a 200 with `error` so the UI can show the actionable message
                 // (e.g. a provider usage-limit hint) instead of a generic failure.
+                .catch((e) =>
+                    apiJson(res, 200, {
+                        enabled: true,
+                        error: String((e as Error)?.message || e).slice(0, 400),
+                    }),
+                );
+            return;
+        }
+        // LLM-as-judge: score the run on a rubric (goal/efficiency/errors).
+        // Opt-in like /explain; disabled is a 200 with {enabled:false}.
+        if (sub === "judge" && req.method === "GET") {
+            const cfg = llmConfig();
+            if (!cfg.enabled) {
+                apiJson(res, 200, {
+                    enabled: false,
+                    hint: "set PI_OBS_LLM=1 to enable the AI judge (uses the pi CLI + PI_OBS_LLM_MODEL / PI_WORKFLOW_MODEL)",
+                });
+                return;
+            }
+            const evs = readRunEvents(run.runId);
+            judgeRun(run.runId, buildRunDigest(evs), evs, cfg)
+                .then((r) => apiJson(res, 200, { enabled: true, ...r }))
                 .catch((e) =>
                     apiJson(res, 200, {
                         enabled: true,

@@ -265,6 +265,71 @@ function summaryAggregate(runList) {
     return a;
 }
 
+// ── automated evaluators (parity with the React Evals tab) ───────────────────
+// Heuristic checks over a scoped run's aggregate (cost / wall / tools / errors).
+const VANILLA_EVAL_CFG = { costBudgetUsd: 1.0, maxDurationMs: 600000, maxToolCalls: 60 };
+function evClamp01(n) {
+    return Math.max(0, Math.min(1, n));
+}
+function evLevel(s) {
+    return s >= 0.999 ? "pass" : s >= 0.5 ? "warn" : "fail";
+}
+function evBudget(v, b) {
+    if (b <= 0) return 1;
+    const r = v / b;
+    return r <= 1 ? 1 : evClamp01(2 - r);
+}
+function runEvals(a, wall) {
+    const errs = a.errors + a.toolErrors;
+    const tools = a.toolCalls;
+    const cfg = VANILLA_EVAL_CFG;
+    const errScore = errs === 0 ? 1 : evClamp01(1 - errs * 0.34);
+    const costScore = evBudget(a.cost, cfg.costBudgetUsd);
+    const latScore = evBudget(wall, cfg.maxDurationMs);
+    const toolScore = evBudget(tools, cfg.maxToolCalls);
+    return [
+        { label: "Error-free", score: errScore, level: evLevel(errScore), value: errs === 0 ? "0 errors" : errs + " error" + (errs === 1 ? "" : "s") },
+        { label: "Cost budget", score: costScore, level: evLevel(costScore), value: fmtCost(a.cost) + " / " + fmtCost(cfg.costBudgetUsd) },
+        { label: "Latency", score: latScore, level: evLevel(latScore), value: fmtDur(wall) },
+        { label: "Tool efficiency", score: toolScore, level: evLevel(toolScore), value: tools + " tool call" + (tools === 1 ? "" : "s") },
+    ];
+}
+function renderStatsEvals(a, wall) {
+    const box = $("stats-evals");
+    if (!box) return;
+    if (!a) {
+        box.style.display = "none";
+        box.innerHTML = "";
+        return;
+    }
+    const results = runEvals(a, wall);
+    const overall = results.reduce((s, r) => s + r.score, 0) / results.length;
+    const oLevel = evLevel(overall);
+    box.style.display = "";
+    box.innerHTML =
+        '<div class="se-h"><span class="se-t">Evaluators</span><span class="se-score ' +
+        oLevel +
+        '">' +
+        Math.round(overall * 100) +
+        "<i>/100</i></span><span class=\"se-sub\">heuristic · auto</span></div><div class=\"se-grid\"></div>";
+    const grid = box.querySelector(".se-grid");
+    for (const r of results) {
+        const c = document.createElement("div");
+        c.className = "se-card " + r.level;
+        c.innerHTML =
+            '<div class="se-card-h"><span class="se-chip"></span><span class="se-label"></span><span class="se-val"></span><span class="se-sc"></span></div><div class="se-track"><i></i></div>';
+        c.querySelector(".se-chip").textContent = r.level;
+        c.querySelector(".se-chip").classList.add(r.level);
+        c.querySelector(".se-label").textContent = r.label;
+        c.querySelector(".se-val").textContent = r.value;
+        c.querySelector(".se-sc").textContent = Math.round(r.score * 100);
+        const bar = c.querySelector(".se-track i");
+        bar.classList.add(r.level);
+        bar.style.width = r.score * 100 + "%";
+        grid.append(c);
+    }
+}
+
 function renderStats() {
     const runs = collectRuns();
     const runList = [...runs.values()].sort((x, y) => y.lastTs - x.lastTs);
@@ -390,6 +455,9 @@ function renderStats() {
         prev && deltaVs(wall, prev.lastTs - prev.firstTs),
     );
     tile(tiles, "avg tok/s", a.summary && !det.turns ? "—" : avgTps);
+
+    // automated heuristic evaluators (per-run; hidden in the all-runs view)
+    renderStatsEvals(scope ? a : null, wall);
 
     // latency percentiles
     const dur = det.turnDur.slice().sort((x, y) => x - y);

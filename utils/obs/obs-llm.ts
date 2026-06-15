@@ -249,6 +249,116 @@ export async function summarizeText(
     return { summary: out };
 }
 
+// ── LLM-as-judge (run quality scoring) ──
+// A strict evaluator that scores a finished run on a small rubric and returns
+// numeric scores (0-100) + reasons. Same opt-in + caching model as explainRun;
+// the client renders it alongside the deterministic heuristic evaluators.
+
+export interface JudgeCriterion {
+    name: string;
+    score: number; // 0..100
+    reason: string;
+}
+export interface RunJudgement {
+    score: number; // 0..100 overall
+    reason: string;
+    criteria: JudgeCriterion[];
+    model: string;
+    ts: number;
+    cached?: boolean;
+}
+
+const JUDGE_SYSTEM =
+    "You are a strict evaluator (LLM-as-judge) scoring a single AI-agent run for an engineer. " +
+    "Assess it on exactly three criteria, each scored 0-100: " +
+    "goal_completion (did the agent accomplish the task it was given?), " +
+    "efficiency (was the cost, turn count, and tool use reasonable for the work done?), and " +
+    "error_handling (did it avoid errors, or recover well from the ones it hit?). " +
+    "Base everything strictly on the data provided — never invent agents, tools, numbers, or causes. " +
+    "Be concise and concrete; one short sentence per reason.\n" +
+    'Respond with ONLY a JSON object: {"score": number, "reason": string, ' +
+    '"criteria": [{"name": string, "score": number, "reason": string}]} — ' +
+    "score is the overall 0-100, each criterion score is 0-100. No prose outside the JSON, no code fences.";
+
+function clampScore(v: unknown): number {
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+/** Tolerant parse of the judge's reply — bare/fenced/embedded JSON; the overall
+ *  score falls back to the mean of the criteria when absent. */
+export function parseJudgement(raw: string): { score: number; reason: string; criteria: JudgeCriterion[] } {
+    const text = raw.trim();
+    const candidate = extractJsonObject(text) ?? text;
+    try {
+        const o = JSON.parse(candidate) as { score?: unknown; reason?: unknown; criteria?: unknown };
+        const criteria: JudgeCriterion[] = Array.isArray(o.criteria)
+            ? o.criteria
+                  .map((c) => {
+                      const cc = c as { name?: unknown; score?: unknown; reason?: unknown };
+                      return {
+                          name: typeof cc.name === "string" ? cc.name : "",
+                          score: clampScore(cc.score),
+                          reason: typeof cc.reason === "string" ? cc.reason : "",
+                      };
+                  })
+                  .filter((c) => c.name)
+            : [];
+        const overall =
+            typeof o.score === "number"
+                ? clampScore(o.score)
+                : criteria.length
+                  ? Math.round(criteria.reduce((s, c) => s + c.score, 0) / criteria.length)
+                  : 0;
+        return { score: overall, reason: typeof o.reason === "string" ? o.reason : text.slice(0, 200), criteria };
+    } catch {
+        return { score: 0, reason: text || "(no judgement returned)", criteria: [] };
+    }
+}
+
+const judgeCache = new Map<string, RunJudgement>(); // runId#endTs -> judgement
+
+/** Score a run via pi (LLM-as-judge), caching by runId+endTs. Throws on
+ *  spawn/timeout error (the route maps that to a 200 with `error`). */
+export async function judgeRun(
+    runId: string,
+    digest: RunDigest,
+    events: ObsEvent[],
+    cfg: LlmConfig = llmConfig(),
+    runImpl: RunPi = runPiText,
+): Promise<RunJudgement> {
+    const key = `${runId}#${digest.endTs}`;
+    const hit = judgeCache.get(key);
+    if (hit) return { ...hit, cached: true };
+
+    const stdout = await runImpl(cfg.model, JUDGE_SYSTEM, compactRun(digest, events), cfg.timeoutMs);
+    const parsed = parseJudgement(stdout);
+    const out: RunJudgement = { ...parsed, model: cfg.model || "session default", ts: Date.now() };
+    judgeCache.set(key, out);
+    return out;
+}
+
+// ── prompt playground (safe sandbox) ──
+// A one-shot completion for iterating on prompt wording: runs pi with tools,
+// session, skills, and extensions OFF, so there are no side effects — it's a
+// pure text sandbox, NOT an agent re-execution.
+export interface PlaygroundResult {
+    output: string;
+    model: string;
+    ts: number;
+}
+export async function runPlayground(
+    system: string,
+    input: string,
+    cfg: LlmConfig = llmConfig(),
+    runImpl: RunPi = runPiText,
+): Promise<PlaygroundResult> {
+    const sys = system.trim() || "You are a helpful assistant.";
+    const out = (await runImpl(cfg.model, sys, input, cfg.timeoutMs)).trim();
+    return { output: out, model: cfg.model || "session default", ts: Date.now() };
+}
+
 function extractJsonObject(t: string): string | null {
     const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fence) return fence[1].trim();

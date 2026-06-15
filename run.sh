@@ -10,6 +10,10 @@
 #   ./run.sh --emit                # pi with emission on, but DON'T start a server
 #                                  #   (use when a `--server` is already running)
 #   ./run.sh --server              # the dashboard server only (background; no pi)
+#   ./run.sh --restart             # stop the server on $PORT, then start it fresh
+#                                  #   (reloads edited utils/obs/*.ts — tsx has no
+#                                  #    hot-reload)
+#   ./run.sh --stop                # stop the dashboard server on $PORT
 #   ./run.sh --obs --project       # scope obs to THIS project: emit to and tail a
 #                                  #   per-project sink under ~/.pi/agent/obs/<slug>/
 #                                  #   instead of the shared global sink
@@ -45,6 +49,8 @@ while [[ $# -gt 0 ]]; do
         --obs) MODE="both"; shift ;;
         --emit) MODE="emit"; shift ;;
         --server | --obs-only) MODE="server"; shift ;;
+        --restart) MODE="restart"; shift ;;
+        --stop) MODE="stop"; shift ;;
         --project | --cwd) SINK_SCOPE="project"; shift ;;
         --) shift; break ;;
         *) break ;;
@@ -66,6 +72,38 @@ if [[ "$SINK_SCOPE" == "project" && -z "${PI_OBS_SINK:-}" ]]; then
     fi
     export PI_OBS_SINK="$HOME/.pi/agent/obs/${obs_slug}-${obs_hash}/events.jsonl"
     echo "run.sh: obs sink → $PI_OBS_SINK"
+fi
+
+# ── stop / restart the background server ─────────────────────────────────────
+# Stop whatever is serving obs on $PORT (the listener) plus its tsx runner.
+# Sets STOPPED=1 if anything was actually running.
+STOPPED=0
+stop_server() {
+    local pids
+    pids="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null || true)"
+    if [[ -n "$pids" ]]; then
+        kill $pids 2>/dev/null || true
+        STOPPED=1
+    fi
+    if pkill -f "obs-server.ts --port $PORT" 2>/dev/null; then
+        STOPPED=1
+    fi
+}
+if [[ "$MODE" == "stop" ]]; then
+    stop_server
+    echo "run.sh: $([[ "$STOPPED" == 1 ]] && echo "stopped the obs-server on port $PORT." || echo "no obs-server was running on port $PORT.")"
+    exit 0
+fi
+# --restart restarts a running server, or cold-starts one if none is running.
+if [[ "$MODE" == "restart" ]]; then
+    stop_server
+    if [[ "$STOPPED" == 1 ]]; then
+        echo "run.sh: stopped the running server on port $PORT — restarting…"
+        sleep 1 # let the port free before rebinding
+    else
+        echo "run.sh: no server on port $PORT — starting it…"
+    fi
+    MODE="server" # fall through to a fresh start
 fi
 
 # ── server only ──────────────────────────────────────────────────────────────
