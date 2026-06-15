@@ -129,6 +129,11 @@ runfilterCombo = makeCombo({
         applyVisibility();
     },
 });
+datefilterCombo = makeCombo({
+    input: $("datefilter-q"),
+    list: $("datefilter-list"),
+    onPick: (v) => setDateFilter(v),
+});
 $("search").addEventListener("input", (e) => {
     search = e.target.value.trim().toLowerCase();
     renderSingle();
@@ -193,8 +198,16 @@ try {
 } catch {
     /* ignore — projectFilter stays "" with auto on */
 }
+// restore the recency window (defaults to "max" = all time)
+try {
+    const savedDate = localStorage.getItem("obs.dateFilter");
+    if (savedDate === "max" || DATE_WINDOWS[savedDate]) dateFilter = savedDate;
+} catch {
+    /* ignore — dateFilter stays "max" */
+}
 if (projectFilter) maybeAddProject(projectFilter); // ensure the option exists
 renderProjectFilter(); // paint the project combo (incl. its restored selection)
+renderDateFilter(); // paint the date combo (incl. its restored selection)
 updateRunFilter(); // show the run picker if a project was restored
 applyHash(); // permalink state (view/project/pinned runs) — beats localStorage
 window.addEventListener("hashchange", applyHash);

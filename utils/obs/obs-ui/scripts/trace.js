@@ -109,7 +109,9 @@ function isRunEmptyFinished(r, now) {
 }
 
 // Group every runId we've seen (within the active project) with its time bounds.
-function collectRuns() {
+// opts.skipDateFilter ignores the header recency window (used to measure the full
+// age span when deciding which windows are worth offering).
+function collectRuns(opts) {
     const runs = new Map();
     for (const a of lanes.values()) {
         if (!laneInProject(a)) continue;
@@ -175,6 +177,23 @@ function collectRuns() {
     // buffer can still hold a quiet all-zero run).
     const now = Date.now();
     for (const [id, r] of runs) if (isRunEmptyFinished(r, now)) runs.delete(id);
+    // Recency window (header date filter): drop runs whose last activity falls
+    // outside the window. The currently-selected/pinned runs are always kept so
+    // the open view never loses its run out from under it.
+    const win = opts && opts.skipDateFilter ? 0 : DATE_WINDOWS[dateFilter];
+    if (win) {
+        const keep = new Set(
+            [
+                typeof traceRun !== "undefined" && traceRun,
+                runFilter,
+                typeof statsRun !== "undefined" && statsRun,
+                typeof cmpA !== "undefined" && cmpA,
+                typeof cmpB !== "undefined" && cmpB,
+            ].filter(Boolean),
+        );
+        for (const [id, r] of runs)
+            if (now - r.lastTs > win && !keep.has(id)) runs.delete(id);
+    }
     return runs;
 }
 
