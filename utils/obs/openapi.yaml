@@ -21,6 +21,10 @@ tags:
   - name: runs
   - name: live
   - name: search
+  - name: llm
+    description: Optional LLM-backed endpoints — opt-in via PI_OBS_LLM=1 (the server shells out to the pi CLI; disabled returns 200 `{enabled:false,hint}`).
+  - name: config
+    description: Agent boot/prompt configuration.
 
 paths:
   /api:
@@ -204,6 +208,10 @@ paths:
               properties:
                 status: { type: string, enum: [pass, fail, open] }
                 note: { type: string, maxLength: 500 }
+                agent:
+                  type: string
+                  maxLength: 80
+                  description: Scope the verdict to one agent's run within this run (omit for the whole run).
       responses:
         "200":
           description: Verdict recorded.
@@ -233,6 +241,185 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/runs/{id}/explain:
+    get:
+      tags: [llm]
+      operationId: explainRun
+      summary: LLM narrative of a run (what happened + what to act on)
+      description: >
+        Opt-in (PI_OBS_LLM=1). A 2-4 sentence summary plus recommendations,
+        cached per run. Disabled returns 200 `{enabled:false,hint}`; a model/
+        spawn failure returns 200 `{enabled:true,error}` (not a 5xx).
+      parameters: [{ $ref: "#/components/parameters/RunId" }]
+      responses:
+        "200":
+          description: The narrative (or a disabled/error envelope).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/LlmDisabled"
+                  - $ref: "#/components/schemas/RunExplanation"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/runs/{id}/judge:
+    get:
+      tags: [llm]
+      operationId: judgeRun
+      summary: LLM-as-judge rubric score for a run
+      description: >
+        Opt-in (PI_OBS_LLM=1). Scores the run 0-100 overall on three criteria
+        (goal_completion, efficiency, error_handling), cached per run. Disabled
+        returns 200 `{enabled:false,hint}`; a failure returns 200
+        `{enabled:true,error}`.
+      parameters: [{ $ref: "#/components/parameters/RunId" }]
+      responses:
+        "200":
+          description: The judgement (or a disabled/error envelope).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/LlmDisabled"
+                  - $ref: "#/components/schemas/RunJudgement"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/verdicts/backfill:
+    post:
+      tags: [runs]
+      operationId: backfillVerdicts
+      summary: Auto-score ended, still-open runs
+      description: >
+        Triggers the auto-verdict backfill for runs that ended without a
+        verdict. Gated on PI_OBS_AUTO_VERDICT=1; disabled returns
+        `{enabled:false,scored:0,hint}`.
+      responses:
+        "200":
+          description: How many runs were scored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, scored]
+                properties:
+                  enabled: { type: boolean }
+                  scored: { type: integer }
+                  hint: { type: string }
+
+  /api/prompts:
+    get:
+      tags: [config]
+      operationId: listPrompts
+      summary: Versioned per-agent boot-config registry
+      description: >
+        Folds every run's `boot`/`session_start` snapshots into a per-agent
+        history of distinct configurations (system-prompt hash + size, model,
+        tools, skills, context files). Same signature ⇒ same version.
+      responses:
+        "200":
+          description: Each agent's config versions (newest first).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AgentPrompts" }
+
+  /api/summarize:
+    post:
+      tags: [llm]
+      operationId: summarizeText
+      summary: One-line LLM summary of an arbitrary chunk
+      description: >
+        Opt-in (PI_OBS_LLM=1). Summarizes a tool's args/result for the trace
+        I/O panel's AI toggle. Disabled returns 200 `{enabled:false,hint}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+                kind: { type: string, maxLength: 40, default: content }
+      responses:
+        "200":
+          description: The summary (or a disabled/error envelope).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/LlmDisabled"
+                  - $ref: "#/components/schemas/TextSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/playground:
+    post:
+      tags: [llm]
+      operationId: runPlayground
+      summary: One-shot prompt sandbox (no tools/session/skills)
+      description: >
+        Opt-in (PI_OBS_LLM=1). Runs a single completion for iterating on prompt
+        wording. Disabled returns 200 `{enabled:false,hint}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input]
+              properties:
+                system: { type: string, description: System prompt. }
+                input: { type: string, description: User input. }
+                model: { type: string, description: Override the configured summarizer model. }
+      responses:
+        "200":
+          description: The completion (or a disabled/error envelope).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/LlmDisabled"
+                  - $ref: "#/components/schemas/PlaygroundResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/notify:
+    post:
+      tags: [meta]
+      operationId: relayNotify
+      summary: Relay a monitor alert to a webhook
+      description: >
+        Server-side `POST` to an http(s) `url` (avoids browser CORS); the
+        dashboard evaluates monitors client-side then posts new alerts here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, description: http(s) webhook target. }
+                payload: { description: Arbitrary JSON forwarded as the POST body. }
+      responses:
+        "200":
+          description: Relay outcome (a non-2xx from the webhook is reported as `{ok:false}`, not a 5xx).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+                  status: { type: integer, description: The webhook's HTTP status (on success). }
+                  error: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
 
   /api/search:
     get:
@@ -558,3 +745,88 @@ components:
             - context
         agent: { type: string }
         detail: { type: string, description: "Human-readable, with numbers." }
+
+    # ── LLM endpoints (opt-in PI_OBS_LLM=1) ──
+    LlmDisabled:
+      type: object
+      description: Returned (200) by an LLM endpoint when PI_OBS_LLM is not set.
+      required: [enabled, hint]
+      properties:
+        enabled: { type: boolean, enum: [false] }
+        hint: { type: string }
+    RunExplanation:
+      type: object
+      description: >
+        On success `enabled` is true; on a best-effort model/spawn failure
+        `error` is set instead of the narrative fields.
+      required: [enabled]
+      properties:
+        enabled: { type: boolean, enum: [true] }
+        narrative: { type: string }
+        recommendations: { type: array, items: { type: string } }
+        model: { type: string }
+        ts: { type: integer }
+        cached: { type: boolean }
+        error: { type: string }
+    JudgeCriterion:
+      type: object
+      required: [name, score, reason]
+      properties:
+        name: { type: string, example: goal_completion }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        reason: { type: string }
+    RunJudgement:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean, enum: [true] }
+        score: { type: integer, minimum: 0, maximum: 100, description: Overall 0-100. }
+        reason: { type: string }
+        criteria: { type: array, items: { $ref: "#/components/schemas/JudgeCriterion" } }
+        model: { type: string }
+        ts: { type: integer }
+        cached: { type: boolean }
+        error: { type: string }
+    TextSummary:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean, enum: [true] }
+        summary: { type: string }
+        cached: { type: boolean }
+        error: { type: string }
+    PlaygroundResult:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean, enum: [true] }
+        output: { type: string }
+        model: { type: string }
+        ts: { type: integer }
+        error: { type: string }
+
+    # ── Prompt-config registry ──
+    PromptVersion:
+      type: object
+      description: One distinct boot configuration and where it was used.
+      required: [promptHash, promptChars, model, tools, skills, contextFiles, firstTs, lastTs, runs, sessions]
+      properties:
+        promptHash: { type: string }
+        promptChars: { type: integer }
+        model: { type: string }
+        tools: { type: array, items: { type: string } }
+        skills: { type: array, items: { type: string } }
+        contextFiles: { type: array, items: { type: string } }
+        firstTs: { type: integer }
+        lastTs: { type: integer }
+        runs: { type: array, items: { type: string }, description: Distinct runIds that used this config. }
+        sessions: { type: integer, description: How many sessions booted with it. }
+    AgentPrompts:
+      type: object
+      required: [agent, versions]
+      properties:
+        agent: { type: string }
+        versions:
+          type: array
+          description: This agent's config versions, newest (by lastTs) first.
+          items: { $ref: "#/components/schemas/PromptVersion" }
