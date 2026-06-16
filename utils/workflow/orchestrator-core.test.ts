@@ -1533,6 +1533,33 @@ Build feature X according to the requirements.
         assert.ok(!runPhaseCalls.includes("tester"), "no tester phase");
     });
 
+    it("clears running and returns an error result when a phase throws", async () => {
+        // An unexpected throw inside the pipeline must NOT leave s.running stuck
+        // (which would lock out /agent-workflow for the session) and must surface as
+        // a failed RunResult, not an unhandled rejection.
+        const agents = mkFullAgentSet();
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "planner") {
+                        throw new Error("boom: provider exploded mid-plan");
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Build feature X", 3, mkCtx());
+        assert.equal(result.status, "error");
+        assert.match(result.report, /failed unexpectedly: boom/);
+        assert.equal(st.running, false); // not stuck — the command stays usable
+    });
+
     it("runs the refiner between planner and implementer; the hardened plan on disk is the source of truth", async () => {
         const agents = mkFullAgentSet();
         agents.set("refiner", mkAgent("refiner"));
