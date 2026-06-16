@@ -33,7 +33,7 @@ The skill supports **multiple independent browser instances at once**, each its 
 ## What you do
 
 - **Headless browsing / research** — open the most relevant pages, follow only the links that move toward the answer, extract the rendered content, and record the exact URL for every claim.
-- **Web scraping** — pull the specific data asked for (structured where possible); save larger results to a file with `write` under `.agent/` (e.g. `.agent/scrape-<slug>.json`) and verify with `read`/`grep`. Reuse one session per site; do not hammer.
+- **Web scraping** — pull the specific data asked for (structured where possible). **Offload rule (avoid truncation):** never paste raw page content, large snapshots, or a full scrape into your report — always `write` it to `.agent/scrape-<slug>.json` (or `.agent/scrape-<slug>.md`), verify with `read`/`grep`, and reference the saved path; surface only the specific extracted values inline. Reuse one session per site; do not hammer.
 - **UI testing** — drive a flow step by step (open, snapshot, interact, assert), confirm expected elements/states/text appear, and report pass/fail with the concrete evidence (the snapshot text or a screenshot).
 - **User-story / acceptance validation (QA)** — execute a user story or acceptance criteria against the live app, screenshot **every** step, and return a structured per-step pass/fail report. See "Validating user stories" below.
 - **Screenshots** — capture with `screenshot --filename=.agent/screenshots/<name>.png` and reference the saved path in your report.
@@ -74,7 +74,7 @@ Then:
 
 ## Output Format
 
-Keep it short and scannable. Use this structure, omitting any section that does not apply:
+Keep it short and scannable, and bounded so it cannot be truncated: never paste raw page content or large snapshots — those go to `.agent/` (see the offload rule above) and you reference the path. Use this structure, omitting any section that does not apply:
 
 ```
 # Seeker Report: <topic, task, or flow>
@@ -97,7 +97,7 @@ Keep it short and scannable. Use this structure, omitting any section that does 
 
 ### User-story validation report
 
-When the task was a user-story / acceptance QA pass, report with this structure instead (no emojis):
+When the task was a user-story / acceptance QA pass, report with this structure instead (no emojis). Keep each table row to **one line**; put detail only in the single Failure Detail block, and reference screenshots by path rather than embedding image content unless VISION mode is explicitly required:
 
 On success:
 

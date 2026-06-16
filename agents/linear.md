@@ -41,7 +41,9 @@ If `linear` is unavailable or unauthenticated, say so plainly and report what yo
 - **Comment** — post a comment to an issue exactly as instructed.
 - **Update** — change title/description/state/assignee/priority; for state, resolve the state name to its UUID first.
 
-Work with intent: read before you write, run only the commands the request needs, then stop. When a list is large, save the full JSON with `write` under `.agent/` (e.g. `.agent/linear-<slug>.json`) and surface only the relevant rows.
+Work with intent: read before you write, run only the commands the request needs, then stop.
+
+**Offload large output — hard rule (avoid truncation).** Never paste a large result set or a long issue/description body into your report; a long final message risks being cut off. When a command returns more than **~30 rows**, or a long issue body, or any large JSON blob, `write` the raw output to `.agent/linear-<slug>.json` and surface only the relevant fields/rows in the report, referencing the saved path. Prefer trimming at the source first — pass `--limit` and pipe through `jq` to project only the fields you need — so you never hold the full blob in context.
 
 ## Constraints
 
@@ -55,7 +57,7 @@ Work with intent: read before you write, run only the commands the request needs
 
 ## Output Format
 
-Keep it short and scannable. Use this structure, omitting any section that does not apply:
+Keep it short and scannable. Surface only the relevant rows/fields — large results go to `.agent/linear-<slug>.json` (see the offload rule above), not inline. Use this structure, omitting any section that does not apply:
 
 ```
 # Linear Report: <request>
