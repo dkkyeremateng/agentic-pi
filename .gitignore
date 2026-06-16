@@ -10,3 +10,4 @@ __pycache__/
 .playwright-mcp/
 .obs-server.log
 obs/obs-ui/mockups/
+extensions/qa-review.ts
