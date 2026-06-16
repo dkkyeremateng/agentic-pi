@@ -312,6 +312,11 @@ function checkAbort(
 }
 
 // ── Full plan → implement → test → validate → document → ship pipeline ──
+// Public entry. Guards re-entry, then runs the pipeline with a hard guarantee that
+// `s.running` is cleared on EVERY exit — including an unexpected throw — so a failed
+// run can never leave the workflow flagged "running" (which would lock out
+// /agent-workflow for the rest of the session). A throw is surfaced as a failed
+// RunResult, not propagated as an unhandled rejection.
 export async function runWorkflowCore(
     s: OrchestratorState,
     h: OrchestratorHost,
@@ -319,13 +324,33 @@ export async function runWorkflowCore(
     maxLoops: number,
     ctx: any,
 ): Promise<RunResult> {
-    // Re-entry guard: prevent a second invocation from corrupting state.
+    // Re-entry guard, kept OUTSIDE the try so its early return for an in-progress
+    // run can't trip the finally below and clear the FIRST run's `running` flag.
     if (s.running) {
         return {
             status: "error",
             report: "A workflow is already running.",
         };
     }
+    try {
+        return await runWorkflowCoreImpl(s, h, request, maxLoops, ctx);
+    } catch (e: any) {
+        return {
+            status: "error",
+            report: `Workflow failed unexpectedly: ${e?.message || String(e)}`,
+        };
+    } finally {
+        s.running = false;
+    }
+}
+
+async function runWorkflowCoreImpl(
+    s: OrchestratorState,
+    h: OrchestratorHost,
+    request: string,
+    maxLoops: number,
+    ctx: any,
+): Promise<RunResult> {
     h.setup.prepareRun(ctx);
     const cwd = ctx.cwd;
 
