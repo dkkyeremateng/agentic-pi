@@ -22,7 +22,8 @@ only `.env` config — no code edits.
   delegation to any agent, in any session.
 - **Observability** — an offline metrics analyzer (per-run reports + cross-project
   trends) and an opt-in live dashboard (`PI_OBS=1`) with seven views (Swimlane,
-  Single, Race, Trace, Stats, Compare, Search), full run history, and an
+  Single, Race, Trace, Stats, Compare, Search), full run history, automated
+  **evals** (+ optional LLM-as-judge), a versioned prompt-config registry, and an
   OpenTelemetry export — spanning every pi instance you're running.
 - **Skills** — LSP diagnostics & navigation (Python/Go/TS/PHP), Playwright browser
   automation, Linear and Jira CLIs, GitHub, and commit helpers.
@@ -146,9 +147,11 @@ run a planning team first.)
   panel mirroring the implementer's phases as they tick `[ ] → [x]`, and a
   **`# Review`** panel ticking the reviewer's checklist (Plan conformance,
   Correctness, Tests, …) as it works.
-- **Footer** — the active model, context usage + cost, run status, and an inline
-  **`LSP:`** segment showing which language servers the project needs and whether
-  they're installed (`✓` ready / `○` missing).
+- **Footer** — a dim `~/path: branch ✔` line (cwd + git branch + clean/dirty mark)
+  above the orchestrator's model, run status, and its context-usage bar + cost.
+  Other extensions' status lines surface below it (e.g. the context pruner's
+  `prune: …`). It's a standalone `pi -e extensions/footer.ts` extension that also
+  works on its own (without the workflow) as a minimal model + context footer.
 - **`workflow-report.md`** — the end-of-run report (requirement, files changed,
   suite/diagnostics results, verdict, branch/commits, PR link or next steps).
 - **`.agent/`** scratch — `plan.md` (and `plan.draft.md`), `progress.md` (phase
@@ -318,7 +321,10 @@ tails that file and streams it to a browser dashboard over SSE with seven views:
   each dispatched agent nested on a shared time axis, annotated with dispatch
   retries/truncation.
 - **Stats** — aggregate analytics (latency percentiles, cost/tokens by agent, a
-  tool-duration leaderboard, cost over time) with vs-previous-run deltas.
+  tool-duration leaderboard, cost over time) with vs-previous-run deltas, plus
+  **automated evaluators** that grade the selected run against cost / duration /
+  tool-call budgets — and, with `PI_OBS_LLM=1`, an **LLM-as-judge** rubric score
+  (0–100 on a small rubric, cached per run).
 - **Compare** — a side-by-side diff of any two runs (A baseline vs B candidate):
   headline metrics, per-agent and tool usage, and setup changes from the boot snapshots.
 - **Search** — server-side substring search over **every run ever recorded**, with
@@ -331,7 +337,9 @@ isn't limited to the live tail: `/runs` lists **every run ever recorded** and an
 events are fetched on demand. A run picker (per-view on Trace/Stats/Compare, plus a header
 filter that scopes the lane views) defaults to the **live run** (green live dot) and labels
 runs by their **session name** when one was set (`pi.setSessionName`), else by timestamp;
-runs beyond the live buffer are marked `archived`.
+runs beyond the live buffer are marked `archived`. A header **recency filter** windows the
+whole run set (last day / week / month / max) — it only offers a window when some runs fall
+inside it and some outside, keeps the open run pinned, and is permalinked (`?since=`).
 
 Every event is tagged with a **trace id** (`runId`, shared across the orchestrator and the
 agents it dispatches) and a **parent** (the agent that dispatched it), so a whole workflow
@@ -347,7 +355,12 @@ project filter in the header scopes the views. To scope obs to one project inste
 per-project sink under `~/.pi/agent/obs/<cwd-slug>-<hash>/events.jsonl`, named like
 pi's session folder (e.g. `-Users-me-Documents-Dev-slf-ai-p-0d3c1ef2`). Equivalently,
 set `PI_OBS_SINK` to any path yourself, or point the server at one project with
-`npm run obs:server -- <project>`. A read-only **`/api`** is exposed for external UIs.
+`npm run obs:server -- <project>`. A read-only **`/api`** is exposed for external UIs,
+including `/api/runs` + `/api/runs/:id`, `/api/prompts` (the **versioned prompt-config
+registry** — each agent's boot config — system-prompt hash/size, tools, skills, context
+files — tracked as versions across runs), and, gated on `PI_OBS_LLM=1`,
+`/api/runs/:id/judge` (the LLM-as-judge score) and `/api/playground` (a one-shot
+prompt sandbox). `POST /api/notify {url, payload}` relays a monitor alert to a webhook.
 
 ```bash
 ./run.sh                              # pi only
@@ -357,6 +370,8 @@ set `PI_OBS_SINK` to any path yourself, or point the server at one project with
 ./run.sh --server                     # the dashboard server only (background; prints a pid to stop)
 ./run.sh --server --project           # …server only, tailing this project's sink (cwd)
 ./run.sh --server -- --port 8000      # …server only, on a custom port / project
+./run.sh --restart                    # stop the server on $PORT, then start it fresh (reload edited utils/obs/*.ts)
+./run.sh --stop                       # stop the dashboard server on $PORT
 # equivalents:
 npm run obs:server                    # same as `./run.sh --server`
 PI_OBS=1 ./run.sh                      # same as `./run.sh --obs`
@@ -388,6 +403,14 @@ Agent **message and thinking text** is a separate opt-in (it can echo file
 contents): `PI_OBS_CONTENT=1`, capped to `PI_OBS_CONTENT_MAX` (default 2000) — e.g.
 `PI_OBS=1 PI_OBS_CONTENT=1 ./run.sh`.
 
+**LLM features (opt-in, `PI_OBS_LLM=1`).** The server can call a model — via `pi`
+itself — to **explain** or **summarize** a run, **judge** it on a rubric
+(`/api/runs/:id/judge`, surfaced in Stats), and back the `/api/playground` prompt
+sandbox. All are gated on `PI_OBS_LLM=1`, cached per run, and never run a model
+unless asked. Because the background server may not inherit your shell's full
+`PATH` (where `pi` lives under a version manager), `run.sh` resolves `pi`'s absolute
+path and passes it through as `PI_OBS_PI_BIN` so the spawn never fails to find it.
+
 ## Develop
 
 `pi` isn't a node dependency of this repo, so type-checking/tests link the
@@ -405,6 +428,11 @@ npm run test:atlassian  # Python tests for the atlassian skill
 use loose (`any`) handler signatures that don't fully line up with pi's strict type
 defs, so `tsc` reports known mismatches. For a quick per-file syntax/type-strip
 check use `node --experimental-strip-types --check <file>`.
+
+**CI** (`.github/workflows/ci.yml`) runs on every push to `main` and every PR: the
+tsx unit suite + a `node --check` of every `extensions/` and `utils/` `.ts` file,
+and the Python skill tests. It needs no `pi` install — the pi imports are type-only
+(erased at runtime) and `node --check` does no module resolution.
 
 `node_modules` is dev-only and gitignored — it is **not** needed to run.
 
