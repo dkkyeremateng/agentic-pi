@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { llmConfig, compactRun, parseResult, explainRun, summarizeText, loadRepoEnv, type RunPi } from "./obs-llm";
+import { llmConfig, compactRun, parseResult, parseJudgement, explainRun, judgeRun, summarizeText, runPlayground, loadRepoEnv, type RunPi } from "./obs-llm";
 import { buildRunDigest } from "./obs-explain";
 import { makeFactory, type ObsEvent } from "./obs-events";
 
@@ -83,6 +83,60 @@ test("parseResult handles bare JSON, fenced JSON, and raw-text fallback", () => 
         recommendations: [],
     });
     assert.deepEqual(parseResult("just prose, no json"), { narrative: "just prose, no json", recommendations: [] });
+});
+
+test("runPlayground passes the system + input to pi and returns the output", async () => {
+    const cfg = llmConfig({ PI_OBS_LLM: "1", PI_OBS_LLM_MODEL: "anthropic/claude-haiku-4-5" });
+    let sawSystem = "";
+    let sawPrompt = "";
+    const fakePi: RunPi = async (_m, system, prompt) => {
+        sawSystem = system;
+        sawPrompt = prompt;
+        return "  rewritten output  ";
+    };
+    const r = await runPlayground("Be terse.", "summarize this", cfg, fakePi);
+    assert.equal(sawSystem, "Be terse.");
+    assert.equal(sawPrompt, "summarize this");
+    assert.equal(r.output, "rewritten output"); // trimmed
+    assert.equal(r.model, "anthropic/claude-haiku-4-5");
+    // empty system → a sane default is sent
+    await runPlayground("", "x", cfg, fakePi);
+    assert.match(sawSystem, /helpful assistant/);
+});
+
+test("parseJudgement clamps scores, keeps criteria, and falls back to their mean", () => {
+    // explicit overall score + criteria; out-of-range scores get clamped
+    const a = parseJudgement('{"score":120,"reason":"strong","criteria":[{"name":"goal_completion","score":90,"reason":"done"},{"name":"efficiency","score":-5,"reason":"pricey"}]}');
+    assert.equal(a.score, 100); // clamped
+    assert.equal(a.criteria.length, 2);
+    assert.equal(a.criteria[1].score, 0); // clamped
+    // no overall score → mean of criteria (80, 60 → 70)
+    const b = parseJudgement('{"reason":"ok","criteria":[{"name":"a","score":80,"reason":""},{"name":"b","score":60,"reason":""}]}');
+    assert.equal(b.score, 70);
+    // garbage → safe default
+    assert.deepEqual(parseJudgement("not json"), { score: 0, reason: "not json", criteria: [] });
+});
+
+test("judgeRun calls pi with the judge rubric and caches by runId+endTs", async () => {
+    const digest = buildRunDigest(fixtures());
+    const cfg = llmConfig({ PI_OBS_LLM: "1", PI_OBS_LLM_MODEL: "anthropic/claude-haiku-4-5" });
+    let calls = 0;
+    let sawSystem = "";
+    const fakePi: RunPi = async (_model, system, prompt) => {
+        calls++;
+        sawSystem = system;
+        assert.match(prompt, /run run-x/);
+        return '{"score":72,"reason":"completed despite one tool error","criteria":[{"name":"goal_completion","score":85,"reason":"task done"},{"name":"error_handling","score":60,"reason":"one bash error"}]}';
+    };
+    const r1 = await judgeRun("run-x", digest, fixtures(), cfg, fakePi);
+    assert.equal(r1.score, 72);
+    assert.equal(r1.model, "anthropic/claude-haiku-4-5");
+    assert.match(sawSystem, /LLM-as-judge/);
+    assert.equal(r1.criteria[0].name, "goal_completion");
+    assert.equal(r1.cached, undefined);
+    const r2 = await judgeRun("run-x", digest, fixtures(), cfg, fakePi);
+    assert.equal(r2.cached, true);
+    assert.equal(calls, 1);
 });
 
 test("explainRun calls pi with the configured model and caches by runId+endTs", async () => {

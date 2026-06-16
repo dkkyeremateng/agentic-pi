@@ -231,3 +231,114 @@ table.lead th[aria-sort="descending"]::after {
     content: " ▼";
     font-size: 9px;
 }
+
+/* ── automated evaluators (per-run; parity with the React Evals tab) ───────── */
+#stats-evals {
+    margin-bottom: 14px;
+}
+.se-h {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.se-t {
+    font: 600 11px var(--font-ui);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dim);
+}
+.se-score {
+    font: 600 16px var(--font-mono);
+    color: var(--fg);
+}
+.se-score i {
+    font: 10px var(--font-mono);
+    font-style: normal;
+    color: var(--dim);
+}
+.se-score.pass {
+    color: var(--ok);
+}
+.se-score.warn {
+    color: var(--warn);
+}
+.se-score.fail {
+    color: var(--err);
+}
+.se-sub {
+    margin-left: auto;
+    font: 10.5px var(--font-mono);
+    color: var(--dim);
+}
+.se-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px;
+}
+.se-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 9px 11px;
+}
+.se-card-h {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.se-chip {
+    font: 600 8.5px var(--font-ui);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--dim);
+}
+.se-chip.pass {
+    color: var(--ok);
+    border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+.se-chip.warn {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+.se-chip.fail {
+    color: var(--err);
+    border-color: color-mix(in srgb, var(--err) 45%, transparent);
+}
+.se-label {
+    font: 500 12px var(--font-ui);
+    color: var(--fg);
+}
+.se-val {
+    margin-left: auto;
+    font: 11px var(--font-mono);
+    color: var(--dim);
+}
+.se-sc {
+    font: 600 12px var(--font-mono);
+    color: var(--fg);
+    min-width: 22px;
+    text-align: right;
+}
+.se-track {
+    height: 5px;
+    border-radius: 3px;
+    background: var(--panel2);
+    overflow: hidden;
+    margin-top: 8px;
+}
+.se-track i {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--ok);
+}
+.se-track i.warn {
+    background: var(--warn);
+}
+.se-track i.fail {
+    background: var(--err);
+}
