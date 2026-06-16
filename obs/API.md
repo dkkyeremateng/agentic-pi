@@ -1,6 +1,6 @@
 # Agent Observability — HTTP API
 
-The obs-server (`utils/obs/obs-server.ts`, default `http://127.0.0.1:7616`)
+The obs-server (`obs/obs-server.ts`, default `http://127.0.0.1:7616`)
 exposes a JSON API under **`/api`** for external UIs and integrations. The
 bundled vanilla dashboard uses equivalent unprefixed legacy routes; treat
 `/api/*` as the stable surface for anything new.
@@ -24,7 +24,7 @@ bundled vanilla dashboard uses equivalent unprefixed legacy routes; treat
 Start the server: `npm run obs:server` (or `run.sh --server`). Data appears
 when workflows run with `PI_OBS=1`.
 
-A machine-readable **OpenAPI 3.0 spec** lives at `utils/obs/openapi.yaml` and
+A machine-readable **OpenAPI 3.0 spec** lives at `obs/openapi.yaml` and
 is served live at `GET /api/openapi.yaml` — point Swagger UI, Postman, or a
 client generator at it.
 
@@ -191,7 +191,7 @@ es.addEventListener("obs", (e) => console.log(JSON.parse(e.data)));
 
 ## The event model (`ObsEvent`, schema 2)
 
-Defined in `utils/obs/obs-events.ts` (the source of truth):
+Defined in `obs/obs-events.ts` (the source of truth):
 
 ```ts
 {

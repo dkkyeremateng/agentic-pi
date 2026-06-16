@@ -45,7 +45,7 @@ import {
     secs,
     isModelFailure,
 } from "./workflow-utils";
-import { obsEmit } from "../obs/obs-events";
+import { obsEmit } from "../../obs/obs-events";
 import {
     writeFileSync,
     mkdirSync,

@@ -370,7 +370,7 @@ prompt sandbox). `POST /api/notify {url, payload}` relays a monitor alert to a w
 ./run.sh --server                     # the dashboard server only (background; prints a pid to stop)
 ./run.sh --server --project           # …server only, tailing this project's sink (cwd)
 ./run.sh --server -- --port 8000      # …server only, on a custom port / project
-./run.sh --restart                    # stop the server on $PORT, then start it fresh (reload edited utils/obs/*.ts)
+./run.sh --restart                    # stop the server on $PORT, then start it fresh (reload edited obs/*.ts)
 ./run.sh --stop                       # stop the dashboard server on $PORT
 # equivalents:
 npm run obs:server                    # same as `./run.sh --server`
@@ -391,8 +391,8 @@ feed any OTel-aware backend (Datadog, Phoenix, Langfuse, Honeycomb, …). Use th
 view's `⤓ OTLP` / `⤓ JSON` buttons, the server's `/otel?run=<id>` endpoint, or the CLI:
 
 ```bash
-tsx utils/obs/obs-export.ts                       # OTLP for every run in the sink → stdout
-tsx utils/obs/obs-export.ts --run <runId> --out trace.json
+tsx obs/obs-export.ts                       # OTLP for every run in the sink → stdout
+tsx obs/obs-export.ts --run <runId> --out trace.json
 curl "http://127.0.0.1:7616/otel?run=<runId>" # OTLP from the running server
 ```
 

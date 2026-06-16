@@ -4,4 +4,4 @@
 # works from any project's cwd.
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-exec npx --prefix "$REPO" tsx "$REPO/utils/obs/obs-cli.ts" "$@"
+exec npx --prefix "$REPO" tsx "$REPO/obs/obs-cli.ts" "$@"

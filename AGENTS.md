@@ -8,7 +8,7 @@ drop one with these sections in any project root and the pipeline will respect i
 
 ## Commands
 
-- **Run the unit suite:** `npx tsx --test utils/*/*.test.ts`
+- **Run the unit suite:** `npx tsx --test utils/*/*.test.ts obs/*.test.ts`
 - **Syntax-check a file:** `node --experimental-strip-types --check <file>`
 - **Do NOT use `tsc`** for type-checking — the type packages aren't installed here; it does not work. Use the syntax check above.
 
@@ -27,6 +27,6 @@ drop one with these sections in any project root and the pipeline will respect i
 
 ## Verifying a change
 
-Run the unit suite (`npx tsx --test utils/*/*.test.ts`) and syntax-check every
+Run the unit suite (`npx tsx --test utils/*/*.test.ts obs/*.test.ts`) and syntax-check every
 changed `.ts` file. A change is done only when the suite passes (currently 265
 tests) and the files check clean.

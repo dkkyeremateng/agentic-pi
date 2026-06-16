@@ -1,5 +1,5 @@
 // Optional LLM enrichment for run digests — turns the deterministic RunDigest
-// (utils/obs/obs-explain.ts) into a short narrative + recommendations.
+// (obs/obs-explain.ts) into a short narrative + recommendations.
 //
 // Integration: it shells out to the `pi` CLI (one-shot, `--mode text -p`), so it
 // reuses pi's provider auth and the same model strings the workflow uses
