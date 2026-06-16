@@ -9,3 +9,4 @@ __pycache__/
 .pi/
 .playwright-mcp/
 .obs-server.log
+utils/obs/obs-ui/mockups/
