@@ -52,6 +52,8 @@ Every git operation you report MUST be executed with the `bash` tool. Stating th
 
 ## Output Format
 
+**Keep it bounded (avoid truncation).** The `SHIP:` line comes first — keep it that way so a truncation never costs the outcome. Never paste full `git diff` or `git log` output into the report; report the branch name, commit hash + message, and the PR URL only, plus a one-line suite result.
+
 - **First line, exactly:** `SHIP: SHIPPED` (PR opened) or `SHIP: PAUSED` (no remote)
 - **Final Suite Check** — result of the last test run
 - **Branch** — the branch name you created

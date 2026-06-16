@@ -54,7 +54,9 @@ If `atlassian` is unavailable or unauthenticated, say so plainly and report what
 - **Update / transition** — change summary/description/assignee/priority via `update`; move status via `transition` (resolve the status name first).
 - **Read Confluence** — given a wiki page id or URL, `page <id-or-url>` returns the title and readable text; summarize what the request needs. Use `wiki-search '<cql>'` to find pages and `spaces` to list spaces. This is read-only — the skill does not edit Confluence.
 
-Work with intent: read before you write, run only the commands the request needs, then stop. When a list is large, save the full JSON with `write` under `.agent/` (e.g. `.agent/atlassian-<slug>.json`) and surface only the relevant rows.
+Work with intent: read before you write, run only the commands the request needs, then stop.
+
+**Offload large output — hard rule (avoid truncation).** Never paste a large result set or a full page body into your report; a long final message risks being cut off. When a command returns more than **~30 rows**, or any **full Confluence page body** (`page`/`page --raw-body`), or any large JSON blob, `write` the raw output with `write` to `.agent/atlassian-<slug>.json` and surface only the relevant fields/rows in the report, referencing the saved path. Prefer trimming at the source first — pass `--limit` and pipe through `jq` to select only the fields you need — so you never hold the full blob in context.
 
 ## Constraints
 
@@ -68,7 +70,7 @@ Work with intent: read before you write, run only the commands the request needs
 
 ## Output Format
 
-Keep it short and scannable. Use this structure, omitting any section that does not apply:
+Keep it short and scannable. Surface only the relevant rows/fields — large results go to `.agent/atlassian-<slug>.json` (see the offload rule above), not inline. Use this structure, omitting any section that does not apply:
 
 ```
 # Atlassian Report: <request>

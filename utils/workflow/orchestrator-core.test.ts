@@ -12,6 +12,8 @@ import {
     selectAgentsCore,
     resolveAgent,
     capturePlan,
+    selectPlan,
+    readPlanFile,
     stripPlanPreamble,
     savePlanDraft,
     resetRunScratch,
@@ -2880,5 +2882,76 @@ describe("archivePlan", () => {
         assert.match(body, /## Phase status/);
         assert.match(body, /- \[x\] Phase 1: A/);
         assert.match(body, /- \[ \] Phase 2: B/); // partial status preserved (failed run)
+    });
+});
+
+// ── selectPlan (write-to-file plan capture) ─────────────────────────────────
+describe("selectPlan", () => {
+    // A minimal structurally-valid plan (phase + acceptance criteria + a file path).
+    const VALID = [
+        "## Phase 1: Do it",
+        "Modify `src/main.ts`.",
+        "## Acceptance Criteria",
+        "1. It works.",
+        "## Critical Files",
+        "- `src/main.ts`",
+    ].join("\n");
+    const VALID2 = VALID.replace("Do it", "Harden it"); // a distinct valid plan
+    const SHORT = "Wrote the hardened plan to .agent/plan.md — 1 phase. None open.";
+
+    function tmp(): string {
+        const cwd = mkdtempSync(join(tmpdir(), "selplan-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        return cwd;
+    }
+    const ra = () => ({}) as any;
+
+    it("uses the message when it is a valid plan (older inline-emit models)", () => {
+        const cwd = tmp();
+        const r = selectPlan(ra(), cwd, [VALID, ""]);
+        assert.ok(r.ok);
+        assert.equal(r.output, VALID);
+        assert.equal(readPlanFile(cwd), VALID); // persisted to disk
+    });
+
+    it("falls back to the written file when the message is a short confirmation", () => {
+        const cwd = tmp();
+        // Simulate the agent having written the full plan to plan.md itself.
+        writeFileSync(join(cwd, ".agent", "plan.md"), VALID, "utf-8");
+        const r = selectPlan(ra(), cwd, [stripPlanPreamble(SHORT), readPlanFile(cwd)]);
+        assert.equal(r.output, VALID); // the file, not the short message
+    });
+
+    it("prefers a valid message over the file (freshest agent output)", () => {
+        const cwd = tmp();
+        writeFileSync(join(cwd, ".agent", "plan.md"), VALID, "utf-8");
+        const r = selectPlan(ra(), cwd, [VALID2, readPlanFile(cwd)]);
+        assert.equal(r.output, VALID2);
+        assert.equal(readPlanFile(cwd), VALID2);
+    });
+
+    it("falls through to the planner draft when message and file are both unusable", () => {
+        const cwd = tmp();
+        // refiner truncated its file write (invalid), short message, but the
+        // planner's draft was saved.
+        writeFileSync(join(cwd, ".agent", "plan.md"), "## Phase 1: cut off", "utf-8");
+        writeFileSync(join(cwd, ".agent", "plan.draft.md"), VALID, "utf-8");
+        const r = selectPlan(ra(), cwd, [
+            stripPlanPreamble(SHORT),
+            readPlanFile(cwd),
+            readPlanFile(cwd, "plan.draft.md"),
+        ]);
+        assert.equal(r.output, VALID); // the planner's draft
+    });
+
+    it("keeps the first non-empty candidate when nothing validates (caller errors)", () => {
+        const cwd = tmp();
+        const r = selectPlan(ra(), cwd, ["", SHORT, "also not a plan"]);
+        assert.equal(r.output, SHORT); // surfaced for the downstream validatePlan error
+        assert.ok(r.ok); // selectPlan itself never throws; validity is checked by the caller
+    });
+
+    it("readPlanFile returns '' for a missing file", () => {
+        assert.equal(readPlanFile(mkdtempSync(join(tmpdir(), "noplan-"))), "");
     });
 });

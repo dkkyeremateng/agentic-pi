@@ -28,6 +28,14 @@ The approved plan is at `.agent/plan.md` — read it for the full phased plan, f
 - Make changes only in the target codebase you were asked to modify
 - **Do NOT include any emojis. Emojis are banned.**
 
+## Keep your handoff report bounded (avoid truncation)
+
+The code and tests you write live on disk (via `edit`/`write`) — that is the real deliverable, and the validator reviews it as a **diff**, not from your message. Your handoff report is a summary, so keep it small so it cannot be truncated mid-section:
+
+- **Summarize "Key Changes"; do NOT paste files or large diffs.** Show at most **~10-15 lines total** of the single most load-bearing snippets that disambiguate the change. Never paste whole functions, whole files, or large diff hunks — the validator reads the diff itself; reference `path:line` instead.
+- **Reference test output, don't paste it.** Report the command run and a one-line pass/fail result; quote only the **failing** lines when something fails. Never paste full suite logs.
+- **Self-check before finishing.** Confirm the report includes all numbered sections and ends with "Risks / Follow-ups" — a handoff cut off mid-section strands the validator.
+
 ## Writing SQL — keep queries sargable
 
 When the change includes SQL, write index-friendly predicates (non-sargable filters force full scans that fail at scale):
@@ -64,7 +72,7 @@ If there is no `Base:` line (not a git repo, or no commit yet), skip the commits
    - Write the phase's test(s) first (failing), covering its acceptance criteria, edge cases, and any regression
    - Make the smallest change that turns them green, in atomic edits per file
    - Run **that phase's targeted tests** — just the files/cases this phase touches, not the whole suite — and fix every failure before moving on
-   - **Required:** run `lsp diagnostics --changed --errors-only` after the phase's edits and fix every error it reports before moving on. This is not optional — it's a fast, precise type/compile check (Python/Go/TypeScript/PHP) that catches breakage a targeted test misses. Always run it: it degrades gracefully (a per-file "not installed" note) when no server is present, so there is no reason to skip it. If it reports a server is missing for a language you're editing, install it (e.g. `go install golang.org/x/tools/gopls@latest`, `npm i -g pyright typescript-language-server`) rather than skipping — see the lsp SKILL.md
+   - **Required:** run `lsp diagnostics --changed --errors-only` after the phase's edits and fix every error it reports before moving on. This is not optional — it's a fast, precise type/compile check (Python/Go/TypeScript/PHP) that catches breakage a targeted test misses. Always run it: it degrades gracefully (a per-file "not installed" note) when no server is present, so there is no reason to skip. If it reports a server is missing for a language you're editing, install it (e.g. `go install golang.org/x/tools/gopls@latest`, `npm i -g pyright typescript-language-server`) rather than skipping — see the lsp SKILL.md
    - Each phase must leave the tree green, as the plan's sequencing guarantees. If a phase genuinely only integrates with a later one and cannot stand alone, say so in your report rather than faking a green intermediate
    - **Mark the phase `[x]` in `.agent/progress.md`** (and commit `wip(phase N)` when on git) before starting the next phase — this status update is mandatory (see Phase checkpoints & resume)
    - **Then call `context_tag`** with a unique name for the phase you just finished (e.g. `phase-1`, or `phase-1-rework` if you redid it — names must be unique within the session). This marks a milestone so the running context can be pruned of the phase's now-stale tool output (file reads, command output) before the next phase, keeping you well under the context window. It is a bookmark only: it changes nothing in the repo and never substitutes for the `.agent/progress.md` update above.
@@ -75,15 +83,15 @@ If there is no `Base:` line (not a git repo, or no commit yet), skip the commits
 
 ## Output Format
 
-Structure your report so the validator can verify without guesswork:
+Structure your report so the validator can verify without guesswork. Keep it bounded (see "Keep your handoff report bounded"): summarize, reference `path:line` and commands, never paste files or full logs.
 
 1. **Requirement** — one line restating what was implemented
 2. **Files Changed** — table of `path` | New/Modified | one-line description
-3. **Key Changes** — the important code snippets (not every line for large diffs)
+3. **Key Changes** — the most load-bearing snippets only (~10-15 lines total; never whole files or large diffs — the validator reads the diff)
 4. **Tests Written** — the tests you added/changed and which acceptance criteria / edge cases each covers
 5. **How to Exercise It** — exact commands or entry points that trigger the new/changed behavior
 6. **Docs Updated** — READMEs/docs/comments you changed and why (or "none needed")
-7. **Tests Run** — per phase, the targeted command(s) you ran and the result, then the final full-suite run (pass/fail with output). Call out the last phase that left the tree green (mirrors `.agent/progress.md`), so any later regression the validator finds is traceable to a phase. If there is no persistent suite (no framework), say so and describe the actual verification (e.g. "manually exercised add/toggle/delete/filter/persist in-browser") — do not present it as N authored tests
+7. **Tests Run** — per phase, the targeted command(s) you ran and the one-line result, then the final full-suite run (pass/fail). Quote only failing lines, never full logs. Call out the last phase that left the tree green (mirrors `.agent/progress.md`), so any later regression the validator finds is traceable to a phase. If there is no persistent suite (no framework), say so and describe the actual verification (e.g. "manually exercised add/toggle/delete/filter/persist in-browser") — do not present it as N authored tests
 8. **Risks / Follow-ups** — anything you could not verify, assumptions made, or deviations from the plan and why
 
 Be specific. Reference real paths, functions, and the plan's phase numbers.

@@ -42,6 +42,8 @@ You:
 
 ## Output Format
 
+**Keep it bounded (avoid truncation).** The `VERDICT:` line comes first, so a truncation never costs the verdict — keep it that way. In Suite Results, quote only the **failing** lines or the final summary of each tool's output; never paste full build/test logs — reference the command instead. A FAIL report stays focused on what failed and how to fix it.
+
 - **First line, exactly:** `VERDICT: PASS` or `VERDICT: FAIL`
 - **Requirement Check** — each acceptance criterion with met/not-met, the evidence, and the test that covers it (or "untested" → FAIL)
 - **Suite Results** — build, lint, type-check, tests, and `lsp diagnostics`, each with pass/fail and key output
