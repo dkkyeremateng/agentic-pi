@@ -490,12 +490,14 @@ export async function runWorkflowCore(
         );
         if (!plan.ok) return fail(s, "Planning", plan.output);
         emitAgentVerdict(planP, "pass", "completed");
-        // The planner's message IS the plan (reliable model output). Strip any
-        // conversational preamble, then persist it to .agent/plan.md — the file the
-        // refiner and downstream agents read. (We do NOT trust a file the agent may
-        // or may not have written: the message is the source of truth.)
-        plan.output = stripPlanPreamble(plan.output);
-        capturePlan(runArtifacts, cwd, plan.output);
+        // The planner writes the full plan to .agent/plan.md and emits a short
+        // confirmation; older models emit it inline. Take whichever is a valid plan
+        // (message first, then the file it wrote) and persist it. resetRunScratch
+        // cleared any prior plan.md above, so the file can only be THIS run's.
+        plan = selectPlan(runArtifacts, cwd, [
+            stripPlanPreamble(plan.output),
+            readPlanFile(cwd),
+        ]);
     }
 
     // ── Refine (review + harden the plan before implementation) ──
@@ -513,11 +515,16 @@ export async function runWorkflowCore(
         );
         if (!refine.ok) return fail(s, "Refining", refine.output);
         emitAgentVerdict(refinerP, "pass", "completed");
-        // The refiner's message is the full hardened plan — it becomes THE plan;
-        // strip any preamble and persist it (overwriting the planner's draft).
-        plan = refine;
-        plan.output = stripPlanPreamble(plan.output);
-        capturePlan(runArtifacts, cwd, plan.output);
+        // The refiner writes the hardened plan to .agent/plan.md and emits a short
+        // confirmation; older models emit it inline. Take whichever is a valid plan
+        // (message, then the file it wrote); if both are unusable (e.g. a truncated
+        // file write), fall back to the planner's saved draft rather than failing
+        // the whole run.
+        plan = selectPlan(runArtifacts, cwd, [
+            stripPlanPreamble(refine.output),
+            readPlanFile(cwd),
+            readPlanFile(cwd, "plan.draft.md"),
+        ]);
     }
 
     // Resuming a planner-less run: no planner produced the plan in-message this run,
@@ -1035,10 +1042,9 @@ export function stripPlanPreamble(plan: string): string {
     return i > 0 ? lines.slice(i).join("\n").replace(/^\s+/, "") : plan;
 }
 
-// Persist the plan (the planner's or refiner's message) to .agent/plan.md as the
-// canonical copy downstream agents read, and record it as the run artifact. Always
-// overwrites: the agent's message is the source of truth, so this is the single
-// place the file is written (the agent need not write it itself).
+// Persist the plan to .agent/plan.md as the canonical copy downstream agents read,
+// and record it as the run artifact. Always overwrites — this is the single place
+// the canonical file is written after a planning phase resolves its plan.
 export function capturePlan(
     runArtifacts: RunArtifacts,
     cwd: string,
@@ -1050,6 +1056,49 @@ export function capturePlan(
         mkdirSync(dirname(file), { recursive: true });
         writeFileSync(file, plan, "utf-8");
     } catch {}
+}
+
+// Read a plan file under `.agent/` (default plan.md), returning "" when it's absent
+// or unreadable.
+export function readPlanFile(cwd: string, name = "plan.md"): string {
+    try {
+        return readFileSync(join(cwd, ".agent", name), "utf-8");
+    } catch {
+        return "";
+    }
+}
+
+// Resolve a planning phase's deliverable from its candidate sources, in priority
+// order, and persist the choice to .agent/plan.md.
+//
+// The planner/refiner now write the full plan to .agent/plan.md (a tool write —
+// NOT bound by the final message's output-token cap, which truncated large plans)
+// and emit only a short confirmation. But older models emit the plan inline as the
+// message. So we pick the FIRST structurally-valid plan from the candidates rather
+// than trusting any single source, which makes every combination work:
+//   - short message + written file  -> the message fails validatePlan, so the FILE
+//     is used (the plan was never squeezed into one message → no truncation);
+//   - full plan in the message      -> the message is used (backward compatible);
+//   - a truncated/garbage file      -> falls through to the next candidate (for the
+//     refiner, the planner's saved draft) instead of failing the whole run.
+// When nothing validates, the first non-empty candidate is kept so the caller's
+// validatePlan still fires with useful content. The chosen plan is the source of
+// truth from here on.
+export function selectPlan(
+    runArtifacts: RunArtifacts,
+    cwd: string,
+    candidates: string[],
+): { output: string; ok: boolean } {
+    let chosen = "";
+    for (const c of candidates) {
+        if (c && validatePlan(c).ok) {
+            chosen = c;
+            break;
+        }
+    }
+    if (!chosen) chosen = candidates.find((c) => c) ?? "";
+    capturePlan(runArtifacts, cwd, chosen);
+    return { output: chosen, ok: true };
 }
 
 // Resolve an agent by its name or one of its frontmatter `aliases` (e.g. "atl"
