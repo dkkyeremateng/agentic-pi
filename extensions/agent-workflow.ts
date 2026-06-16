@@ -114,7 +114,10 @@ import {
     runFullWorkflowCommand,
     resolveAgent,
 } from "../utils/workflow/orchestrator-core";
-import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/workflow/dispatch-events";
+import {
+    DISPATCH_UPDATE,
+    type DispatchUpdate,
+} from "../utils/workflow/dispatch-events";
 
 // Run before any process.env reads below (WORKER_MODEL, …).
 loadDotEnv(process.cwd());
@@ -696,29 +699,26 @@ export default function (pi: ExtensionAPI) {
         // Text(line, 1, 0) (a +1 left pad), so building to columns-2 keeps the
         // widest row + pad from wrapping and shattering the card borders.
         widgetGen++; // a state change → rebuild on the next factory call
-        widgetCtx.ui.setWidget(
-            "agent-workflow",
-            (_tui: any, theme?: any) => {
-                const t = theme || widgetCtx.ui.theme;
-                const width = Math.max(20, (process.stdout.columns || 80) - 2);
-                // Rebuild only when state, theme, or width changed; reuse the
-                // cached lines on plain redraws so we don't re-read disk per frame.
-                if (
-                    widgetMemo.gen !== widgetGen ||
-                    widgetMemo.theme !== t ||
-                    widgetMemo.width !== width
-                ) {
-                    widgetMemo.gen = widgetGen;
-                    widgetMemo.theme = t;
-                    widgetMemo.width = width;
-                    widgetMemo.lines = buildWidgetLines(width, t);
-                }
-                const container = new Container();
-                for (const line of widgetMemo.lines)
-                    container.addChild(new Text(line, 1, 0));
-                return container;
-            },
-        );
+        widgetCtx.ui.setWidget("agent-workflow", (_tui: any, theme?: any) => {
+            const t = theme || widgetCtx.ui.theme;
+            const width = Math.max(20, (process.stdout.columns || 80) - 2);
+            // Rebuild only when state, theme, or width changed; reuse the
+            // cached lines on plain redraws so we don't re-read disk per frame.
+            if (
+                widgetMemo.gen !== widgetGen ||
+                widgetMemo.theme !== t ||
+                widgetMemo.width !== width
+            ) {
+                widgetMemo.gen = widgetGen;
+                widgetMemo.theme = t;
+                widgetMemo.width = width;
+                widgetMemo.lines = buildWidgetLines(width, t);
+            }
+            const container = new Container();
+            for (const line of widgetMemo.lines)
+                container.addChild(new Text(line, 1, 0));
+            return container;
+        });
     }
 
     // ── Run a single agent as a subprocess ───────
@@ -1469,7 +1469,8 @@ export default function (pi: ExtensionAPI) {
     // the footer) follow /model changes live, not just the session-start model.
     pi.on("model_select", async (event: any) => {
         const m = event?.model;
-        if (m) primaryModel = m.provider && m.id ? `${m.provider}/${m.id}` : m.id;
+        if (m)
+            primaryModel = m.provider && m.id ? `${m.provider}/${m.id}` : m.id;
         updateWidget();
     });
 
@@ -1532,7 +1533,10 @@ export default function (pi: ExtensionAPI) {
                     // already-exited proc is a harmless no-op.
                     setTimeout(() => {
                         try {
-                            if (proc.exitCode == null && proc.signalCode == null)
+                            if (
+                                proc.exitCode == null &&
+                                proc.signalCode == null
+                            )
                                 proc.kill("SIGKILL");
                         } catch {}
                     }, 2000).unref?.();
@@ -1580,18 +1584,55 @@ export default function (pi: ExtensionAPI) {
         // closes over `st` (mutated in place), `primaryCostUsd` (a live let), and
         // primaryModelStr()/ctx, so it always returns fresh values per frame. Bridged
         // via globalThis so the footer can be its own `pi -e` extension.
-        (globalThis as any)[WORKFLOW_FOOTER_GLOBAL] = (): WorkflowFooterState => ({
-            model: primaryModelStr(),
-            running: st.running,
-            lastStatus: st.lastStatus,
-            iteration: st.iteration,
-            maxLoopsRef: st.maxLoopsRef,
-            dispatchMode: st.dispatchMode,
-            phases: st.phases,
-            dispatchElapsedMs: st.dispatchElapsedMs,
-            runElapsedMs: st.runElapsedMs,
-            primaryCostUsd,
-            contextUsage: () => ctx.getContextUsage?.(),
-        });
+        (globalThis as any)[WORKFLOW_FOOTER_GLOBAL] =
+            (): WorkflowFooterState => ({
+                model: primaryModelStr(),
+                running: st.running,
+                lastStatus: st.lastStatus,
+                iteration: st.iteration,
+                maxLoopsRef: st.maxLoopsRef,
+                dispatchMode: st.dispatchMode,
+                phases: st.phases,
+                dispatchElapsedMs: st.dispatchElapsedMs,
+                runElapsedMs: st.runElapsedMs,
+                primaryCostUsd,
+                contextUsage: () => ctx.getContextUsage?.(),
+            });
+    });
+
+    // ── Teardown ───────────────────────────────────
+    // pi fires session_shutdown on /new, /resume, /fork, /reload, and quit, then
+    // rebinds a fresh extension instance. Without this, a /reload mid-run would
+    // leave a sub-agent subprocess running detached, a trailing widget timer could
+    // fire into a dead instance, and the globalThis bridges would keep pointing at
+    // this (now-stale) instance's closures. Idempotent: safe to run more than once,
+    // and it only deletes the global slots if they are still the ones we installed.
+    pi.on("session_shutdown", async () => {
+        // Cancel any pending coalesced widget render.
+        cancelPendingWidget();
+        // Kill the pipeline's live sub-agent subprocess so it doesn't outlive the
+        // session. SIGTERM, then SIGKILL if it ignores it (unref'd so the timer
+        // can't keep the process alive). Parallel-dispatch procs are owned and torn
+        // down by extensions/dispatch.ts.
+        const proc = currentProc;
+        currentProc = null;
+        if (proc) {
+            try {
+                proc.kill("SIGTERM");
+                setTimeout(() => {
+                    try {
+                        if (proc.exitCode == null && proc.signalCode == null)
+                            proc.kill("SIGKILL");
+                    } catch {}
+                }, 2000).unref?.();
+            } catch {}
+        }
+        st.running = false;
+        // Release the cross-extension globalThis bridges we own, but only if they
+        // are still ours — a newly-bound instance may have already replaced them.
+        const g = globalThis as any;
+        if (g.__piKillWorkflowProc) delete g.__piKillWorkflowProc;
+        if (g.__piHasRunningWorkflow) delete g.__piHasRunningWorkflow;
+        if (g[WORKFLOW_FOOTER_GLOBAL]) delete g[WORKFLOW_FOOTER_GLOBAL];
     });
 }

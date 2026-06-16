@@ -42,7 +42,10 @@ import {
     dispatchParallelCore,
     selectAgentsCore,
 } from "../utils/workflow/orchestrator-core";
-import { DISPATCH_UPDATE, type DispatchUpdate } from "../utils/workflow/dispatch-events";
+import {
+    DISPATCH_UPDATE,
+    type DispatchUpdate,
+} from "../utils/workflow/dispatch-events";
 
 // Run before any process.env reads below.
 loadDotEnv(process.cwd());
@@ -121,7 +124,8 @@ export default function (pi: ExtensionAPI) {
         if (WORKER_MODEL) return WORKER_MODEL;
         const m = widgetCtx?.model;
         return (
-            (m?.provider && m?.id ? `${m.provider}/${m.id}` : m?.id) || "default"
+            (m?.provider && m?.id ? `${m.provider}/${m.id}` : m?.id) ||
+            "default"
         );
     }
 
@@ -193,7 +197,8 @@ export default function (pi: ExtensionAPI) {
     const host: OrchestratorHost = {
         execution: {
             runPhase: async () => ({ output: "", ok: false }),
-            runAgent: (def, task, phase, cwd) => runAgent(def, task, phase, cwd),
+            runAgent: (def, task, phase, cwd) =>
+                runAgent(def, task, phase, cwd),
         },
         ui: {
             updateWidget: () => emitUpdate(),
@@ -363,5 +368,13 @@ export default function (pi: ExtensionAPI) {
     pi.on("agent_start", async () => {
         st.primaryTurnStartedAt = Date.now();
         st.dispatchesThisTurn = 0;
+    });
+
+    // Teardown: pi fires session_shutdown on /new, /resume, /fork, /reload, and
+    // quit. Abort already kills live procs on turn cancellation, but a session
+    // switch mid-dispatch would otherwise leave sub-agent subprocesses running
+    // detached — so kill them all here too. Idempotent (killAllProcs clears the Set).
+    pi.on("session_shutdown", async () => {
+        killAllProcs();
     });
 }
