@@ -5,12 +5,12 @@
 // renders the metrics from obs-metrics.ts (which does the pure math).
 //
 // Usage:
-//   tsx utils/obs/obs-cli.ts [projectPath] [--json] [--since ISO] [--until ISO]
-//   tsx utils/obs/obs-cli.ts --session <file.jsonl> [--json]
-//   tsx utils/obs/obs-cli.ts --all [root] [--json] [--since ISO] [--until ISO]
-//   tsx utils/obs/obs-cli.ts score <runId|--last> --pass|--fail [--note <text>]
+//   tsx obs/obs-cli.ts [projectPath] [--json] [--since ISO] [--until ISO]
+//   tsx obs/obs-cli.ts --session <file.jsonl> [--json]
+//   tsx obs/obs-cli.ts --all [root] [--json] [--since ISO] [--until ISO]
+//   tsx obs/obs-cli.ts score <runId|--last> --pass|--fail [--note <text>]
 //                                  [--sink <file>]
-//   tsx utils/obs/obs-cli.ts explain <runId|--last> [--json] [--sink <file>]
+//   tsx obs/obs-cli.ts explain <runId|--last> [--json] [--sink <file>]
 //
 //   projectPath  defaults to the current directory. Its session dir is resolved
 //                the same way the workflow spawns sub-agents (projectSessionHash).
@@ -37,7 +37,7 @@ import {
     projectSessionHash,
     parseProgressLedger,
     type WorkflowMetrics,
-} from "../workflow/workflow-core";
+} from "../utils/workflow/workflow-core";
 import {
     makeFactory,
     serializeEvent,

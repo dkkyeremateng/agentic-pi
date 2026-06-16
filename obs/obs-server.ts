@@ -8,7 +8,7 @@
 // Node stdlib only — no deps, no SQLite, no Bun.
 //
 // Usage:
-//   tsx utils/obs/obs-server.ts [projectPath] [--sink <file>] [--port <n>]
+//   tsx obs/obs-server.ts [projectPath] [--sink <file>] [--port <n>]
 //
 //   projectPath  defaults to cwd; sink is <projectPath>/.agent/obs/events.jsonl
 //   --sink       tail an explicit sink file instead
@@ -52,8 +52,8 @@ import { buildPromptRegistry } from "./obs-prompts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 // pi's extensions load the repo .env into the pi process; the server is a sibling
 // process that doesn't, so load it here too (real env wins). Lets PI_OBS_LLM* live
-// in .env like every other setting. HERE = <repo>/utils/obs → repo root is ../../.
-loadRepoEnv(join(HERE, "..", "..", ".env"));
+// in .env like every other setting. HERE = <repo>/obs → repo root is ...
+loadRepoEnv(join(HERE, "..", ".env"));
 const UI_DIR = join(HERE, "obs-ui");
 
 function parseArgs(argv: string[]) {
@@ -480,7 +480,7 @@ function broadcast(ev: ObsEvent): void {
 // A stable, CORS-open surface for external UIs and other integrations; the
 // bundled dashboard keeps using the legacy unprefixed routes (same data). The
 // server binds to 127.0.0.1, so open CORS only exposes it to local pages and
-// apps. Documented in utils/obs/API.md.
+// apps. Documented in obs/API.md.
 
 const API_CORS: Record<string, string> = {
     "access-control-allow-origin": "*",
@@ -524,7 +524,7 @@ function handleApi(
     }
     const seg = path.split("/").filter(Boolean); // ["api", ...]
 
-    // The machine-readable contract (utils/obs/openapi.yaml, served as-is).
+    // The machine-readable contract (obs/openapi.yaml, served as-is).
     if (path === "/api/openapi.yaml" && req.method === "GET") {
         const file = join(HERE, "openapi.yaml");
         if (!existsSync(file)) {
@@ -1096,7 +1096,7 @@ server.listen(opts.port, "127.0.0.1", () => {
     process.stdout.write(
         `\nAgent observability — live\n` +
             `  dashboard  http://127.0.0.1:${opts.port}/\n` +
-            `  api        http://127.0.0.1:${opts.port}/api (see utils/obs/API.md)\n` +
+            `  api        http://127.0.0.1:${opts.port}/api (see obs/API.md)\n` +
             `  tailing    ${SINK}${AGGREGATE ? ` (+ ${discoverSinks().length - 1} project sink(s))` : ""}\n` +
             `  history    /runs · /events?run=<id> · /otel?run=<id>\n` +
             (OTLP_ENDPOINT ? `  otlp push  ${OTLP_ENDPOINT}\n` : "") +

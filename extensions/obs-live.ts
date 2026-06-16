@@ -24,7 +24,7 @@ import {
     messageContent,
     capText,
     type EventFactory,
-} from "../utils/obs/obs-events";
+} from "../obs/obs-events";
 
 // Cap (chars) for the full args/result captured for the expand-on-click view.
 // Default is unlimited — tool args/results are the agent's working I/O and we

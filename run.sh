@@ -11,7 +11,7 @@
 #                                  #   (use when a `--server` is already running)
 #   ./run.sh --server              # the dashboard server only (background; no pi)
 #   ./run.sh --restart             # stop the server on $PORT, then start it fresh
-#                                  #   (reloads edited utils/obs/*.ts — tsx has no
+#                                  #   (reloads edited obs/*.ts — tsx has no
 #                                  #    hot-reload)
 #   ./run.sh --stop                # stop the dashboard server on $PORT
 #   ./run.sh --obs --project       # scope obs to THIS project: emit to and tail a
@@ -122,7 +122,7 @@ if [[ "$MODE" == "server" ]]; then
     }
     # Background + detached so it keeps running and frees the terminal. Remaining
     # args (e.g. --port 8000, or a project path) pass through.
-    nohup "$TSX" "$DIR/utils/obs/obs-server.ts" --port "$PORT" "$@" \
+    nohup "$TSX" "$DIR/obs/obs-server.ts" --port "$PORT" "$@" \
         >"$DIR/.obs-server.log" 2>&1 &
     SP=$!
     disown 2>/dev/null || true
@@ -162,7 +162,7 @@ fi
 if [[ "$MODE" == "both" ]]; then
     # Start the dashboard server in the background, tailing the shared sink.
     if [[ -x "$TSX" ]]; then
-        "$TSX" "$DIR/utils/obs/obs-server.ts" --port "$PORT" \
+        "$TSX" "$DIR/obs/obs-server.ts" --port "$PORT" \
             >"$DIR/.obs-server.log" 2>&1 &
         SERVER_PID=$!
         # Stop the server when pi exits (normal quit, error, or Ctrl-C).

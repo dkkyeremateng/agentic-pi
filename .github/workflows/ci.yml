@@ -21,11 +21,11 @@ jobs:
       # we run tsx directly rather than `npm test`, whose pretest hook links pi types
       # for `tsc` (which AGENTS.md says not to run; the types aren't installed here).
       - name: Unit tests
-        run: npx tsx --test utils/*/*.test.ts
-      # Parse-only check of every extension + util. `node --check` does no module
-      # resolution, so it needs no pi packages either.
+        run: npx tsx --test utils/*/*.test.ts obs/*.test.ts
+      # Parse-only check of every extension + util + obs. `node --check` does no
+      # module resolution, so it needs no pi packages either.
       - name: Syntax check
-        run: find extensions utils -name '*.ts' -print0 | xargs -0 -n1 node --experimental-strip-types --check
+        run: find extensions utils obs -name '*.ts' -print0 | xargs -0 -n1 node --experimental-strip-types --check
 
   python:
     name: Python skill tests

@@ -5,7 +5,7 @@
 // OTel-aware backend (Datadog, Phoenix, Langfuse, Honeycomb, …).
 //
 // Usage:
-//   tsx utils/obs/obs-export.ts [--sink <file>] [--run <runId>] [--out <file>]
+//   tsx obs/obs-export.ts [--sink <file>] [--run <runId>] [--out <file>]
 //
 //   --sink   the events.jsonl to read (default: $PI_OBS_SINK or
 //            ~/.pi/agent/obs/events.jsonl — the shared collector sink)

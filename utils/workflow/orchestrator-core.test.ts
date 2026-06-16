@@ -23,7 +23,7 @@ import {
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
 import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
-import { setObsEmit } from "../obs/obs-events";
+import { setObsEmit } from "../../obs/obs-events";
 
 // Run with: npx tsx --test orchestrator-core.test.ts
 

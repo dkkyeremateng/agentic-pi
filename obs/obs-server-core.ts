@@ -1,6 +1,6 @@
 // Phase 2 (live observability) — the PURE server core.
 //
-// The obs-server (utils/obs/obs-server.ts) tails the sink file and serves the
+// The obs-server (obs/obs-server.ts) tails the sink file and serves the
 // dashboard; this module holds the parts worth testing in isolation: an event
 // store with a bounded ring buffer + (sessionId,seq) dedupe, SSE frame
 // formatting, and a live rollup the dashboard header uses. No I/O, no http.

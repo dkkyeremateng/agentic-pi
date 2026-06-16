@@ -11,7 +11,7 @@
 >
 > The vanilla app stays the bundled zero-dependency default served by
 > obs-server; the React app is the power UI consuming `/api` (see
-> `utils/obs/API.md` + `openapi.yaml`).
+> `obs/API.md` + `openapi.yaml`).
 
 ---
 
@@ -222,7 +222,7 @@ Found in the 2026-06-12 end-to-end review (vanilla keeps them as-is):
 
 ### 7.1 Architecture
 
-- **Location**: `utils/obs/obs-app/` (Vite root) in this repo — so the app
+- **Location**: `obs/obs-app/` (Vite root) in this repo — so the app
   can import the repo's **pure TS modules directly** instead of
   reimplementing them: `obs-events.ts` (types/parsers), `obs-explain.ts`
   (digest), plus ports of `rollup.js`/lane-derivation logic as shared TS.

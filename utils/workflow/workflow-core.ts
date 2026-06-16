@@ -1824,7 +1824,7 @@ export function buildWorkflowReport(o: {
 
 // ── Structured run metrics (machine-readable sibling of the report) ─────────
 // buildWorkflowReport emits human markdown; this emits the same run as JSON so
-// the observability analyzer (utils/obs/obs-cli.ts) has a precise, single-run record
+// the observability analyzer (obs/obs-cli.ts) has a precise, single-run record
 // instead of re-parsing the markdown. Same call site, same inputs.
 
 export interface PhaseMetrics {
