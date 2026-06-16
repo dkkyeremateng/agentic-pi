@@ -170,7 +170,10 @@ const runPiText: RunPi = (model, system, prompt, timeoutMs) =>
         if (model) args.push("--model", model);
         args.push("--append-system-prompt", system, prompt);
 
-        const proc = spawn("pi", args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+        // PI_OBS_PI_BIN lets run.sh hand the detached server an absolute path to
+        // `pi` — its PATH may lack the version-manager (nvm) bin dir that holds it.
+        const bin = process.env.PI_OBS_PI_BIN || "pi";
+        const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
         let out = "";
         let err = "";
         const timer = setTimeout(() => {
@@ -181,7 +184,11 @@ const runPiText: RunPi = (model, system, prompt, timeoutMs) =>
         proc.stderr.on("data", (d: Buffer) => (err = (err + d.toString()).slice(-2000)));
         proc.on("error", (e) => {
             clearTimeout(timer);
-            reject(new Error(`spawn pi: ${e.message}`));
+            const hint =
+                (e as NodeJS.ErrnoException).code === "ENOENT"
+                    ? ` — '${bin}' not on the server's PATH; set PI_OBS_PI_BIN to pi's absolute path (run.sh does this automatically)`
+                    : "";
+            reject(new Error(`spawn ${bin}: ${e.message}${hint}`));
         });
         proc.on("close", (code) => {
             clearTimeout(timer);

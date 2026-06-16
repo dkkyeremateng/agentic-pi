@@ -36,6 +36,14 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PI_OBS_PORT:-7616}"
 TSX="$DIR/node_modules/.bin/tsx"
 
+# The dashboard server spawns `pi` for LLM features (judge/explain/summarize).
+# When it runs detached (nohup --server), its PATH may not include the version-
+# manager bin dir that holds `pi`. Resolve the absolute path here — we're in the
+# user's interactive shell — and pass it through so the spawn never ENOENTs.
+if [[ -z "${PI_OBS_PI_BIN:-}" ]] && command -v pi >/dev/null 2>&1; then
+    export PI_OBS_PI_BIN="$(command -v pi)"
+fi
+
 # Mode: pi (default) | both (pi + server) | emit (pi + emission, no server) |
 # server (server only). PI_OBS=1 in the environment is equivalent to --obs.
 MODE="pi"
