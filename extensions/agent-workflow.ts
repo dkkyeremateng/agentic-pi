@@ -43,7 +43,6 @@ import {
 } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { join, dirname } from "path";
-import { fileURLToPath } from "url";
 import { execFileSync } from "child_process";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
 import { secs } from "../utils/workflow/workflow-utils";
@@ -130,16 +129,12 @@ const loadedExplicitly = () =>
     loadedExplicitlyCore(import.meta.url, "agent-workflow.ts");
 const isActiveWorkflow = () => isActiveWorkflowCore(SELF_NAME);
 
-// The agents shipped alongside this extension (`<ext>/../agents`). Used as a
-// fallback so the pipeline works when launched (e.g. via `-e`) from a project
-// that has no .pi/agents of its own — the cwd still wins when it does.
-const INSTALL_AGENTS_DIR = join(
-    dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "agents",
-);
-const loadAgents = (cwd: string) => loadAgentsCore(cwd, INSTALL_AGENTS_DIR);
-const loadTeams = (cwd: string) => loadTeamsCore(cwd, INSTALL_AGENTS_DIR);
+// The agents shipped alongside this extension serve as a fallback so the
+// pipeline works when launched (e.g. via `-e`) from a project that has no
+// .pi/agents of its own — the cwd still wins when it does. The core resolves
+// that install dir itself (relative to workflow-core), so no path is passed.
+const loadAgents = (cwd: string) => loadAgentsCore(cwd);
+const loadTeams = (cwd: string) => loadTeamsCore(cwd);
 
 // ── Config ───────────────────────────────────────
 

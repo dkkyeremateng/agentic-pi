@@ -5,7 +5,6 @@
 import type { PhaseState } from "./workflow-core";
 import {
     displayName,
-    statusBadge,
     statusMeta,
     agentPhaseStatus,
     formatContextUsage,
@@ -217,61 +216,6 @@ export function renderCardGrid(
 }
 
 // ── Pipeline view layout ─────────────────────────
-
-// Render the title line for a pipeline view.
-// Shows workflow title, pass info, status badge, and optional total time.
-export function renderPipelineTitle(
-    phases: PhaseState[],
-    running: boolean,
-    lastStatus: string,
-    iteration: number,
-    maxLoopsRef: number,
-    runElapsedMs: number,
-    theme: any,
-    options: {
-        showTotalTime?: boolean;
-    } = {},
-): string[] {
-    const { showTotalTime = false } = options;
-
-    const passInfo =
-        iteration > 1
-            ? theme.fg("dim", `  attempt ${iteration}/${maxLoopsRef}`)
-            : "";
-
-    const doneCount = phases.filter((p) => p.status === "done").length;
-    const phaseProgress = running ? ` (${doneCount}/${phases.length})` : "";
-
-    // Use different separator for parallel vs sequential execution
-    // Check if there are duplicate agent names (parallel dispatch)
-    const agentNames = phases.map((p) => p.agent);
-    const hasDuplicateAgents = new Set(agentNames).size < agentNames.length;
-
-    // Check if multiple phases are running concurrently
-    const runningCount = phases.filter((p) => p.status === "running").length;
-    const hasConcurrentExecution = runningCount > 1;
-
-    // Use ∥ for parallel execution (duplicates or concurrent), → for sequential
-    const isParallel = hasDuplicateAgents || hasConcurrentExecution;
-    const separator = isParallel ? " ∥ " : "→";
-
-    const workflowTitle =
-        phases.map((p) => p.label).join(separator) + phaseProgress;
-
-    const totalTime =
-        showTotalTime && !running && runElapsedMs > 0
-            ? theme.fg("dim", `  ·  ${secs(runElapsedMs)} total`)
-            : "";
-
-    return [
-        " " +
-            theme.fg("accent", theme.bold(workflowTitle)) +
-            passInfo +
-            statusBadge(theme, running, lastStatus) +
-            totalTime,
-        "",
-    ];
-}
 
 // Render phase cards with arrows between them.
 // Returns an array of lines with cards laid out horizontally and arrows on the middle row.
