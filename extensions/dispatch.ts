@@ -18,8 +18,7 @@ import { Type } from "@sinclair/typebox";
 import { Text, Markdown } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { appendFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 import {
     setupSessions as setupSessionsCore,
     runAgentWithFallback,
@@ -61,14 +60,10 @@ const MAX_DISPATCHES_PER_TURN = Math.max(
 );
 const MIN_DISPATCH_OUTPUT_CHARS = 40;
 
-// Agents shipped alongside this extension (`<ext>/../agents`), used as a fallback
-// when the cwd has no .pi/agents of its own — same resolution as the workflows.
-const INSTALL_AGENTS_DIR = join(
-    dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "agents",
-);
-const loadAgents = (cwd: string) => loadAgentsCore(cwd, INSTALL_AGENTS_DIR);
+// Agents shipped alongside this extension serve as a fallback when the cwd has
+// no .pi/agents of its own — the core resolves that install dir itself (relative
+// to workflow-core), so no path is passed.
+const loadAgents = (cwd: string) => loadAgentsCore(cwd);
 
 export default function (pi: ExtensionAPI) {
     // This extension's OWN dispatch state (never a workflow's).

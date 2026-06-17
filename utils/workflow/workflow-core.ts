@@ -1190,10 +1190,7 @@ export function resolveAgentModel(
     return workflowModel || fallback;
 }
 // Project agents in `.pi/agents/` take precedence; extension agents serve as fallback.
-export function loadAgents(
-    cwd: string,
-    fallbackDir?: string,
-): Map<string, AgentDef> {
+export function loadAgents(cwd: string): Map<string, AgentDef> {
     const agents = new Map<string, AgentDef>();
 
     // First, load project-level agents from cwd/.pi/agents/
@@ -1267,10 +1264,7 @@ function parseTeamsYaml(raw: string): Record<string, string[]> {
 
 // Load team definitions from both project-level and extension-level files.
 // Project teams in `.pi/agents/teams.yaml` take precedence; extension teams serve as fallback.
-export function loadTeams(
-    cwd: string,
-    fallbackDir?: string,
-): Record<string, string[]> {
+export function loadTeams(cwd: string): Record<string, string[]> {
     // First, try project-level teams from cwd/.pi/agents/teams.yaml
     const projectTeamsFile = join(cwd, ".pi", "agents", "teams.yaml");
     if (existsSync(projectTeamsFile)) {
@@ -1453,7 +1447,7 @@ const SESSION_TTL_MS =
 // The session directory is read from PI_WORKFLOW_SESSION_DIR env var;
 // falls back to `~/.pi/agent/sessions/` if unset. Supports `~` expansion.
 // Returns the directory path (the caller stores it as its sessionDir).
-export function setupSessions(cwd: string, wipe: boolean): string {
+export function setupSessions(_cwd: string, wipe: boolean): string {
     const defaultDir = join(homedir(), ".pi", "agent", "sessions");
     const envDir = (process.env.PI_WORKFLOW_SESSION_DIR || "").trim();
     const sessionDir = envDir
@@ -3543,11 +3537,6 @@ export function loadPromptTemplate(
     }
     promptTemplateCache.set(cacheKey, fallback);
     return fallback;
-}
-
-// Clear the prompt template cache (for tests).
-export function clearPromptTemplateCache(): void {
-    promptTemplateCache.clear();
 }
 
 // Track which template warnings have been emitted so we only warn once per session.
