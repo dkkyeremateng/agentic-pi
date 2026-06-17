@@ -734,6 +734,11 @@ export default function (pi: ExtensionAPI) {
         setCurrentProc: (p: any) => {
             currentProc = p;
         },
+        // pi's authoritative project-trust answer (pi >= 0.79.1), used to decide
+        // --approve for each spawn instead of re-reading ~/.pi/agent/trust.json by
+        // hand. Guarded (?.) so older pi without the API yields undefined and the
+        // spawn helper falls back to its disk read.
+        isProjectTrusted: () => widgetCtx?.isProjectTrusted?.(),
         // When a sub-agent's provider doesn't report a context window in usage
         // (e.g. gateframe's supportsUsageInStreaming:false) and the agent has none
         // configured, derive it: first look the model up in pi's registry
