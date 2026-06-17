@@ -156,6 +156,10 @@ export default function (pi: ExtensionAPI) {
                 p.once?.("exit", () => liveProcs.delete(p));
             }
         },
+        // pi's authoritative project-trust answer (pi >= 0.79.1) for the --approve
+        // decision, instead of re-reading ~/.pi/agent/trust.json by hand. Guarded so
+        // older pi (no API) yields undefined and the disk fallback applies.
+        isProjectTrusted: () => widgetCtx?.isProjectTrusted?.(),
     });
 
     function runAgent(

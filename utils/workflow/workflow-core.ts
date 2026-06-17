@@ -1504,6 +1504,7 @@ export function makeSpawnWrapper(opts: {
     updateWidget: () => void;
     setCurrentProc: (proc: any) => void;
     getFallbackContextWindow?: (model: string) => number;
+    isProjectTrusted?: () => boolean | undefined;
 }): (
     agentDef: AgentDef,
     task: string,
@@ -1518,6 +1519,7 @@ export function makeSpawnWrapper(opts: {
         updateWidget,
         setCurrentProc,
         getFallbackContextWindow,
+        isProjectTrusted,
     } = opts;
     const getSessionDir =
         typeof sessionDirOpt === "function"
@@ -1530,6 +1532,7 @@ export function makeSpawnWrapper(opts: {
             updateWidget,
             setCurrentProc,
             getFallbackContextWindow,
+            isProjectTrusted,
         };
         const prevToolCount = phase.toolCount;
         const prevDroppedLines = phase.droppedLines;
@@ -2697,6 +2700,11 @@ export interface SpawnConfig {
     // lookup, falling back to the primary session's window. Per-agent config
     // (agentDef.contextWindow) still wins.
     getFallbackContextWindow?: (model: string) => number;
+    // pi's authoritative project-trust answer (ctx.isProjectTrusted(), pi >= 0.79.1),
+    // used to decide --approve for the spawn. Returns undefined when no ctx/API is
+    // available, in which case shouldApproveProjectForSpawn falls back to the disk
+    // read. Wired from the extension so we don't re-implement pi's trust resolution.
+    isProjectTrusted?: () => boolean | undefined;
 }
 
 // Result of a spawned agent subprocess.
@@ -2746,17 +2754,29 @@ export function dispatchEnv(
 // inputs unless --approve is passed. Our sub-agents run --mode json -p, so without
 // this they would stop honoring the repo's conventions and nobody would notice.
 //
-// We mirror pi's own resolution: the trust store is ~/.pi/agent/trust.json (or
-// $PI_CODING_AGENT_DIR), keyed by the canonical cwd — realpathSync(resolve(cwd)),
-// falling back to resolve(cwd) when the path can't be realpath'd. We approve iff:
-//   - PI_WORKFLOW_APPROVE_PROJECT=1 (force on, e.g. session-only trust), OR
-//   - the saved decision for this cwd is exactly `true`.
-// PI_WORKFLOW_APPROVE_PROJECT=0 forces it off regardless. A saved `false`
-// (declined) or absent decision is respected by NOT approving.
-export function shouldApproveProjectForSpawn(cwd: string): boolean {
+// Resolution order:
+//   1. PI_WORKFLOW_APPROVE_PROJECT=1 forces on (e.g. session-only trust); =0 forces
+//      off. This explicit override always wins.
+//   2. `authoritativeTrusted` — pi's own answer from ctx.isProjectTrusted() (pi
+//      >= 0.79.1), passed down from the extension. Preferred when available: it is
+//      pi's live trust decision, so it can't drift from pi's internal format.
+//   3. Disk fallback — for contexts with no ctx (or older pi where the API is
+//      absent). Mirrors pi's resolution: trust store at ~/.pi/agent/trust.json (or
+//      $PI_CODING_AGENT_DIR), keyed by the canonical cwd — realpathSync(resolve(cwd)),
+//      falling back to resolve(cwd) when the path can't be realpath'd. Approves iff
+//      the saved decision for this cwd is exactly `true`. A saved `false` (declined)
+//      or absent decision is respected by NOT approving.
+//
+// The disk fallback re-implements pi internals, so prefer passing the ctx answer.
+export function shouldApproveProjectForSpawn(
+    cwd: string,
+    authoritativeTrusted?: boolean,
+): boolean {
     const env = process.env.PI_WORKFLOW_APPROVE_PROJECT;
     if (env === "0") return false;
     if (env === "1") return true;
+    // Prefer pi's authoritative trust decision when the caller supplied one.
+    if (typeof authoritativeTrusted === "boolean") return authoritativeTrusted;
     const expand = (p: string) =>
         p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
     const agentDir = process.env.PI_CODING_AGENT_DIR
@@ -3105,7 +3125,9 @@ function spawnAgentWithModelFallback(
         sessionFile,
         "--name",
         spawnSessionName(cwd, agentDef.name),
-        ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
+        ...(shouldApproveProjectForSpawn(cwd, config.isProjectTrusted?.())
+            ? ["--approve"]
+            : []),
         ...subagentExtArgs(agentDef.tools, agentDef.readOnlyBash),
     ];
 
@@ -3333,7 +3355,9 @@ export function spawnAgentWithModel(
         sessionFile,
         "--name",
         spawnSessionName(cwd, agentDef.name),
-        ...(shouldApproveProjectForSpawn(cwd) ? ["--approve"] : []),
+        ...(shouldApproveProjectForSpawn(cwd, config.isProjectTrusted?.())
+            ? ["--approve"]
+            : []),
         ...subagentExtArgs(agentDef.tools, agentDef.readOnlyBash),
     ];
     // Pass --model via spawnModelArg: a two-or-more-slash string keeps its

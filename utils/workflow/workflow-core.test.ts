@@ -1219,6 +1219,27 @@ describe("shouldApproveProjectForSpawn", () => {
         writeFileSync(join(dir, "trust.json"), "{ not json");
         assert.equal(shouldApproveProjectForSpawn(cwd), false);
     });
+
+    // Authoritative trust from pi's ctx.isProjectTrusted() (pi >= 0.79.1).
+    it("approves on authoritative true even with no store", () => {
+        assert.equal(shouldApproveProjectForSpawn(cwd, true), true);
+    });
+    it("authoritative false wins over a trusted disk store", () => {
+        writeTrust({ [keyFor(cwd)]: true });
+        assert.equal(shouldApproveProjectForSpawn(cwd, false), false);
+    });
+    it("falls back to the disk read when authoritative is undefined", () => {
+        writeTrust({ [keyFor(cwd)]: true });
+        assert.equal(shouldApproveProjectForSpawn(cwd, undefined), true);
+    });
+    it("PI_WORKFLOW_APPROVE_PROJECT=0 still overrides authoritative true", () => {
+        process.env.PI_WORKFLOW_APPROVE_PROJECT = "0";
+        assert.equal(shouldApproveProjectForSpawn(cwd, true), false);
+    });
+    it("PI_WORKFLOW_APPROVE_PROJECT=1 still overrides authoritative false", () => {
+        process.env.PI_WORKFLOW_APPROVE_PROJECT = "1";
+        assert.equal(shouldApproveProjectForSpawn(cwd, false), true);
+    });
 });
 
 // ── loadSkills ───────────────────────────────────
