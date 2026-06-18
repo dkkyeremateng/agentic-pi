@@ -77,9 +77,15 @@ downstream agents, so it is never re-threaded through the context.
 ## Quick start
 
 ```bash
-cp example.env .env          # then fill in your models / API keys
+./install.sh                 # one-time setup (macOS/Linux): pi CLI + deps + types + context pruner + .env
+# edit .env to set your models / API keys, then:
 ./run.sh                     # loads dispatch + interactive + agent-workflow + footer + revert
 ```
+
+[`install.sh`](install.sh) sets up everything to run/develop the workflow and the
+observability server (it excludes the React dashboard in `pi-obs/` — set that up
+separately with `cd pi-obs && npm install`). Already have `pi` and the deps? Just
+`cp example.env .env` and `./run.sh`.
 
 `run.sh` loads the extensions resolved relative to itself, so you never edit pi's
 global settings per machine. Then, inside pi:
