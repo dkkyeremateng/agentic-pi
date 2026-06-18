@@ -8,6 +8,8 @@ __pycache__/
 .agent/
 .pi/
 .playwright-mcp/
+.playwright-cli/
+.playwright/
 .obs-server.log
 obs/obs-ui/mockups/
 extensions/qa-review.ts
