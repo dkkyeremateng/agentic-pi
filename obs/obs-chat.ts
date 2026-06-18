@@ -57,6 +57,7 @@ export type ChatEvent =
     | { type: "thinking"; text: string } // reasoning delta
     | { type: "tool"; phase: "start" | "end"; name: string; detail?: string }
     | { type: "done"; text: string; costUsd: number; tokens?: number; model?: string }
+    | { type: "approval"; toolCallId: string; name: string; input?: unknown } // agent waiting for human allow/deny
     | { type: "error"; error: string };
 
 function str(v: unknown): string {

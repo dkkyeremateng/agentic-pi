@@ -571,7 +571,8 @@ function handleApi(
                 "POST /api/playground  {system, input, model?}  (safe one-shot prompt sandbox; opt-in PI_OBS_LLM=1)",
                 "POST /api/chat  {sessionId, text, model?, cwd?, tools?, forkFrom?}  (SSE stream of reply tokens; forkFrom attaches to a run's session; opt-in PI_OBS_LLM=1)",
                 "GET  /api/live-sessions  (agents running right now with a control channel — attachable)",
-                "GET  /api/chat-live  ?sessionId=&text=&deliverAs=  (SSE; steer a LIVE agent and stream its reply)",
+                "GET  /api/chat-live  ?sessionId=&text=&deliverAs=&approve=  (SSE; steer a LIVE agent and stream its reply)",
+                "GET  /api/chat-approve  ?sessionId=&toolCallId=&decision=  (allow/deny a paused tool on a live agent)",
                 "POST /api/verdicts/backfill  (auto-score ended, still-open runs)",
                 "GET  /api/stream  (SSE; ?run= filters)",
             ],
@@ -809,6 +810,7 @@ function handleApi(
             const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
             const text = typeof p.text === "string" ? p.text : "";
             const deliverAs = p.deliverAs === "steer" ? "steer" : "followUp";
+            const approve = p.approve === "1" || p.approve === true;
             if (!/^[\w.-]{1,64}$/.test(sessionId)) {
                 emit({ type: "error", error: "invalid sessionId" });
                 finish();
@@ -830,7 +832,7 @@ function handleApi(
             let sawTerminal = false;
             sock.on("connect", () => {
                 try {
-                    sock.write(JSON.stringify({ text, deliverAs }) + "\n");
+                    sock.write(JSON.stringify({ text, deliverAs, approve }) + "\n");
                 } catch {}
             });
             sock.on("data", (d: Buffer) => {
@@ -890,6 +892,55 @@ function handleApi(
         req.on("end", () => {
             try {
                 run(JSON.parse(body || "{}"));
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+            }
+        });
+        return;
+    }
+    // Relay a human approve/deny decision for a paused tool to the live agent's
+    // control socket (the agent's tool_call handler is awaiting it).
+    if (a === "chat-approve" && (req.method === "GET" || req.method === "POST")) {
+        const decide = (p: Record<string, unknown>) => {
+            const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+            const toolCallId = typeof p.toolCallId === "string" ? p.toolCallId : "";
+            const decision = p.decision === "allow" ? "allow" : "deny";
+            if (!/^[\w.-]{1,64}$/.test(sessionId) || !toolCallId) {
+                apiError(res, 400, "sessionId and toolCallId required");
+                return;
+            }
+            const live = listLiveSessions().find((m) => m.sessionId === sessionId);
+            if (!live) {
+                apiError(res, 409, "session no longer live");
+                return;
+            }
+            const sock = netConnect(live.sock);
+            const done = (ok: boolean) => {
+                try {
+                    sock.destroy();
+                } catch {}
+                if (!res.writableEnded) apiJson(res, ok ? 200 : 502, { ok });
+            };
+            sock.on("connect", () => {
+                try {
+                    sock.write(JSON.stringify({ cmd: "approve", toolCallId, decision }) + "\n");
+                } catch {}
+                setTimeout(() => done(true), 30); // give the frame time to flush
+            });
+            sock.on("error", () => done(false));
+        };
+        if (req.method === "GET") {
+            decide(Object.fromEntries(query));
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 64_000) req.destroy();
+        });
+        req.on("end", () => {
+            try {
+                decide(JSON.parse(body || "{}"));
             } catch {
                 apiError(res, 400, "invalid JSON body");
             }

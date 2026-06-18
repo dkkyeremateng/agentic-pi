@@ -99,6 +99,15 @@ export default function obsLive(pi: any): void {
     let liveCtx: any; // latest ExtensionContext, for ctx.abort() on a stop request
     let ctrlCleaned = false;
 
+    // HITL approval: when a steered turn opts in, these tools pause for a human
+    // allow/deny over the control channel before they run.
+    const approveTools = (process.env.PI_OBS_CHAT_APPROVE_TOOLS || "bash,edit,write")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    const approveTimeoutMs = Number(process.env.PI_OBS_CHAT_APPROVE_TIMEOUT_MS) || 300_000;
+    const pendingApprovals = new Map<string, (d: "allow" | "deny") => void>();
+
     // Refresh the control sidecar on disk (e.g. once the toolset is known at boot).
     const writeSidecar = (): void => {
         if (!liveMeta) return;
@@ -155,7 +164,7 @@ export default function obsLive(pi: any): void {
                         const line = buf.slice(0, nl);
                         buf = buf.slice(nl + 1);
                         if (!line.trim()) continue;
-                        let req: { text?: string; deliverAs?: string; cmd?: string };
+                        let req: { text?: string; deliverAs?: string; cmd?: string; approve?: boolean; toolCallId?: string; decision?: string };
                         try {
                             req = JSON.parse(line);
                         } catch {
@@ -170,13 +179,22 @@ export default function obsLive(pi: any): void {
                             control?.fail("stopped by user");
                             continue;
                         }
+                        // approval decision for a paused tool (may arrive on any connection)
+                        if (req.cmd === "approve" && typeof req.toolCallId === "string") {
+                            const resolve = pendingApprovals.get(req.toolCallId);
+                            if (resolve) {
+                                pendingApprovals.delete(req.toolCallId);
+                                resolve(req.decision === "allow" ? "allow" : "deny");
+                            }
+                            continue;
+                        }
                         const text = typeof req.text === "string" ? req.text.trim() : "";
                         const deliverAs = req.deliverAs === "steer" ? "steer" : "followUp";
                         if (!text) {
                             send({ type: "error", error: "empty prompt" });
                             continue;
                         }
-                        if (!control || !control.beginPrompt(send)) {
+                        if (!control || !control.beginPrompt(send, !!req.approve)) {
                             send({ type: "error", error: "agent busy with another chat turn" });
                             continue;
                         }
@@ -425,6 +443,31 @@ export default function obsLive(pi: any): void {
         if (thinking)
             emit("message", { role: "assistant", kind: "thinking", text: thinking });
         if (text) emit("message", { role: "assistant", kind: "assistant", text });
+    });
+
+    // HITL approval gate: before a risky tool runs during an approval-enabled
+    // steered turn, ask the human in chat and block on a deny. Async — pi awaits
+    // this handler, so the tool can't run until a decision arrives. Best-effort:
+    // any error here falls through to allowing the tool (never breaks the agent).
+    pi.on("tool_call", async (e: any) => {
+        try {
+            if (!control || !control.wantsApproval()) return;
+            const name = e?.toolName || "tool";
+            if (!approveTools.includes(name)) return;
+            const toolCallId = String(e?.toolCallId || `${name}-${Date.now()}`);
+            const sent = control.emitToActive({ type: "approval", toolCallId, name, input: e?.input });
+            if (!sent) return; // no chat consumer listening — don't stall the agent
+            const decision = await new Promise<"allow" | "deny">((resolve) => {
+                pendingApprovals.set(toolCallId, resolve);
+                setTimeout(() => {
+                    if (pendingApprovals.delete(toolCallId)) resolve("deny");
+                }, approveTimeoutMs);
+            });
+            if (decision === "deny") return { block: true, reason: "denied by human in chat" };
+        } catch {
+            /* never break the agent on approval errors */
+        }
+        return;
     });
 
     pi.on("tool_execution_start", async (e: any) => {

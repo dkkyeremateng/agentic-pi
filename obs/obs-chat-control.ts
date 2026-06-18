@@ -95,6 +95,7 @@ interface Capture {
     cost: number; // summed turn cost across the run
     tokens: number; // summed turn tokens across the run
     model?: string;
+    approve: boolean; // gate risky tools on human approval for this turn
     done: boolean;
 }
 
@@ -108,10 +109,24 @@ export class LiveChatControl {
     }
 
     /** Register a reply sink for a new prompt. Returns false if one is already in
-     *  flight (caller should reject with a "busy" error and not inject). */
-    beginPrompt(send: SendFrame): boolean {
+     *  flight (caller should reject with a "busy" error and not inject).
+     *  `approve` gates the turn's risky tools on human approval. */
+    beginPrompt(send: SendFrame, approve = false): boolean {
         if (this.busy()) return false;
-        this.pending = { send, buf: "", cost: 0, tokens: 0, model: undefined, done: false };
+        this.pending = { send, buf: "", cost: 0, tokens: 0, model: undefined, approve, done: false };
+        return true;
+    }
+
+    /** Whether the in-flight turn requested human tool approval. */
+    wantsApproval(): boolean {
+        return !!this.active?.approve;
+    }
+
+    /** Send a frame (e.g. an approval request) to the active turn's consumer.
+     *  Returns false when there's no active capture to deliver it to. */
+    emitToActive(frame: ChatEvent): boolean {
+        if (!this.active) return false;
+        this.active.send(frame);
         return true;
     }
 

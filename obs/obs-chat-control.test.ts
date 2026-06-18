@@ -49,6 +49,26 @@ test("LiveChatControl sums tokens across turns into the done frame", () => {
     assert.deepEqual(done, { type: "done", text: "ok", costUsd: 0.003, model: "m", tokens: 200 });
 });
 
+test("LiveChatControl tracks approve mode and routes approval frames to the active turn", () => {
+    const frames: ChatEvent[] = [];
+    const c = new LiveChatControl();
+    // not approve-enabled by default
+    c.beginPrompt(() => {});
+    c.onAgentStart();
+    assert.equal(c.wantsApproval(), false);
+    assert.equal(c.emitToActive({ type: "approval", toolCallId: "t1", name: "bash" }), true);
+    c.onAgentEnd();
+
+    // approve-enabled turn
+    const c2 = new LiveChatControl();
+    c2.beginPrompt((f) => frames.push(f), true);
+    assert.equal(c2.emitToActive({ type: "approval", toolCallId: "x", name: "edit" }), false); // not bound yet
+    c2.onAgentStart();
+    assert.equal(c2.wantsApproval(), true);
+    assert.equal(c2.emitToActive({ type: "approval", toolCallId: "t2", name: "edit" }), true);
+    assert.deepEqual(frames, [{ type: "approval", toolCallId: "t2", name: "edit" }]);
+});
+
 test("LiveChatControl.fail emits a terminal error and releases", () => {
     const frames: ChatEvent[] = [];
     const c = new LiveChatControl();
