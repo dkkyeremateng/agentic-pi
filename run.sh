@@ -14,6 +14,16 @@
 #                                  #   (reloads edited obs/*.ts — tsx has no
 #                                  #    hot-reload)
 #   ./run.sh --stop                # stop the dashboard server on $PORT
+#   ./run.sh --bg [name]           # start a PERSISTENT interactive pi session in
+#                                  #   the background (hosted in tmux). Emission is
+#                                  #   on by default AND the dashboard server is
+#                                  #   started if not already running, so it's
+#                                  #   immediately steerable. Extra flags pass
+#                                  #   through, e.g. `./run.sh --bg work -- -n x`.
+#   ./run.sh --attach [name]       # attach to a background session (Ctrl-b d to
+#                                  #   detach again; it keeps running)
+#   ./run.sh --bg-stop [name]      # kill a background session
+#   ./run.sh --bg-list             # list background pi sessions
 #   ./run.sh --obs --project       # scope obs to THIS project: emit to and tail a
 #                                  #   per-project sink under ~/.pi/agent/obs/<slug>/
 #                                  #   instead of the shared global sink
@@ -33,8 +43,10 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="$DIR/$(basename "${BASH_SOURCE[0]}")"
 PORT="${PI_OBS_PORT:-7616}"
 TSX="$DIR/node_modules/.bin/tsx"
+TMUX_PREFIX="pi" # background tmux sessions are named "pi-<project>"
 
 # The dashboard server spawns `pi` for LLM features (judge/explain/summarize).
 # When it runs detached (nohup --server), its PATH may not include the version-
@@ -43,6 +55,101 @@ TSX="$DIR/node_modules/.bin/tsx"
 if [[ -z "${PI_OBS_PI_BIN:-}" ]] && command -v pi >/dev/null 2>&1; then
     export PI_OBS_PI_BIN="$(command -v pi)"
 fi
+
+# ── background sessions (tmux) ───────────────────────────────────────────────
+# Interactive pi needs a real terminal, so plain `&`/nohup can't keep a usable
+# session alive. tmux gives it a pty: start one detached, attach/detach at will,
+# and (with emission on) drive it from the dashboard's live chat. These are
+# leading subcommands — handled before normal flag parsing, then we exit.
+need() { command -v "$1" >/dev/null 2>&1 || { echo "run.sh: '$1' not found — needed for $2." >&2; exit 1; }; }
+# Default session name: "pi-<current-dir>" (sanitised for tmux).
+default_bg_name() {
+    local b
+    b="$(basename "$PWD" | tr -c 'a-zA-Z0-9_-' '-')"
+    echo "${TMUX_PREFIX}-${b:-session}"
+}
+# Normalise a session name: empty → the per-dir default; otherwise ensure the
+# "pi-" prefix so every session is discoverable via --bg-list.
+bg_name() {
+    local n="$1"
+    [[ -z "$n" ]] && { default_bg_name; return; }
+    case "$n" in "${TMUX_PREFIX}-"*) echo "$n" ;; *) echo "${TMUX_PREFIX}-${n}" ;; esac
+}
+case "${1:-}" in
+    --attach | --bg-attach)
+        need tmux "attaching to a background session"
+        exec tmux attach -t "$(bg_name "${2:-}")"
+        ;;
+    --bg-stop | --bg-kill)
+        need tmux "stopping a background session"
+        name="$(bg_name "${2:-}")"
+        if tmux kill-session -t "$name" 2>/dev/null; then
+            echo "run.sh: stopped background session '$name'."
+        else
+            echo "run.sh: no background session named '$name'."
+        fi
+        exit 0
+        ;;
+    --bg-list | --bg-ls)
+        need tmux "listing background sessions"
+        tmux ls 2>/dev/null | grep -E "^${TMUX_PREFIX}-" || echo "run.sh: no background pi sessions."
+        exit 0
+        ;;
+    --bg)
+        need tmux "background sessions"
+        shift
+        # optional name (a leading non-flag token)
+        name=""
+        if [[ -n "${1:-}" && "${1#-}" == "$1" && "$1" != "--" ]]; then
+            name="$1"
+            shift
+        fi
+        name="$(bg_name "$name")"
+        if tmux has-session -t "$name" 2>/dev/null; then
+            echo "run.sh: a background session named '$name' already exists." >&2
+            echo "run.sh:   attach with:  $0 --attach $name" >&2
+            exit 1
+        fi
+        # Emission on by default so the session registers a control channel and is
+        # steerable from the dashboard; skip the injection if the caller already
+        # chose an obs mode (--obs/--emit/--server) before the `--` passthrough.
+        obs_mode=0
+        for a in "$@"; do
+            case "$a" in
+                --obs | --emit | --server | --obs-only) obs_mode=1 ;;
+                --) break ;;
+            esac
+        done
+        # On the default path (emission injected), make the session observable
+        # right away: bring up a shared dashboard server if nothing is already
+        # serving on $PORT. It persists beyond the session (stop with --stop).
+        # Skipped when the caller chose their own obs mode.
+        dash_msg=""
+        if [[ "$obs_mode" == 0 ]]; then
+            if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
+                dash_msg="dashboard already running → http://127.0.0.1:$PORT"
+            elif [[ -x "$TSX" ]]; then
+                nohup "$TSX" "$DIR/obs/obs-server.ts" --port "$PORT" >"$DIR/.obs-server.log" 2>&1 &
+                disown 2>/dev/null || true
+                dash_msg="started dashboard → http://127.0.0.1:$PORT (log: $DIR/.obs-server.log)"
+            else
+                dash_msg="dashboard server needs dev deps (npm install in $DIR) — session still emits"
+            fi
+        fi
+        # Re-invoke this script inside tmux so the full normal flow (extensions,
+        # obs wiring, sink scoping) runs identically. Carry PATH through so `pi`
+        # resolves the same as in this shell even if tmux's server env is stale.
+        cmd="cd $(printf '%q' "$PWD") && PATH=$(printf '%q' "$PATH") exec $(printf '%q' "$SELF")"
+        [[ "$obs_mode" == 0 ]] && cmd+=" --emit"
+        for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
+        tmux new-session -d -s "$name" "$cmd"
+        echo "run.sh: started background pi session '$name' (tmux)."
+        echo "run.sh:   attach:  $0 --attach $name      (detach: Ctrl-b then d)"
+        echo "run.sh:   stop:    $0 --bg-stop $name"
+        [[ -n "$dash_msg" ]] && echo "run.sh:   $dash_msg"
+        exit 0
+        ;;
+esac
 
 # Mode: pi (default) | both (pi + server) | emit (pi + emission, no server) |
 # server (server only). PI_OBS=1 in the environment is equivalent to --obs.

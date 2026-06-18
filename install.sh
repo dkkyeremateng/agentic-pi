@@ -7,17 +7,19 @@
 #
 # What it does:
 #   1. checks Node.js + npm (required) and python3 (for skills; warn-only)
-#   2. installs the global `pi` CLI (@earendil-works/pi-coding-agent)
-#   3. `npm install` — the repo's dev deps (tsx/tsc) for the obs server + tests
-#   4. links pi's types into node_modules (npm run setup:types)
-#   5. installs pi-context-prune (recommended context manager)
-#   6. creates .env from example.env (if missing)
-#   7. a light smoke check
+#   2. installs tmux (for './run.sh --bg' background sessions; best-effort)
+#   3. installs the global `pi` CLI (@earendil-works/pi-coding-agent)
+#   4. `npm install` — the repo's dev deps (tsx/tsc) for the obs server + tests
+#   5. links pi's types into node_modules (npm run setup:types)
+#   6. installs pi-context-prune (recommended context manager)
+#   7. creates .env from example.env (if missing)
+#   8. a light smoke check
 #
 # Usage:
 #   ./install.sh                  # full setup, then print next steps
 #   ./install.sh --run            # setup, then launch pi + the observability API server (run.sh --obs)
 #   ./install.sh --no-pi          # don't (re)install the global pi CLI
+#   ./install.sh --no-tmux        # don't install tmux (background sessions need it)
 #   ./install.sh --no-context-prune
 #   PI_PKG=@earendil-works/pi-coding-agent ./install.sh
 #
@@ -29,12 +31,14 @@ cd "$DIR"
 PI_PKG="${PI_PKG:-@earendil-works/pi-coding-agent}"
 INSTALL_PI=1
 WITH_PRUNE=1
+WITH_TMUX=1
 RUN=0
 
 for arg in "$@"; do
     case "$arg" in
         --run | --obs) RUN=1 ;;
         --no-pi) INSTALL_PI=0 ;;
+        --no-tmux) WITH_TMUX=0 ;;
         --no-context-prune) WITH_PRUNE=0 ;;
         -h | --help)
             # print the leading comment header (skip the shebang; stop at code)
@@ -55,6 +59,28 @@ die() {
     exit 1
 }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Best-effort tmux install via the platform's package manager. Returns non-zero
+# (so the caller warns) when no known manager is available or the install fails.
+install_tmux() {
+    case "$OS" in
+        Darwin)
+            have brew || return 1
+            brew install tmux
+            ;;
+        Linux)
+            if have apt-get; then sudo apt-get update -y && sudo apt-get install -y tmux
+            elif have dnf; then sudo dnf install -y tmux
+            elif have yum; then sudo yum install -y tmux
+            elif have pacman; then sudo pacman -Sy --noconfirm tmux
+            elif have zypper; then sudo zypper install -y tmux
+            elif have apk; then sudo apk add tmux
+            else return 1
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+}
 
 OS="$(uname -s)"
 case "$OS" in
@@ -79,6 +105,23 @@ if have python3; then
     say "python3 $(python3 -V 2>&1 | awk '{print $2}')"
 else
     warn "python3 not found — the lsp/linear/atlassian skills and browser QA need it."
+fi
+
+# 2b. tmux — hosts persistent background pi sessions (`./run.sh --bg`). Optional;
+#     installed best-effort and never fatal (skip with --no-tmux).
+if [ "$WITH_TMUX" -eq 0 ]; then
+    say "skipping tmux (--no-tmux) — './run.sh --bg' background sessions won't be available"
+elif have tmux; then
+    say "tmux $(tmux -V 2>/dev/null | awk '{print $2}')"
+else
+    say "installing tmux (for './run.sh --bg' background sessions)"
+    if install_tmux && have tmux; then
+        say "tmux → $(command -v tmux)"
+    else
+        warn "couldn't auto-install tmux — './run.sh --bg' background sessions need it. Install manually:
+    macOS:  brew install tmux
+    Linux:  sudo apt install tmux   (or dnf/yum/pacman/zypper/apk)"
+    fi
 fi
 
 # 3. global pi CLI
@@ -125,6 +168,7 @@ fi
 say "smoke check"
 [ -x node_modules/.bin/tsx ] && say "  tsx ready" || warn "  tsx missing from node_modules/.bin"
 pi --version >/dev/null 2>&1 && say "  pi runs ($(pi --version 2>/dev/null | head -1))" || warn "  'pi --version' failed"
+have tmux && say "  tmux ready (background sessions: ./run.sh --bg)" || warn "  tmux missing — ./run.sh --bg unavailable"
 
 printf '\n\033[1;32m✓ install complete\033[0m\n'
 
@@ -145,6 +189,7 @@ Next steps:
   2. ./run.sh         — launch pi with the workflow  (add --obs for the dashboard)
      or re-run:  ./install.sh --run   (setup is idempotent; then starts pi + the API server)
      inside pi:  /agent-workflow <your request>
+     background: ./run.sh --bg        — persistent session in tmux (attach/steer later)
 
 Optional (per-language, not installed here):
   • language servers for the 'lsp' skill (pyright, gopls, typescript-language-server, intelephense)

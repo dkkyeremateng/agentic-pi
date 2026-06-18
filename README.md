@@ -98,6 +98,29 @@ global settings per machine. Then, inside pi:
 pipeline itself. You'll be asked to pick a team, then the run streams on a live
 dashboard and writes `workflow-report.md` at the end.
 
+### Background sessions
+
+A normal `./run.sh` is an interactive session and needs a terminal, so plain
+`&`/`nohup` can't keep one usable. `--bg` hosts a **persistent** interactive
+session in [`tmux`](https://github.com/tmux/tmux) instead — attach and detach at
+will, and (emission is on by default) drive it from the dashboard's live chat
+without ever reattaching the terminal:
+
+```bash
+./run.sh --bg [name]          # start a detached session (default name: pi-<dir>)
+./run.sh --attach [name]      # attach to it (detach again with Ctrl-b then d)
+./run.sh --bg-list            # list background pi sessions
+./run.sh --bg-stop [name]     # kill it
+```
+
+`--bg` turns emission on **and starts the dashboard server if it isn't already
+running** (a shared server that outlives the session — stop it with `./run.sh
+--stop`), so the session is immediately observable. It registers a control
+channel, so it shows up under the **Active** filter and can be steered from
+**Chat** (see [Observability](#observability)). Extra flags pass through, so
+`./run.sh --bg work -- -n "nightly"` also names the underlying pi session.
+Requires `tmux` on `PATH`.
+
 ## Using the workflow
 
 ### Slash commands
