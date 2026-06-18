@@ -67,6 +67,19 @@ function contentMax(): number {
     return Number.isNaN(n) ? 2000 : Math.max(0, n);
 }
 
+// A short, single-line run title from the root's first user prompt (metadata —
+// like a window/tab title — so a list of same-project runs is distinguishable).
+// On by default; set PI_OBS_TITLE=0 to suppress it if even the opening line is
+// sensitive. Capped to PI_OBS_TITLE_MAX chars (default 100).
+function titleEnabled(): boolean {
+    return process.env.PI_OBS_TITLE !== "0" && process.env.PI_OBS_TITLE !== "false";
+}
+function shortTitle(s: string): string {
+    const max = parseInt(process.env.PI_OBS_TITLE_MAX ?? "100", 10) || 100;
+    const t = s.replace(/\s+/g, " ").trim();
+    return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+
 function sinkPath(_cwd: string): string {
     if (process.env.PI_OBS_SINK)
         return resolvePath(
@@ -369,6 +382,9 @@ export default function obsLive(pi: any): void {
             })),
             promptChars: sys.length,
             promptHash: sys ? shortHash(sys) : undefined,
+            // root's first prompt → a human title for the run (unnamed sessions
+            // otherwise all collapse to the project name in the runs list)
+            request: isRoot && titleEnabled() && typeof e?.prompt === "string" && e.prompt.trim() ? shortTitle(e.prompt) : undefined,
         });
         // (b) the user's prompt, when content capture is on.
         if (contentEnabled() && typeof e?.prompt === "string" && e.prompt.trim())
