@@ -9,10 +9,10 @@
 // Inert unless PI_OBS=1. Load via -e; sub-agents get it injected by
 // subagentExtArgs (workflow-core.ts) when PI_OBS=1.
 
-import { appendFileSync, mkdirSync, writeFileSync, unlinkSync } from "fs";
+import { appendFileSync, mkdirSync, writeFileSync, unlinkSync, utimesSync, chmodSync } from "fs";
 import { join, dirname, resolve as resolvePath } from "path";
 import { homedir } from "os";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { createServer, type Server, type Socket } from "net";
 import {
     makeFactory,
@@ -31,6 +31,7 @@ import {
     controlDir,
     sockPath,
     sidecarPath,
+    HEARTBEAT_MS,
     type LiveSessionMeta,
 } from "../obs/obs-chat-control";
 import type { ChatEvent } from "../obs/obs-chat";
@@ -97,6 +98,8 @@ export default function obsLive(pi: any): void {
     let liveSid = ""; // obs session id this process published a control channel for
     let liveMeta: LiveSessionMeta | undefined; // the published sidecar (re-written on boot)
     let liveCtx: any; // latest ExtensionContext, for ctx.abort() on a stop request
+    let ctrlToken = ""; // shared secret required on control frames
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     let ctrlCleaned = false;
 
     // HITL approval: when a steered turn opts in, these tools pause for a human
@@ -120,6 +123,9 @@ export default function obsLive(pi: any): void {
         if (ctrlCleaned) return;
         ctrlCleaned = true;
         try {
+            if (heartbeatTimer) clearInterval(heartbeatTimer);
+        } catch {}
+        try {
             control?.fail("session ended");
         } catch {}
         try {
@@ -139,8 +145,12 @@ export default function obsLive(pi: any): void {
         if (process.env.PI_OBS_CHAT === "0") return; // opt-out
         if (typeof pi.sendUserMessage !== "function") return; // not steerable in this mode
         try {
-            mkdirSync(controlDir(), { recursive: true });
+            mkdirSync(controlDir(), { recursive: true, mode: 0o700 }); // user-only
+            try {
+                chmodSync(controlDir(), 0o700); // enforce even if the dir pre-existed
+            } catch {}
             control = new LiveChatControl();
+            ctrlToken = randomBytes(18).toString("hex"); // shared secret for this session
             const sock = sockPath(meta.sessionId);
             try {
                 unlinkSync(sock); // clear any stale socket from a crashed predecessor
@@ -164,11 +174,16 @@ export default function obsLive(pi: any): void {
                         const line = buf.slice(0, nl);
                         buf = buf.slice(nl + 1);
                         if (!line.trim()) continue;
-                        let req: { text?: string; deliverAs?: string; cmd?: string; approve?: boolean; toolCallId?: string; decision?: string };
+                        let req: { text?: string; deliverAs?: string; cmd?: string; approve?: boolean; toolCallId?: string; decision?: string; token?: string };
                         try {
                             req = JSON.parse(line);
                         } catch {
                             send({ type: "error", error: "bad request" });
+                            continue;
+                        }
+                        // every control frame must carry the session's shared secret
+                        if (req.token !== ctrlToken) {
+                            send({ type: "error", error: "unauthorized" });
                             continue;
                         }
                         // stop: interrupt the agent's current operation (pi's abort)
@@ -208,10 +223,23 @@ export default function obsLive(pi: any): void {
                 conn.on("error", () => {});
             });
             ctrlServer.on("error", () => {});
-            ctrlServer.listen(sock);
-            liveMeta = { ...meta, pid: process.pid, startedTs: Date.now(), sock };
+            ctrlServer.listen(sock, () => {
+                try {
+                    chmodSync(sock, 0o600); // user-only socket
+                } catch {}
+            });
+            liveMeta = { ...meta, pid: process.pid, startedTs: Date.now(), sock, token: ctrlToken };
             liveSid = meta.sessionId;
             writeSidecar();
+            // heartbeat: bump the sidecar's mtime so the server can tell we're
+            // still alive even if our pid is later reused by another process
+            heartbeatTimer = setInterval(() => {
+                try {
+                    const t = Date.now() / 1000;
+                    utimesSync(sidecarPath(liveSid), t, t);
+                } catch {}
+            }, HEARTBEAT_MS);
+            heartbeatTimer.unref?.(); // don't keep the process alive for this
             process.once("exit", cleanupControl);
         } catch {
             // never let control setup break the run

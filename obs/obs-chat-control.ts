@@ -11,10 +11,18 @@
 //   onAgentEnd()       → emit the terminal `done` frame, release
 // A socket close / session end calls fail() to emit a terminal `error`.
 
-import { existsSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { assistantEventToChat, type ChatEvent } from "./obs-chat";
+
+// A live agent bumps its sidecar's mtime on this cadence; the server treats a
+// sidecar whose mtime is older than the TTL as dead — robust against pid reuse
+// (a recycled pid won't be touching THIS sidecar).
+export const HEARTBEAT_MS = 10_000;
+function heartbeatTtlMs(): number {
+    return Number(process.env.PI_OBS_CHAT_HEARTBEAT_TTL_MS) || 30_000;
+}
 
 export type SendFrame = (f: ChatEvent) => void;
 
@@ -30,6 +38,7 @@ export interface LiveSessionMeta {
     pid: number;
     startedTs: number;
     sock: string; // unix socket path for the control channel
+    token?: string; // shared secret the server must echo on control frames (server-only)
 }
 
 /** Directory holding one `<sessionId>.sock` + `<sessionId>.json` per live agent. */
@@ -53,12 +62,16 @@ export function isPidAlive(pid: number): boolean {
     }
 }
 
-/** Live, attachable sessions: sidecars whose owning process is still alive.
- *  Dead ones are pruned (their socket + sidecar removed) so the list stays clean. */
+/** Live, attachable sessions: sidecars whose owning process is alive AND whose
+ *  heartbeat is fresh. The mtime check defends against pid reuse — a recycled
+ *  pid passes isPidAlive but won't be bumping this sidecar, so it ages out.
+ *  Dead/stale ones are pruned (socket + sidecar removed) so the list stays clean. */
 export function listLiveSessions(prune = true): LiveSessionMeta[] {
     const dir = controlDir();
     if (!existsSync(dir)) return [];
     const out: LiveSessionMeta[] = [];
+    const ttl = heartbeatTtlMs();
+    const now = Date.now();
     let files: string[];
     try {
         files = readdirSync(dir);
@@ -69,12 +82,15 @@ export function listLiveSessions(prune = true): LiveSessionMeta[] {
         if (!f.endsWith(".json")) continue;
         const p = join(dir, f);
         let meta: LiveSessionMeta;
+        let mtimeMs = 0;
         try {
             meta = JSON.parse(readFileSync(p, "utf-8")) as LiveSessionMeta;
+            mtimeMs = statSync(p).mtimeMs;
         } catch {
             continue;
         }
-        if (typeof meta?.pid === "number" && isPidAlive(meta.pid)) {
+        const fresh = now - mtimeMs < ttl;
+        if (typeof meta?.pid === "number" && isPidAlive(meta.pid) && fresh) {
             out.push(meta);
         } else if (prune) {
             try {

@@ -836,7 +836,7 @@ function handleApi(
             let sawTerminal = false;
             sock.on("connect", () => {
                 try {
-                    sock.write(JSON.stringify({ text, deliverAs, approve }) + "\n");
+                    sock.write(JSON.stringify({ text, deliverAs, approve, token: live.token }) + "\n");
                 } catch {}
             });
             sock.on("data", (d: Buffer) => {
@@ -874,7 +874,7 @@ function handleApi(
             // current turn (pi's ctx.abort), then drop the socket.
             req.on("close", () => {
                 try {
-                    if (!sawTerminal) sock.write(JSON.stringify({ cmd: "abort" }) + "\n");
+                    if (!sawTerminal) sock.write(JSON.stringify({ cmd: "abort", token: live.token }) + "\n");
                 } catch {}
                 setTimeout(() => {
                     try {
@@ -927,7 +927,7 @@ function handleApi(
             };
             sock.on("connect", () => {
                 try {
-                    sock.write(JSON.stringify({ cmd: "approve", toolCallId, decision }) + "\n");
+                    sock.write(JSON.stringify({ cmd: "approve", toolCallId, decision, token: live.token }) + "\n");
                 } catch {}
                 setTimeout(() => done(true), 30); // give the frame time to flush
             });

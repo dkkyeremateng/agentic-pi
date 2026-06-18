@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LiveChatControl, listLiveSessions, sidecarPath, sockPath, isPidAlive, type LiveSessionMeta } from "./obs-chat-control";
@@ -105,6 +105,28 @@ test("listLiveSessions returns pid-alive sessions and prunes dead ones", () => {
         // dead sidecar + socket pruned
         assert.equal(existsSync(sidecarPath(deadSid)), false);
         assert.equal(existsSync(sockPath(deadSid)), false);
+    } finally {
+        delete process.env.PI_OBS_CONTROL_DIR;
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test("listLiveSessions prunes a stale-heartbeat sidecar even if the pid is alive (pid reuse)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "obs-ctrl-"));
+    process.env.PI_OBS_CONTROL_DIR = dir;
+    try {
+        const sid = "orchestrator-stale-1";
+        writeFileSync(
+            sidecarPath(sid),
+            JSON.stringify({ sessionId: sid, agent: "orchestrator", cwd: "/p", pid: process.pid, startedTs: Date.now(), sock: sockPath(sid) }),
+        );
+        writeFileSync(sockPath(sid), "");
+        // backdate the heartbeat well past the 30s TTL
+        const old = Date.now() / 1000 - 60;
+        utimesSync(sidecarPath(sid), old, old);
+        assert.deepEqual(listLiveSessions(), []);
+        assert.equal(existsSync(sidecarPath(sid)), false); // pruned
+        assert.equal(existsSync(sockPath(sid)), false);
     } finally {
         delete process.env.PI_OBS_CONTROL_DIR;
         rmSync(dir, { recursive: true, force: true });
