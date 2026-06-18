@@ -15,7 +15,8 @@
 #   7. a light smoke check
 #
 # Usage:
-#   ./install.sh                  # full setup
+#   ./install.sh                  # full setup, then print next steps
+#   ./install.sh --run            # setup, then launch pi + the observability API server (run.sh --obs)
 #   ./install.sh --no-pi          # don't (re)install the global pi CLI
 #   ./install.sh --no-context-prune
 #   PI_PKG=@earendil-works/pi-coding-agent ./install.sh
@@ -28,9 +29,11 @@ cd "$DIR"
 PI_PKG="${PI_PKG:-@earendil-works/pi-coding-agent}"
 INSTALL_PI=1
 WITH_PRUNE=1
+RUN=0
 
 for arg in "$@"; do
     case "$arg" in
+        --run | --obs) RUN=1 ;;
         --no-pi) INSTALL_PI=0 ;;
         --no-context-prune) WITH_PRUNE=0 ;;
         -h | --help)
@@ -124,11 +127,23 @@ say "smoke check"
 pi --version >/dev/null 2>&1 && say "  pi runs ($(pi --version 2>/dev/null | head -1))" || warn "  'pi --version' failed"
 
 printf '\n\033[1;32m✓ install complete\033[0m\n'
+
+# --run: hand off to run.sh --obs (pi + the observability API server). exec so
+# pi takes over this process (Ctrl-C goes to pi; run.sh stops the server on exit).
+if [ "$RUN" -eq 1 ]; then
+    if [ ! -s .env ] || ! grep -vqE '^\s*(#|$)' .env 2>/dev/null; then
+        warn ".env looks empty — set a model / API key in it or pi won't have a model to use."
+    fi
+    say "launching pi with the observability API server (./run.sh --obs) …"
+    exec "$DIR/run.sh" --obs
+fi
+
 cat <<EOF
 
 Next steps:
   1. edit .env        — set your model(s) and API keys
   2. ./run.sh         — launch pi with the workflow  (add --obs for the dashboard)
+     or re-run:  ./install.sh --run   (setup is idempotent; then starts pi + the API server)
      inside pi:  /agent-workflow <your request>
 
 Optional (per-language, not installed here):
