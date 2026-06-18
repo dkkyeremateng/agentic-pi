@@ -74,6 +74,7 @@ export interface RunSummary {
     agents: string[];
     cwd?: string; // first seen — runs are per-project in practice
     name?: string; // the run's display name (root session name), if it was named
+    request?: string; // the root agent's first user prompt (short), for a title fallback
     costUsd: number;
     tokens: number; // total tokens across turns
     toolCalls: number; // tool invocations (tool_start count)
@@ -96,6 +97,7 @@ interface RunRec {
     agents: Set<string>;
     cwd?: string;
     name?: string;
+    request?: string;
     costUsd: number;
     tokens: number;
     toolCalls: number;
@@ -180,6 +182,8 @@ export class RunIndexer {
         r.agents.add(ev.agent);
         if (!r.cwd && ev.cwd) r.cwd = ev.cwd;
         if (ev.name) r.name = ev.name; // root-only; last named value wins
+        // the root agent's first prompt → a title fallback for unnamed sessions
+        if (ev.type === "boot" && !r.request && typeof p?.request === "string" && p.request) r.request = p.request;
         // Map each session to its model (from session_start) so turn cost can be
         // attributed to the right model even across sub-agents on different models.
         if (ev.type === "session_start" && typeof p?.model === "string") {
@@ -223,6 +227,7 @@ function toSummary(r: RunRec): RunSummary {
         agents: [...r.agents],
         cwd: r.cwd,
         name: r.name,
+        request: r.request,
         costUsd: r.costUsd,
         tokens: r.tokens,
         toolCalls: r.toolCalls,

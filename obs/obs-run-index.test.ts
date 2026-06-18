@@ -114,6 +114,21 @@ test("RunIndexer skips lines without a runId and malformed lines", () => {
     assert.equal(idx.runs().length, 0);
 });
 
+test("RunIndexer captures the root's first boot request as the run title", () => {
+    const f = makeFactory({ sessionId: "orchestrator-r1", agent: "orchestrator", cwd: "/proj/pi", runId: "run-r1" });
+    const idx = new RunIndexer();
+    idx.feed(
+        Buffer.from(
+            [
+                serializeEvent(f.next("session_start", { model: "m" }, 1)),
+                serializeEvent(f.next("boot", { request: "add rate limiting to the API", promptChars: 10 }, 2)),
+                serializeEvent(f.next("boot", { request: "a later boot — ignored", promptChars: 10 }, 3)),
+            ].join("\n") + "\n",
+        ),
+    );
+    assert.equal(idx.get("run-r1")?.request, "add rate limiting to the API"); // first wins
+});
+
 test("RunIndexer reset clears runs and offsets for a rebuild", () => {
     const idx = new RunIndexer();
     idx.feed(sinkOf(runEvents("run-x", "a", 1)));
