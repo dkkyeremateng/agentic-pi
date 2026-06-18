@@ -36,6 +36,19 @@ test("LiveChatControl streams a steered reply scoped to its agent run", () => {
     assert.equal(c.busy(), false);
 });
 
+test("LiveChatControl sums tokens across turns into the done frame", () => {
+    const frames: ChatEvent[] = [];
+    const c = new LiveChatControl();
+    c.beginPrompt((f) => frames.push(f));
+    c.onAgentStart();
+    c.onAssistantEvent({ type: "text_delta", delta: "ok" });
+    c.onTurnEnd(0.001, "m", 120);
+    c.onTurnEnd(0.002, "m", 80); // a second turn (tool use) in the same run
+    c.onAgentEnd();
+    const done = frames.find((f) => f.type === "done");
+    assert.deepEqual(done, { type: "done", text: "ok", costUsd: 0.003, model: "m", tokens: 200 });
+});
+
 test("LiveChatControl.fail emits a terminal error and releases", () => {
     const frames: ChatEvent[] = [];
     const c = new LiveChatControl();

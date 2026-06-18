@@ -41,11 +41,17 @@ test("agent_end resolves final assistant text + cost + model", () => {
     assert.deepEqual(parseChatLine(line), { type: "done", text: "PONG-ONE", costUsd: 0.0052, model: "glm-5-2" });
 });
 
-test("tool_start/tool_end frames map to tool events", () => {
-    assert.deepEqual(
-        parseChatLine(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "tool_start", tool: "bash" } })),
-        { type: "tool", phase: "start", name: "bash" },
-    );
+test("tool_execution_start/end frames map to tool events", () => {
+    assert.deepEqual(parseChatLine(JSON.stringify({ type: "tool_execution_start", toolName: "bash", toolCallId: "c1" })), {
+        type: "tool",
+        phase: "start",
+        name: "bash",
+    });
+    assert.deepEqual(parseChatLine(JSON.stringify({ type: "tool_execution_end", toolName: "edit", toolCallId: "c2", isError: false })), {
+        type: "tool",
+        phase: "end",
+        name: "edit",
+    });
 });
 
 test("noise frames and bad JSON are ignored", () => {

@@ -26,6 +26,7 @@ export interface LiveSessionMeta {
     parent?: string;
     cwd: string;
     model?: string;
+    tools?: string[]; // the agent's active tools (filled in on first turn / boot)
     pid: number;
     startedTs: number;
     sock: string; // unix socket path for the control channel
@@ -92,6 +93,7 @@ interface Capture {
     send: SendFrame;
     buf: string; // accumulated assistant text (the reply)
     cost: number; // summed turn cost across the run
+    tokens: number; // summed turn tokens across the run
     model?: string;
     done: boolean;
 }
@@ -109,7 +111,7 @@ export class LiveChatControl {
      *  flight (caller should reject with a "busy" error and not inject). */
     beginPrompt(send: SendFrame): boolean {
         if (this.busy()) return false;
-        this.pending = { send, buf: "", cost: 0, model: undefined, done: false };
+        this.pending = { send, buf: "", cost: 0, tokens: 0, model: undefined, done: false };
         return true;
     }
 
@@ -131,10 +133,18 @@ export class LiveChatControl {
         c.send(ev); // token | thinking | tool — all stream straight through
     }
 
-    onTurnEnd(costUsd: number, model?: string): void {
+    /** A tool started/ended during the captured run — stream it to the client. */
+    onTool(phase: "start" | "end", name: string): void {
+        const c = this.active;
+        if (!c) return;
+        c.send({ type: "tool", phase, name });
+    }
+
+    onTurnEnd(costUsd: number, model?: string, tokens?: number): void {
         const c = this.active;
         if (!c) return;
         if (costUsd) c.cost += costUsd;
+        if (tokens) c.tokens += tokens;
         if (model) c.model = model;
     }
 
@@ -142,7 +152,7 @@ export class LiveChatControl {
         const c = this.active;
         if (!c || c.done) return;
         c.done = true;
-        c.send({ type: "done", text: c.buf, costUsd: c.cost, model: c.model });
+        c.send({ type: "done", text: c.buf, costUsd: c.cost, model: c.model, ...(c.tokens ? { tokens: c.tokens } : {}) });
         this.active = null;
     }
 

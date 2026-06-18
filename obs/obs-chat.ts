@@ -56,7 +56,7 @@ export type ChatEvent =
     | { type: "token"; text: string } // assistant reply delta
     | { type: "thinking"; text: string } // reasoning delta
     | { type: "tool"; phase: "start" | "end"; name: string; detail?: string }
-    | { type: "done"; text: string; costUsd: number; model?: string }
+    | { type: "done"; text: string; costUsd: number; tokens?: number; model?: string }
     | { type: "error"; error: string };
 
 function str(v: unknown): string {
@@ -71,10 +71,8 @@ export function assistantEventToChat(ev: Record<string, unknown> | undefined): C
     const et = str(ev?.type);
     if (et === "text_delta") return { type: "token", text: str(ev?.delta) };
     if (et === "thinking_delta") return { type: "thinking", text: str(ev?.delta) };
-    if (et === "tool_start")
-        return { type: "tool", phase: "start", name: str(ev?.tool) || str(ev?.name) || "tool" };
-    if (et === "tool_end")
-        return { type: "tool", phase: "end", name: str(ev?.tool) || str(ev?.name) || "tool" };
+    // tool activity is surfaced from the top-level tool_execution_* frames (see
+    // parseChatLine) / the collector's tool hooks — not from message_update.
     return null;
 }
 
@@ -95,12 +93,20 @@ export function parseChatLine(line: string): ChatEvent | null {
         return assistantEventToChat(o.assistantMessageEvent as Record<string, unknown> | undefined);
     }
 
+    // Tool lifecycle arrives as top-level frames (not inside message_update),
+    // carrying the resolved toolName — the cleanest source for tool activity.
+    if (type === "tool_execution_start")
+        return { type: "tool", phase: "start", name: str(o.toolName) || "tool" };
+    if (type === "tool_execution_end")
+        return { type: "tool", phase: "end", name: str(o.toolName) || "tool" };
+
     // agent_end is the definitive end of the turn — carries every message, so we
     // can resolve the final assistant text + total cost.
     if (type === "agent_end") {
         const msgs = Array.isArray(o.messages) ? (o.messages as Record<string, unknown>[]) : [];
         let text = "";
         let costUsd = 0;
+        let tokens = 0;
         let model: string | undefined;
         for (const m of msgs) {
             if (str(m.role) !== "assistant") continue;
@@ -109,9 +115,16 @@ export function parseChatLine(line: string): ChatEvent | null {
             const usage = m.usage as Record<string, unknown> | undefined;
             const cost = usage?.cost as Record<string, unknown> | undefined;
             if (typeof cost?.total === "number") costUsd += cost.total;
+            if (usage) {
+                const n = (k: string) => (typeof usage[k] === "number" ? (usage[k] as number) : 0);
+                tokens +=
+                    typeof usage.totalTokens === "number"
+                        ? (usage.totalTokens as number)
+                        : n("input") + n("output") + n("cacheRead") + n("cacheWrite");
+            }
             if (str(m.responseModel)) model = str(m.responseModel);
         }
-        return { type: "done", text, costUsd, model };
+        return { type: "done", text, costUsd, model, ...(tokens ? { tokens } : {}) };
     }
 
     return null;
@@ -128,6 +141,9 @@ export interface ChatRequest {
     // session (sessionId) doesn't exist yet; later turns just continue it. Fork
     // is a copy — it never writes back to the source/live run.
     forkFrom?: string;
+    // Server-side only: abort kills the spawned pi (e.g. the browser disconnected
+    // / the user hit stop), so a cancelled turn never leaves an orphan process.
+    signal?: AbortSignal;
 }
 
 export type SpawnFn = typeof spawn;
@@ -184,6 +200,16 @@ export function streamChat(
         let err = "";
         let sawDone = false;
         const timer = setTimeout(() => proc.kill("SIGTERM"), cfg.timeoutMs);
+
+        // stop: caller aborted (browser disconnected) → kill the spawned pi
+        if (req.signal) {
+            if (req.signal.aborted) proc.kill("SIGTERM");
+            else req.signal.addEventListener("abort", () => {
+                try {
+                    proc.kill("SIGTERM");
+                } catch {}
+            });
+        }
 
         proc.stdout.on("data", (d: Buffer) => {
             buf += d.toString();

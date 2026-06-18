@@ -731,6 +731,9 @@ function handleApi(
             }
             const model = typeof p.model === "string" ? p.model.trim() : "";
             const forkFrom = typeof p.forkFrom === "string" && /^[\w.-]{1,64}$/.test(p.forkFrom) ? p.forkFrom : undefined;
+            // stop: if the browser disconnects, abort kills the spawned pi (no orphan)
+            const ac = new AbortController();
+            req.on("close", () => ac.abort());
             streamChat(
                 {
                     sessionId,
@@ -739,6 +742,7 @@ function handleApi(
                     cwd: typeof p.cwd === "string" ? p.cwd : undefined,
                     tools: p.tools === "1" || p.tools === true,
                     forkFrom,
+                    signal: ac.signal,
                 },
                 emit,
                 model ? { ...cfg, model } : cfg,
@@ -775,6 +779,7 @@ function handleApi(
             runId: m.runId,
             cwd: m.cwd,
             model: m.model,
+            tools: m.tools,
             startedTs: m.startedTs,
         }));
         apiJson(res, 200, list);
@@ -859,11 +864,17 @@ function handleApi(
                 if (!sawTerminal) emit({ type: "error", error: "agent closed the channel before replying" });
                 finish();
             });
-            // if the browser disconnects, stop waiting on the agent
+            // stop: when the browser disconnects, tell the agent to abort its
+            // current turn (pi's ctx.abort), then drop the socket.
             req.on("close", () => {
                 try {
-                    sock.destroy();
+                    if (!sawTerminal) sock.write(JSON.stringify({ cmd: "abort" }) + "\n");
                 } catch {}
+                setTimeout(() => {
+                    try {
+                        sock.destroy();
+                    } catch {}
+                }, 50);
                 finish();
             });
         };

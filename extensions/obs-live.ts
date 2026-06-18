@@ -95,7 +95,17 @@ export default function obsLive(pi: any): void {
     let control: LiveChatControl | undefined;
     let ctrlServer: Server | undefined;
     let liveSid = ""; // obs session id this process published a control channel for
+    let liveMeta: LiveSessionMeta | undefined; // the published sidecar (re-written on boot)
+    let liveCtx: any; // latest ExtensionContext, for ctx.abort() on a stop request
     let ctrlCleaned = false;
+
+    // Refresh the control sidecar on disk (e.g. once the toolset is known at boot).
+    const writeSidecar = (): void => {
+        if (!liveMeta) return;
+        try {
+            writeFileSync(sidecarPath(liveMeta.sessionId), JSON.stringify(liveMeta), "utf-8");
+        } catch {}
+    };
 
     const cleanupControl = (): void => {
         if (ctrlCleaned) return;
@@ -140,40 +150,50 @@ export default function obsLive(pi: any): void {
                 };
                 conn.on("data", (d: Buffer) => {
                     buf += d.toString();
-                    const nl = buf.indexOf("\n");
-                    if (nl < 0) return;
-                    const line = buf.slice(0, nl);
-                    buf = "";
-                    let req: { text?: string; deliverAs?: string };
-                    try {
-                        req = JSON.parse(line);
-                    } catch {
-                        send({ type: "error", error: "bad request" });
-                        return;
-                    }
-                    const text = typeof req.text === "string" ? req.text.trim() : "";
-                    const deliverAs = req.deliverAs === "steer" ? "steer" : "followUp";
-                    if (!text) {
-                        send({ type: "error", error: "empty prompt" });
-                        return;
-                    }
-                    if (!control || !control.beginPrompt(send)) {
-                        send({ type: "error", error: "agent busy with another chat turn" });
-                        return;
-                    }
-                    try {
-                        pi.sendUserMessage(text, { deliverAs });
-                    } catch (e: any) {
-                        control.fail("inject failed: " + (e?.message || e));
+                    let nl: number;
+                    while ((nl = buf.indexOf("\n")) >= 0) {
+                        const line = buf.slice(0, nl);
+                        buf = buf.slice(nl + 1);
+                        if (!line.trim()) continue;
+                        let req: { text?: string; deliverAs?: string; cmd?: string };
+                        try {
+                            req = JSON.parse(line);
+                        } catch {
+                            send({ type: "error", error: "bad request" });
+                            continue;
+                        }
+                        // stop: interrupt the agent's current operation (pi's abort)
+                        if (req.cmd === "abort") {
+                            try {
+                                liveCtx?.abort?.();
+                            } catch {}
+                            control?.fail("stopped by user");
+                            continue;
+                        }
+                        const text = typeof req.text === "string" ? req.text.trim() : "";
+                        const deliverAs = req.deliverAs === "steer" ? "steer" : "followUp";
+                        if (!text) {
+                            send({ type: "error", error: "empty prompt" });
+                            continue;
+                        }
+                        if (!control || !control.beginPrompt(send)) {
+                            send({ type: "error", error: "agent busy with another chat turn" });
+                            continue;
+                        }
+                        try {
+                            pi.sendUserMessage(text, { deliverAs });
+                        } catch (e: any) {
+                            control.fail("inject failed: " + (e?.message || e));
+                        }
                     }
                 });
                 conn.on("error", () => {});
             });
             ctrlServer.on("error", () => {});
             ctrlServer.listen(sock);
-            const full: LiveSessionMeta = { ...meta, pid: process.pid, startedTs: Date.now(), sock };
-            writeFileSync(sidecarPath(meta.sessionId), JSON.stringify(full), "utf-8");
+            liveMeta = { ...meta, pid: process.pid, startedTs: Date.now(), sock };
             liveSid = meta.sessionId;
+            writeSidecar();
             process.once("exit", cleanupControl);
         } catch {
             // never let control setup break the run
@@ -225,6 +245,7 @@ export default function obsLive(pi: any): void {
     };
 
     pi.on("session_start", async (_e: any, ctx: any) => {
+        liveCtx = ctx; // for stop/abort over the control channel
         const cwd: string = ctx?.cwd ?? process.cwd();
         sink = sinkPath(cwd);
         try {
@@ -279,6 +300,12 @@ export default function obsLive(pi: any): void {
         const o = e?.systemPromptOptions ?? {};
         const sys: string = e?.systemPrompt ?? "";
         const ctxFiles = Array.isArray(o.contextFiles) ? o.contextFiles : [];
+        // surface the agent's real toolset on its control sidecar so the chat
+        // attach UI can show what a live agent can actually do
+        if (liveMeta && Array.isArray(o.selectedTools)) {
+            liveMeta.tools = o.selectedTools as string[];
+            writeSidecar();
+        }
         emit("boot", {
             tools: Array.isArray(o.selectedTools) ? o.selectedTools : undefined,
             skills: Array.isArray(o.skills)
@@ -354,9 +381,9 @@ export default function obsLive(pi: any): void {
                 ? e.toolResults.length
                 : 0,
         });
-        // feed the live-chat capture: tally this turn's cost + model
+        // feed the live-chat capture: tally this turn's cost + tokens + model
         try {
-            control?.onTurnEnd(usage?.costUsd ?? 0, e?.message?.model ?? e?.message?.responseModel);
+            control?.onTurnEnd(usage?.costUsd ?? 0, e?.message?.model ?? e?.message?.responseModel, usage?.total ?? 0);
         } catch {}
         // reset per-turn timing so a turn without a provider call doesn't reuse
         // the previous turn's numbers
@@ -401,6 +428,9 @@ export default function obsLive(pi: any): void {
     });
 
     pi.on("tool_execution_start", async (e: any) => {
+        try {
+            control?.onTool("start", e?.toolName || "tool");
+        } catch {}
         if (e?.toolCallId) toolStartTs.set(e.toolCallId, Date.now());
         // Full args (pretty JSON, capped) power the expand-on-click view.
         let argsRaw = "";
@@ -420,6 +450,9 @@ export default function obsLive(pi: any): void {
     });
 
     pi.on("tool_execution_end", async (e: any) => {
+        try {
+            control?.onTool("end", e?.toolName || "tool");
+        } catch {}
         // (d) tool execution latency.
         const started = e?.toolCallId ? toolStartTs.get(e.toolCallId) : undefined;
         const durationMs = started ? Date.now() - started : 0;
