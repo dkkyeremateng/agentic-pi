@@ -9,10 +9,11 @@
 // Inert unless PI_OBS=1. Load via -e; sub-agents get it injected by
 // subagentExtArgs (workflow-core.ts) when PI_OBS=1.
 
-import { appendFileSync, mkdirSync } from "fs";
+import { appendFileSync, mkdirSync, writeFileSync, unlinkSync, utimesSync, chmodSync } from "fs";
 import { join, dirname, resolve as resolvePath } from "path";
 import { homedir } from "os";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
+import { createServer, type Server, type Socket } from "net";
 import {
     makeFactory,
     serializeEvent,
@@ -25,6 +26,15 @@ import {
     capText,
     type EventFactory,
 } from "../obs/obs-events";
+import {
+    LiveChatControl,
+    controlDir,
+    sockPath,
+    sidecarPath,
+    HEARTBEAT_MS,
+    type LiveSessionMeta,
+} from "../obs/obs-chat-control";
+import type { ChatEvent } from "../obs/obs-chat";
 
 // Cap (chars) for the full args/result captured for the expand-on-click view.
 // Default is unlimited — tool args/results are the agent's working I/O and we
@@ -81,6 +91,162 @@ export default function obsLive(pi: any): void {
     let sink = "";
     let dead = false;
     let isRoot = false; // the root orchestrator (no PI_OBS_PARENT) — owns the run name
+    // Live chat control: lets the dashboard steer THIS running agent (opt-out
+    // with PI_OBS_CHAT=0). Best-effort throughout — never disrupt the agent.
+    let control: LiveChatControl | undefined;
+    let ctrlServer: Server | undefined;
+    let liveSid = ""; // obs session id this process published a control channel for
+    let liveMeta: LiveSessionMeta | undefined; // the published sidecar (re-written on boot)
+    let liveCtx: any; // latest ExtensionContext, for ctx.abort() on a stop request
+    let ctrlToken = ""; // shared secret required on control frames
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let ctrlCleaned = false;
+
+    // HITL approval: when a steered turn opts in, these tools pause for a human
+    // allow/deny over the control channel before they run.
+    const approveTools = (process.env.PI_OBS_CHAT_APPROVE_TOOLS || "bash,edit,write")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    const approveTimeoutMs = Number(process.env.PI_OBS_CHAT_APPROVE_TIMEOUT_MS) || 300_000;
+    const pendingApprovals = new Map<string, (d: "allow" | "deny") => void>();
+
+    // Refresh the control sidecar on disk (e.g. once the toolset is known at boot).
+    const writeSidecar = (): void => {
+        if (!liveMeta) return;
+        try {
+            writeFileSync(sidecarPath(liveMeta.sessionId), JSON.stringify(liveMeta), "utf-8");
+        } catch {}
+    };
+
+    const cleanupControl = (): void => {
+        if (ctrlCleaned) return;
+        ctrlCleaned = true;
+        try {
+            if (heartbeatTimer) clearInterval(heartbeatTimer);
+        } catch {}
+        try {
+            control?.fail("session ended");
+        } catch {}
+        try {
+            ctrlServer?.close();
+        } catch {}
+        if (liveSid) {
+            try {
+                unlinkSync(sockPath(liveSid));
+            } catch {}
+            try {
+                unlinkSync(sidecarPath(liveSid));
+            } catch {}
+        }
+    };
+
+    const setupControl = (meta: Omit<LiveSessionMeta, "pid" | "startedTs" | "sock">): void => {
+        if (process.env.PI_OBS_CHAT === "0") return; // opt-out
+        if (typeof pi.sendUserMessage !== "function") return; // not steerable in this mode
+        try {
+            mkdirSync(controlDir(), { recursive: true, mode: 0o700 }); // user-only
+            try {
+                chmodSync(controlDir(), 0o700); // enforce even if the dir pre-existed
+            } catch {}
+            control = new LiveChatControl();
+            ctrlToken = randomBytes(18).toString("hex"); // shared secret for this session
+            const sock = sockPath(meta.sessionId);
+            try {
+                unlinkSync(sock); // clear any stale socket from a crashed predecessor
+            } catch {}
+            ctrlServer = createServer((conn: Socket) => {
+                let buf = "";
+                const send = (f: ChatEvent): void => {
+                    try {
+                        conn.write(JSON.stringify(f) + "\n");
+                    } catch {}
+                    if (f.type === "done" || f.type === "error") {
+                        try {
+                            conn.end();
+                        } catch {}
+                    }
+                };
+                conn.on("data", (d: Buffer) => {
+                    buf += d.toString();
+                    let nl: number;
+                    while ((nl = buf.indexOf("\n")) >= 0) {
+                        const line = buf.slice(0, nl);
+                        buf = buf.slice(nl + 1);
+                        if (!line.trim()) continue;
+                        let req: { text?: string; deliverAs?: string; cmd?: string; approve?: boolean; toolCallId?: string; decision?: string; token?: string; images?: any[] };
+                        try {
+                            req = JSON.parse(line);
+                        } catch {
+                            send({ type: "error", error: "bad request" });
+                            continue;
+                        }
+                        // every control frame must carry the session's shared secret
+                        if (req.token !== ctrlToken) {
+                            send({ type: "error", error: "unauthorized" });
+                            continue;
+                        }
+                        // stop: interrupt the agent's current operation (pi's abort)
+                        if (req.cmd === "abort") {
+                            try {
+                                liveCtx?.abort?.();
+                            } catch {}
+                            control?.fail("stopped by user");
+                            continue;
+                        }
+                        // approval decision for a paused tool (may arrive on any connection)
+                        if (req.cmd === "approve" && typeof req.toolCallId === "string") {
+                            const resolve = pendingApprovals.get(req.toolCallId);
+                            if (resolve) {
+                                pendingApprovals.delete(req.toolCallId);
+                                resolve(req.decision === "allow" ? "allow" : "deny");
+                            }
+                            continue;
+                        }
+                        const text = typeof req.text === "string" ? req.text.trim() : "";
+                        const deliverAs = req.deliverAs === "steer" ? "steer" : "followUp";
+                        if (!text) {
+                            send({ type: "error", error: "empty prompt" });
+                            continue;
+                        }
+                        if (!control || !control.beginPrompt(send, !!req.approve)) {
+                            send({ type: "error", error: "agent busy with another chat turn" });
+                            continue;
+                        }
+                        try {
+                            const imgs = Array.isArray(req.images) ? req.images : [];
+                            const content = imgs.length ? [{ type: "text", text }, ...imgs] : text;
+                            pi.sendUserMessage(content, { deliverAs });
+                        } catch (e: any) {
+                            control.fail("inject failed: " + (e?.message || e));
+                        }
+                    }
+                });
+                conn.on("error", () => {});
+            });
+            ctrlServer.on("error", () => {});
+            ctrlServer.listen(sock, () => {
+                try {
+                    chmodSync(sock, 0o600); // user-only socket
+                } catch {}
+            });
+            liveMeta = { ...meta, pid: process.pid, startedTs: Date.now(), sock, token: ctrlToken };
+            liveSid = meta.sessionId;
+            writeSidecar();
+            // heartbeat: bump the sidecar's mtime so the server can tell we're
+            // still alive even if our pid is later reused by another process
+            heartbeatTimer = setInterval(() => {
+                try {
+                    const t = Date.now() / 1000;
+                    utimesSync(sidecarPath(liveSid), t, t);
+                } catch {}
+            }, HEARTBEAT_MS);
+            heartbeatTimer.unref?.(); // don't keep the process alive for this
+            process.once("exit", cleanupControl);
+        } catch {
+            // never let control setup break the run
+        }
+    };
     let lastName = ""; // last emitted session name, to emit only on change
     let bootEmitted = false;
     let turnStartTs = 0;
@@ -127,6 +293,7 @@ export default function obsLive(pi: any): void {
     };
 
     pi.on("session_start", async (_e: any, ctx: any) => {
+        liveCtx = ctx; // for stop/abort over the control channel
         const cwd: string = ctx?.cwd ?? process.cwd();
         sink = sinkPath(cwd);
         try {
@@ -168,6 +335,8 @@ export default function obsLive(pi: any): void {
             // (so parallel runs of the same agent stay distinct).
             dispatchId: process.env.PI_OBS_DISPATCH_ID || undefined,
         });
+        // Publish a control channel so the dashboard can steer this live agent.
+        setupControl({ sessionId, agent, runId, parent, cwd, model: ctx?.model?.id });
     });
 
     // (a) Boot snapshot — once per session, on the first user prompt. Captures
@@ -179,6 +348,12 @@ export default function obsLive(pi: any): void {
         const o = e?.systemPromptOptions ?? {};
         const sys: string = e?.systemPrompt ?? "";
         const ctxFiles = Array.isArray(o.contextFiles) ? o.contextFiles : [];
+        // surface the agent's real toolset on its control sidecar so the chat
+        // attach UI can show what a live agent can actually do
+        if (liveMeta && Array.isArray(o.selectedTools)) {
+            liveMeta.tools = o.selectedTools as string[];
+            writeSidecar();
+        }
         emit("boot", {
             tools: Array.isArray(o.selectedTools) ? o.selectedTools : undefined,
             skills: Array.isArray(o.skills)
@@ -254,9 +429,32 @@ export default function obsLive(pi: any): void {
                 ? e.toolResults.length
                 : 0,
         });
+        // feed the live-chat capture: tally this turn's cost + tokens + model
+        try {
+            control?.onTurnEnd(usage?.costUsd ?? 0, e?.message?.model ?? e?.message?.responseModel, usage?.total ?? 0);
+        } catch {}
         // reset per-turn timing so a turn without a provider call doesn't reuse
         // the previous turn's numbers
         reqSentTs = respStartTs = prefillMs = genTps = 0;
+    });
+
+    // Live-chat capture hooks — scope a steered reply to the agent run it triggers.
+    // All best-effort: a throw here must never disrupt the agent.
+    pi.on("agent_start", async () => {
+        try {
+            control?.onAgentStart();
+        } catch {}
+    });
+    pi.on("agent_end", async () => {
+        try {
+            control?.onAgentEnd();
+        } catch {}
+    });
+    pi.on("message_update", async (e: any) => {
+        if (!control) return;
+        try {
+            control.onAssistantEvent(e?.assistantMessageEvent);
+        } catch {}
     });
 
     pi.on("message_end", async (e: any) => {
@@ -277,7 +475,35 @@ export default function obsLive(pi: any): void {
         if (text) emit("message", { role: "assistant", kind: "assistant", text });
     });
 
+    // HITL approval gate: before a risky tool runs during an approval-enabled
+    // steered turn, ask the human in chat and block on a deny. Async — pi awaits
+    // this handler, so the tool can't run until a decision arrives. Best-effort:
+    // any error here falls through to allowing the tool (never breaks the agent).
+    pi.on("tool_call", async (e: any) => {
+        try {
+            if (!control || !control.wantsApproval()) return;
+            const name = e?.toolName || "tool";
+            if (!approveTools.includes(name)) return;
+            const toolCallId = String(e?.toolCallId || `${name}-${Date.now()}`);
+            const sent = control.emitToActive({ type: "approval", toolCallId, name, input: e?.input });
+            if (!sent) return; // no chat consumer listening — don't stall the agent
+            const decision = await new Promise<"allow" | "deny">((resolve) => {
+                pendingApprovals.set(toolCallId, resolve);
+                setTimeout(() => {
+                    if (pendingApprovals.delete(toolCallId)) resolve("deny");
+                }, approveTimeoutMs);
+            });
+            if (decision === "deny") return { block: true, reason: "denied by human in chat" };
+        } catch {
+            /* never break the agent on approval errors */
+        }
+        return;
+    });
+
     pi.on("tool_execution_start", async (e: any) => {
+        try {
+            control?.onTool("start", e?.toolName || "tool");
+        } catch {}
         if (e?.toolCallId) toolStartTs.set(e.toolCallId, Date.now());
         // Full args (pretty JSON, capped) power the expand-on-click view.
         let argsRaw = "";
@@ -297,6 +523,9 @@ export default function obsLive(pi: any): void {
     });
 
     pi.on("tool_execution_end", async (e: any) => {
+        try {
+            control?.onTool("end", e?.toolName || "tool");
+        } catch {}
         // (d) tool execution latency.
         const started = e?.toolCallId ? toolStartTs.get(e.toolCallId) : undefined;
         const durationMs = started ? Date.now() - started : 0;
@@ -343,5 +572,6 @@ export default function obsLive(pi: any): void {
 
     pi.on("session_shutdown", async (e: any) => {
         emit("session_end", { reason: e?.reason });
+        cleanupControl();
     });
 }

@@ -22,11 +22,15 @@ import {
     readSync,
     closeSync,
     readFileSync,
+    writeFileSync,
+    existsSync,
+    mkdirSync,
     appendFileSync,
     readdirSync,
 } from "fs";
 import { join, resolve as resolvePath, dirname } from "path";
 import { homedir } from "os";
+import { randomBytes } from "crypto";
 import { fileURLToPath } from "url";
 import {
     EventStore,
@@ -47,6 +51,9 @@ import { eventsToOtlp } from "./obs-otel";
 import { LineScanner, RunIndexer, type RunSummary } from "./obs-run-index";
 import { buildRunDigest, formatRunDigest, runAutoVerdict } from "./obs-explain";
 import { llmConfig, explainRun, judgeRun, summarizeText, runPlayground, loadRepoEnv } from "./obs-llm";
+import { streamChat } from "./obs-chat";
+import { listLiveSessions } from "./obs-chat-control";
+import { connect as netConnect } from "node:net";
 import { buildPromptRegistry } from "./obs-prompts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -499,6 +506,36 @@ function apiError(res: Res, status: number, message: string): void {
     apiJson(res, status, { error: message });
 }
 
+// ── Image attachment uploads (chat) ──────────────────
+const UPLOAD_EXT_MIME: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+};
+function uploadsDir(): string {
+    return join(homedir(), ".pi", "agent", "obs", "uploads");
+}
+// A safe upload id is `<hex>.<ext>` — no path separators, known image ext.
+function validUploadId(id: string): boolean {
+    return /^[A-Za-z0-9_-]+\.(png|jpe?g|webp|gif)$/.test(id);
+}
+function uploadMime(id: string): string {
+    return UPLOAD_EXT_MIME[id.split(".").pop()!.toLowerCase()] || "application/octet-stream";
+}
+/** Resolve a comma-list of upload ids to existing files (path + mimeType). */
+function resolveUploads(idsCsv: unknown): { id: string; path: string; mimeType: string }[] {
+    if (typeof idsCsv !== "string" || !idsCsv) return [];
+    const out: { id: string; path: string; mimeType: string }[] = [];
+    for (const id of idsCsv.split(",").map((s) => s.trim()).filter(Boolean)) {
+        if (!validUploadId(id)) continue;
+        const p = join(uploadsDir(), id);
+        if (existsSync(p)) out.push({ id, path: p, mimeType: uploadMime(id) });
+    }
+    return out;
+}
+
 // Exact runId, or a unique prefix (friendly for hand-typed ids).
 function findRun(id: string): RunSummary | { ambiguous: number } | undefined {
     ensureRunIndex();
@@ -566,6 +603,12 @@ function handleApi(
                 "POST /api/summarize  {text, kind?}  (LLM; opt-in PI_OBS_LLM=1)",
                 "POST /api/notify  {url, payload}  (relay monitor alerts to a webhook)",
                 "POST /api/playground  {system, input, model?}  (safe one-shot prompt sandbox; opt-in PI_OBS_LLM=1)",
+                "POST /api/chat  {sessionId, text, model?, cwd?, tools?, forkFrom?}  (SSE stream of reply tokens; forkFrom attaches to a run's session; opt-in PI_OBS_LLM=1)",
+                "GET  /api/live-sessions  (agents running right now with a control channel — attachable)",
+                "GET  /api/chat-live  ?sessionId=&text=&deliverAs=&approve=  (SSE; steer a LIVE agent and stream its reply)",
+                "GET  /api/chat-approve  ?sessionId=&toolCallId=&decision=  (allow/deny a paused tool on a live agent)",
+                "GET/PUT /api/chats  (server-side chat persistence; {chats:[...]})",
+                "POST /api/chat-upload  {name, mimeType, dataB64}  (image attachment → returns {id}); GET /api/uploads/:id serves it",
                 "POST /api/verdicts/backfill  (auto-score ended, still-open runs)",
                 "GET  /api/stream  (SSE; ?run= filters)",
             ],
@@ -685,6 +728,350 @@ function handleApi(
                 .then((r) => apiJson(res, 200, { enabled: true, ...r }))
                 .catch((e) => apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e).slice(0, 400) }));
         });
+        return;
+    }
+    // Chat — spawn pi per message, reusing --session-id for continuity, and
+    // stream parsed reply tokens back as SSE. Opt-in like the other LLM routes.
+    // GET (EventSource, params in query) is the primary path — it proxies cleanly
+    // through the vite dev server, which buffers POST streams. POST is also
+    // accepted (direct/prod). All outcomes — including "disabled" / bad input —
+    // are delivered as SSE frames so the client gets one stream shape.
+    if (a === "chat" && (req.method === "GET" || req.method === "POST")) {
+        const stream = (p: Record<string, unknown>) => {
+            res.writeHead(200, {
+                "content-type": "text/event-stream",
+                "cache-control": "no-cache",
+                connection: "keep-alive",
+                ...API_CORS,
+            });
+            // flush a comment immediately so proxies (vite dev server) start
+            // streaming now instead of buffering until pi's first byte
+            res.write(": connected\n\n");
+            const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+            const cfg = llmConfig();
+            if (!cfg.enabled) {
+                emit({ type: "error", error: "set PI_OBS_LLM=1 on the server to enable chat" });
+                res.end();
+                return;
+            }
+            const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+            const text = typeof p.text === "string" ? p.text : "";
+            if (!/^[\w.-]{1,64}$/.test(sessionId)) {
+                emit({ type: "error", error: "invalid sessionId" });
+                res.end();
+                return;
+            }
+            if (!text.trim()) {
+                emit({ type: "error", error: "missing text" });
+                res.end();
+                return;
+            }
+            const model = typeof p.model === "string" ? p.model.trim() : "";
+            const forkFrom = typeof p.forkFrom === "string" && /^[\w.-]{1,64}$/.test(p.forkFrom) ? p.forkFrom : undefined;
+            // stop: if the browser disconnects, abort kills the spawned pi (no orphan)
+            const ac = new AbortController();
+            req.on("close", () => ac.abort());
+            const imagePaths = resolveUploads(p.imageIds).map((u) => u.path);
+            streamChat(
+                {
+                    sessionId,
+                    text,
+                    model,
+                    cwd: typeof p.cwd === "string" ? p.cwd : undefined,
+                    tools: p.tools === "1" || p.tools === true,
+                    forkFrom,
+                    signal: ac.signal,
+                    imagePaths,
+                },
+                emit,
+                model ? { ...cfg, model } : cfg,
+            )
+                .catch(() => {
+                    /* error already emitted as an event */
+                })
+                .finally(() => res.end());
+        };
+        if (req.method === "GET") {
+            stream(Object.fromEntries(query));
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", () => {
+            try {
+                stream(JSON.parse(body || "{}"));
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+            }
+        });
+        return;
+    }
+    // Live sessions: agents currently running with a control channel open, i.e.
+    // the only sessions you can steer/chat into. Pruned to pid-alive processes.
+    if (a === "live-sessions" && req.method === "GET") {
+        const list = listLiveSessions().map((m) => ({
+            sessionId: m.sessionId,
+            agent: m.agent,
+            runId: m.runId,
+            cwd: m.cwd,
+            model: m.model,
+            tools: m.tools,
+            startedTs: m.startedTs,
+        }));
+        apiJson(res, 200, list);
+        return;
+    }
+    // Steer a LIVE agent: forward a prompt to its control socket and relay the
+    // agent's reply back as an SSE stream of ChatEvents. Only works while the
+    // target session is alive (enforced by the socket's existence).
+    if (a === "chat-live" && (req.method === "GET" || req.method === "POST")) {
+        const run = (p: Record<string, unknown>) => {
+            res.writeHead(200, {
+                "content-type": "text/event-stream",
+                "cache-control": "no-cache",
+                connection: "keep-alive",
+                ...API_CORS,
+            });
+            res.write(": connected\n\n");
+            const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+            let ended = false;
+            const finish = () => {
+                if (ended) return;
+                ended = true;
+                try {
+                    res.end();
+                } catch {}
+            };
+            const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+            const text = typeof p.text === "string" ? p.text : "";
+            const deliverAs = p.deliverAs === "steer" ? "steer" : "followUp";
+            const approve = p.approve === "1" || p.approve === true;
+            if (!/^[\w.-]{1,64}$/.test(sessionId)) {
+                emit({ type: "error", error: "invalid sessionId" });
+                finish();
+                return;
+            }
+            if (!text.trim()) {
+                emit({ type: "error", error: "missing text" });
+                finish();
+                return;
+            }
+            const live = listLiveSessions().find((m) => m.sessionId === sessionId);
+            if (!live) {
+                emit({ type: "error", error: "that session is no longer live — attach to an active session" });
+                finish();
+                return;
+            }
+            const images = resolveUploads(p.imageIds).map((u) => ({
+                type: "image",
+                data: readFileSync(u.path).toString("base64"),
+                mimeType: u.mimeType,
+            }));
+            const sock = netConnect(live.sock);
+            let buf = "";
+            let sawTerminal = false;
+            sock.on("connect", () => {
+                try {
+                    sock.write(JSON.stringify({ text, deliverAs, approve, token: live.token, images }) + "\n");
+                } catch {}
+            });
+            sock.on("data", (d: Buffer) => {
+                buf += d.toString();
+                let nl: number;
+                while ((nl = buf.indexOf("\n")) >= 0) {
+                    const line = buf.slice(0, nl);
+                    buf = buf.slice(nl + 1);
+                    if (!line.trim()) continue;
+                    let ev: { type?: string };
+                    try {
+                        ev = JSON.parse(line);
+                    } catch {
+                        continue;
+                    }
+                    emit(ev);
+                    if (ev.type === "done" || ev.type === "error") {
+                        sawTerminal = true;
+                        try {
+                            sock.end();
+                        } catch {}
+                        finish();
+                    }
+                }
+            });
+            sock.on("error", (e: Error) => {
+                if (!sawTerminal) emit({ type: "error", error: "control channel error: " + e.message });
+                finish();
+            });
+            sock.on("close", () => {
+                if (!sawTerminal) emit({ type: "error", error: "agent closed the channel before replying" });
+                finish();
+            });
+            // stop: when the browser disconnects, tell the agent to abort its
+            // current turn (pi's ctx.abort), then drop the socket.
+            req.on("close", () => {
+                try {
+                    if (!sawTerminal) sock.write(JSON.stringify({ cmd: "abort", token: live.token }) + "\n");
+                } catch {}
+                setTimeout(() => {
+                    try {
+                        sock.destroy();
+                    } catch {}
+                }, 50);
+                finish();
+            });
+        };
+        if (req.method === "GET") {
+            run(Object.fromEntries(query));
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", () => {
+            try {
+                run(JSON.parse(body || "{}"));
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+            }
+        });
+        return;
+    }
+    // Relay a human approve/deny decision for a paused tool to the live agent's
+    // control socket (the agent's tool_call handler is awaiting it).
+    if (a === "chat-approve" && (req.method === "GET" || req.method === "POST")) {
+        const decide = (p: Record<string, unknown>) => {
+            const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+            const toolCallId = typeof p.toolCallId === "string" ? p.toolCallId : "";
+            const decision = p.decision === "allow" ? "allow" : "deny";
+            if (!/^[\w.-]{1,64}$/.test(sessionId) || !toolCallId) {
+                apiError(res, 400, "sessionId and toolCallId required");
+                return;
+            }
+            const live = listLiveSessions().find((m) => m.sessionId === sessionId);
+            if (!live) {
+                apiError(res, 409, "session no longer live");
+                return;
+            }
+            const sock = netConnect(live.sock);
+            const done = (ok: boolean) => {
+                try {
+                    sock.destroy();
+                } catch {}
+                if (!res.writableEnded) apiJson(res, ok ? 200 : 502, { ok });
+            };
+            sock.on("connect", () => {
+                try {
+                    sock.write(JSON.stringify({ cmd: "approve", toolCallId, decision, token: live.token }) + "\n");
+                } catch {}
+                setTimeout(() => done(true), 30); // give the frame time to flush
+            });
+            sock.on("error", () => done(false));
+        };
+        if (req.method === "GET") {
+            decide(Object.fromEntries(query));
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 64_000) req.destroy();
+        });
+        req.on("end", () => {
+            try {
+                decide(JSON.parse(body || "{}"));
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+            }
+        });
+        return;
+    }
+    // Chat persistence: store conversations server-side so they survive a cache
+    // clear and are shared across browsers (last-write-wins; local-dev scope).
+    if (a === "chats" && (req.method === "GET" || req.method === "PUT" || req.method === "POST")) {
+        const file = join(homedir(), ".pi", "agent", "obs", "chats.json");
+        if (req.method === "GET") {
+            let chats: unknown = [];
+            try {
+                if (existsSync(file)) chats = JSON.parse(readFileSync(file, "utf-8"));
+            } catch {
+                chats = [];
+            }
+            apiJson(res, 200, { chats: Array.isArray(chats) ? chats : [] });
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 8_000_000) req.destroy(); // 8MB cap
+        });
+        req.on("end", () => {
+            try {
+                const parsed = JSON.parse(body || "{}");
+                const chats = Array.isArray(parsed) ? parsed : parsed.chats;
+                if (!Array.isArray(chats)) {
+                    apiError(res, 400, "expected { chats: [...] }");
+                    return;
+                }
+                mkdirSync(dirname(file), { recursive: true });
+                writeFileSync(file, JSON.stringify(chats), "utf-8");
+                apiJson(res, 200, { ok: true, count: chats.length });
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+            }
+        });
+        return;
+    }
+    // Upload an image attachment (base64) → temp file under the obs uploads dir.
+    if (a === "chat-upload" && req.method === "POST") {
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 12_000_000) req.destroy(); // ~9MB image cap
+        });
+        req.on("end", () => {
+            let p: { name?: string; mimeType?: string; dataB64?: string };
+            try {
+                p = JSON.parse(body || "{}");
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+                return;
+            }
+            const mime = typeof p.mimeType === "string" ? p.mimeType : "";
+            const ext = Object.keys(UPLOAD_EXT_MIME).find((e) => UPLOAD_EXT_MIME[e] === mime);
+            if (!ext || typeof p.dataB64 !== "string" || !p.dataB64) {
+                apiError(res, 400, "expected an image {mimeType, dataB64}");
+                return;
+            }
+            try {
+                mkdirSync(uploadsDir(), { recursive: true, mode: 0o700 });
+                const id = `${randomBytes(12).toString("hex")}.${ext}`;
+                writeFileSync(join(uploadsDir(), id), Buffer.from(p.dataB64, "base64"));
+                apiJson(res, 200, { id, mimeType: mime, name: typeof p.name === "string" ? p.name : id });
+            } catch (e) {
+                apiError(res, 500, "could not store upload: " + String((e as Error)?.message || e));
+            }
+        });
+        return;
+    }
+    // Serve an uploaded image (for chat thumbnails).
+    if (a === "uploads" && seg[2] && req.method === "GET") {
+        const id = seg[2];
+        if (!validUploadId(id)) {
+            apiError(res, 400, "bad upload id");
+            return;
+        }
+        const p = join(uploadsDir(), id);
+        if (!existsSync(p)) {
+            apiError(res, 404, "not found");
+            return;
+        }
+        res.writeHead(200, { "content-type": uploadMime(id), "cache-control": "max-age=3600", ...API_CORS });
+        res.end(readFileSync(p));
         return;
     }
     // Optional one-sentence LLM summary of an arbitrary chunk (a tool's input
