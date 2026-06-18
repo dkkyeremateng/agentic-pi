@@ -30,6 +30,7 @@ import {
 } from "fs";
 import { join, resolve as resolvePath, dirname } from "path";
 import { homedir } from "os";
+import { randomBytes } from "crypto";
 import { fileURLToPath } from "url";
 import {
     EventStore,
@@ -505,6 +506,36 @@ function apiError(res: Res, status: number, message: string): void {
     apiJson(res, status, { error: message });
 }
 
+// ── Image attachment uploads (chat) ──────────────────
+const UPLOAD_EXT_MIME: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+};
+function uploadsDir(): string {
+    return join(homedir(), ".pi", "agent", "obs", "uploads");
+}
+// A safe upload id is `<hex>.<ext>` — no path separators, known image ext.
+function validUploadId(id: string): boolean {
+    return /^[A-Za-z0-9_-]+\.(png|jpe?g|webp|gif)$/.test(id);
+}
+function uploadMime(id: string): string {
+    return UPLOAD_EXT_MIME[id.split(".").pop()!.toLowerCase()] || "application/octet-stream";
+}
+/** Resolve a comma-list of upload ids to existing files (path + mimeType). */
+function resolveUploads(idsCsv: unknown): { id: string; path: string; mimeType: string }[] {
+    if (typeof idsCsv !== "string" || !idsCsv) return [];
+    const out: { id: string; path: string; mimeType: string }[] = [];
+    for (const id of idsCsv.split(",").map((s) => s.trim()).filter(Boolean)) {
+        if (!validUploadId(id)) continue;
+        const p = join(uploadsDir(), id);
+        if (existsSync(p)) out.push({ id, path: p, mimeType: uploadMime(id) });
+    }
+    return out;
+}
+
 // Exact runId, or a unique prefix (friendly for hand-typed ids).
 function findRun(id: string): RunSummary | { ambiguous: number } | undefined {
     ensureRunIndex();
@@ -577,6 +608,7 @@ function handleApi(
                 "GET  /api/chat-live  ?sessionId=&text=&deliverAs=&approve=  (SSE; steer a LIVE agent and stream its reply)",
                 "GET  /api/chat-approve  ?sessionId=&toolCallId=&decision=  (allow/deny a paused tool on a live agent)",
                 "GET/PUT /api/chats  (server-side chat persistence; {chats:[...]})",
+                "POST /api/chat-upload  {name, mimeType, dataB64}  (image attachment → returns {id}); GET /api/uploads/:id serves it",
                 "POST /api/verdicts/backfill  (auto-score ended, still-open runs)",
                 "GET  /api/stream  (SSE; ?run= filters)",
             ],
@@ -739,6 +771,7 @@ function handleApi(
             // stop: if the browser disconnects, abort kills the spawned pi (no orphan)
             const ac = new AbortController();
             req.on("close", () => ac.abort());
+            const imagePaths = resolveUploads(p.imageIds).map((u) => u.path);
             streamChat(
                 {
                     sessionId,
@@ -748,6 +781,7 @@ function handleApi(
                     tools: p.tools === "1" || p.tools === true,
                     forkFrom,
                     signal: ac.signal,
+                    imagePaths,
                 },
                 emit,
                 model ? { ...cfg, model } : cfg,
@@ -831,12 +865,17 @@ function handleApi(
                 finish();
                 return;
             }
+            const images = resolveUploads(p.imageIds).map((u) => ({
+                type: "image",
+                data: readFileSync(u.path).toString("base64"),
+                mimeType: u.mimeType,
+            }));
             const sock = netConnect(live.sock);
             let buf = "";
             let sawTerminal = false;
             sock.on("connect", () => {
                 try {
-                    sock.write(JSON.stringify({ text, deliverAs, approve, token: live.token }) + "\n");
+                    sock.write(JSON.stringify({ text, deliverAs, approve, token: live.token, images }) + "\n");
                 } catch {}
             });
             sock.on("data", (d: Buffer) => {
@@ -985,6 +1024,54 @@ function handleApi(
                 apiError(res, 400, "invalid JSON body");
             }
         });
+        return;
+    }
+    // Upload an image attachment (base64) → temp file under the obs uploads dir.
+    if (a === "chat-upload" && req.method === "POST") {
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 12_000_000) req.destroy(); // ~9MB image cap
+        });
+        req.on("end", () => {
+            let p: { name?: string; mimeType?: string; dataB64?: string };
+            try {
+                p = JSON.parse(body || "{}");
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+                return;
+            }
+            const mime = typeof p.mimeType === "string" ? p.mimeType : "";
+            const ext = Object.keys(UPLOAD_EXT_MIME).find((e) => UPLOAD_EXT_MIME[e] === mime);
+            if (!ext || typeof p.dataB64 !== "string" || !p.dataB64) {
+                apiError(res, 400, "expected an image {mimeType, dataB64}");
+                return;
+            }
+            try {
+                mkdirSync(uploadsDir(), { recursive: true, mode: 0o700 });
+                const id = `${randomBytes(12).toString("hex")}.${ext}`;
+                writeFileSync(join(uploadsDir(), id), Buffer.from(p.dataB64, "base64"));
+                apiJson(res, 200, { id, mimeType: mime, name: typeof p.name === "string" ? p.name : id });
+            } catch (e) {
+                apiError(res, 500, "could not store upload: " + String((e as Error)?.message || e));
+            }
+        });
+        return;
+    }
+    // Serve an uploaded image (for chat thumbnails).
+    if (a === "uploads" && seg[2] && req.method === "GET") {
+        const id = seg[2];
+        if (!validUploadId(id)) {
+            apiError(res, 400, "bad upload id");
+            return;
+        }
+        const p = join(uploadsDir(), id);
+        if (!existsSync(p)) {
+            apiError(res, 404, "not found");
+            return;
+        }
+        res.writeHead(200, { "content-type": uploadMime(id), "cache-control": "max-age=3600", ...API_CORS });
+        res.end(readFileSync(p));
         return;
     }
     // Optional one-sentence LLM summary of an arbitrary chunk (a tool's input

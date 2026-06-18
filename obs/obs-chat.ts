@@ -145,6 +145,9 @@ export interface ChatRequest {
     // Server-side only: abort kills the spawned pi (e.g. the browser disconnected
     // / the user hit stop), so a cancelled turn never leaves an orphan process.
     signal?: AbortSignal;
+    // Image attachments — absolute file paths passed to pi as `@<path>` tokens
+    // (pi's file-argument syntax turns them into image content).
+    imagePaths?: string[];
 }
 
 export type SpawnFn = typeof spawn;
@@ -177,11 +180,19 @@ export function streamChat(
             }
         }
 
+        const hasImages = !!req.imagePaths?.length;
         const args = ["-p", "--mode", "json"];
         if (forkPath) args.push("--fork", forkPath);
         args.push("--session-id", req.sessionId, "--no-skills");
-        if (!req.tools) args.push("--no-tools", "--no-extensions");
+        if (!req.tools) {
+            args.push("--no-extensions");
+            // vision is gated behind tools in pi — only keep tools off when there
+            // are no images to look at (text-only chats stay locked down).
+            if (!hasImages) args.push("--no-tools");
+        }
         if (model) args.push("--model", model);
+        // image attachments as `@<path>` tokens (pi turns them into image content)
+        for (const p of req.imagePaths ?? []) args.push(`@${p}`);
         args.push(req.text);
 
         let proc: ChildProcessWithoutNullStreams;

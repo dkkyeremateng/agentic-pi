@@ -174,7 +174,7 @@ export default function obsLive(pi: any): void {
                         const line = buf.slice(0, nl);
                         buf = buf.slice(nl + 1);
                         if (!line.trim()) continue;
-                        let req: { text?: string; deliverAs?: string; cmd?: string; approve?: boolean; toolCallId?: string; decision?: string; token?: string };
+                        let req: { text?: string; deliverAs?: string; cmd?: string; approve?: boolean; toolCallId?: string; decision?: string; token?: string; images?: any[] };
                         try {
                             req = JSON.parse(line);
                         } catch {
@@ -214,7 +214,9 @@ export default function obsLive(pi: any): void {
                             continue;
                         }
                         try {
-                            pi.sendUserMessage(text, { deliverAs });
+                            const imgs = Array.isArray(req.images) ? req.images : [];
+                            const content = imgs.length ? [{ type: "text", text }, ...imgs] : text;
+                            pi.sendUserMessage(content, { deliverAs });
                         } catch (e: any) {
                             control.fail("inject failed: " + (e?.message || e));
                         }
