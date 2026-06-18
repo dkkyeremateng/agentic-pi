@@ -9,10 +9,11 @@
 // Inert unless PI_OBS=1. Load via -e; sub-agents get it injected by
 // subagentExtArgs (workflow-core.ts) when PI_OBS=1.
 
-import { appendFileSync, mkdirSync } from "fs";
+import { appendFileSync, mkdirSync, writeFileSync, unlinkSync } from "fs";
 import { join, dirname, resolve as resolvePath } from "path";
 import { homedir } from "os";
 import { createHash } from "crypto";
+import { createServer, type Server, type Socket } from "net";
 import {
     makeFactory,
     serializeEvent,
@@ -25,6 +26,14 @@ import {
     capText,
     type EventFactory,
 } from "../obs/obs-events";
+import {
+    LiveChatControl,
+    controlDir,
+    sockPath,
+    sidecarPath,
+    type LiveSessionMeta,
+} from "../obs/obs-chat-control";
+import type { ChatEvent } from "../obs/obs-chat";
 
 // Cap (chars) for the full args/result captured for the expand-on-click view.
 // Default is unlimited — tool args/results are the agent's working I/O and we
@@ -81,6 +90,95 @@ export default function obsLive(pi: any): void {
     let sink = "";
     let dead = false;
     let isRoot = false; // the root orchestrator (no PI_OBS_PARENT) — owns the run name
+    // Live chat control: lets the dashboard steer THIS running agent (opt-out
+    // with PI_OBS_CHAT=0). Best-effort throughout — never disrupt the agent.
+    let control: LiveChatControl | undefined;
+    let ctrlServer: Server | undefined;
+    let liveSid = ""; // obs session id this process published a control channel for
+    let ctrlCleaned = false;
+
+    const cleanupControl = (): void => {
+        if (ctrlCleaned) return;
+        ctrlCleaned = true;
+        try {
+            control?.fail("session ended");
+        } catch {}
+        try {
+            ctrlServer?.close();
+        } catch {}
+        if (liveSid) {
+            try {
+                unlinkSync(sockPath(liveSid));
+            } catch {}
+            try {
+                unlinkSync(sidecarPath(liveSid));
+            } catch {}
+        }
+    };
+
+    const setupControl = (meta: Omit<LiveSessionMeta, "pid" | "startedTs" | "sock">): void => {
+        if (process.env.PI_OBS_CHAT === "0") return; // opt-out
+        if (typeof pi.sendUserMessage !== "function") return; // not steerable in this mode
+        try {
+            mkdirSync(controlDir(), { recursive: true });
+            control = new LiveChatControl();
+            const sock = sockPath(meta.sessionId);
+            try {
+                unlinkSync(sock); // clear any stale socket from a crashed predecessor
+            } catch {}
+            ctrlServer = createServer((conn: Socket) => {
+                let buf = "";
+                const send = (f: ChatEvent): void => {
+                    try {
+                        conn.write(JSON.stringify(f) + "\n");
+                    } catch {}
+                    if (f.type === "done" || f.type === "error") {
+                        try {
+                            conn.end();
+                        } catch {}
+                    }
+                };
+                conn.on("data", (d: Buffer) => {
+                    buf += d.toString();
+                    const nl = buf.indexOf("\n");
+                    if (nl < 0) return;
+                    const line = buf.slice(0, nl);
+                    buf = "";
+                    let req: { text?: string; deliverAs?: string };
+                    try {
+                        req = JSON.parse(line);
+                    } catch {
+                        send({ type: "error", error: "bad request" });
+                        return;
+                    }
+                    const text = typeof req.text === "string" ? req.text.trim() : "";
+                    const deliverAs = req.deliverAs === "steer" ? "steer" : "followUp";
+                    if (!text) {
+                        send({ type: "error", error: "empty prompt" });
+                        return;
+                    }
+                    if (!control || !control.beginPrompt(send)) {
+                        send({ type: "error", error: "agent busy with another chat turn" });
+                        return;
+                    }
+                    try {
+                        pi.sendUserMessage(text, { deliverAs });
+                    } catch (e: any) {
+                        control.fail("inject failed: " + (e?.message || e));
+                    }
+                });
+                conn.on("error", () => {});
+            });
+            ctrlServer.on("error", () => {});
+            ctrlServer.listen(sock);
+            const full: LiveSessionMeta = { ...meta, pid: process.pid, startedTs: Date.now(), sock };
+            writeFileSync(sidecarPath(meta.sessionId), JSON.stringify(full), "utf-8");
+            liveSid = meta.sessionId;
+            process.once("exit", cleanupControl);
+        } catch {
+            // never let control setup break the run
+        }
+    };
     let lastName = ""; // last emitted session name, to emit only on change
     let bootEmitted = false;
     let turnStartTs = 0;
@@ -168,6 +266,8 @@ export default function obsLive(pi: any): void {
             // (so parallel runs of the same agent stay distinct).
             dispatchId: process.env.PI_OBS_DISPATCH_ID || undefined,
         });
+        // Publish a control channel so the dashboard can steer this live agent.
+        setupControl({ sessionId, agent, runId, parent, cwd, model: ctx?.model?.id });
     });
 
     // (a) Boot snapshot — once per session, on the first user prompt. Captures
@@ -254,9 +354,32 @@ export default function obsLive(pi: any): void {
                 ? e.toolResults.length
                 : 0,
         });
+        // feed the live-chat capture: tally this turn's cost + model
+        try {
+            control?.onTurnEnd(usage?.costUsd ?? 0, e?.message?.model ?? e?.message?.responseModel);
+        } catch {}
         // reset per-turn timing so a turn without a provider call doesn't reuse
         // the previous turn's numbers
         reqSentTs = respStartTs = prefillMs = genTps = 0;
+    });
+
+    // Live-chat capture hooks — scope a steered reply to the agent run it triggers.
+    // All best-effort: a throw here must never disrupt the agent.
+    pi.on("agent_start", async () => {
+        try {
+            control?.onAgentStart();
+        } catch {}
+    });
+    pi.on("agent_end", async () => {
+        try {
+            control?.onAgentEnd();
+        } catch {}
+    });
+    pi.on("message_update", async (e: any) => {
+        if (!control) return;
+        try {
+            control.onAssistantEvent(e?.assistantMessageEvent);
+        } catch {}
     });
 
     pi.on("message_end", async (e: any) => {
@@ -343,5 +466,6 @@ export default function obsLive(pi: any): void {
 
     pi.on("session_shutdown", async (e: any) => {
         emit("session_end", { reason: e?.reason });
+        cleanupControl();
     });
 }

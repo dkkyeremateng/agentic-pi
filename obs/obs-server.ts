@@ -47,6 +47,9 @@ import { eventsToOtlp } from "./obs-otel";
 import { LineScanner, RunIndexer, type RunSummary } from "./obs-run-index";
 import { buildRunDigest, formatRunDigest, runAutoVerdict } from "./obs-explain";
 import { llmConfig, explainRun, judgeRun, summarizeText, runPlayground, loadRepoEnv } from "./obs-llm";
+import { streamChat } from "./obs-chat";
+import { listLiveSessions } from "./obs-chat-control";
+import { connect as netConnect } from "node:net";
 import { buildPromptRegistry } from "./obs-prompts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -566,6 +569,9 @@ function handleApi(
                 "POST /api/summarize  {text, kind?}  (LLM; opt-in PI_OBS_LLM=1)",
                 "POST /api/notify  {url, payload}  (relay monitor alerts to a webhook)",
                 "POST /api/playground  {system, input, model?}  (safe one-shot prompt sandbox; opt-in PI_OBS_LLM=1)",
+                "POST /api/chat  {sessionId, text, model?, cwd?, tools?, forkFrom?}  (SSE stream of reply tokens; forkFrom attaches to a run's session; opt-in PI_OBS_LLM=1)",
+                "GET  /api/live-sessions  (agents running right now with a control channel — attachable)",
+                "GET  /api/chat-live  ?sessionId=&text=&deliverAs=  (SSE; steer a LIVE agent and stream its reply)",
                 "POST /api/verdicts/backfill  (auto-score ended, still-open runs)",
                 "GET  /api/stream  (SSE; ?run= filters)",
             ],
@@ -684,6 +690,198 @@ function handleApi(
             runPlayground(system, input, cfg)
                 .then((r) => apiJson(res, 200, { enabled: true, ...r }))
                 .catch((e) => apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e).slice(0, 400) }));
+        });
+        return;
+    }
+    // Chat — spawn pi per message, reusing --session-id for continuity, and
+    // stream parsed reply tokens back as SSE. Opt-in like the other LLM routes.
+    // GET (EventSource, params in query) is the primary path — it proxies cleanly
+    // through the vite dev server, which buffers POST streams. POST is also
+    // accepted (direct/prod). All outcomes — including "disabled" / bad input —
+    // are delivered as SSE frames so the client gets one stream shape.
+    if (a === "chat" && (req.method === "GET" || req.method === "POST")) {
+        const stream = (p: Record<string, unknown>) => {
+            res.writeHead(200, {
+                "content-type": "text/event-stream",
+                "cache-control": "no-cache",
+                connection: "keep-alive",
+                ...API_CORS,
+            });
+            // flush a comment immediately so proxies (vite dev server) start
+            // streaming now instead of buffering until pi's first byte
+            res.write(": connected\n\n");
+            const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+            const cfg = llmConfig();
+            if (!cfg.enabled) {
+                emit({ type: "error", error: "set PI_OBS_LLM=1 on the server to enable chat" });
+                res.end();
+                return;
+            }
+            const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+            const text = typeof p.text === "string" ? p.text : "";
+            if (!/^[\w.-]{1,64}$/.test(sessionId)) {
+                emit({ type: "error", error: "invalid sessionId" });
+                res.end();
+                return;
+            }
+            if (!text.trim()) {
+                emit({ type: "error", error: "missing text" });
+                res.end();
+                return;
+            }
+            const model = typeof p.model === "string" ? p.model.trim() : "";
+            const forkFrom = typeof p.forkFrom === "string" && /^[\w.-]{1,64}$/.test(p.forkFrom) ? p.forkFrom : undefined;
+            streamChat(
+                {
+                    sessionId,
+                    text,
+                    model,
+                    cwd: typeof p.cwd === "string" ? p.cwd : undefined,
+                    tools: p.tools === "1" || p.tools === true,
+                    forkFrom,
+                },
+                emit,
+                model ? { ...cfg, model } : cfg,
+            )
+                .catch(() => {
+                    /* error already emitted as an event */
+                })
+                .finally(() => res.end());
+        };
+        if (req.method === "GET") {
+            stream(Object.fromEntries(query));
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", () => {
+            try {
+                stream(JSON.parse(body || "{}"));
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+            }
+        });
+        return;
+    }
+    // Live sessions: agents currently running with a control channel open, i.e.
+    // the only sessions you can steer/chat into. Pruned to pid-alive processes.
+    if (a === "live-sessions" && req.method === "GET") {
+        const list = listLiveSessions().map((m) => ({
+            sessionId: m.sessionId,
+            agent: m.agent,
+            runId: m.runId,
+            cwd: m.cwd,
+            model: m.model,
+            startedTs: m.startedTs,
+        }));
+        apiJson(res, 200, list);
+        return;
+    }
+    // Steer a LIVE agent: forward a prompt to its control socket and relay the
+    // agent's reply back as an SSE stream of ChatEvents. Only works while the
+    // target session is alive (enforced by the socket's existence).
+    if (a === "chat-live" && (req.method === "GET" || req.method === "POST")) {
+        const run = (p: Record<string, unknown>) => {
+            res.writeHead(200, {
+                "content-type": "text/event-stream",
+                "cache-control": "no-cache",
+                connection: "keep-alive",
+                ...API_CORS,
+            });
+            res.write(": connected\n\n");
+            const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+            let ended = false;
+            const finish = () => {
+                if (ended) return;
+                ended = true;
+                try {
+                    res.end();
+                } catch {}
+            };
+            const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+            const text = typeof p.text === "string" ? p.text : "";
+            const deliverAs = p.deliverAs === "steer" ? "steer" : "followUp";
+            if (!/^[\w.-]{1,64}$/.test(sessionId)) {
+                emit({ type: "error", error: "invalid sessionId" });
+                finish();
+                return;
+            }
+            if (!text.trim()) {
+                emit({ type: "error", error: "missing text" });
+                finish();
+                return;
+            }
+            const live = listLiveSessions().find((m) => m.sessionId === sessionId);
+            if (!live) {
+                emit({ type: "error", error: "that session is no longer live — attach to an active session" });
+                finish();
+                return;
+            }
+            const sock = netConnect(live.sock);
+            let buf = "";
+            let sawTerminal = false;
+            sock.on("connect", () => {
+                try {
+                    sock.write(JSON.stringify({ text, deliverAs }) + "\n");
+                } catch {}
+            });
+            sock.on("data", (d: Buffer) => {
+                buf += d.toString();
+                let nl: number;
+                while ((nl = buf.indexOf("\n")) >= 0) {
+                    const line = buf.slice(0, nl);
+                    buf = buf.slice(nl + 1);
+                    if (!line.trim()) continue;
+                    let ev: { type?: string };
+                    try {
+                        ev = JSON.parse(line);
+                    } catch {
+                        continue;
+                    }
+                    emit(ev);
+                    if (ev.type === "done" || ev.type === "error") {
+                        sawTerminal = true;
+                        try {
+                            sock.end();
+                        } catch {}
+                        finish();
+                    }
+                }
+            });
+            sock.on("error", (e: Error) => {
+                if (!sawTerminal) emit({ type: "error", error: "control channel error: " + e.message });
+                finish();
+            });
+            sock.on("close", () => {
+                if (!sawTerminal) emit({ type: "error", error: "agent closed the channel before replying" });
+                finish();
+            });
+            // if the browser disconnects, stop waiting on the agent
+            req.on("close", () => {
+                try {
+                    sock.destroy();
+                } catch {}
+                finish();
+            });
+        };
+        if (req.method === "GET") {
+            run(Object.fromEntries(query));
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", () => {
+            try {
+                run(JSON.parse(body || "{}"));
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+            }
         });
         return;
     }

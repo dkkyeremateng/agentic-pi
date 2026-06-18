@@ -362,6 +362,17 @@ files — tracked as versions across runs), and, gated on `PI_OBS_LLM=1`,
 `/api/runs/:id/judge` (the LLM-as-judge score) and `/api/playground` (a one-shot
 prompt sandbox). `POST /api/notify {url, payload}` relays a monitor alert to a webhook.
 
+**Chat into a live agent (`/api/live-sessions`, `/api/chat-live`).** Every running
+agent (with `PI_OBS=1`) opens a per-process **control channel** (a Unix socket +
+metadata sidecar under `~/.pi/agent/obs/control/`). `GET /api/live-sessions` lists the
+sessions alive *right now* — the only attachable ones — and `GET /api/chat-live`
+**steers** one: your prompt is injected into that running pi instance
+(`pi.sendUserMessage`, delivered as a follow-up) and the agent's reply streams straight
+back over SSE, token by token. The channel exists only while the process does and the
+server prunes dead ones by pid, so you can only chat into a live, active session; when a
+session ends mid-chat the caller gets a clean *"no longer live"* error. The whole path is
+best-effort and never disrupts the agent — opt out entirely with `PI_OBS_CHAT=0`.
+
 ```bash
 ./run.sh                              # pi only
 ./run.sh --obs                        # pi + the dashboard (http://127.0.0.1:7616)
