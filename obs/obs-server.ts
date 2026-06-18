@@ -22,6 +22,9 @@ import {
     readSync,
     closeSync,
     readFileSync,
+    writeFileSync,
+    existsSync,
+    mkdirSync,
     appendFileSync,
     readdirSync,
 } from "fs";
@@ -573,6 +576,7 @@ function handleApi(
                 "GET  /api/live-sessions  (agents running right now with a control channel — attachable)",
                 "GET  /api/chat-live  ?sessionId=&text=&deliverAs=&approve=  (SSE; steer a LIVE agent and stream its reply)",
                 "GET  /api/chat-approve  ?sessionId=&toolCallId=&decision=  (allow/deny a paused tool on a live agent)",
+                "GET/PUT /api/chats  (server-side chat persistence; {chats:[...]})",
                 "POST /api/verdicts/backfill  (auto-score ended, still-open runs)",
                 "GET  /api/stream  (SSE; ?run= filters)",
             ],
@@ -941,6 +945,42 @@ function handleApi(
         req.on("end", () => {
             try {
                 decide(JSON.parse(body || "{}"));
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+            }
+        });
+        return;
+    }
+    // Chat persistence: store conversations server-side so they survive a cache
+    // clear and are shared across browsers (last-write-wins; local-dev scope).
+    if (a === "chats" && (req.method === "GET" || req.method === "PUT" || req.method === "POST")) {
+        const file = join(homedir(), ".pi", "agent", "obs", "chats.json");
+        if (req.method === "GET") {
+            let chats: unknown = [];
+            try {
+                if (existsSync(file)) chats = JSON.parse(readFileSync(file, "utf-8"));
+            } catch {
+                chats = [];
+            }
+            apiJson(res, 200, { chats: Array.isArray(chats) ? chats : [] });
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 8_000_000) req.destroy(); // 8MB cap
+        });
+        req.on("end", () => {
+            try {
+                const parsed = JSON.parse(body || "{}");
+                const chats = Array.isArray(parsed) ? parsed : parsed.chats;
+                if (!Array.isArray(chats)) {
+                    apiError(res, 400, "expected { chats: [...] }");
+                    return;
+                }
+                mkdirSync(dirname(file), { recursive: true });
+                writeFileSync(file, JSON.stringify(chats), "utf-8");
+                apiJson(res, 200, { ok: true, count: chats.length });
             } catch {
                 apiError(res, 400, "invalid JSON body");
             }
