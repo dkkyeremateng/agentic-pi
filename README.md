@@ -20,6 +20,9 @@ only `.env` config — no code edits.
   written run report.
 - **Sub-agent dispatch** — `dispatch_agent` / `dispatch_parallel` for ad-hoc
   delegation to any agent, in any session.
+- **Background sessions** — run a persistent interactive pi session in `tmux`
+  (`./run.sh --bg`), then attach/detach the terminal or steer it live from the
+  dashboard without reattaching.
 - **Observability** — an offline metrics analyzer (per-run reports + cross-project
   trends) and an opt-in live dashboard (`PI_OBS=1`) with seven views (Swimlane,
   Single, Race, Trace, Stats, Compare, Search), full run history, automated
@@ -57,6 +60,8 @@ downstream agents, so it is never re-threaded through the context.
 - **`pi`** on your `PATH` — the only hard requirement to *run*.
 - **`python3`** — for the skills (`lsp`, `linear`, `atlassian`) and Playwright.
 - **Node.js** — only for type-checking/tests during development (not to run).
+- **`tmux`** (optional) — only for [background sessions](#background-sessions)
+  (`./run.sh --bg`); `install.sh` installs it best-effort.
 - Optional per-language tools you want the agents to use: language servers for
   `lsp` (pyright, gopls, typescript-language-server, intelephense), `gh` for
   GitHub, Playwright browsers for `bowser`.
