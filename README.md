@@ -429,6 +429,15 @@ dashboard. Both default to the same shared sink, so the events show up live.
 `./run.sh --obs` starts the dashboard server in the background (port `PI_OBS_PORT`,
 default 7616) and stops it when pi exits; it needs the dev deps (`npm install`).
 
+**Expose it via Tailscale serve.** The server binds to `127.0.0.1` (the open `/api`
+CORS is safe only because nothing but loopback reaches it, and there is no auth), so
+to view the dashboard from another device without exposing it to the network, front
+it with [Tailscale serve](https://tailscale.com/kb/1242/tailscale-serve): with the
+server running, `tailscale serve 7616` proxies it over your tailnet (auth + TLS via
+Tailscale) at `https://<machine>.<tailnet>.ts.net/`. Use `tailscale funnel 7616` only
+if you intend it to be reachable from the public internet. Run `tailscale serve --https=443 off`
+to stop sharing.
+
 **OpenTelemetry export.** The same sink converts to an OTLP/JSON trace following the
 [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 (`invoke_agent` / `chat` / `execute_tool` spans with `gen_ai.*` attributes), so a run can
