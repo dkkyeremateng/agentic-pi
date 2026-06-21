@@ -430,13 +430,22 @@ dashboard. Both default to the same shared sink, so the events show up live.
 default 7616) and stops it when pi exits; it needs the dev deps (`npm install`).
 
 **Expose it via Tailscale serve.** The server binds to `127.0.0.1` (the open `/api`
-CORS is safe only because nothing but loopback reaches it, and there is no auth), so
-to view the dashboard from another device without exposing it to the network, front
-it with [Tailscale serve](https://tailscale.com/kb/1242/tailscale-serve): with the
-server running, `tailscale serve 7616` proxies it over your tailnet (auth + TLS via
-Tailscale) at `https://<machine>.<tailnet>.ts.net/`. Use `tailscale funnel 7616` only
-if you intend it to be reachable from the public internet. Run `tailscale serve --https=443 off`
-to stop sharing.
+CORS is safe only because nothing but loopback reaches it, and auth is off by
+default), so to view the dashboard from another device without exposing it to the
+network, front it with [Tailscale serve](https://tailscale.com/kb/1242/tailscale-serve):
+with the server running, `tailscale serve 7616` proxies it over your tailnet (auth +
+TLS via Tailscale) at `https://<machine>.<tailnet>.ts.net/`. Use `tailscale funnel 7616`
+only if you intend it to be reachable from the public internet. Run
+`tailscale serve --https=443 off` to stop sharing.
+
+**Require a token (`PI_OBS_TOKEN`).** Auth is opt-in and off by default (loopback-only).
+Set `PI_OBS_TOKEN` (in `.env` or the launch env) and every data and control route
+requires it — `Authorization: Bearer <token>`, or `?token=` for the SSE streams that
+use `EventSource`. The dashboard prompts for it and caches it in `localStorage`; the
+static shell stays open only so the page can load. The control routes can steer a live
+agent, so set a token whenever the server is reachable beyond your own loopback (e.g.
+behind Tailscale or a proxy). Generate one with `openssl rand -hex 32`. Details in
+[`obs/API.md`](obs/API.md#authentication).
 
 **OpenTelemetry export.** The same sink converts to an OTLP/JSON trace following the
 [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)

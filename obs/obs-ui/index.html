@@ -513,7 +513,8 @@
         </div>
         <!-- Vanilla, no bundler: ordered classic scripts share one global scope,
              so these modules see each other's functions/state. Load order matters —
-             state first, main (init + wiring) last. -->
+             state first, main (init + wiring) last. auth before any fetch/SSE. -->
+        <script src="/scripts/auth.js"></script>
         <script src="/scripts/state.js"></script>
         <script src="/scripts/archive.js"></script>
         <script src="/scripts/format.js"></script>

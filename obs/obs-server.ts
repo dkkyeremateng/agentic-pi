@@ -55,6 +55,7 @@ import { streamChat } from "./obs-chat";
 import { listLiveSessions } from "./obs-chat-control";
 import { connect as netConnect } from "node:net";
 import { buildPromptRegistry } from "./obs-prompts";
+import { configuredToken, isAuthorized } from "./obs-auth";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // pi's extensions load the repo .env into the pi process; the server is a sibling
@@ -62,6 +63,30 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // in .env like every other setting. HERE = <repo>/obs → repo root is ...
 loadRepoEnv(join(HERE, "..", ".env"));
 const UI_DIR = join(HERE, "obs-ui");
+
+// Shared-secret auth (read after loadRepoEnv so PI_OBS_TOKEN can live in .env).
+// Empty => auth disabled: the server stays open, matching the loopback default.
+// When set, every data/control route requires the token (Authorization: Bearer,
+// or ?token= for EventSource); only the static dashboard shell stays open so the
+// browser can bootstrap and present a token. See obs-auth.ts / obs/API.md.
+const OBS_TOKEN = configuredToken();
+function authorized(req: Req, query: URLSearchParams): boolean {
+    return isAuthorized(OBS_TOKEN, req.headers, query);
+}
+function sendUnauthorized(res: Res): void {
+    res.writeHead(401, {
+        "content-type": "application/json",
+        "www-authenticate": 'Bearer realm="obs"',
+        ...API_CORS,
+    });
+    res.end(
+        JSON.stringify({
+            error: "unauthorized",
+            detail:
+                "missing or invalid token — send Authorization: Bearer <PI_OBS_TOKEN>, or ?token=<PI_OBS_TOKEN> for SSE",
+        }),
+    );
+}
 
 function parseArgs(argv: string[]) {
     const o: { project?: string; sink?: string; port: number } = {
@@ -555,8 +580,14 @@ function handleApi(
     query: URLSearchParams,
 ): void {
     if (req.method === "OPTIONS") {
+        // CORS preflight carries no credentials by design — never gate it.
         res.writeHead(204, API_CORS);
         res.end();
+        return;
+    }
+    // Every /api route (data + control) requires the token when one is set.
+    if (!authorized(req, query)) {
+        sendUnauthorized(res);
         return;
     }
     const seg = path.split("/").filter(Boolean); // ["api", ...]
@@ -1379,6 +1410,13 @@ const server = createServer((req, res) => {
         res.writeHead(204).end();
         return;
     }
+    // The static shell above (index.html, /scripts, /styles, favicon) stays open
+    // so the browser can load and present a token; everything below serves run
+    // data, so it requires the token when one is configured.
+    if (!authorized(req, query)) {
+        sendUnauthorized(res);
+        return;
+    }
     if (url === "/summary") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(store.summary()));
@@ -1487,6 +1525,7 @@ server.listen(opts.port, "127.0.0.1", () => {
             `  tailing    ${SINK}${AGGREGATE ? ` (+ ${discoverSinks().length - 1} project sink(s))` : ""}\n` +
             `  history    /runs · /events?run=<id> · /otel?run=<id>\n` +
             (OTLP_ENDPOINT ? `  otlp push  ${OTLP_ENDPOINT}\n` : "") +
+            `  auth       ${OBS_TOKEN ? "on — token required (PI_OBS_TOKEN)" : "off — no PI_OBS_TOKEN set (open)"}\n` +
             `  (run a workflow with PI_OBS=1 to see events; Ctrl-C to stop)\n\n`,
     );
 });

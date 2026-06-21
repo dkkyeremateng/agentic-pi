@@ -22,7 +22,7 @@ $("content").addEventListener("scroll", () => {
 // deduped per lane by seq (handle()).
 let sseRetryTimer = null;
 function connect() {
-    const es = new EventSource("/stream");
+    const es = new EventSource(ObsAuth.streamUrl("/stream"));
     es.addEventListener("open", () => {
         $("conn").textContent = "live";
         $("conn").classList.add("up");

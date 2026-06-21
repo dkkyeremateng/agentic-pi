@@ -8,7 +8,8 @@ bundled vanilla dashboard uses equivalent unprefixed legacy routes; treat
 - **CORS**: `/api/*` responds with `Access-Control-Allow-Origin: *` (plus
   `OPTIONS` preflight). The server binds to `127.0.0.1`, so this only exposes
   it to pages and apps on the same machine.
-- **Auth**: none (localhost-only by design).
+- **Auth**: none by default (localhost-only by design). Set `PI_OBS_TOKEN` to
+  require a shared secret on every route — see [Authentication](#authentication).
 - **Content type**: `application/json` unless noted.
 - **Sink aggregation**: when tailing the shared global sink
   (`~/.pi/agent/obs/events.jsonl`, the no-arg default), the server also reads
@@ -27,6 +28,35 @@ when workflows run with `PI_OBS=1`.
 A machine-readable **OpenAPI 3.0 spec** lives at `obs/openapi.yaml` and
 is served live at `GET /api/openapi.yaml` — point Swagger UI, Postman, or a
 client generator at it.
+
+## Authentication
+
+Auth is **opt-in**. With no `PI_OBS_TOKEN` set the server is open (the loopback
+default). Start it with a token to require a shared secret on every route:
+
+```bash
+PI_OBS_TOKEN=$(openssl rand -hex 32) npm run obs:server
+# or put PI_OBS_TOKEN=… in .env (the server loads it like every other setting)
+```
+
+When set, send the token one of two ways:
+
+- **`Authorization: Bearer <token>`** — for `fetch`, `curl`, and external clients.
+- **`?token=<token>`** query parameter — for the SSE endpoints (`/api/stream`,
+  `/api/chat`, `/api/chat-live`), which use `EventSource` and cannot set headers.
+
+The static dashboard shell (`/`, `/scripts/*`, `/styles/*`) stays unauthenticated
+so the page can load; it then prompts for the token and stores it in
+`localStorage` (`pi_obs_token`), attaching it to every data request and stream.
+Missing/invalid tokens get `401` with a `WWW-Authenticate: Bearer` header. The
+comparison is constant-time. `OPTIONS` preflights are never gated.
+
+```bash
+curl -H "Authorization: Bearer $PI_OBS_TOKEN" http://127.0.0.1:7616/api/runs
+```
+
+This is defense-in-depth, not a replacement for network controls: keep the server
+on loopback and front it with Tailscale/a reverse proxy for TLS and identity.
 
 ## Endpoints
 

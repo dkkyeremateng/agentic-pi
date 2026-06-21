@@ -8,13 +8,24 @@ info:
     Local-first observability for pi agent workflows. The obs-server tails a
     JSONL event sink that every agent process appends to, indexes it by run,
     and exposes this read-mostly API for external UIs and integrations. CORS
-    is open (`*`) because the server binds to 127.0.0.1 only. There is no
-    authentication. Run `:id` path parameters accept the full runId or any
-    unique prefix.
-  version: "2.0.0"
+    is open (`*`) because the server binds to 127.0.0.1 only. Optional
+    shared-secret auth: set `PI_OBS_TOKEN` and every route requires it via an
+    `Authorization: Bearer <token>` header (or a `?token=` query param for SSE
+    endpoints, which use EventSource and cannot send headers); unset means the
+    API is open. Run `:id` path parameters accept the full runId or any unique
+    prefix.
+  version: "2.1.0"
 servers:
   - url: http://127.0.0.1:7616
     description: default local obs-server (PI_OBS_PORT/--port to change)
+
+# Applied globally: requests need the bearer token only when the server was
+# started with PI_OBS_TOKEN set. With no token configured the API is open, so
+# treat security as optional (either scheme — or none — satisfies it).
+security:
+  - bearerAuth: []
+  - queryToken: []
+  - {}
 
 tags:
   - name: meta
@@ -469,6 +480,21 @@ paths:
               schema: { type: string }
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Send `Authorization: Bearer <PI_OBS_TOKEN>`. Required only when the
+        server was started with PI_OBS_TOKEN set.
+    queryToken:
+      type: apiKey
+      in: query
+      name: token
+      description: >
+        `?token=<PI_OBS_TOKEN>` query parameter — the SSE/EventSource transport,
+        which cannot set an Authorization header. Equivalent to bearerAuth.
+
   parameters:
     RunId:
       name: id
@@ -480,6 +506,17 @@ components:
   responses:
     NotFound:
       description: No (or no unique) run matches the id.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: >
+        Missing or invalid token (only when the server runs with PI_OBS_TOKEN
+        set). Send the bearer header, or `?token=` for SSE.
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+          description: 'Bearer realm="obs"'
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

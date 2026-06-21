@@ -74,7 +74,7 @@ function runFind() {
     $("find-axis").textContent = "searching…";
     $("find-results").innerHTML =
         '<div class="skeleton find-skel"></div>'.repeat(4);
-    fetch("/search?q=" + encodeURIComponent(q) + "&limit=200")
+    ObsAuth.fetch("/search?q=" + encodeURIComponent(q) + "&limit=200")
         .then((r) => r.json())
         .then((evs) => {
             rememberFind(raw);
