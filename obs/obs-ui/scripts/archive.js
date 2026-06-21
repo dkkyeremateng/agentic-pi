@@ -19,7 +19,7 @@ function archiveRerender() {
 // Refresh the run list. Cheap (summaries only) — called on init and whenever
 // the trace/stats views open.
 function loadRunArchive() {
-    fetch("/runs")
+    ObsAuth.fetch("/runs")
         .then((r) => r.json())
         .then((list) => {
             if (!Array.isArray(list)) return;
@@ -38,7 +38,7 @@ function loadRunArchive() {
 function fetchArchivedRun(runId) {
     if (archivedEvents.has(runId) || archiveFetching.has(runId)) return;
     archiveFetching.add(runId);
-    fetch("/events?run=" + encodeURIComponent(runId))
+    ObsAuth.fetch("/events?run=" + encodeURIComponent(runId))
         .then((r) => r.json())
         .then((evs) => {
             const list = (Array.isArray(evs) ? evs : []).map(normalizeEvent);

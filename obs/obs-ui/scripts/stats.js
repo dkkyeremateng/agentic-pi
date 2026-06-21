@@ -118,7 +118,7 @@ const AGG_RUN_CAP = 50; // most-recent runs to deep-aggregate
 function ensureAggEvents(runId) {
     if (aggEvents.has(runId) || aggPending.has(runId) || archivedEvents.has(runId)) return;
     aggPending.add(runId);
-    fetch("/events?run=" + encodeURIComponent(runId))
+    ObsAuth.fetch("/events?run=" + encodeURIComponent(runId))
         .then((r) => r.json())
         .then((evs) => {
             aggEvents.set(runId, (Array.isArray(evs) ? evs : []).map(normalizeEvent));
