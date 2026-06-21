@@ -1517,15 +1517,25 @@ if (AUTO_VERDICT_ENABLED) {
     setInterval(backfillVerdicts, 60_000).unref();
 }
 
-server.listen(opts.port, "127.0.0.1", () => {
+// Bind 127.0.0.1 by default (the safe local default). PI_OBS_HOST overrides it
+// — set PI_OBS_HOST=0.0.0.0 to listen on all interfaces, which a container needs
+// since a loopback bind inside a container is unreachable through a published
+// port. Pair a non-loopback bind with PI_OBS_TOKEN (and a firewall/proxy).
+const HOST = (process.env.PI_OBS_HOST || "127.0.0.1").trim();
+const shownHost = HOST === "0.0.0.0" || HOST === "::" ? "localhost" : HOST;
+server.listen(opts.port, HOST, () => {
     process.stdout.write(
         `\nAgent observability — live\n` +
-            `  dashboard  http://127.0.0.1:${opts.port}/\n` +
-            `  api        http://127.0.0.1:${opts.port}/api (see obs/API.md)\n` +
+            `  dashboard  http://${shownHost}:${opts.port}/\n` +
+            `  api        http://${shownHost}:${opts.port}/api (see obs/API.md)\n` +
+            `  bind       ${HOST}:${opts.port}\n` +
             `  tailing    ${SINK}${AGGREGATE ? ` (+ ${discoverSinks().length - 1} project sink(s))` : ""}\n` +
             `  history    /runs · /events?run=<id> · /otel?run=<id>\n` +
             (OTLP_ENDPOINT ? `  otlp push  ${OTLP_ENDPOINT}\n` : "") +
             `  auth       ${OBS_TOKEN ? "on — token required (PI_OBS_TOKEN)" : "off — no PI_OBS_TOKEN set (open)"}\n` +
+            (HOST !== "127.0.0.1" && !OBS_TOKEN
+                ? `  WARNING    bound beyond loopback with no PI_OBS_TOKEN — the API is open to the network\n`
+                : "") +
             `  (run a workflow with PI_OBS=1 to see events; Ctrl-C to stop)\n\n`,
     );
 });

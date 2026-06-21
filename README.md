@@ -447,6 +447,14 @@ agent, so set a token whenever the server is reachable beyond your own loopback 
 behind Tailscale or a proxy). Generate one with `openssl rand -hex 32`. Details in
 [`obs/API.md`](obs/API.md#authentication).
 
+**Run it in Docker.** The dashboard + API can run in a container (the bundled
+dashboard only — not the React app). Your agents still run on the host and write
+the event sink; the container tails it. `PI_OBS_TOKEN=$(openssl rand -hex 32)
+docker compose up --build`, then open `http://localhost:7616/`. The image binds
+`0.0.0.0` (a loopback bind is unreachable through a published port), so always set
+`PI_OBS_TOKEN`. Build/run, the sink mount, and limitations (LLM/chat need the `pi`
+CLI, which the image omits) are in [`DOCKER.md`](DOCKER.md).
+
 **OpenTelemetry export.** The same sink converts to an OTLP/JSON trace following the
 [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 (`invoke_agent` / `chat` / `execute_tool` spans with `gen_ai.*` attributes), so a run can

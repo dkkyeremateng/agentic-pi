@@ -1,0 +1,25 @@
+# Run the obs dashboard + API in a container, tailing the event sink that pi
+# agents write on the host. Usage:
+#   PI_OBS_TOKEN=$(openssl rand -hex 32) docker compose up --build
+# then open http://localhost:7616/ and paste the token.
+services:
+  obs:
+    build: .
+    image: pi-obs-server
+    ports:
+      # host:container — change the host side to relocate the port.
+      - "7616:7616"
+    environment:
+      # Require a token whenever the port leaves the host. Export PI_OBS_TOKEN in
+      # your shell (or an .env file) before `docker compose up`.
+      PI_OBS_TOKEN: ${PI_OBS_TOKEN:-}
+      # Optional: enable the LLM/"Explain"/chat features. They shell out to the
+      # `pi` CLI, which this image does NOT contain — leave off unless you add it.
+      # PI_OBS_LLM: "1"
+    volumes:
+      # Mount the host's event sink so the server tails real runs. The host path
+      # is pi's default global sink; adjust if you set PI_OBS_SINK on the host.
+      # Read-only: the container only tails. (Chat/upload writes need the pi CLI,
+      # which isn't in this image anyway.)
+      - "${HOME}/.pi/agent/obs:/data/obs:ro"
+    restart: unless-stopped

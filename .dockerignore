@@ -1,0 +1,30 @@
+# The image runs only the obs server (obs/ + utils/ + tsx). Keep everything else
+# out so the build context stays small and the React app is never bundled.
+.git
+node_modules
+**/node_modules
+
+# The React dashboard is intentionally excluded — the container serves the
+# bundled vanilla dashboard from obs/obs-ui, not pi-obs.
+pi-obs
+mockups
+
+# Local scratch / runtime artifacts.
+.agent
+*.log
+.obs-server.log
+.env
+.DS_Store
+
+# Not needed to run the server.
+themes
+prompts
+agents
+skills
+install.sh
+run.sh
+AGENTS.md
+README.md
+DOCKER.md
+test-results
+playwright-report
