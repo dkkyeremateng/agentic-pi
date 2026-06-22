@@ -16,7 +16,6 @@
 
 import { createServer } from "http";
 import {
-    existsSync,
     statSync,
     openSync,
     readSync,
@@ -50,7 +49,14 @@ import {
 import { eventsToOtlp } from "./obs-otel";
 import { LineScanner, RunIndexer, type RunSummary } from "./obs-run-index";
 import { buildRunDigest, formatRunDigest, runAutoVerdict } from "./obs-explain";
-import { llmConfig, explainRun, judgeRun, summarizeText, runPlayground, loadRepoEnv } from "./obs-llm";
+import {
+    llmConfig,
+    explainRun,
+    judgeRun,
+    summarizeText,
+    runPlayground,
+    loadRepoEnv,
+} from "./obs-llm";
 import { streamChat } from "./obs-chat";
 import { listLiveSessions } from "./obs-chat-control";
 import { connect as netConnect } from "node:net";
@@ -82,8 +88,7 @@ function sendUnauthorized(res: Res): void {
     res.end(
         JSON.stringify({
             error: "unauthorized",
-            detail:
-                "missing or invalid token — send Authorization: Bearer <PI_OBS_TOKEN>, or ?token=<PI_OBS_TOKEN> for SSE",
+            detail: "missing or invalid token — send Authorization: Bearer <PI_OBS_TOKEN>, or ?token=<PI_OBS_TOKEN> for SSE",
         }),
     );
 }
@@ -250,7 +255,13 @@ function ensureRunIndex(): void {
             const buf = Buffer.alloc(SCAN_CHUNK);
             let pos = s.index.scannedTo;
             while (pos < size) {
-                const n = readSync(fd, buf, 0, Math.min(SCAN_CHUNK, size - pos), pos);
+                const n = readSync(
+                    fd,
+                    buf,
+                    0,
+                    Math.min(SCAN_CHUNK, size - pos),
+                    pos,
+                );
                 if (n <= 0) break;
                 s.index.feed(buf.subarray(0, n));
                 pos += n;
@@ -273,7 +284,10 @@ function ensureRunIndex(): void {
             // time bounds/totals, but take the most recent verdict from either.
             const main = r.events >= prev.events ? r : prev;
             const verdict = laterVerdict(r.verdict, prev.verdict);
-            byId.set(r.runId, verdict === main.verdict ? main : { ...main, verdict });
+            byId.set(
+                r.runId,
+                verdict === main.verdict ? main : { ...main, verdict },
+            );
             if (r.events >= prev.events) runSink.set(r.runId, s.path);
         }
     }
@@ -311,7 +325,13 @@ function readRunEvents(runId: string): ObsEvent[] {
         const buf = Buffer.alloc(SCAN_CHUNK);
         let pos = run.startOffset;
         while (pos < run.endOffset) {
-            const n = readSync(fd, buf, 0, Math.min(SCAN_CHUNK, run.endOffset - pos), pos);
+            const n = readSync(
+                fd,
+                buf,
+                0,
+                Math.min(SCAN_CHUNK, run.endOffset - pos),
+                pos,
+            );
             if (n <= 0) break;
             scanner.push(buf.subarray(0, n));
             pos += n;
@@ -346,7 +366,9 @@ function backfillVerdicts(now = Date.now()): number {
         if (autoInspected.get(run.runId) === run.lastTs) continue; // unchanged since last look
         autoInspected.set(run.runId, run.lastTs);
 
-        const verdict = runAutoVerdict(buildRunDigest(readRunEvents(run.runId)));
+        const verdict = runAutoVerdict(
+            buildRunDigest(readRunEvents(run.runId)),
+        );
         if (!verdict) continue; // empty session — nothing to judge
 
         const f = makeFactory({
@@ -357,7 +379,11 @@ function backfillVerdicts(now = Date.now()): number {
         });
         const ev = f.next("verdict", { status: verdict, source: "auto" });
         try {
-            appendFileSync(sinkForRun(run.runId), serializeEvent(ev) + "\n", "utf-8");
+            appendFileSync(
+                sinkForRun(run.runId),
+                serializeEvent(ev) + "\n",
+                "utf-8",
+            );
             scored++;
         } catch {
             /* sink not writable — try again next tick */
@@ -387,7 +413,13 @@ function searchSink(q: string, limit: number): ObsEvent[] {
                 const buf = Buffer.alloc(SCAN_CHUNK);
                 let pos = 0;
                 while (pos < size) {
-                    const n = readSync(fd, buf, 0, Math.min(SCAN_CHUNK, size - pos), pos);
+                    const n = readSync(
+                        fd,
+                        buf,
+                        0,
+                        Math.min(SCAN_CHUNK, size - pos),
+                        pos,
+                    );
                     if (n <= 0) break;
                     scanner.push(buf.subarray(0, n));
                     pos += n;
@@ -547,13 +579,21 @@ function validUploadId(id: string): boolean {
     return /^[A-Za-z0-9_-]+\.(png|jpe?g|webp|gif)$/.test(id);
 }
 function uploadMime(id: string): string {
-    return UPLOAD_EXT_MIME[id.split(".").pop()!.toLowerCase()] || "application/octet-stream";
+    return (
+        UPLOAD_EXT_MIME[id.split(".").pop()!.toLowerCase()] ||
+        "application/octet-stream"
+    );
 }
 /** Resolve a comma-list of upload ids to existing files (path + mimeType). */
-function resolveUploads(idsCsv: unknown): { id: string; path: string; mimeType: string }[] {
+function resolveUploads(
+    idsCsv: unknown,
+): { id: string; path: string; mimeType: string }[] {
     if (typeof idsCsv !== "string" || !idsCsv) return [];
     const out: { id: string; path: string; mimeType: string }[] = [];
-    for (const id of idsCsv.split(",").map((s) => s.trim()).filter(Boolean)) {
+    for (const id of idsCsv
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)) {
         if (!validUploadId(id)) continue;
         const p = join(uploadsDir(), id);
         if (existsSync(p)) out.push({ id, path: p, mimeType: uploadMime(id) });
@@ -656,14 +696,22 @@ function handleApi(
     // Manually trigger the auto-verdict backfill for ended, still-open runs.
     if (a === "verdicts" && seg[2] === "backfill" && req.method === "POST") {
         if (!AUTO_VERDICT_ENABLED) {
-            apiJson(res, 200, { enabled: false, scored: 0, hint: "set PI_OBS_AUTO_VERDICT=1 to enable" });
+            apiJson(res, 200, {
+                enabled: false,
+                scored: 0,
+                hint: "set PI_OBS_AUTO_VERDICT=1 to enable",
+            });
             return;
         }
         apiJson(res, 200, { enabled: true, scored: backfillVerdicts() });
         return;
     }
     if (a === "events" && seg.length === 2 && req.method === "GET") {
-        apiJson(res, 200, store.recent(Number(query.get("limit")) || undefined));
+        apiJson(
+            res,
+            200,
+            store.recent(Number(query.get("limit")) || undefined),
+        );
         return;
     }
     if (a === "search" && req.method === "GET") {
@@ -683,7 +731,8 @@ function handleApi(
         const boots: ObsEvent[] = [];
         for (const r of allRuns()) {
             for (const e of readRunEvents(r.runId)) {
-                if (e.type === "boot" || e.type === "session_start") boots.push(e);
+                if (e.type === "boot" || e.type === "session_start")
+                    boots.push(e);
             }
         }
         apiJson(res, 200, buildPromptRegistry(boots));
@@ -721,7 +770,12 @@ function handleApi(
                 signal: ctrl.signal,
             })
                 .then((r) => apiJson(res, 200, { ok: r.ok, status: r.status }))
-                .catch((e) => apiJson(res, 200, { ok: false, error: String((e as Error)?.message || e).slice(0, 300) }))
+                .catch((e) =>
+                    apiJson(res, 200, {
+                        ok: false,
+                        error: String((e as Error)?.message || e).slice(0, 300),
+                    }),
+                )
                 .finally(() => clearTimeout(timer));
         });
         return;
@@ -731,7 +785,10 @@ function handleApi(
     if (a === "playground" && req.method === "POST") {
         const baseCfg = llmConfig();
         if (!baseCfg.enabled) {
-            apiJson(res, 200, { enabled: false, hint: "set PI_OBS_LLM=1 to enable the prompt playground" });
+            apiJson(res, 200, {
+                enabled: false,
+                hint: "set PI_OBS_LLM=1 to enable the prompt playground",
+            });
             return;
         }
         let body = "";
@@ -747,17 +804,24 @@ function handleApi(
                 apiError(res, 400, "invalid JSON body");
                 return;
             }
-            const system = typeof parsed.system === "string" ? parsed.system : "";
+            const system =
+                typeof parsed.system === "string" ? parsed.system : "";
             const input = typeof parsed.input === "string" ? parsed.input : "";
             if (!input.trim()) {
                 apiError(res, 400, "missing input");
                 return;
             }
-            const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
+            const model =
+                typeof parsed.model === "string" ? parsed.model.trim() : "";
             const cfg = model ? { ...baseCfg, model } : baseCfg;
             runPlayground(system, input, cfg)
                 .then((r) => apiJson(res, 200, { enabled: true, ...r }))
-                .catch((e) => apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e).slice(0, 400) }));
+                .catch((e) =>
+                    apiJson(res, 200, {
+                        enabled: true,
+                        error: String((e as Error)?.message || e).slice(0, 400),
+                    }),
+                );
         });
         return;
     }
@@ -778,14 +842,19 @@ function handleApi(
             // flush a comment immediately so proxies (vite dev server) start
             // streaming now instead of buffering until pi's first byte
             res.write(": connected\n\n");
-            const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+            const emit = (ev: unknown) =>
+                res.write(`data: ${JSON.stringify(ev)}\n\n`);
             const cfg = llmConfig();
             if (!cfg.enabled) {
-                emit({ type: "error", error: "set PI_OBS_LLM=1 on the server to enable chat" });
+                emit({
+                    type: "error",
+                    error: "set PI_OBS_LLM=1 on the server to enable chat",
+                });
                 res.end();
                 return;
             }
-            const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+            const sessionId =
+                typeof p.sessionId === "string" ? p.sessionId : "";
             const text = typeof p.text === "string" ? p.text : "";
             if (!/^[\w.-]{1,64}$/.test(sessionId)) {
                 emit({ type: "error", error: "invalid sessionId" });
@@ -798,7 +867,11 @@ function handleApi(
                 return;
             }
             const model = typeof p.model === "string" ? p.model.trim() : "";
-            const forkFrom = typeof p.forkFrom === "string" && /^[\w.-]{1,64}$/.test(p.forkFrom) ? p.forkFrom : undefined;
+            const forkFrom =
+                typeof p.forkFrom === "string" &&
+                /^[\w.-]{1,64}$/.test(p.forkFrom)
+                    ? p.forkFrom
+                    : undefined;
             // stop: if the browser disconnects, abort kills the spawned pi (no orphan)
             const ac = new AbortController();
             req.on("close", () => ac.abort());
@@ -867,7 +940,8 @@ function handleApi(
                 ...API_CORS,
             });
             res.write(": connected\n\n");
-            const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+            const emit = (ev: unknown) =>
+                res.write(`data: ${JSON.stringify(ev)}\n\n`);
             let ended = false;
             const finish = () => {
                 if (ended) return;
@@ -876,7 +950,8 @@ function handleApi(
                     res.end();
                 } catch {}
             };
-            const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+            const sessionId =
+                typeof p.sessionId === "string" ? p.sessionId : "";
             const text = typeof p.text === "string" ? p.text : "";
             const deliverAs = p.deliverAs === "steer" ? "steer" : "followUp";
             const approve = p.approve === "1" || p.approve === true;
@@ -890,9 +965,14 @@ function handleApi(
                 finish();
                 return;
             }
-            const live = listLiveSessions().find((m) => m.sessionId === sessionId);
+            const live = listLiveSessions().find(
+                (m) => m.sessionId === sessionId,
+            );
             if (!live) {
-                emit({ type: "error", error: "that session is no longer live — attach to an active session" });
+                emit({
+                    type: "error",
+                    error: "that session is no longer live — attach to an active session",
+                });
                 finish();
                 return;
             }
@@ -906,7 +986,15 @@ function handleApi(
             let sawTerminal = false;
             sock.on("connect", () => {
                 try {
-                    sock.write(JSON.stringify({ text, deliverAs, approve, token: live.token, images }) + "\n");
+                    sock.write(
+                        JSON.stringify({
+                            text,
+                            deliverAs,
+                            approve,
+                            token: live.token,
+                            images,
+                        }) + "\n",
+                    );
                 } catch {}
             });
             sock.on("data", (d: Buffer) => {
@@ -933,18 +1021,32 @@ function handleApi(
                 }
             });
             sock.on("error", (e: Error) => {
-                if (!sawTerminal) emit({ type: "error", error: "control channel error: " + e.message });
+                if (!sawTerminal)
+                    emit({
+                        type: "error",
+                        error: "control channel error: " + e.message,
+                    });
                 finish();
             });
             sock.on("close", () => {
-                if (!sawTerminal) emit({ type: "error", error: "agent closed the channel before replying" });
+                if (!sawTerminal)
+                    emit({
+                        type: "error",
+                        error: "agent closed the channel before replying",
+                    });
                 finish();
             });
             // stop: when the browser disconnects, tell the agent to abort its
             // current turn (pi's ctx.abort), then drop the socket.
             req.on("close", () => {
                 try {
-                    if (!sawTerminal) sock.write(JSON.stringify({ cmd: "abort", token: live.token }) + "\n");
+                    if (!sawTerminal)
+                        sock.write(
+                            JSON.stringify({
+                                cmd: "abort",
+                                token: live.token,
+                            }) + "\n",
+                        );
                 } catch {}
                 setTimeout(() => {
                     try {
@@ -974,16 +1076,23 @@ function handleApi(
     }
     // Relay a human approve/deny decision for a paused tool to the live agent's
     // control socket (the agent's tool_call handler is awaiting it).
-    if (a === "chat-approve" && (req.method === "GET" || req.method === "POST")) {
+    if (
+        a === "chat-approve" &&
+        (req.method === "GET" || req.method === "POST")
+    ) {
         const decide = (p: Record<string, unknown>) => {
-            const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
-            const toolCallId = typeof p.toolCallId === "string" ? p.toolCallId : "";
+            const sessionId =
+                typeof p.sessionId === "string" ? p.sessionId : "";
+            const toolCallId =
+                typeof p.toolCallId === "string" ? p.toolCallId : "";
             const decision = p.decision === "allow" ? "allow" : "deny";
             if (!/^[\w.-]{1,64}$/.test(sessionId) || !toolCallId) {
                 apiError(res, 400, "sessionId and toolCallId required");
                 return;
             }
-            const live = listLiveSessions().find((m) => m.sessionId === sessionId);
+            const live = listLiveSessions().find(
+                (m) => m.sessionId === sessionId,
+            );
             if (!live) {
                 apiError(res, 409, "session no longer live");
                 return;
@@ -997,7 +1106,14 @@ function handleApi(
             };
             sock.on("connect", () => {
                 try {
-                    sock.write(JSON.stringify({ cmd: "approve", toolCallId, decision, token: live.token }) + "\n");
+                    sock.write(
+                        JSON.stringify({
+                            cmd: "approve",
+                            toolCallId,
+                            decision,
+                            token: live.token,
+                        }) + "\n",
+                    );
                 } catch {}
                 setTimeout(() => done(true), 30); // give the frame time to flush
             });
@@ -1023,12 +1139,16 @@ function handleApi(
     }
     // Chat persistence: store conversations server-side so they survive a cache
     // clear and are shared across browsers (last-write-wins; local-dev scope).
-    if (a === "chats" && (req.method === "GET" || req.method === "PUT" || req.method === "POST")) {
+    if (
+        a === "chats" &&
+        (req.method === "GET" || req.method === "PUT" || req.method === "POST")
+    ) {
         const file = join(homedir(), ".pi", "agent", "obs", "chats.json");
         if (req.method === "GET") {
             let chats: unknown = [];
             try {
-                if (existsSync(file)) chats = JSON.parse(readFileSync(file, "utf-8"));
+                if (existsSync(file))
+                    chats = JSON.parse(readFileSync(file, "utf-8"));
             } catch {
                 chats = [];
             }
@@ -1073,7 +1193,9 @@ function handleApi(
                 return;
             }
             const mime = typeof p.mimeType === "string" ? p.mimeType : "";
-            const ext = Object.keys(UPLOAD_EXT_MIME).find((e) => UPLOAD_EXT_MIME[e] === mime);
+            const ext = Object.keys(UPLOAD_EXT_MIME).find(
+                (e) => UPLOAD_EXT_MIME[e] === mime,
+            );
             if (!ext || typeof p.dataB64 !== "string" || !p.dataB64) {
                 apiError(res, 400, "expected an image {mimeType, dataB64}");
                 return;
@@ -1081,10 +1203,22 @@ function handleApi(
             try {
                 mkdirSync(uploadsDir(), { recursive: true, mode: 0o700 });
                 const id = `${randomBytes(12).toString("hex")}.${ext}`;
-                writeFileSync(join(uploadsDir(), id), Buffer.from(p.dataB64, "base64"));
-                apiJson(res, 200, { id, mimeType: mime, name: typeof p.name === "string" ? p.name : id });
+                writeFileSync(
+                    join(uploadsDir(), id),
+                    Buffer.from(p.dataB64, "base64"),
+                );
+                apiJson(res, 200, {
+                    id,
+                    mimeType: mime,
+                    name: typeof p.name === "string" ? p.name : id,
+                });
             } catch (e) {
-                apiError(res, 500, "could not store upload: " + String((e as Error)?.message || e));
+                apiError(
+                    res,
+                    500,
+                    "could not store upload: " +
+                        String((e as Error)?.message || e),
+                );
             }
         });
         return;
@@ -1101,7 +1235,11 @@ function handleApi(
             apiError(res, 404, "not found");
             return;
         }
-        res.writeHead(200, { "content-type": uploadMime(id), "cache-control": "max-age=3600", ...API_CORS });
+        res.writeHead(200, {
+            "content-type": uploadMime(id),
+            "cache-control": "max-age=3600",
+            ...API_CORS,
+        });
         res.end(readFileSync(p));
         return;
     }
@@ -1111,7 +1249,10 @@ function handleApi(
     if (a === "summarize" && req.method === "POST") {
         const cfg = llmConfig();
         if (!cfg.enabled) {
-            apiJson(res, 200, { enabled: false, hint: "set PI_OBS_LLM=1 to enable AI summaries" });
+            apiJson(res, 200, {
+                enabled: false,
+                hint: "set PI_OBS_LLM=1 to enable AI summaries",
+            });
             return;
         }
         let body = "";
@@ -1128,14 +1269,21 @@ function handleApi(
                 return;
             }
             const text = typeof parsed.text === "string" ? parsed.text : "";
-            const kind = (typeof parsed.kind === "string" ? parsed.kind : "content").slice(0, 40);
+            const kind = (
+                typeof parsed.kind === "string" ? parsed.kind : "content"
+            ).slice(0, 40);
             if (!text.trim()) {
                 apiError(res, 400, "missing text");
                 return;
             }
             summarizeText(text, kind, cfg)
                 .then((r) => apiJson(res, 200, { enabled: true, ...r }))
-                .catch((e) => apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e).slice(0, 400) }));
+                .catch((e) =>
+                    apiJson(res, 200, {
+                        enabled: true,
+                        error: String((e as Error)?.message || e).slice(0, 400),
+                    }),
+                );
         });
         return;
     }
@@ -1334,9 +1482,17 @@ function handleApi(
                     source: "api",
                 });
                 try {
-                    appendFileSync(sinkForRun(run.runId), serializeEvent(ev) + "\n", "utf-8");
+                    appendFileSync(
+                        sinkForRun(run.runId),
+                        serializeEvent(ev) + "\n",
+                        "utf-8",
+                    );
                 } catch (e: any) {
-                    apiError(res, 500, `could not append verdict: ${e?.message}`);
+                    apiError(
+                        res,
+                        500,
+                        `could not append verdict: ${e?.message}`,
+                    );
                     return;
                 }
                 apiJson(res, 200, {
@@ -1344,7 +1500,7 @@ function handleApi(
                     runId: run.runId,
                     ...(agent ? { agent } : {}),
                     verdict: ev.payload,
-                    previous: agent ? null : run.verdict ?? null,
+                    previous: agent ? null : (run.verdict ?? null),
                 });
             });
             return;
@@ -1429,7 +1585,9 @@ const server = createServer((req, res) => {
         // Hide finished no-op runs (no cost/tokens/tools, gone quiet) — matches
         // /api/runs and the React dashboard. `?includeEmpty=1` returns them too.
         const includeEmpty = query.get("includeEmpty") === "1";
-        const runs = includeEmpty ? allRuns() : allRuns().filter((r) => !isEmptyFinishedRun(r));
+        const runs = includeEmpty
+            ? allRuns()
+            : allRuns().filter((r) => !isEmptyFinishedRun(r));
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(runs));
         return;
