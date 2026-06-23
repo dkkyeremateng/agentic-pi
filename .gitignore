@@ -13,3 +13,4 @@ __pycache__/
 .obs-server.log
 obs/obs-ui/mockups/
 extensions/qa-review.ts
+mockups/
