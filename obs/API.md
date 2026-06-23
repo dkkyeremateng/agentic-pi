@@ -249,7 +249,7 @@ Event types and notable payload fields:
 | `tool_start` / `tool_end` | `toolCallId`, `toolName`, `arg`/`argsText`, end: `durationMs`, `isError`, `result`/`resultText` |
 | `message` | `role`, `kind` (`user`/`assistant`/`thinking`), `text` (opt-in via `PI_OBS_CONTENT=1`) |
 | `model_change` | `model`, `previous`, `source` |
-| `compaction` | — (context pressure marker) |
+| `compaction` | `reason` (`manual`/`threshold`/`overflow`), `willRetry` (turn retried after an overflow compaction), `fromExtension`, `tokensBefore` (context size just before compacting) |
 | `error` | `source`, `status` (provider HTTP status), `message` |
 | `dispatch_start/retry/end` | `agent` (the child), `dispatchId`, retry: `reason`, end: `status`, `attempts` |
 | `verdict` | `status` (`pass`/`fail`/`open`), `outcome?`, `note?`, `source` (`workflow`/`cli`/`api`), `prUrl?` |

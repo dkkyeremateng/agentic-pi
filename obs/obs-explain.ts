@@ -139,6 +139,9 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
     const turnRecs: { agent: string; idx: unknown; ms: number; cost: number }[] = [];
     const slowToolRecs: { agent: string; tool: string; ms: number; arg: string }[] = [];
     const anomalies: Anomaly[] = [];
+    // Per-agent overflow-compaction detail (count + largest pre-compaction size),
+    // used to enrich that agent's compaction anomaly below.
+    const compactInfo = new Map<string, { overflow: number; tokensBefore: number }>();
 
     const agentOf = (ev: ObsEvent) => {
         let a = agents.get(ev.agent);
@@ -310,6 +313,19 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
             case "compaction":
                 d.totals.compactions++;
                 a.compactions++;
+                // Track the overflow-recovery compactions (context overran and a
+                // turn was retried) separately from routine threshold/manual ones,
+                // so the per-agent compaction anomaly can call out the bad case.
+                if (p.reason === "overflow" || p.willRetry) {
+                    const ci = compactInfo.get(ev.agent) ?? {
+                        overflow: 0,
+                        tokensBefore: 0,
+                    };
+                    ci.overflow++;
+                    if (typeof p.tokensBefore === "number")
+                        ci.tokensBefore = Math.max(ci.tokensBefore, p.tokensBefore);
+                    compactInfo.set(ev.agent, ci);
+                }
                 break;
             case "error":
                 d.totals.providerErrors++;
@@ -356,12 +372,21 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
             });
 
     for (const a of agents.values()) {
-        if (a.compactions)
+        if (a.compactions) {
+            const ci = compactInfo.get(a.agent);
             anomalies.push({
                 kind: "compaction",
                 agent: a.agent,
-                detail: `${a.agent} compacted ${a.compactions}× (context pressure)`,
+                detail:
+                    `${a.agent} compacted ${a.compactions}× (context pressure)` +
+                    (ci?.overflow
+                        ? ` — ${ci.overflow} from overflow, turn retried`
+                        : "") +
+                    (ci?.tokensBefore
+                        ? ` (~${ci.tokensBefore.toLocaleString()} tokens before)`
+                        : ""),
             });
+        }
         if (a.maxContextPct != null && a.maxContextPct >= 70)
             anomalies.push({
                 kind: "context",

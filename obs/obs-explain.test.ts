@@ -173,3 +173,26 @@ test("buildRunDigest handles an empty event list", () => {
     assert.equal(d.agents.length, 0);
     assert.equal(d.anomalies.length, 0);
 });
+
+test("overflow compaction enriches the agent's compaction anomaly; routine stays plain", () => {
+    const f = makeFactory({ sessionId: "s", agent: "implementer", runId: "r" });
+    const overflow = buildRunDigest([
+        f.next("session_start", { model: "m" }, 1000),
+        f.next("compaction", { reason: "overflow", willRetry: true, tokensBefore: 184320 }, 2000),
+    ]);
+    assert.equal(overflow.totals.compactions, 1);
+    // one compaction anomaly (the per-agent rollup), now enriched with overflow detail
+    const anoms = overflow.anomalies.filter((a) => a.kind === "compaction");
+    assert.equal(anoms.length, 1);
+    assert.match(anoms[0].detail, /from overflow, turn retried/);
+    assert.match(anoms[0].detail, /184,320 tokens before/);
+
+    const routine = buildRunDigest([
+        f.next("session_start", { model: "m" }, 1000),
+        f.next("compaction", { reason: "threshold" }, 2000),
+    ]);
+    assert.equal(routine.totals.compactions, 1);
+    const r = routine.anomalies.filter((a) => a.kind === "compaction");
+    assert.equal(r.length, 1);
+    assert.doesNotMatch(r[0].detail, /overflow/);
+});

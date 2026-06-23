@@ -200,6 +200,10 @@ export default function (pi: ExtensionAPI) {
     // for the footer extension, which adds it to the sub-agent phase total so the
     // footer reflects all spend.
     let primaryCostUsd = 0;
+    // Primary (orchestrator) session prompt-cache accounting, summed from each
+    // assistant message's usage, for the footer's cache-hit-rate (CH).
+    let primaryCacheRead = 0;
+    let primaryInputTokens = 0;
     // Run a git command in `cwd`, returning trimmed stdout (throws on failure).
     const git =
         (cwd: string) =>
@@ -1325,17 +1329,17 @@ export default function (pi: ExtensionAPI) {
     if (active)
         pi.on("message_end", async (event: any) => {
             const msg = event?.message;
-            const total = msg?.usage?.cost?.total;
-            if (
-                msg?.role === "assistant" &&
-                typeof total === "number" &&
-                total > 0
-            ) {
-                primaryCostUsd += total;
-                // Repaint the dashboard with the new total; the footer extension
-                // reads primaryCostUsd live, so it refreshes on the same redraw.
-                updateWidget();
-            }
+            const u = msg?.usage;
+            if (msg?.role !== "assistant" || !u) return;
+            const total = u.cost?.total;
+            if (typeof total === "number" && total > 0) primaryCostUsd += total;
+            // Cache/input token tallies for the footer's hit rate (cached input as
+            // a share of all input). Accumulated on every assistant message.
+            primaryCacheRead += u.cacheRead ?? 0;
+            primaryInputTokens += u.input ?? 0;
+            // Repaint the dashboard; the footer reads these live, so it refreshes
+            // on the same redraw.
+            updateWidget();
         });
 
     // ── Primary-turn timing ──
@@ -1489,6 +1493,8 @@ export default function (pi: ExtensionAPI) {
         // session. Restart clears them too (new process).
         clearAllModelOverrides();
         primaryCostUsd = 0; // fresh per-session spend tally
+        primaryCacheRead = 0;
+        primaryInputTokens = 0;
         loadDotEnv(ctx.cwd); // pick up cwd/.env in case pi launched from elsewhere
         st.agents = loadAgents(ctx.cwd);
         st.teams = loadTeams(ctx.cwd);
@@ -1596,6 +1602,12 @@ export default function (pi: ExtensionAPI) {
                 dispatchElapsedMs: st.dispatchElapsedMs,
                 runElapsedMs: st.runElapsedMs,
                 primaryCostUsd,
+                cacheHitPct:
+                    primaryCacheRead + primaryInputTokens > 0
+                        ? (primaryCacheRead /
+                              (primaryCacheRead + primaryInputTokens)) *
+                          100
+                        : undefined,
                 contextUsage: () => ctx.getContextUsage?.(),
             });
     });

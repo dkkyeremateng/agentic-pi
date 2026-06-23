@@ -1049,6 +1049,36 @@ describe("renderWorkflowFooter", () => {
         assert.ok(line.includes("+2"));
         assert.ok(!line.includes("∥ E"));
     });
+
+    const base = {
+        width: 200,
+        theme,
+        selfName: "",
+        model: "m",
+        running: false,
+        lastStatus: "idle",
+        iteration: 1,
+        maxLoopsRef: 3,
+        dispatchMode: false,
+        phases: [] as PhaseState[],
+        dispatchElapsedMs: 0,
+        runElapsedMs: 0,
+        contextUsage: () => undefined,
+        visibleWidth: (s: string) => s.length,
+        truncateToWidth: (s: string, w: number) => s.slice(0, w),
+    };
+
+    it("shows the rounded cache hit rate when provided", () => {
+        const line = renderWorkflowFooter({ ...base, cacheHitPct: 88.6 })[0];
+        assert.ok(line.includes("CH 89%"), line);
+    });
+
+    it("omits the cache hit rate when zero or undefined", () => {
+        assert.ok(!renderWorkflowFooter({ ...base })[0].includes("CH "));
+        assert.ok(
+            !renderWorkflowFooter({ ...base, cacheHitPct: 0 })[0].includes("CH "),
+        );
+    });
 });
 
 describe("parseAgentFile aliases", () => {
