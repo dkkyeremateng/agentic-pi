@@ -1515,6 +1515,7 @@ const CONTENT: Record<string, string> = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml; charset=utf-8",
 };
 
 function serveStatic(res: import("http").ServerResponse, file: string): void {
@@ -1560,6 +1561,10 @@ const server = createServer((req, res) => {
         } else {
             res.writeHead(404).end("not found");
         }
+        return;
+    }
+    if (url === "/favicon.svg") {
+        serveStatic(res, join(UI_DIR, "favicon.svg"));
         return;
     }
     if (url === "/favicon.ico") {
