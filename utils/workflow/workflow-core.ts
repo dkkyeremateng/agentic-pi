@@ -587,6 +587,9 @@ export interface WorkflowFooterState {
     dispatchElapsedMs: number;
     runElapsedMs: number;
     primaryCostUsd: number;
+    // Prompt-cache hit rate of the primary session (0-100): cached input tokens as
+    // a share of all input tokens. Undefined when nothing priced has run yet.
+    cacheHitPct?: number;
     contextUsage: () => any;
 }
 export const WORKFLOW_FOOTER_GLOBAL = "__piWorkflowFooterState";
@@ -622,6 +625,9 @@ export function renderWorkflowFooter(opts: {
     // USD cost of the primary (orchestrator) session itself, folded into the
     // footer total alongside the sub-agent phase costs. Optional (defaults to 0).
     primaryCostUsd?: number;
+    // Prompt-cache hit rate (0-100) of the primary session, shown as `CH NN%`.
+    // Omitted from the footer when undefined or 0.
+    cacheHitPct?: number;
     contextUsage: () => any;
     visibleWidth: (s: string) => number;
     truncateToWidth: (s: string, w: number, ellipsis?: string) => string;
@@ -643,6 +649,7 @@ export function renderWorkflowFooter(opts: {
         dispatchElapsedMs,
         runElapsedMs,
         primaryCostUsd = 0,
+        cacheHitPct,
         contextUsage,
         visibleWidth,
         truncateToWidth,
@@ -749,7 +756,13 @@ export function renderWorkflowFooter(opts: {
         primaryCostUsd +
         phases.reduce((sum, p) => sum + (p.tokens?.costUsd || 0), 0);
     const costStr = theme.fg("muted", `${formatCostUsd(totalCostUsd)} · `);
-    const right = costStr + theme.fg("dim", `[${bar}] ${pctStr} `);
+    // Prompt-cache hit rate, when known and non-zero (a long run with good cache
+    // reuse reads ~90%+). Sits between cost and the context bar.
+    const chStr =
+        typeof cacheHitPct === "number" && cacheHitPct > 0
+            ? theme.fg("dim", `CH ${Math.round(cacheHitPct)}% · `)
+            : "";
+    const right = costStr + chStr + theme.fg("dim", `[${bar}] ${pctStr} `);
 
     const left = modelPart + namePart;
     const pad = " ".repeat(
@@ -1663,9 +1676,15 @@ export function formatContextUsage(opts: {
         pctKnown = false;
     }
 
-    const filled = pctKnown
-        ? Math.max(0, Math.min(barLength, Math.round((pct / 100) * barLength)))
-        : 0;
+    // Any non-zero usage lights at least one cell: on a large window (e.g. 1M),
+    // a real but small load (say 1.3%) rounds to 0 cells and the bar reads empty
+    // even though context is filling. Floor a known, non-zero percent to 1 cell so
+    // the bar visibly tracks usage; only a true 0% stays empty.
+    const filled = !pctKnown
+        ? 0
+        : pct > 0
+          ? Math.max(1, Math.min(barLength, Math.round((pct / 100) * barLength)))
+          : 0;
     const bar = "#".repeat(filled) + "-".repeat(barLength - filled);
 
     const display = !pctKnown

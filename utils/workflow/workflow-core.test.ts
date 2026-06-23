@@ -27,6 +27,7 @@ import {
     freshPhases,
     dispatchEnv,
     renderWorkflowFooter,
+    formatContextUsage,
     parseAgentFile,
     subagentExtArgs,
     shouldApproveProjectForSpawn,
@@ -1005,6 +1006,30 @@ describe("dispatchEnv", () => {
     });
 });
 
+describe("formatContextUsage bar fill", () => {
+    const fill = (contextPct: number | null, opts: any = {}) =>
+        formatContextUsage({ contextPct, barLength: 10, preferContextPct: true, ...opts }).bar;
+
+    it("lights at least one cell for any non-zero usage (large window)", () => {
+        // 1.3% of a 1M window rounds to 0 cells naively; floor it to 1 so the bar
+        // visibly tracks usage instead of reading empty.
+        assert.equal(fill(1.3), "#---------");
+    });
+
+    it("keeps a true 0% empty", () => {
+        assert.equal(fill(0), "----------");
+    });
+
+    it("fills proportionally above the first cell", () => {
+        assert.equal(fill(50), "#####-----");
+        assert.equal(fill(100), "##########");
+    });
+
+    it("is empty when the percent is unknown", () => {
+        assert.equal(fill(null), "----------");
+    });
+});
+
 describe("renderWorkflowFooter", () => {
     // Stub theme: return the raw text so we can assert on content, not colors.
     const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
@@ -1048,6 +1073,36 @@ describe("renderWorkflowFooter", () => {
         );
         assert.ok(line.includes("+2"));
         assert.ok(!line.includes("∥ E"));
+    });
+
+    const base = {
+        width: 200,
+        theme,
+        selfName: "",
+        model: "m",
+        running: false,
+        lastStatus: "idle",
+        iteration: 1,
+        maxLoopsRef: 3,
+        dispatchMode: false,
+        phases: [] as PhaseState[],
+        dispatchElapsedMs: 0,
+        runElapsedMs: 0,
+        contextUsage: () => undefined,
+        visibleWidth: (s: string) => s.length,
+        truncateToWidth: (s: string, w: number) => s.slice(0, w),
+    };
+
+    it("shows the rounded cache hit rate when provided", () => {
+        const line = renderWorkflowFooter({ ...base, cacheHitPct: 88.6 })[0];
+        assert.ok(line.includes("CH 89%"), line);
+    });
+
+    it("omits the cache hit rate when zero or undefined", () => {
+        assert.ok(!renderWorkflowFooter({ ...base })[0].includes("CH "));
+        assert.ok(
+            !renderWorkflowFooter({ ...base, cacheHitPct: 0 })[0].includes("CH "),
+        );
     });
 });
 

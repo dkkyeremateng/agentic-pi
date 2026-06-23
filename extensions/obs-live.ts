@@ -582,8 +582,30 @@ export default function obsLive(pi: any): void {
         });
     });
 
-    pi.on("session_compact", async () => {
-        emit("compaction", {});
+    // Context size just before a compaction, captured on session_before_compact
+    // (ContextUsage.tokens is valid before compaction, null right after), so the
+    // compaction event can report how full context got before it was reclaimed.
+    let tokensBeforeCompact: number | null = null;
+    pi.on("session_before_compact", async (_e: any, ctx: any) => {
+        try {
+            tokensBeforeCompact = ctx?.getContextUsage?.()?.tokens ?? null;
+        } catch {
+            tokensBeforeCompact = null;
+        }
+    });
+    pi.on("session_compact", async (e: any) => {
+        // reason: manual | threshold | overflow; willRetry: true on overflow
+        // recovery (the aborted turn is retried after compacting). pi 0.79.8+
+        // / 0.79.10.
+        emit("compaction", {
+            reason: e?.reason,
+            willRetry: !!e?.willRetry,
+            fromExtension: !!e?.fromExtension,
+            ...(tokensBeforeCompact != null
+                ? { tokensBefore: tokensBeforeCompact }
+                : {}),
+        });
+        tokensBeforeCompact = null;
     });
 
     pi.on("session_shutdown", async (e: any) => {

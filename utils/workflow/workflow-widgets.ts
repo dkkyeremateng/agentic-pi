@@ -115,7 +115,14 @@ export function renderRichCard(opts: {
     // Append the phase's USD cost to the usage line (where tokens already live)
     // so the card height stays constant. Always shown ($0.00 for unpriced models).
     const costSuffix = ` · ${formatCostUsd(livePhase?.tokens?.costUsd)}`;
-    const ctxRaw = `[${ctxBar}] ${ctxDisplay}${costSuffix}`;
+    // Per-agent prompt-cache hit rate (cached input / all input), matching the
+    // footer's CH. Appended last so a narrow card truncates it before the cost or
+    // tokens. Omitted until this agent has read cache (CH 0 / no input yet).
+    const tk = livePhase?.tokens;
+    const chDen = (tk?.cacheRead || 0) + (tk?.input || 0);
+    const chPct = chDen > 0 ? Math.round(((tk?.cacheRead || 0) / chDen) * 100) : 0;
+    const chSuffix = chPct > 0 ? ` · CH ${chPct}%` : "";
+    const ctxRaw = `[${ctxBar}] ${ctxDisplay}${costSuffix}${chSuffix}`;
     const ctxStr = theme.fg("dim", truncate(ctxRaw, inner));
     const ctxVisible = Math.min(ctxRaw.length, inner);
 

@@ -57,11 +57,17 @@ export default function (pi: ExtensionAPI) {
     // Standalone mode tracks the session's own spend (workflow mode reads cost from
     // the orchestrator's published state instead).
     let sessionCostUsd = 0;
+    // Standalone-mode prompt-cache accounting for the footer's hit rate (CH).
+    let sessionCacheRead = 0;
+    let sessionInput = 0;
     if (!workflow)
         pi.on("message_end", async (event: any) => {
-            const total = event?.message?.usage?.cost?.total;
-            if (event?.message?.role === "assistant" && total > 0)
-                sessionCostUsd += total;
+            const u = event?.message?.usage;
+            if (event?.message?.role !== "assistant" || !u) return;
+            if (typeof u.cost?.total === "number" && u.cost.total > 0)
+                sessionCostUsd += u.cost.total;
+            sessionCacheRead += u.cacheRead ?? 0;
+            sessionInput += u.input ?? 0;
         });
 
     pi.on("session_start", async (_event, ctx: any) => {
@@ -164,6 +170,13 @@ export default function (pi: ExtensionAPI) {
                         dispatchElapsedMs: wf?.dispatchElapsedMs ?? 0,
                         runElapsedMs: wf?.runElapsedMs ?? 0,
                         primaryCostUsd: wf?.primaryCostUsd ?? sessionCostUsd,
+                        cacheHitPct:
+                            wf?.cacheHitPct ??
+                            (sessionCacheRead + sessionInput > 0
+                                ? (sessionCacheRead /
+                                      (sessionCacheRead + sessionInput)) *
+                                  100
+                                : undefined),
                         contextUsage:
                             wf?.contextUsage ?? (() => ctx.getContextUsage?.()),
                         visibleWidth,

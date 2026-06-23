@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
     renderLspServers,
     renderTodos,
+    renderRichCard,
     type LspServerInfo,
 } from "./workflow-widgets";
 
@@ -71,5 +72,37 @@ describe("renderTodos", () => {
         const out = renderTodos(items, theme, { title: " # Review" });
         assert.match(out[0], /# Review/);
         assert.ok(!out[0].includes("# Todos"));
+    });
+});
+
+describe("renderRichCard per-agent cache hit rate", () => {
+    const card = (tokens: any): string =>
+        renderRichCard({
+            agentKey: "implementer",
+            def: { description: "builds", contextWindow: 1_000_000 },
+            phases: [
+                {
+                    agent: "implementer",
+                    label: "Implementer",
+                    status: "running",
+                    contextPct: 2,
+                    tokens,
+                } as any,
+            ],
+            colWidth: 70,
+            theme,
+            model: "m",
+            showContext: true,
+        }).join("\n");
+
+    it("shows CH on the usage line (cached input / all input)", () => {
+        // 13000 / (13000 + 7000) = 65%
+        const out = card({ input: 7000, cacheRead: 13000, output: 100, cacheWrite: 0, costUsd: 0.27, contextWindow: 1_000_000 });
+        assert.match(out, /CH 65%/);
+    });
+
+    it("omits CH when the agent has read no cache", () => {
+        const out = card({ input: 7000, cacheRead: 0, output: 100, cacheWrite: 0, costUsd: 0.1, contextWindow: 1_000_000 });
+        assert.doesNotMatch(out, /CH /);
     });
 });
