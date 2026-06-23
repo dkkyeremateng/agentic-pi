@@ -27,6 +27,7 @@ import {
     freshPhases,
     dispatchEnv,
     renderWorkflowFooter,
+    formatContextUsage,
     parseAgentFile,
     subagentExtArgs,
     shouldApproveProjectForSpawn,
@@ -1002,6 +1003,30 @@ describe("dispatchEnv", () => {
             assert.equal(env.PI_OBS_AGENT, "seeker");
             assert.equal(env.PI_OBS_DISPATCH_ID, undefined);
         });
+    });
+});
+
+describe("formatContextUsage bar fill", () => {
+    const fill = (contextPct: number | null, opts: any = {}) =>
+        formatContextUsage({ contextPct, barLength: 10, preferContextPct: true, ...opts }).bar;
+
+    it("lights at least one cell for any non-zero usage (large window)", () => {
+        // 1.3% of a 1M window rounds to 0 cells naively; floor it to 1 so the bar
+        // visibly tracks usage instead of reading empty.
+        assert.equal(fill(1.3), "#---------");
+    });
+
+    it("keeps a true 0% empty", () => {
+        assert.equal(fill(0), "----------");
+    });
+
+    it("fills proportionally above the first cell", () => {
+        assert.equal(fill(50), "#####-----");
+        assert.equal(fill(100), "##########");
+    });
+
+    it("is empty when the percent is unknown", () => {
+        assert.equal(fill(null), "----------");
     });
 });
 
