@@ -1676,15 +1676,15 @@ export function formatContextUsage(opts: {
         pctKnown = false;
     }
 
-    // Any non-zero usage lights at least one cell: on a large window (e.g. 1M),
-    // a real but small load (say 1.3%) rounds to 0 cells and the bar reads empty
-    // even though context is filling. Floor a known, non-zero percent to 1 cell so
-    // the bar visibly tracks usage; only a true 0% stays empty.
-    const filled = !pctKnown
-        ? 0
-        : pct > 0
-          ? Math.max(1, Math.min(barLength, Math.round((pct / 100) * barLength)))
-          : 0;
+    // Light at least one cell once usage is non-zero AT THE DISPLAYED precision
+    // (1 decimal). On a large window (e.g. 1M) a real load like 1.3% rounds to 0
+    // cells naively, so floor it to 1 so the bar tracks usage. But a few tokens
+    // that read 0.0% (< 0.05%) must stay empty — the bar must never disagree with
+    // the shown percent.
+    const filled =
+        !pctKnown || pct < 0.05
+            ? 0
+            : Math.max(1, Math.min(barLength, Math.round((pct / 100) * barLength)));
     const bar = "#".repeat(filled) + "-".repeat(barLength - filled);
 
     const display = !pctKnown

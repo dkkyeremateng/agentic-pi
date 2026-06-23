@@ -1020,6 +1020,13 @@ describe("formatContextUsage bar fill", () => {
         assert.equal(fill(0), "----------");
     });
 
+    it("stays empty when usage rounds to 0.0% (e.g. a few tokens on a 1M window)", () => {
+        // 16 tokens / 1M ≈ 0.0016% — displays 0.0%, so the bar must not light a cell.
+        assert.equal(fill(0.0016), "----------");
+        assert.equal(fill(0.04), "----------"); // still < 0.05 → 0.0%
+        assert.equal(fill(0.05), "#---------"); // rounds to 0.1% → one cell
+    });
+
     it("fills proportionally above the first cell", () => {
         assert.equal(fill(50), "#####-----");
         assert.equal(fill(100), "##########");
