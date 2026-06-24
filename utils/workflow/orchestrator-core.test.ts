@@ -2268,6 +2268,33 @@ describe("handleSpawnEvent", () => {
         assert.equal(phase.tokens?.contextWindow, 1_000_000);
     });
 
+    it("captures usage when the provider reports cacheRead/cost but input is 0 (e.g. gateframe)", () => {
+        const state = mkState();
+        state.configuredContextWindow = 1_000_000;
+        const phase = mkPhase();
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: {
+                    usage: {
+                        input: 0,
+                        output: 200,
+                        cacheRead: 120000,
+                        cost: { total: 0.42 },
+                    },
+                },
+            },
+            state,
+            phase,
+            noopPaint,
+        );
+        // Before: gating on `input` skipped this entirely → tokens undefined, $0.
+        assert.ok(phase.tokens, "tokens captured despite input 0");
+        assert.equal(phase.tokens?.cacheRead, 120000);
+        assert.equal(phase.tokens?.costUsd, 0.42);
+        assert.equal(state.costUsd, 0.42);
+    });
+
     it("prefers the provider-reported window over the configured one", () => {
         const state = mkState();
         state.configuredContextWindow = 1_000_000;

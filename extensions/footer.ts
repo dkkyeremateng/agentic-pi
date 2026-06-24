@@ -24,6 +24,7 @@ import { applyExtensionDefaults } from "../utils/shared/themeMap";
 import {
     agentWorkflowLoaded,
     renderWorkflowFooter,
+    stickyContextUsage,
     WORKFLOW_FOOTER_GLOBAL,
     type WorkflowFooterState,
 } from "../utils/workflow/workflow-core";
@@ -60,6 +61,12 @@ export default function (pi: ExtensionAPI) {
     // Standalone-mode prompt-cache accounting for the footer's hit rate (CH).
     let sessionCacheRead = 0;
     let sessionInput = 0;
+    // Last context usage with a real percent/tokens. pi reports tokens/percent as
+    // null when idle between turns (right after a job finishes, or post-compaction
+    // before the next response); without this the footer would collapse the bar to
+    // 0.0% on every idle frame. Sticky: keep showing the last known value until a
+    // real reading replaces it.
+    let lastUsage: any;
     if (!workflow)
         pi.on("message_end", async (event: any) => {
             const u = event?.message?.usage;
@@ -73,6 +80,7 @@ export default function (pi: ExtensionAPI) {
     pi.on("session_start", async (_event, ctx: any) => {
         // TUI/RPC only — no footer chrome in print/json modes.
         if (!ctx.hasUI) return;
+        lastUsage = undefined; // fresh context for a new/resumed/forked session
         // Standalone footer also owns this folder's theme/title defaults.
         if (!workflow) applyExtensionDefaults(import.meta.url, ctx);
 
@@ -177,8 +185,17 @@ export default function (pi: ExtensionAPI) {
                                       (sessionCacheRead + sessionInput)) *
                                   100
                                 : undefined),
-                        contextUsage:
-                            wf?.contextUsage ?? (() => ctx.getContextUsage?.()),
+                        // Sticky context usage: when the live read is unknown
+                        // (idle between turns / right after a job), keep the last
+                        // reading that had a real percent/tokens instead of
+                        // collapsing the bar to 0.0%.
+                        contextUsage: () => {
+                            const get =
+                                wf?.contextUsage ??
+                                (() => ctx.getContextUsage?.());
+                            lastUsage = stickyContextUsage(lastUsage, get());
+                            return lastUsage;
+                        },
                         visibleWidth,
                         truncateToWidth,
                     });

@@ -28,6 +28,7 @@ import {
     dispatchEnv,
     renderWorkflowFooter,
     formatContextUsage,
+    stickyContextUsage,
     parseAgentFile,
     subagentExtArgs,
     shouldApproveProjectForSpawn,
@@ -1003,6 +1004,30 @@ describe("dispatchEnv", () => {
             assert.equal(env.PI_OBS_AGENT, "seeker");
             assert.equal(env.PI_OBS_DISPATCH_ID, undefined);
         });
+    });
+});
+
+describe("stickyContextUsage", () => {
+    const known = { percent: 42, tokens: 13000, contextWindow: 1_000_000 };
+    const idle = { percent: null, tokens: null, contextWindow: 1_000_000 };
+
+    it("returns the live reading when it has a real percent/tokens", () => {
+        assert.equal(stickyContextUsage(undefined, known), known);
+    });
+
+    it("keeps the last known reading when the live one is idle (null)", () => {
+        // after a job finishes, getContextUsage reports null until the next turn
+        assert.equal(stickyContextUsage(known, idle), known);
+    });
+
+    it("falls back to the live (unknown) value when there is no prior reading", () => {
+        assert.equal(stickyContextUsage(undefined, idle), idle);
+        assert.equal(stickyContextUsage(undefined, undefined), undefined);
+    });
+
+    it("treats a real 0% as known (does not stick to a stale value)", () => {
+        const zero = { percent: 0, tokens: 0, contextWindow: 1_000_000 };
+        assert.equal(stickyContextUsage(known, zero), zero);
     });
 });
 

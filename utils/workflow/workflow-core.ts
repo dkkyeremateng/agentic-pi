@@ -1611,6 +1611,19 @@ export function publishLogs(
 
 // ── Context usage helpers ────────────────────────
 
+// Sticky context usage. pi reports `tokens`/`percent` as null when the session is
+// idle between turns — right after a job finishes, or post-compaction before the
+// next response. Rendering that verbatim collapses the footer bar to 0.0% on every
+// idle frame; instead keep showing the last reading that had a real number until a
+// new known one replaces it. Returns the usage to display given the prior one.
+export function stickyContextUsage(last: any, current: any): any {
+    const known =
+        current &&
+        (typeof current.percent === "number" ||
+            typeof current.tokens === "number");
+    return known ? current : (last ?? current);
+}
+
 // Format context usage for display in cards and footers.
 // Returns the progress bar and display string (percentage + token count + context window).
 export function formatContextUsage(opts: {
@@ -2973,7 +2986,20 @@ export function handleSpawnEvent(
                     state.finalError = String(msg.errorMessage);
             }
         }
-        if (msg?.usage?.input) {
+        // Update on ANY usage signal, not just a non-zero `input`. Providers that
+        // serve most of the prompt from cache report the load under `cacheRead`
+        // with `input` at 0 (e.g. gateframe), and some report only `output`/`cost`.
+        // Gating on `input` alone left those agents' cards stuck at 0.0% / $0.00
+        // for the whole run even as they did real work.
+        const us = msg?.usage;
+        if (
+            us &&
+            (us.input ||
+                us.output ||
+                us.cacheRead ||
+                us.cacheWrite ||
+                us.cost?.total)
+        ) {
             // contextWindow may not be reported by all providers. Fall back to the
             // agent's CONFIGURED window (frontmatter / PI_AGENT_<NAME> env) so the
             // bar still works for providers that omit it; never fall back to
