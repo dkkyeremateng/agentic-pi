@@ -24,6 +24,7 @@ import {
     parseCommand,
     reduceChatEvent,
     renderStream,
+    resolveSteerTarget,
     type RunView,
     shortId,
     usageText,
@@ -104,16 +105,12 @@ async function apiPostJson<T = any>(cfg: BridgeConfig, path: string, body: unkno
     return { status, data: data as T };
 }
 
-/** Stream /api/chat (SSE) — calls onEvent for each ChatEvent frame. Resolves when
- *  the stream ends. The token rides as a query param (EventSource transport rule;
- *  we mirror it). */
-function streamChatSSE(cfg: BridgeConfig, params: { sessionId: string; text: string }, onEvent: (e: ChatEvent) => void): Promise<void> {
-    const u = new URL(cfg.apiBase + "/api/chat");
-    u.searchParams.set("sessionId", params.sessionId);
-    u.searchParams.set("text", params.text);
-    if (cfg.model) u.searchParams.set("model", cfg.model);
-    if (cfg.cwd) u.searchParams.set("cwd", cfg.cwd);
-    if (cfg.chatTools) u.searchParams.set("tools", "1");
+/** Stream an obs SSE endpoint (/api/chat or /api/chat-live), calling onEvent for
+ *  each ChatEvent frame and resolving when the stream ends. The token rides as a
+ *  query param (the EventSource transport rule the server mirrors). */
+function streamSSE(cfg: BridgeConfig, path: string, params: Record<string, string>, onEvent: (e: ChatEvent) => void): Promise<void> {
+    const u = new URL(cfg.apiBase + path);
+    for (const [k, v] of Object.entries(params)) if (v) u.searchParams.set(k, v);
     if (cfg.apiToken) u.searchParams.set("token", cfg.apiToken);
 
     return new Promise((resolve, reject) => {
@@ -121,7 +118,7 @@ function streamChatSSE(cfg: BridgeConfig, params: { sessionId: string; text: str
         const req = mod.get(u, (res) => {
             if ((res.statusCode || 0) >= 400) {
                 res.resume();
-                reject(new Error(`obs /api/chat: HTTP ${res.statusCode}`));
+                reject(new Error(`obs ${path}: HTTP ${res.statusCode}`));
                 return;
             }
             res.setEncoding("utf8");
@@ -181,9 +178,12 @@ function formatSearch(events: any[], q: string): string {
     return `matches for "${q}" (newest ${Math.min(events.length, 10)}):\n${lines.join("\n")}`;
 }
 
-// ── chat: edit-streamed reply ────────────────────────────────────────────────
+// ── edit-streamed reply (shared by /chat and /steer) ─────────────────────────
 
-async function runChat(cfg: BridgeConfig, state: BridgeState, chatId: number, text: string): Promise<void> {
+/** Render a streamed ChatEvent reply into Telegram by editing one message as
+ *  tokens land. `runStream` produces the SSE (chat or chat-live). Serialized to
+ *  one reply per chat at a time. */
+async function streamReply(cfg: BridgeConfig, state: BridgeState, chatId: number, runStream: (onEvent: (e: ChatEvent) => void) => Promise<void>): Promise<void> {
     if (state.busy.has(chatId)) {
         await send(cfg, chatId, "still working on your previous message — one at a time.");
         return;
@@ -219,8 +219,7 @@ async function runChat(cfg: BridgeConfig, state: BridgeState, chatId: number, te
             });
         };
 
-        const sessionId = chatSessionId(chatId, state.salt.get(chatId) || 0);
-        await streamChatSSE(cfg, { sessionId, text }, (ev) => {
+        await runStream((ev) => {
             reduceChatEvent(s, ev);
             if (ev.type === "token" || ev.type === "tool") enqueueEdit(false);
         });
@@ -233,6 +232,32 @@ async function runChat(cfg: BridgeConfig, state: BridgeState, chatId: number, te
     } finally {
         state.busy.delete(chatId);
     }
+}
+
+/** Free text -> the obs chat assistant (per-chat session for continuity). */
+function runChat(cfg: BridgeConfig, state: BridgeState, chatId: number, text: string): Promise<void> {
+    const params: Record<string, string> = { sessionId: chatSessionId(chatId, state.salt.get(chatId) || 0), text };
+    if (cfg.model) params.model = cfg.model;
+    if (cfg.cwd) params.cwd = cfg.cwd;
+    if (cfg.chatTools) params.tools = "1";
+    return streamReply(cfg, state, chatId, (onEvent) => streamSSE(cfg, "/api/chat", params, onEvent));
+}
+
+/** /steer -> inject a message into the LIVE orchestrator and stream its reply.
+ *  Resolves which orchestrator from the live-session list; delivered as a
+ *  follow-up user message (reliable whether the agent is idle or mid-turn). */
+async function runSteer(cfg: BridgeConfig, state: BridgeState, chatId: number, rawText: string): Promise<void> {
+    const live = await apiGetJson<LiveView[]>(cfg, `/api/live-sessions`);
+    const target = resolveSteerTarget(live, rawText);
+    if (target.kind === "none") {
+        await send(cfg, chatId, "no live orchestrator is running. start one with PI_OBS=1 (e.g. ./run.sh --obs) and try again.");
+        return;
+    }
+    if (target.kind === "ambiguous") {
+        await sendChunked(cfg, chatId, `several orchestrators are live — prefix your message with a session id:\n${formatLive(target.options, Date.now())}\n\n/steer <session-id> <your message>`);
+        return;
+    }
+    await streamReply(cfg, state, chatId, (onEvent) => streamSSE(cfg, "/api/chat-live", { sessionId: target.target.sessionId, text: target.text, deliverAs: "followUp" }, onEvent));
 }
 
 // ── command dispatch ─────────────────────────────────────────────────────────
@@ -293,6 +318,9 @@ async function handleMessage(cfg: BridgeConfig, state: BridgeState, chatId: numb
             await send(cfg, chatId, status < 400 && (data as any)?.ok ? `scored ${shortId(cmd.id)} → ${cmd.status}.` : `could not score that run (HTTP ${status}).`);
             return;
         }
+        case "steer":
+            await runSteer(cfg, state, chatId, cmd.text);
+            return;
         case "chat":
             if (!cmd.text) return;
             await runChat(cfg, state, chatId, cmd.text);

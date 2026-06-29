@@ -100,6 +100,7 @@ export type Command =
     | { kind: "search"; q: string }
     | { kind: "verdict"; status: "pass" | "fail" | "open"; id: string; note: string }
     | { kind: "live" }
+    | { kind: "steer"; text: string }
     | { kind: "reset" }
     | { kind: "usage"; cmd: string }; // recognised command, wrong/missing args
 
@@ -131,6 +132,8 @@ export function parseCommand(raw: string): Command {
             return { kind: "last" };
         case "live":
             return { kind: "live" };
+        case "steer":
+            return rest ? { kind: "steer", text: rest } : { kind: "usage", cmd: "steer" };
         case "digest":
             return rest ? { kind: "digest", id: rest.split(/\s+/)[0] } : { kind: "usage", cmd: "digest" };
         case "search":
@@ -303,6 +306,38 @@ export function formatLive(sessions: LiveView[], now: number): string {
         .join("\n");
 }
 
+/** Root-orchestrator live sessions (the steerable ones). obs-live publishes the
+ *  root agent as "orchestrator"; sub-agents carry their own names. */
+export function orchestrators(sessions: LiveView[]): LiveView[] {
+    return sessions.filter((s) => s.agent === "orchestrator");
+}
+
+export type SteerTarget =
+    | { kind: "none" } // no live orchestrator
+    | { kind: "ambiguous"; options: LiveView[] } // several — caller must disambiguate
+    | { kind: "ok"; target: LiveView; text: string };
+
+/** Pick which live orchestrator a `/steer <text>` should drive. One orchestrator
+ *  ⇒ steer it with the whole text. Several ⇒ the user must prefix the message
+ *  with a session-id (or run-id) prefix to choose; absent/ambiguous prefix ⇒
+ *  return the options so the caller can list them. Pure. */
+export function resolveSteerTarget(sessions: LiveView[], rawText: string): SteerTarget {
+    const orch = orchestrators(sessions);
+    if (orch.length === 0) return { kind: "none" };
+    const text = rawText.trim();
+    if (orch.length === 1) return { kind: "ok", target: orch[0], text };
+
+    // Disambiguate on a leading id prefix (>=4 chars, to avoid matching a word).
+    const sp = text.indexOf(" ");
+    const first = (sp === -1 ? text : text.slice(0, sp)).trim();
+    const rest = sp === -1 ? "" : text.slice(sp + 1).trim();
+    if (first.length >= 4 && rest) {
+        const matches = orch.filter((s) => s.sessionId.startsWith(first) || (s.runId || "").startsWith(first));
+        if (matches.length === 1) return { kind: "ok", target: matches[0], text: rest };
+    }
+    return { kind: "ambiguous", options: orch };
+}
+
 export function helpText(): string {
     return [
         "pi obs bridge — talk to your agent observability.",
@@ -315,6 +350,7 @@ export function helpText(): string {
         "/digest <id> — what happened in a run",
         "/search <text> — search across all runs",
         "/live — agents running right now",
+        "/steer <text> — message the live orchestrator (drives your agent)",
         "/pass <id> [note] — score a run pass",
         "/fail <id> [note] — score a run fail",
         "/open <id> [note] — mark a run needs-review",
@@ -329,6 +365,8 @@ export function usageText(cmd: string): string {
             return "usage: /digest <run-id>  (get an id from /runs)";
         case "search":
             return "usage: /search <text>";
+        case "steer":
+            return "usage: /steer <message>  (sends to the live orchestrator; see /live)";
         case "pass":
         case "fail":
         case "open":
