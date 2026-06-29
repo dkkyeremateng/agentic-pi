@@ -276,6 +276,96 @@ curl -s -X POST localhost:7616/api/runs/run-mqa9/verdict \
      -d '{"status":"pass","note":"verified manually"}'
 ```
 
+## Agent dispatch (opt-in `PI_OBS_DISPATCH=1`)
+
+Run a single named workflow agent **standalone** — no orchestrator or active run
+needed — reusing the workflow's own spawn recipe (the agent's prompt, tools, and
+model). The dispatched agent runs as its own root run, so it appears on the
+dashboard. **Off by default**; set `PI_OBS_DISPATCH=1` on the server to enable.
+
+### `GET /api/agents?cwd=`
+Lists the known agents (project `.pi/agents/` then bundled), `cwd`-scoped:
+`{ dispatchEnabled, agents: [{ name, description, model, readOnly }] }`. `readOnly`
+(no `write`/`edit` tool) is informational — **all** agents are dispatchable.
+
+### `POST /api/select` — `{ task, cwd }`
+Auto-picks the best agent for a free-text `task` (the bridge's `/do`). One small
+LLM completion over the agent roster (their `description`s — the same signal the
+orchestrator's `select_agents` reasons over), returning `{ enabled, choice,
+reason, model }` where `choice` is an agent name or `"chat"` (a question/
+conversation that needs no tools). Opt-in (`PI_OBS_LLM=1`) — disabled returns
+`{ enabled: false, hint }`; a failure returns `{ enabled: true, error }`.
+
+### `POST /api/dispatch` (SSE) — `{ agent, text, cwd, model?, sessionId? }`
+Spawns `agent` for one `text` task in `cwd` and streams `ChatEvent` frames (same
+shape as `/api/chat`: `token`/`thinking`/`tool`/`done`/`error`). `sessionId` (must
+match `^[\w.-]{1,64}$`) continues a prior dispatch for follow-ups; `model`
+overrides the agent's configured model. Disabled returns one `error` frame.
+
+**Confinement.** The agent's **file tools** (read/write/edit/grep/find/ls) are
+always confined to `cwd` (cwd-guard is forced on). cwd-guard does **not** confine
+`bash`; for real confinement (bash included) wrap the spawn in an OS sandbox via:
+
+| Env var | Effect |
+|---|---|
+| `PI_OBS_DISPATCH_SANDBOX=sandbox-exec` | macOS Seatbelt: bash **reads and writes** confined to `cwd` plus the tool infra an agent needs (node, this repo, `~/.pi`, `~/.config`, `~/Library/Caches`/`~/.cache`/`~/.npm`, temp). The rest of `$HOME` — other projects, `~/.ssh`, `~/.aws` — is hidden. System reads + network + exec stay open so tools work (Playwright, gh, git, …). Extend with `PI_OBS_DISPATCH_READ_EXTRA` / `PI_OBS_DISPATCH_WRITE_EXTRA` (`:`/`,`-lists). |
+| `PI_OBS_DISPATCH_SANDBOX=auto` | macOS → `sandbox-exec`; other platforms require the CMD form below. |
+| `PI_OBS_DISPATCH_SANDBOX_CMD=<argv>` | Any platform: a custom wrapper (`{cwd}` substituted), e.g. `bwrap`/`firejail`/`docker`. The cleanest full isolation on Linux/containers. |
+
+Sandboxing is **fail-closed**: a requested-but-unavailable sandbox makes dispatch
+error rather than run unconfined. The route is gated on `PI_OBS_DISPATCH=1`, and
+(via the bridge) behind the chat-id allowlist.
+
+## Telegram bridge
+
+`obs/obs-bridge.ts` is a small client that lets you talk to this API from
+Telegram — chat with the assistant and inspect/score runs from your phone. Run
+it with **`./run.sh --bridge`**, which cold-starts the obs-server on `$PORT` if
+none is running (use `npm run obs:bridge` when a server is already up, or point
+the bridge at one with `PI_OBS_BRIDGE_API`).
+
+It **long-polls** the Telegram Bot API (`getUpdates`), so there is **no inbound
+webhook** — the obs-server keeps binding loopback exactly as before, and the
+bridge reaches out. It maps each message onto the API above:
+
+- **free text** -> `GET /api/chat` (SSE), keyed to a stable per-chat `sessionId`
+  (`tg-<chatId>`) for conversational continuity. Replies **edit-stream**: one
+  Telegram message is edited as tokens arrive (throttled by `PI_OBS_TG_EDIT_MS`).
+  Needs `PI_OBS_LLM=1` on the server. Tools are **off** by default.
+- `/runs [n]` -> `/api/runs`; `/last` and `/digest <id>` -> `/api/runs/:id/digest?format=text`
+- `/search <text>` -> `/api/search`; `/live` -> `/api/live-sessions`
+- `/pass|/fail|/open <id> [note]` -> `POST /api/runs/:id/verdict`
+- `/attach <run-id>` binds the chat to a **live run** (resolved from
+  `/api/live-sessions` — the run's root `orchestrator`); subsequent plain messages
+  route to `GET /api/chat-live` (injected as a follow-up user message) and stream
+  the orchestrator's reply. `/detach` unbinds; the bridge also auto-detaches if the
+  run ends. Slash commands still work while attached.
+- `/agents` -> `GET /api/agents`; `/dispatch <agent>, <prompt>` -> `POST /api/dispatch`
+  runs a single named agent standalone (no run needed) and streams its reply. The
+  bare `<agent>, <prompt>` form is opt-in (`PI_OBS_TG_BARE_DISPATCH=1`). Per-
+  (chat, agent) sessions give follow-up continuity.
+- `/do <task>` -> `POST /api/select` then either `/api/dispatch` (auto-picks the
+  best agent and runs it) or the chat assistant (when it's a question). Echoes the
+  chosen agent first. Needs `PI_OBS_LLM=1` (selection) + `PI_OBS_DISPATCH=1` (run).
+- `/reset` starts a fresh conversation (rotates the `sessionId`, detaches if
+  attached, and resets dispatch sessions); `/help` lists all.
+
+**Auth & access.** The bridge holds `PI_OBS_TOKEN` and calls the server locally,
+so the token never leaves the machine (it's sent as the bearer header, and as
+`?token=` for the SSE streams). Access is **fail-closed**: only chat ids in
+`PI_OBS_TG_ALLOW` are served; an unknown sender gets a one-line reply with *their
+own* chat id so you can add it.
+
+While `/attach`ed the bridge **drives a live agent** (`/api/chat-live`), so treat
+the allowlist as a privilege boundary. It delivers as a follow-up with `approve`
+off (the run keeps its own tool policy) and does not expose the tool approve/deny
+route (`/api/chat-approve`).
+
+Config (see `example.env`): `PI_OBS_TG_TOKEN` (required, from @BotFather),
+`PI_OBS_TG_ALLOW` (required for any access), `PI_OBS_TG_TOOLS`, `PI_OBS_TG_MODEL`,
+`PI_OBS_TG_CWD`, `PI_OBS_TG_POLL_S`, `PI_OBS_TG_EDIT_MS`, and `PI_OBS_BRIDGE_API`
+(defaults to `PI_OBS_HOST:PI_OBS_PORT`).
+
 ## Legacy routes (used by the bundled dashboard)
 
 `/stream`, `/summary`, `/events[?run=]`, `/runs`, `/search?q=`,

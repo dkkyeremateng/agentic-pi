@@ -58,6 +58,7 @@ import {
     loadRepoEnv,
 } from "./obs-llm";
 import { streamChat } from "./obs-chat";
+import { dispatchStream, listAgents, selectAgent } from "./obs-dispatch";
 import { listLiveSessions } from "./obs-chat-control";
 import { connect as netConnect } from "node:net";
 import { buildPromptRegistry } from "./obs-prompts";
@@ -675,6 +676,9 @@ function handleApi(
                 "POST /api/notify  {url, payload}  (relay monitor alerts to a webhook)",
                 "POST /api/playground  {system, input, model?}  (safe one-shot prompt sandbox; opt-in PI_OBS_LLM=1)",
                 "POST /api/chat  {sessionId, text, model?, cwd?, tools?, forkFrom?}  (SSE stream of reply tokens; forkFrom attaches to a run's session; opt-in PI_OBS_LLM=1)",
+                "GET  /api/agents  ?cwd=  (known workflow agents; readOnly flag)",
+                "POST /api/select  {task, cwd}  (auto-pick the best agent for a task, or \"chat\"; opt-in PI_OBS_LLM=1)",
+                "POST /api/dispatch  {agent, text, cwd, model?, sessionId?}  (SSE; run any agent standalone, file tools confined to cwd, no run needed; opt-in PI_OBS_DISPATCH=1)",
                 "GET  /api/live-sessions  (agents running right now with a control channel — attachable)",
                 "GET  /api/chat-live  ?sessionId=&text=&deliverAs=&approve=  (SSE; steer a LIVE agent and stream its reply)",
                 "GET  /api/chat-approve  ?sessionId=&toolCallId=&decision=  (allow/deny a paused tool on a live agent)",
@@ -907,6 +911,106 @@ function handleApi(
         req.on("end", () => {
             try {
                 stream(JSON.parse(body || "{}"));
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+            }
+        });
+        return;
+    }
+    // Known workflow agents (project + bundled), each flagged read-only — the
+    // read-only ones are what /api/dispatch will run. cwd scopes project agents.
+    if (a === "agents" && req.method === "GET") {
+        const cwd = query.get("cwd") || process.cwd();
+        try {
+            apiJson(res, 200, { dispatchEnabled: process.env.PI_OBS_DISPATCH === "1" || process.env.PI_OBS_DISPATCH === "true", agents: listAgents(cwd) });
+        } catch (e) {
+            apiError(res, 500, `could not load agents: ${String((e as Error)?.message || e)}`);
+        }
+        return;
+    }
+    // Auto-select the best agent for a free-text task (the bridge's /do). Returns
+    // a chosen agent name or "chat". Uses the LLM (opt-in PI_OBS_LLM=1).
+    if (a === "select" && req.method === "POST") {
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", async () => {
+            let p: Record<string, unknown>;
+            try {
+                p = JSON.parse(body || "{}");
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+                return;
+            }
+            const task = typeof p.task === "string" ? p.task : "";
+            const cwd = typeof p.cwd === "string" && p.cwd.trim() ? p.cwd : process.cwd();
+            if (!task.trim()) {
+                apiError(res, 400, "missing task");
+                return;
+            }
+            if (!llmConfig().enabled) {
+                apiJson(res, 200, { enabled: false, hint: "set PI_OBS_LLM=1 on the server to enable /do (agent selection)" });
+                return;
+            }
+            try {
+                const sel = await selectAgent(cwd, task);
+                apiJson(res, 200, { enabled: true, ...sel });
+            } catch (e) {
+                apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e) });
+            }
+        });
+        return;
+    }
+    // Dispatch a single READ-ONLY agent standalone (no orchestrator/run needed)
+    // and stream its reply as SSE ChatEvents. Opt-in (PI_OBS_DISPATCH=1) because
+    // it executes an agent with its tools; read-only is enforced in dispatchStream.
+    if (a === "dispatch" && (req.method === "GET" || req.method === "POST")) {
+        const run = (p: Record<string, unknown>) => {
+            res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", ...API_CORS });
+            res.write(": connected\n\n");
+            const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+            if (!(process.env.PI_OBS_DISPATCH === "1" || process.env.PI_OBS_DISPATCH === "true")) {
+                emit({ type: "error", error: "set PI_OBS_DISPATCH=1 on the server to enable agent dispatch" });
+                res.end();
+                return;
+            }
+            const agent = typeof p.agent === "string" ? p.agent.trim() : "";
+            const text = typeof p.text === "string" ? p.text : "";
+            const cwd = typeof p.cwd === "string" && p.cwd.trim() ? p.cwd : process.cwd();
+            if (!agent) {
+                emit({ type: "error", error: "missing agent" });
+                res.end();
+                return;
+            }
+            if (!text.trim()) {
+                emit({ type: "error", error: "missing text" });
+                res.end();
+                return;
+            }
+            const sessionId = typeof p.sessionId === "string" && /^[\w.-]{1,64}$/.test(p.sessionId) ? p.sessionId : undefined;
+            const model = typeof p.model === "string" ? p.model.trim() : undefined;
+            const ac = new AbortController();
+            req.on("close", () => ac.abort());
+            dispatchStream({ agent, text, cwd, model, sessionId, signal: ac.signal }, emit)
+                .catch(() => {
+                    /* error already emitted as an event */
+                })
+                .finally(() => res.end());
+        };
+        if (req.method === "GET") {
+            run(Object.fromEntries(query));
+            return;
+        }
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", () => {
+            try {
+                run(JSON.parse(body || "{}"));
             } catch {
                 apiError(res, 400, "invalid JSON body");
             }

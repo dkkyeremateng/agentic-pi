@@ -10,6 +10,9 @@
 #   ./run.sh --emit                # pi with emission on, but DON'T start a server
 #                                  #   (use when a `--server` is already running)
 #   ./run.sh --server              # the dashboard server only (background; no pi)
+#   ./run.sh --bridge              # the Telegram bridge (foreground). Auto-starts
+#                                  #   the obs-server on $PORT if none is running
+#                                  #   (skipped when PI_OBS_BRIDGE_API is set).
 #   ./run.sh --restart             # stop the server on $PORT, then start it fresh
 #                                  #   (reloads edited obs/*.ts — tsx has no
 #                                  #    hot-reload)
@@ -164,6 +167,7 @@ while [[ $# -gt 0 ]]; do
         --obs) MODE="both"; shift ;;
         --emit) MODE="emit"; shift ;;
         --server | --obs-only) MODE="server"; shift ;;
+        --bridge) MODE="bridge"; shift ;;
         --restart) MODE="restart"; shift ;;
         --stop) MODE="stop"; shift ;;
         --project | --cwd) SINK_SCOPE="project"; shift ;;
@@ -219,6 +223,34 @@ if [[ "$MODE" == "restart" ]]; then
         echo "run.sh: no server on port $PORT — starting it…"
     fi
     MODE="server" # fall through to a fresh start
+fi
+
+# ── telegram bridge ──────────────────────────────────────────────────────────
+# Long-polls Telegram and talks to the obs-server over HTTP (it never spawns pi
+# itself). The bridge needs a server, so cold-start one on $PORT if nothing is
+# serving there — backgrounded + detached so it persists (stop with --stop),
+# exactly like --server. Skipped when PI_OBS_BRIDGE_API points at a server the
+# bridge doesn't manage (e.g. a remote/containerised one). The bridge then runs
+# in the foreground (logs show, Ctrl-C stops it); remaining args pass through.
+# Needs PI_OBS_TG_TOKEN/PI_OBS_TG_ALLOW (see .env).
+if [[ "$MODE" == "bridge" ]]; then
+    [[ -x "$TSX" ]] || {
+        echo "run.sh: the Telegram bridge needs dev deps — run 'npm install' in $DIR." >&2
+        exit 1
+    }
+    if [[ -z "${PI_OBS_BRIDGE_API:-}" ]]; then
+        if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
+            echo "run.sh: obs-server already running → http://127.0.0.1:$PORT"
+        else
+            nohup "$TSX" "$DIR/obs/obs-server.ts" --port "$PORT" \
+                >"$DIR/.obs-server.log" 2>&1 &
+            disown 2>/dev/null || true
+            echo "run.sh: started obs-server → http://127.0.0.1:$PORT" \
+                "(log: $DIR/.obs-server.log, stop with: $0 --stop)"
+            sleep 1 # let it bind before the bridge's first request
+        fi
+    fi
+    exec "$TSX" "$DIR/obs/obs-bridge.ts" "$@"
 fi
 
 # ── server only ──────────────────────────────────────────────────────────────

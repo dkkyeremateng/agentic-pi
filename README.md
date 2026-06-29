@@ -447,6 +447,25 @@ agent, so set a token whenever the server is reachable beyond your own loopback 
 behind Tailscale or a proxy). Generate one with `openssl rand -hex 32`. Details in
 [`obs/API.md`](obs/API.md#authentication).
 
+**Talk to it from Telegram (`./run.sh --bridge`).** A messaging bridge lets you
+chat with your observability from your phone. It **long-polls** the Telegram Bot
+API (no inbound webhook, so the obs-server stays on loopback) and maps messages
+onto the API: free text chats with the assistant (it knows your runs; needs
+`PI_OBS_LLM=1`); `/runs`, `/last`, `/digest <id>`, `/search <text>`, `/live`,
+`/pass`/`/fail` inspect and score runs; `/attach <run-id>` binds the chat to a
+**live run** so your messages drive that orchestrator until you `/detach`; and
+`/dispatch <agent>, <prompt>` runs a single agent standalone (no run needed —
+file tools confined to `PI_OBS_TG_CWD`, and bash too with an OS sandbox via
+`PI_OBS_DISPATCH_SANDBOX`; needs `PI_OBS_DISPATCH=1`). Replies
+**edit-stream** — one message
+grows as tokens arrive. Set `PI_OBS_TG_TOKEN` (a [@BotFather](https://t.me/BotFather)
+token) and `PI_OBS_TG_ALLOW` (the chat ids allowed — fail-closed; message the bot
+once and it replies with yours), then `./run.sh --bridge` — which **cold-starts the
+obs-server on `$PORT` if none is running** (use `npm run obs:bridge` instead when a
+server is already up). The bridge holds `PI_OBS_TOKEN` and calls the server
+locally, so the token never leaves the machine. See `example.env` and
+[`obs/API.md`](obs/API.md#telegram-bridge).
+
 **Run it in Docker.** The dashboard + API can run in a container (the bundled
 dashboard only — not the React app). Your agents still run on the host and write
 the event sink; the container tails it. `PI_OBS_TOKEN=$(openssl rand -hex 32)

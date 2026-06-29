@@ -36,6 +36,8 @@ tags:
     description: Optional LLM-backed endpoints — opt-in via PI_OBS_LLM=1 (the server shells out to the pi CLI; disabled returns 200 `{enabled:false,hint}`).
   - name: config
     description: Agent boot/prompt configuration.
+  - name: dispatch
+    description: Run a named agent standalone (no run needed) — opt-in via PI_OBS_DISPATCH=1.
 
 paths:
   /api:
@@ -396,6 +398,120 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/LlmDisabled"
                   - $ref: "#/components/schemas/PlaygroundResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/agents:
+    get:
+      tags: [dispatch]
+      operationId: listAgents
+      summary: Known workflow agents (the dispatchable ones)
+      description: >
+        Lists the agents resolvable for dispatch — project `.pi/agents/` then the
+        bundled set. `readOnly` (no write/edit tool) is informational; all agents
+        are dispatchable. `dispatchEnabled` reflects PI_OBS_DISPATCH.
+      parameters:
+        - name: cwd
+          in: query
+          description: Scope project-level agents to this directory (defaults to the server cwd).
+          schema: { type: string }
+      responses:
+        "200":
+          description: The agent list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dispatchEnabled, agents]
+                properties:
+                  dispatchEnabled: { type: boolean }
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, description, model, readOnly]
+                      properties:
+                        name: { type: string, example: seeker }
+                        description: { type: string }
+                        model: { type: string }
+                        readOnly:
+                          type: boolean
+                          description: No write/edit tool. Informational — all agents are dispatchable.
+
+  /api/select:
+    post:
+      tags: [dispatch]
+      operationId: selectAgent
+      summary: Auto-pick the best agent for a task (or "chat")
+      description: >
+        Opt-in (PI_OBS_LLM=1). One small LLM completion over the agent roster
+        (their descriptions) picks the single best agent for a free-text task, or
+        "chat" when it's a question needing no tools. Powers the bridge's /do.
+        Disabled returns `{enabled:false,hint}`; a failure returns
+        `{enabled:true,error}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task]
+              properties:
+                task: { type: string }
+                cwd: { type: string, description: Scope the agent roster (defaults to the server cwd). }
+      responses:
+        "200":
+          description: The routing decision (or a disabled/error envelope).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled]
+                properties:
+                  enabled: { type: boolean }
+                  choice: { type: string, description: An agent name, or "chat". }
+                  reason: { type: string }
+                  model: { type: string }
+                  hint: { type: string }
+                  error: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/dispatch:
+    post:
+      tags: [dispatch]
+      operationId: dispatchAgent
+      summary: Run a single named agent standalone (SSE), no run needed
+      description: >
+        Opt-in (PI_OBS_DISPATCH=1). Spawns the named agent for one task — reusing
+        the workflow's spawn recipe (the agent's prompt, tools, model) — and streams
+        ChatEvent frames (same shape as /api/chat). The agent runs as its own root
+        run, so it appears on the dashboard. The agent's FILE tools are always
+        confined to `cwd` (cwd-guard); `bash` is confined too when an OS sandbox is
+        configured (PI_OBS_DISPATCH_SANDBOX / _CMD, fail-closed). Disabled / bad
+        input is delivered as a single `error` frame, not a non-2xx. GET with the
+        same params is also accepted (EventSource transport).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent, text, cwd]
+              properties:
+                agent: { type: string, description: Agent name or alias. }
+                text: { type: string, description: The task prompt. }
+                cwd: { type: string, description: Working directory; file tools are confined here. }
+                model: { type: string, description: Override the agent's configured model. }
+                sessionId:
+                  type: string
+                  description: Continue a prior dispatch (follow-ups). Must match `^[\w.-]{1,64}$`.
+      responses:
+        "200":
+          description: SSE stream of ChatEvent frames (`data:` JSON).
+          content:
+            text/event-stream:
+              schema: { type: string }
         "400":
           $ref: "#/components/responses/BadRequest"
 
