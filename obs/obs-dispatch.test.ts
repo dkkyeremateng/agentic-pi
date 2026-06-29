@@ -83,10 +83,21 @@ test("buildSandboxLaunch: sandbox-exec on darwin wraps with a generated profile"
     assert.match(r.argv[1], /\(version 1\)/);
 });
 
-test("macSandboxProfile confines writes to cwd (+ caches) and leaves reads open", () => {
-    const p = macSandboxProfile({ cwd: "/Users/me/proj", home: "/Users/me", tmp: "/tmp" });
+test("macSandboxProfile confines reads+writes to cwd + tool infra, hides the rest of $HOME", () => {
+    const p = macSandboxProfile({ cwd: "/Users/me/proj", home: "/Users/me", tmp: "/tmp", env: {} });
+    // writes: cwd + caches, denied elsewhere
     assert.match(p, /\(deny file-write\*\)/);
     assert.match(p, /allow file-write\*[^\n]*"\/Users\/me\/proj"/);
-    assert.match(p, /"\/Users\/me\/Library\/Caches"/); // Playwright/tool caches writable
-    assert.ok(!/file-read/.test(p)); // reads are open — no read restriction
+    assert.match(p, /"\/Users\/me\/Library\/Caches"/);
+    // reads: $HOME data denied, cwd + tool infra re-allowed (explicit file-read-data)
+    assert.match(p, /\(deny file-read-data \(subpath "\/Users\/me"\)\)/);
+    assert.match(p, /allow file-read-data[^\n]*"\/Users\/me\/proj"/);
+    assert.match(p, /allow file-read-data[^\n]*"\/Users\/me\/\.config"/); // gh/git config readable
+});
+
+test("macSandboxProfile honors PI_OBS_DISPATCH_{READ,WRITE}_EXTRA", () => {
+    const p = macSandboxProfile({ cwd: "/p", home: "/h", tmp: "/tmp", env: { PI_OBS_DISPATCH_WRITE_EXTRA: "/data/out", PI_OBS_DISPATCH_READ_EXTRA: "/refs:/more" } });
+    assert.match(p, /allow file-write\*[^\n]*"\/data\/out"/);
+    assert.match(p, /allow file-read-data[^\n]*"\/refs"/);
+    assert.match(p, /allow file-read-data[^\n]*"\/more"/);
 });

@@ -15,15 +15,18 @@
 //     cwd. `bash` is NOT confined by cwd-guard, so for real WRITE confinement (bash
 //     included) set PI_OBS_DISPATCH_SANDBOX (macOS sandbox-exec) or
 //     PI_OBS_DISPATCH_SANDBOX_CMD (a bwrap/firejail/docker wrapper). The macOS
-//     sandbox confines WRITES to the cwd (+ runtime caches/temp) while leaving
-//     reads/network/exec open so tools work — the agent can't MODIFY anything
-//     outside the project. Fail-closed.
+//     sandbox confines BOTH reads and writes to the cwd (+ the tool infra/caches
+//     an agent needs — node, this repo, ~/.pi, ~/.config, ~/Library/Caches, temp,
+//     plus PI_OBS_DISPATCH_{READ,WRITE}_EXTRA); the rest of $HOME (other projects,
+//     ~/.ssh, ~/.aws) is hidden. System reads + network + exec stay open so tools
+//     run. Fail-closed.
 //   - The agent runs as its OWN root run, so it shows on the dashboard.
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter as pathDelimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseChatLine, type ChatEvent } from "./obs-chat";
 import {
     type AgentDef,
@@ -104,11 +107,23 @@ export function sandboxConfig(env: NodeJS.ProcessEnv = process.env): SandboxConf
     return { mode, customCmd };
 }
 
+// This repo's root — agents read their extensions/skills from here, so reads of
+// it must be allowed even though it sits outside the request cwd.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+function expandHome(p: string, home: string): string {
+    return p.startsWith("~") ? join(home, p.slice(1)) : p;
+}
+/** Split a `:`/`,`-delimited path list (operator extras). */
+function extraRoots(v: string | undefined): string[] {
+    return (v || "").split(/[:,]/).map((s) => s.trim()).filter(Boolean);
+}
+
 /** Write roots a dispatched agent needs beyond the cwd: pi's own state plus the
  *  runtime caches tools require (e.g. Playwright's ~/Library/Caches/ms-playwright,
- *  fontconfig/npm caches). These are throwaway runtime data, not user content —
- *  the agent still cannot modify your other projects/files/home. */
-function writeRootsFor(cwd: string, home: string, tmp: string): string[] {
+ *  fontconfig/npm caches), plus operator extras (PI_OBS_DISPATCH_WRITE_EXTRA).
+ *  These are throwaway runtime data, not user content. */
+function writeRootsFor(cwd: string, home: string, tmp: string, env: NodeJS.ProcessEnv): string[] {
     return [
         cwd,
         join(home, ".pi"),
@@ -119,25 +134,61 @@ function writeRootsFor(cwd: string, home: string, tmp: string): string[] {
         "/private/var/folders",
         "/private/tmp",
         "/private/var/tmp",
+        ...extraRoots(env.PI_OBS_DISPATCH_WRITE_EXTRA),
     ];
 }
 
-/** Generate a macOS Seatbelt (SBPL) profile that confines an agent's WRITES —
- *  bash included — to the cwd (+ runtime caches/temp). Reads, network, and exec
- *  stay allowed so every tool finds its binaries/config and works. The agent
- *  therefore cannot MODIFY anything outside the project (your other files and
- *  projects are untouchable), but can read what it needs. Pure. */
-export function macSandboxProfile(o: { cwd: string; home: string; tmp: string }): string {
+/** $HOME-relative dirs whose CONTENTS the agent may read (everything outside
+ *  $HOME is already readable). Covers cwd, pi state, the node/pi install, this
+ *  repo (extensions/skills), tool caches + configs, skill roots, and operator
+ *  extras (PI_OBS_DISPATCH_READ_EXTRA). */
+function readDataDirs(cwd: string, home: string, tmp: string, env: NodeJS.ProcessEnv, bin: string): string[] {
+    const roots = [
+        ...writeRootsFor(cwd, home, tmp, env), // writable ⇒ readable
+        REPO_ROOT,
+        join(home, ".nvm"), // node (when installed via nvm, under $HOME)
+        join(home, ".config"), // tool config/state (gh, git, …)
+    ];
+    if (env.PI_CODING_AGENT_DIR) roots.push(expandHome(env.PI_CODING_AGENT_DIR, home));
+    if (env.PI_WORKFLOW_SESSION_DIR) roots.push(expandHome(env.PI_WORKFLOW_SESSION_DIR, home));
+    for (const p of (env.PI_SKILLS_DIR || "").split(pathDelimiter)) if (p) roots.push(p);
+    if (bin && bin.includes("/")) roots.push(dirname(bin));
+    roots.push(...extraRoots(env.PI_OBS_DISPATCH_READ_EXTRA));
+    return roots;
+}
+
+/** Generate a macOS Seatbelt (SBPL) profile confining an agent — bash included —
+ *  to the cwd for BOTH reads and writes: writes only under cwd (+ runtime
+ *  caches/temp), and reads of the rest of $HOME (other projects, ~/.ssh, ~/.aws,
+ *  …) denied except the tool infra it needs. System reads + network + exec stay
+ *  allowed so pi/tools work. Pure. */
+export function macSandboxProfile(o: { cwd: string; home: string; tmp: string; bin?: string; env?: NodeJS.ProcessEnv }): string {
+    const env = o.env || process.env;
     const subs = (ps: string[]) =>
         ps
             .filter(Boolean)
             .map((p) => `(subpath ${JSON.stringify(p)})`)
             .join(" ");
+    const lits = (ps: string[]) =>
+        ps
+            .filter(Boolean)
+            .map((p) => `(literal ${JSON.stringify(p)})`)
+            .join(" ");
+    const writeRoots = writeRootsFor(o.cwd, o.home, o.tmp, env);
+    const readDirs = readDataDirs(o.cwd, o.home, o.tmp, env, o.bin || "");
+    const readFiles = [join(o.home, ".gitconfig"), join(o.home, ".npmrc")]; // common config FILES
     return [
         "(version 1)",
-        "(allow default)", // reads, network, and exec stay allowed so tools work
+        "(allow default)", // system reads, network, and exec stay allowed
         "(deny file-write*)",
-        `(allow file-write* ${subs(writeRootsFor(o.cwd, o.home, o.tmp))} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/stdout") (literal "/dev/stderr") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
+        `(allow file-write* ${subs(writeRoots)} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/stdout") (literal "/dev/stderr") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
+        // Hide the CONTENTS of the rest of $HOME (other projects, secrets). Deny
+        // only file-read-DATA (not metadata) so lstat/traversal still works — else
+        // Node's module loader (lstat on $HOME) breaks. The re-allow must be an
+        // explicit `file-read-data` (a wildcard `file-read*` does NOT override a
+        // specific `file-read-data` deny in SBPL).
+        `(deny file-read-data (subpath ${JSON.stringify(o.home)}))`,
+        `(allow file-read-data ${subs(readDirs)} ${lits(readFiles)})`,
     ].join("\n");
 }
 
@@ -160,7 +211,7 @@ export function buildSandboxLaunch(sb: SandboxConfig, cwd: string, bin: string, 
     if (!existsSync("/usr/bin/sandbox-exec")) return { error: "sandbox-exec not found at /usr/bin/sandbox-exec." };
     const home = env.HOME || homedir();
     const tmp = env.TMPDIR || "/tmp";
-    const profile = macSandboxProfile({ cwd, home, tmp });
+    const profile = macSandboxProfile({ cwd, home, tmp, bin, env });
     return { cmd: "/usr/bin/sandbox-exec", argv: ["-p", profile, bin, ...args] };
 }
 
