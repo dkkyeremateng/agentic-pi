@@ -100,6 +100,8 @@ export type Command =
     | { kind: "search"; q: string }
     | { kind: "verdict"; status: "pass" | "fail" | "open"; id: string; note: string }
     | { kind: "live" }
+    | { kind: "attach"; runArg: string }
+    | { kind: "detach" }
     | { kind: "reset" }
     | { kind: "usage"; cmd: string }; // recognised command, wrong/missing args
 
@@ -131,6 +133,10 @@ export function parseCommand(raw: string): Command {
             return { kind: "last" };
         case "live":
             return { kind: "live" };
+        case "attach":
+            return rest ? { kind: "attach", runArg: rest.split(/\s+/)[0] } : { kind: "usage", cmd: "attach" };
+        case "detach":
+            return { kind: "detach" };
         case "digest":
             return rest ? { kind: "digest", id: rest.split(/\s+/)[0] } : { kind: "usage", cmd: "digest" };
         case "search":
@@ -303,6 +309,38 @@ export function formatLive(sessions: LiveView[], now: number): string {
         .join("\n");
 }
 
+/** Root-orchestrator live sessions (the attachable ones). obs-live publishes the
+ *  root agent as "orchestrator"; sub-agents carry their own names. */
+export function orchestrators(sessions: LiveView[]): LiveView[] {
+    return sessions.filter((s) => s.agent === "orchestrator");
+}
+
+export type AttachTarget =
+    | { kind: "none" } // no live run matches
+    | { kind: "ambiguous"; options: LiveView[] } // prefix matched several
+    | { kind: "ok"; target: LiveView };
+
+/** Resolve `/attach <runArg>` to a single live orchestrator. Matches the run id
+ *  (full or prefix, with or without the `run-` prefix) against live root agents.
+ *  Pure. */
+export function resolveAttachTarget(sessions: LiveView[], runArg: string): AttachTarget {
+    const orch = orchestrators(sessions);
+    const q = runArg.replace(/^run-/, "").trim();
+    if (!q) return { kind: "none" };
+    const matches = orch.filter((s) => (s.runId || "").replace(/^run-/, "").startsWith(q));
+    if (matches.length === 1) return { kind: "ok", target: matches[0] };
+    if (matches.length === 0) return { kind: "none" };
+    return { kind: "ambiguous", options: matches };
+}
+
+/** List attachable live runs by run id (what /attach takes), newest detail first. */
+export function formatAttachable(sessions: LiveView[], now: number): string {
+    if (!sessions.length) return "no live runs right now.";
+    return sessions
+        .map((s) => `• ${shortId(s.runId || "?")} — ${projectOf(s.cwd)}${s.model ? ` · ${s.model}` : ""}${s.startedTs ? ` · started ${fmtAge(s.startedTs, now)}` : ""}`)
+        .join("\n");
+}
+
 export function helpText(): string {
     return [
         "pi obs bridge — talk to your agent observability.",
@@ -318,6 +356,8 @@ export function helpText(): string {
         "/pass <id> [note] — score a run pass",
         "/fail <id> [note] — score a run fail",
         "/open <id> [note] — mark a run needs-review",
+        "/attach <run-id> — route your messages into a live run (drive it)",
+        "/detach — stop routing; back to the assistant",
         "/reset — start a fresh conversation",
         "/help — this message",
     ].join("\n");
@@ -329,6 +369,8 @@ export function usageText(cmd: string): string {
             return "usage: /digest <run-id>  (get an id from /runs)";
         case "search":
             return "usage: /search <text>";
+        case "attach":
+            return "usage: /attach <run-id>  (a live run — see /runs or /live)";
         case "pass":
         case "fail":
         case "open":

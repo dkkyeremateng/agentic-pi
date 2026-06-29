@@ -4,13 +4,16 @@ import {
     bridgeConfig,
     chatSessionId,
     chunk,
+    formatAttachable,
     formatLive,
     formatRuns,
     initStreamState,
     isAllowed,
+    orchestrators,
     parseCommand,
     reduceChatEvent,
     renderStream,
+    resolveAttachTarget,
     shortId,
     TG_LIMIT,
 } from "./obs-bridge-core";
@@ -104,6 +107,13 @@ test("verdict commands carry status, id, and an optional note", () => {
     assert.deepEqual(parseCommand("/pass"), { kind: "usage", cmd: "pass" });
 });
 
+test("/attach takes a run id (else usage); /detach has no args", () => {
+    assert.deepEqual(parseCommand("/attach run-abc"), { kind: "attach", runArg: "run-abc" });
+    assert.deepEqual(parseCommand("/attach abc extra ignored"), { kind: "attach", runArg: "abc" });
+    assert.deepEqual(parseCommand("/attach"), { kind: "usage", cmd: "attach" });
+    assert.deepEqual(parseCommand("/detach"), { kind: "detach" });
+});
+
 test("/reset and /new map to reset; unknown slash → usage", () => {
     assert.deepEqual(parseCommand("/reset"), { kind: "reset" });
     assert.deepEqual(parseCommand("/new"), { kind: "reset" });
@@ -188,6 +198,43 @@ test("formatLive lists agent, project, and session id", () => {
 test("shortId drops the run- prefix", () => {
     assert.equal(shortId("run-mqa9m2kb-z027y"), "mqa9m2kb-z027y");
     assert.equal(shortId("no-prefix"), "no-prefix");
+});
+
+// ── attach target resolution ─────────────────────────────────────────────────
+
+const orch = (sessionId: string, runId: string): any => ({ sessionId, agent: "orchestrator", runId, cwd: "/x/proj", model: "m", startedTs: 1 });
+const sub = (sessionId: string, runId: string): any => ({ sessionId, agent: "implementer", runId, cwd: "/x/proj", startedTs: 1 });
+
+test("orchestrators() keeps only root orchestrator sessions", () => {
+    assert.deepEqual(orchestrators([orch("s1", "run-a"), sub("s2", "run-a"), orch("s3", "run-b")]).map((s) => s.sessionId), ["s1", "s3"]);
+});
+
+test("resolveAttachTarget matches a live run by id (with or without run- prefix)", () => {
+    const live = [orch("sess-1", "run-alpha"), sub("sess-2", "run-alpha")];
+    for (const arg of ["run-alpha", "alpha", "alph"]) {
+        const r = resolveAttachTarget(live, arg);
+        assert.equal(r.kind, "ok");
+        if (r.kind === "ok") assert.equal(r.target.sessionId, "sess-1");
+    }
+});
+
+test("resolveAttachTarget: none when no live orchestrator matches", () => {
+    assert.deepEqual(resolveAttachTarget([orch("s1", "run-a")], "run-zzz"), { kind: "none" });
+    assert.deepEqual(resolveAttachTarget([sub("s2", "run-a")], "run-a"), { kind: "none" }); // sub-agent isn't attachable
+    assert.deepEqual(resolveAttachTarget([], "run-a"), { kind: "none" });
+});
+
+test("resolveAttachTarget: ambiguous when a prefix matches several runs", () => {
+    const r = resolveAttachTarget([orch("s1", "run-ab12"), orch("s2", "run-ab34")], "ab");
+    assert.equal(r.kind, "ambiguous");
+    if (r.kind === "ambiguous") assert.equal(r.options.length, 2);
+});
+
+test("formatAttachable lists runs by short id, empty case handled", () => {
+    assert.match(formatAttachable([], Date.now()), /no live runs/);
+    const out = formatAttachable([orch("s1", "run-alpha")], Date.now());
+    assert.match(out, /alpha/);
+    assert.match(out, /proj/);
 });
 
 // ── chunking ─────────────────────────────────────────────────────────────────

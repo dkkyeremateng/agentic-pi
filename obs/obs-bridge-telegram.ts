@@ -15,15 +15,18 @@ import {
     type BridgeConfig,
     chatSessionId,
     chunk,
+    formatAttachable,
     formatLive,
     formatRuns,
     helpText,
     initStreamState,
     isAllowed,
     type LiveView,
+    orchestrators,
     parseCommand,
     reduceChatEvent,
     renderStream,
+    resolveAttachTarget,
     type RunView,
     shortId,
     usageText,
@@ -104,16 +107,12 @@ async function apiPostJson<T = any>(cfg: BridgeConfig, path: string, body: unkno
     return { status, data: data as T };
 }
 
-/** Stream /api/chat (SSE) — calls onEvent for each ChatEvent frame. Resolves when
- *  the stream ends. The token rides as a query param (EventSource transport rule;
- *  we mirror it). */
-function streamChatSSE(cfg: BridgeConfig, params: { sessionId: string; text: string }, onEvent: (e: ChatEvent) => void): Promise<void> {
-    const u = new URL(cfg.apiBase + "/api/chat");
-    u.searchParams.set("sessionId", params.sessionId);
-    u.searchParams.set("text", params.text);
-    if (cfg.model) u.searchParams.set("model", cfg.model);
-    if (cfg.cwd) u.searchParams.set("cwd", cfg.cwd);
-    if (cfg.chatTools) u.searchParams.set("tools", "1");
+/** Stream an obs SSE endpoint (/api/chat or /api/chat-live), calling onEvent for
+ *  each ChatEvent frame and resolving when the stream ends. The token rides as a
+ *  query param (the EventSource transport rule the server mirrors). */
+function streamSSE(cfg: BridgeConfig, path: string, params: Record<string, string>, onEvent: (e: ChatEvent) => void): Promise<void> {
+    const u = new URL(cfg.apiBase + path);
+    for (const [k, v] of Object.entries(params)) if (v) u.searchParams.set(k, v);
     if (cfg.apiToken) u.searchParams.set("token", cfg.apiToken);
 
     return new Promise((resolve, reject) => {
@@ -121,7 +120,7 @@ function streamChatSSE(cfg: BridgeConfig, params: { sessionId: string; text: str
         const req = mod.get(u, (res) => {
             if ((res.statusCode || 0) >= 400) {
                 res.resume();
-                reject(new Error(`obs /api/chat: HTTP ${res.statusCode}`));
+                reject(new Error(`obs ${path}: HTTP ${res.statusCode}`));
                 return;
             }
             res.setEncoding("utf8");
@@ -162,10 +161,13 @@ interface BridgeState {
     salt: Map<number, number>;
     /** Chats with a chat turn in flight — we serialize to one reply at a time. */
     busy: Set<number>;
+    /** Chats currently /attached to a live run: their plain messages route into
+     *  that run's orchestrator instead of the standalone assistant. */
+    attached: Map<number, { runId: string; sessionId: string }>;
 }
 
 function newState(): BridgeState {
-    return { salt: new Map(), busy: new Set() };
+    return { salt: new Map(), busy: new Set(), attached: new Map() };
 }
 
 // ── search result formatting (transport-local; trivial) ──────────────────────
@@ -181,9 +183,12 @@ function formatSearch(events: any[], q: string): string {
     return `matches for "${q}" (newest ${Math.min(events.length, 10)}):\n${lines.join("\n")}`;
 }
 
-// ── chat: edit-streamed reply ────────────────────────────────────────────────
+// ── edit-streamed reply (shared by the assistant and an attached run) ─────────
 
-async function runChat(cfg: BridgeConfig, state: BridgeState, chatId: number, text: string): Promise<void> {
+/** Render a streamed ChatEvent reply into Telegram by editing one message as
+ *  tokens land. `runStream` produces the SSE (assistant chat or a live run).
+ *  Serialized to one reply per chat at a time. */
+async function streamReply(cfg: BridgeConfig, state: BridgeState, chatId: number, runStream: (onEvent: (e: ChatEvent) => void) => Promise<void>): Promise<void> {
     if (state.busy.has(chatId)) {
         await send(cfg, chatId, "still working on your previous message — one at a time.");
         return;
@@ -219,8 +224,7 @@ async function runChat(cfg: BridgeConfig, state: BridgeState, chatId: number, te
             });
         };
 
-        const sessionId = chatSessionId(chatId, state.salt.get(chatId) || 0);
-        await streamChatSSE(cfg, { sessionId, text }, (ev) => {
+        await runStream((ev) => {
             reduceChatEvent(s, ev);
             if (ev.type === "token" || ev.type === "tool") enqueueEdit(false);
         });
@@ -233,6 +237,47 @@ async function runChat(cfg: BridgeConfig, state: BridgeState, chatId: number, te
     } finally {
         state.busy.delete(chatId);
     }
+}
+
+/** Free text -> the standalone obs assistant (per-chat session for continuity). */
+function runChat(cfg: BridgeConfig, state: BridgeState, chatId: number, text: string): Promise<void> {
+    const params: Record<string, string> = { sessionId: chatSessionId(chatId, state.salt.get(chatId) || 0), text };
+    if (cfg.model) params.model = cfg.model;
+    if (cfg.cwd) params.cwd = cfg.cwd;
+    if (cfg.chatTools) params.tools = "1";
+    return streamReply(cfg, state, chatId, (onEvent) => streamSSE(cfg, "/api/chat", params, onEvent));
+}
+
+/** Free text while /attached -> inject into the live run's orchestrator and
+ *  stream its reply. Auto-detaches if the run has since ended. */
+async function runAttachedChat(cfg: BridgeConfig, state: BridgeState, chatId: number, att: { runId: string; sessionId: string }, text: string): Promise<void> {
+    const live = await apiGetJson<LiveView[]>(cfg, `/api/live-sessions`);
+    if (!live.some((srv) => srv.sessionId === att.sessionId)) {
+        state.attached.delete(chatId);
+        await send(cfg, chatId, `run ${shortId(att.runId)} is no longer live — detached. your message wasn't sent.`);
+        return;
+    }
+    // followUp: queued as a normal user message (reliable whether the agent is
+    // idle or mid-turn). approve stays off, so the run keeps its own tool policy.
+    await streamReply(cfg, state, chatId, (onEvent) => streamSSE(cfg, "/api/chat-live", { sessionId: att.sessionId, text, deliverAs: "followUp" }, onEvent));
+}
+
+/** /attach <run-id> -> bind this chat to a live run so subsequent messages drive it. */
+async function runAttach(cfg: BridgeConfig, state: BridgeState, chatId: number, runArg: string): Promise<void> {
+    const live = await apiGetJson<LiveView[]>(cfg, `/api/live-sessions`);
+    const target = resolveAttachTarget(live, runArg);
+    if (target.kind === "ambiguous") {
+        await sendChunked(cfg, chatId, `"${runArg}" matches several live runs — be more specific:\n${formatAttachable(target.options, Date.now())}`);
+        return;
+    }
+    if (target.kind === "none") {
+        const orch = orchestrators(live);
+        await sendChunked(cfg, chatId, orch.length ? `no live run matches "${runArg}". live runs:\n${formatAttachable(orch, Date.now())}` : "no live runs right now. start one with PI_OBS=1 (e.g. ./run.sh --obs).");
+        return;
+    }
+    const runId = target.target.runId || runArg;
+    state.attached.set(chatId, { runId, sessionId: target.target.sessionId });
+    await send(cfg, chatId, `attached to ${shortId(runId)} — your messages now drive this live run. /detach to stop.`);
 }
 
 // ── command dispatch ─────────────────────────────────────────────────────────
@@ -293,10 +338,21 @@ async function handleMessage(cfg: BridgeConfig, state: BridgeState, chatId: numb
             await send(cfg, chatId, status < 400 && (data as any)?.ok ? `scored ${shortId(cmd.id)} → ${cmd.status}.` : `could not score that run (HTTP ${status}).`);
             return;
         }
-        case "chat":
-            if (!cmd.text) return;
-            await runChat(cfg, state, chatId, cmd.text);
+        case "attach":
+            await runAttach(cfg, state, chatId, cmd.runArg);
             return;
+        case "detach": {
+            const had = state.attached.delete(chatId);
+            await send(cfg, chatId, had ? "detached — messages go to the obs assistant again." : "you're not attached to a run.");
+            return;
+        }
+        case "chat": {
+            if (!cmd.text) return;
+            const att = state.attached.get(chatId);
+            if (att) await runAttachedChat(cfg, state, chatId, att, cmd.text);
+            else await runChat(cfg, state, chatId, cmd.text);
+            return;
+        }
     }
 }
 

@@ -295,15 +295,23 @@ bridge reaches out. It maps each message onto the API above:
 - `/runs [n]` -> `/api/runs`; `/last` and `/digest <id>` -> `/api/runs/:id/digest?format=text`
 - `/search <text>` -> `/api/search`; `/live` -> `/api/live-sessions`
 - `/pass|/fail|/open <id> [note]` -> `POST /api/runs/:id/verdict`
+- `/attach <run-id>` binds the chat to a **live run** (resolved from
+  `/api/live-sessions` — the run's root `orchestrator`); subsequent plain messages
+  route to `GET /api/chat-live` (injected as a follow-up user message) and stream
+  the orchestrator's reply. `/detach` unbinds; the bridge also auto-detaches if the
+  run ends. Slash commands still work while attached.
 - `/reset` starts a fresh conversation (rotates the `sessionId`); `/help` lists all.
 
 **Auth & access.** The bridge holds `PI_OBS_TOKEN` and calls the server locally,
 so the token never leaves the machine (it's sent as the bearer header, and as
-`?token=` for the chat SSE). Access is **fail-closed**: only chat ids in
+`?token=` for the SSE streams). Access is **fail-closed**: only chat ids in
 `PI_OBS_TG_ALLOW` are served; an unknown sender gets a one-line reply with *their
-own* chat id so you can add it. Architecturally it's a read + conversational
-surface — it does not expose the live-agent steering routes (`/api/chat-live`,
-`/api/chat-approve`).
+own* chat id so you can add it.
+
+While `/attach`ed the bridge **drives a live agent** (`/api/chat-live`), so treat
+the allowlist as a privilege boundary. It delivers as a follow-up with `approve`
+off (the run keeps its own tool policy) and does not expose the tool approve/deny
+route (`/api/chat-approve`).
 
 Config (see `example.env`): `PI_OBS_TG_TOKEN` (required, from @BotFather),
 `PI_OBS_TG_ALLOW` (required for any access), `PI_OBS_TG_TOOLS`, `PI_OBS_TG_MODEL`,
