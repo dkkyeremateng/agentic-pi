@@ -276,6 +276,39 @@ curl -s -X POST localhost:7616/api/runs/run-mqa9/verdict \
      -d '{"status":"pass","note":"verified manually"}'
 ```
 
+## Telegram bridge
+
+`obs/obs-bridge.ts` is a small client that lets you talk to this API from
+Telegram — chat with the assistant and inspect/score runs from your phone. Run
+it with **`./run.sh --bridge`** (or `npm run obs:bridge`) next to a running
+server.
+
+It **long-polls** the Telegram Bot API (`getUpdates`), so there is **no inbound
+webhook** — the obs-server keeps binding loopback exactly as before, and the
+bridge reaches out. It maps each message onto the API above:
+
+- **free text** -> `GET /api/chat` (SSE), keyed to a stable per-chat `sessionId`
+  (`tg-<chatId>`) for conversational continuity. Replies **edit-stream**: one
+  Telegram message is edited as tokens arrive (throttled by `PI_OBS_TG_EDIT_MS`).
+  Needs `PI_OBS_LLM=1` on the server. Tools are **off** by default.
+- `/runs [n]` -> `/api/runs`; `/last` and `/digest <id>` -> `/api/runs/:id/digest?format=text`
+- `/search <text>` -> `/api/search`; `/live` -> `/api/live-sessions`
+- `/pass|/fail|/open <id> [note]` -> `POST /api/runs/:id/verdict`
+- `/reset` starts a fresh conversation (rotates the `sessionId`); `/help` lists all.
+
+**Auth & access.** The bridge holds `PI_OBS_TOKEN` and calls the server locally,
+so the token never leaves the machine (it's sent as the bearer header, and as
+`?token=` for the chat SSE). Access is **fail-closed**: only chat ids in
+`PI_OBS_TG_ALLOW` are served; an unknown sender gets a one-line reply with *their
+own* chat id so you can add it. Architecturally it's a read + conversational
+surface — it does not expose the live-agent steering routes (`/api/chat-live`,
+`/api/chat-approve`).
+
+Config (see `example.env`): `PI_OBS_TG_TOKEN` (required, from @BotFather),
+`PI_OBS_TG_ALLOW` (required for any access), `PI_OBS_TG_TOOLS`, `PI_OBS_TG_MODEL`,
+`PI_OBS_TG_CWD`, `PI_OBS_TG_POLL_S`, `PI_OBS_TG_EDIT_MS`, and `PI_OBS_BRIDGE_API`
+(defaults to `PI_OBS_HOST:PI_OBS_PORT`).
+
 ## Legacy routes (used by the bundled dashboard)
 
 `/stream`, `/summary`, `/events[?run=]`, `/runs`, `/search?q=`,

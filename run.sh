@@ -10,6 +10,8 @@
 #   ./run.sh --emit                # pi with emission on, but DON'T start a server
 #                                  #   (use when a `--server` is already running)
 #   ./run.sh --server              # the dashboard server only (background; no pi)
+#   ./run.sh --bridge              # the Telegram bridge only (foreground; talks to
+#                                  #   an obs-server over HTTP — start one too)
 #   ./run.sh --restart             # stop the server on $PORT, then start it fresh
 #                                  #   (reloads edited obs/*.ts — tsx has no
 #                                  #    hot-reload)
@@ -164,6 +166,7 @@ while [[ $# -gt 0 ]]; do
         --obs) MODE="both"; shift ;;
         --emit) MODE="emit"; shift ;;
         --server | --obs-only) MODE="server"; shift ;;
+        --bridge) MODE="bridge"; shift ;;
         --restart) MODE="restart"; shift ;;
         --stop) MODE="stop"; shift ;;
         --project | --cwd) SINK_SCOPE="project"; shift ;;
@@ -219,6 +222,18 @@ if [[ "$MODE" == "restart" ]]; then
         echo "run.sh: no server on port $PORT — starting it…"
     fi
     MODE="server" # fall through to a fresh start
+fi
+
+# ── telegram bridge only ─────────────────────────────────────────────────────
+# Long-polls Telegram and talks to a running obs-server over HTTP (it never spawns
+# pi itself). Foreground so logs show and Ctrl-C stops it; remaining args pass
+# through. Needs PI_OBS_TG_TOKEN/PI_OBS_TG_ALLOW (see .env) and a reachable server.
+if [[ "$MODE" == "bridge" ]]; then
+    [[ -x "$TSX" ]] || {
+        echo "run.sh: the Telegram bridge needs dev deps — run 'npm install' in $DIR." >&2
+        exit 1
+    }
+    exec "$TSX" "$DIR/obs/obs-bridge.ts" "$@"
 fi
 
 # ── server only ──────────────────────────────────────────────────────────────

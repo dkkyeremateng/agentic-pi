@@ -1,0 +1,367 @@
+// obs-bridge-core.ts — pure, transport-agnostic logic for the messaging bridge
+// that lets you talk to the obs API from a chat app (Telegram first). NO I/O
+// lives here: config, allowlist, chat-id → pi-session mapping, command parsing,
+// the streaming ChatEvent → display-text reducer, edit-stream throttling, and
+// message formatting/chunking. The transport (obs-bridge-telegram.ts) does the
+// actual HTTP/SSE + Telegram Bot API calls and drives these helpers.
+//
+// Design constraints (mirrors the rest of obs-*):
+//   - STDLIB ONLY (this file has zero imports beyond a type).
+//   - OFF BY DEFAULT — the bridge runs only when PI_OBS_TG_TOKEN is set, and a
+//     message is acted on only when its chat id is on PI_OBS_TG_ALLOW.
+//   - PURE + UNIT-TESTED — every function here is deterministic given its args.
+
+import type { ChatEvent } from "./obs-chat";
+
+// ── config ───────────────────────────────────────────────────────────────────
+
+export interface BridgeConfig {
+    /** True once a bot token is present — nothing polls Telegram without it. */
+    enabled: boolean;
+    /** Telegram Bot API token (from @BotFather). */
+    token: string;
+    /** Allowed Telegram chat ids. Empty ⇒ nobody is allowed (fail closed). */
+    allow: number[];
+    /** obs-server base URL the bridge calls (loopback by default). */
+    apiBase: string;
+    /** Shared secret for the obs API (PI_OBS_TOKEN), or "" when the API is open. */
+    apiToken: string;
+    /** Optional model override forwarded to /api/chat. */
+    model: string;
+    /** Optional project dir scope forwarded to /api/chat (sessions are per-cwd). */
+    cwd: string;
+    /** Allow the chat assistant to use tools (default false — text-only, no side
+     *  effects). Steering a live agent is a separate, explicit surface. */
+    chatTools: boolean;
+    /** Long-poll timeout (seconds) handed to Telegram getUpdates. */
+    pollTimeoutS: number;
+    /** Minimum gap between live message edits while a reply streams (ms). */
+    editThrottleMs: number;
+}
+
+/** Telegram's hard limit on a single message's text length. */
+export const TG_LIMIT = 4096;
+
+function intList(raw: string | undefined): number[] {
+    if (!raw) return [];
+    return raw
+        .split(/[,\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => Number(s))
+        .filter((n) => Number.isInteger(n));
+}
+
+export function bridgeConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
+    const token = (env.PI_OBS_TG_TOKEN || "").trim();
+    // Build the obs API base the same way run.sh / the server resolve host+port,
+    // so the bridge talks to the local server with no extra config. An explicit
+    // PI_OBS_BRIDGE_API always wins (e.g. a remote/containerised server).
+    const host = (env.PI_OBS_HOST || "127.0.0.1").trim();
+    // 0.0.0.0 is a bind address, not a dial address — reach it over loopback.
+    const dial = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+    const port = Number(env.PI_OBS_PORT) || 7616;
+    const apiBase = (env.PI_OBS_BRIDGE_API || `http://${dial}:${port}`).replace(/\/+$/, "");
+    return {
+        enabled: !!token,
+        token,
+        allow: intList(env.PI_OBS_TG_ALLOW),
+        apiBase,
+        apiToken: (env.PI_OBS_TOKEN || "").trim(),
+        model: (env.PI_OBS_TG_MODEL || "").trim(),
+        cwd: (env.PI_OBS_TG_CWD || "").trim(),
+        chatTools: env.PI_OBS_TG_TOOLS === "1" || env.PI_OBS_TG_TOOLS === "true",
+        pollTimeoutS: Number(env.PI_OBS_TG_POLL_S) || 50,
+        editThrottleMs: Number(env.PI_OBS_TG_EDIT_MS) || 1200,
+    };
+}
+
+/** Is this chat id allowed to use the bridge? Fail closed: an empty allowlist
+ *  means nobody (you must opt people in explicitly). */
+export function isAllowed(cfg: BridgeConfig, chatId: number): boolean {
+    return cfg.allow.includes(chatId);
+}
+
+/** Stable pi session id for a Telegram chat, so the conversation keeps context
+ *  across turns. `salt` rotates the session on /reset (a fresh conversation).
+ *  Stays within the server's `^[\w.-]{1,64}$` sessionId rule. */
+export function chatSessionId(chatId: number, salt = 0): string {
+    return `tg-${chatId}${salt ? `-${salt}` : ""}`;
+}
+
+// ── command parsing ────────────────────────────────────────────────────────
+
+export type Command =
+    | { kind: "chat"; text: string }
+    | { kind: "help" }
+    | { kind: "runs"; limit: number }
+    | { kind: "last" }
+    | { kind: "digest"; id: string }
+    | { kind: "search"; q: string }
+    | { kind: "verdict"; status: "pass" | "fail" | "open"; id: string; note: string }
+    | { kind: "live" }
+    | { kind: "reset" }
+    | { kind: "usage"; cmd: string }; // recognised command, wrong/missing args
+
+/** Map a raw message into a Command. A leading "/" is a slash command (Telegram
+ *  may suffix it with @botname in groups — stripped); anything else is free-text
+ *  routed to the chat assistant. */
+export function parseCommand(raw: string): Command {
+    const text = (raw || "").trim();
+    if (!text.startsWith("/")) return { kind: "chat", text };
+
+    const sp = text.indexOf(" ");
+    let cmd = (sp === -1 ? text : text.slice(0, sp)).slice(1).toLowerCase();
+    const at = cmd.indexOf("@"); // /help@MyBot → help
+    if (at !== -1) cmd = cmd.slice(0, at);
+    const rest = sp === -1 ? "" : text.slice(sp + 1).trim();
+
+    switch (cmd) {
+        case "start":
+        case "help":
+            return { kind: "help" };
+        case "reset":
+        case "new":
+            return { kind: "reset" };
+        case "runs": {
+            const n = Number(rest);
+            return { kind: "runs", limit: Number.isInteger(n) && n > 0 ? Math.min(n, 20) : 5 };
+        }
+        case "last":
+            return { kind: "last" };
+        case "live":
+            return { kind: "live" };
+        case "digest":
+            return rest ? { kind: "digest", id: rest.split(/\s+/)[0] } : { kind: "usage", cmd: "digest" };
+        case "search":
+            return rest ? { kind: "search", q: rest } : { kind: "usage", cmd: "search" };
+        case "pass":
+        case "fail":
+        case "open": {
+            if (!rest) return { kind: "usage", cmd };
+            const m = rest.split(/\s+/);
+            const id = m[0];
+            const note = rest.slice(id.length).trim();
+            return { kind: "verdict", status: cmd as "pass" | "fail" | "open", id, note };
+        }
+        default:
+            // Unknown slash command — don't silently feed "/foo" to the model.
+            return { kind: "usage", cmd };
+    }
+}
+
+// ── streaming reduce (ChatEvent → display text) ──────────────────────────────
+
+export interface StreamState {
+    text: string; // accumulated assistant reply
+    activeTool?: string; // a tool currently running (shown as a status line)
+    done: boolean;
+    error?: string;
+    costUsd: number;
+    tokens?: number;
+    model?: string;
+}
+
+export function initStreamState(): StreamState {
+    return { text: "", done: false, costUsd: 0 };
+}
+
+/** Fold one streamed ChatEvent into the running display state (in place). Tokens
+ *  accumulate the reply; tool start/end drive a transient status line; `done`
+ *  carries the authoritative final text + cost/tokens/model. Reasoning frames
+ *  are dropped (we surface the answer, not the model's thinking). */
+export function reduceChatEvent(s: StreamState, ev: ChatEvent): StreamState {
+    switch (ev.type) {
+        case "token":
+            s.text += ev.text;
+            break;
+        case "thinking":
+            break; // not surfaced in chat
+        case "tool":
+            s.activeTool = ev.phase === "start" ? ev.name : undefined;
+            break;
+        case "approval":
+            // Tools are off by default, so this is rare. Surface it rather than
+            // hang — the bridge can't approve from here in v1.
+            s.activeTool = undefined;
+            s.error = `the agent paused for tool approval (${ev.name}); approve it from the dashboard`;
+            s.done = true;
+            break;
+        case "done":
+            s.done = true;
+            if (ev.text) s.text = ev.text; // authoritative final text
+            s.costUsd = ev.costUsd || 0;
+            s.tokens = ev.tokens;
+            s.model = ev.model;
+            s.activeTool = undefined;
+            break;
+        case "error":
+            s.error = ev.error;
+            s.done = true;
+            s.activeTool = undefined;
+            break;
+    }
+    return s;
+}
+
+// ── formatting ───────────────────────────────────────────────────────────────
+
+function fmtCost(usd: number): string {
+    if (!usd) return "$0";
+    return usd < 0.1 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
+}
+function fmtTok(n: number | undefined): string {
+    if (!n) return "0 tok";
+    return n >= 1000 ? `${(n / 1000).toFixed(1)}k tok` : `${n} tok`;
+}
+export function fmtAge(ms: number, now: number): string {
+    const d = Math.max(0, now - ms);
+    const s = Math.round(d / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+}
+
+/** Render the streaming state into the text shown in Telegram. While a reply is
+ *  in flight an ellipsis / running-tool line signals progress; once done a small
+ *  cost footer is appended. */
+export function renderStream(s: StreamState): string {
+    if (s.error && !s.text) return `error: ${s.error}`;
+    let body = s.text || (s.done ? "(no reply)" : "...");
+    if (!s.done && s.activeTool) body += `\n\n... running ${s.activeTool}`;
+    if (s.done) {
+        if (s.error) body += `\n\n(interrupted: ${s.error})`;
+        const foot = `${fmtCost(s.costUsd)} · ${fmtTok(s.tokens)}${s.model ? ` · ${s.model}` : ""}`;
+        if (s.costUsd || s.tokens) body += `\n\n— ${foot}`;
+    }
+    return body;
+}
+
+// Minimal structural views of the obs API responses the bridge reads — keeps
+// this module free of server-internal type imports.
+export interface RunView {
+    runId: string;
+    name?: string;
+    cwd?: string;
+    costUsd?: number;
+    tokens?: number;
+    toolCalls?: number;
+    errors?: number;
+    lastTs?: number;
+    agents?: string[];
+    verdict?: { status?: string };
+}
+export interface LiveView {
+    sessionId: string;
+    agent: string;
+    runId?: string;
+    cwd?: string;
+    model?: string;
+    startedTs?: number;
+}
+
+function projectOf(cwd: string | undefined): string {
+    if (!cwd) return "—";
+    const parts = cwd.replace(/\/+$/, "").split("/");
+    return parts[parts.length - 1] || cwd;
+}
+/** Short, recognisable run id (the unique-prefix the API accepts on :id). */
+export function shortId(runId: string): string {
+    // run-mqa9m2kb-z027y → mqa9m2kb-z027y is plenty unique; keep the run- off for
+    // brevity but the API matches on the full or any unique prefix either way.
+    return runId.replace(/^run-/, "");
+}
+
+export function formatRuns(runs: RunView[], now: number): string {
+    if (!runs.length) return "no runs recorded yet.";
+    const lines = runs.map((r) => {
+        const v = r.verdict?.status ? ` · ${r.verdict.status}` : "";
+        const errs = r.errors ? ` · ${r.errors} err` : "";
+        const when = r.lastTs ? ` · ${fmtAge(r.lastTs, now)}` : "";
+        return (
+            `• ${shortId(r.runId)} — ${projectOf(r.cwd)}` +
+            (r.name ? ` · "${r.name}"` : "") +
+            `\n  ${fmtCost(r.costUsd || 0)} · ${fmtTok(r.tokens)} · ${r.toolCalls || 0} tools${errs}${when}${v}`
+        );
+    });
+    return lines.join("\n");
+}
+
+export function formatLive(sessions: LiveView[], now: number): string {
+    if (!sessions.length) return "no agents are running right now.";
+    return sessions
+        .map(
+            (s) =>
+                `• ${s.agent} — ${projectOf(s.cwd)}` +
+                (s.model ? ` · ${s.model}` : "") +
+                (s.startedTs ? ` · started ${fmtAge(s.startedTs, now)}` : "") +
+                `\n  session ${s.sessionId}`,
+        )
+        .join("\n");
+}
+
+export function helpText(): string {
+    return [
+        "pi obs bridge — talk to your agent observability.",
+        "",
+        "Send any message to chat with the obs assistant (it knows your runs).",
+        "",
+        "Commands:",
+        "/runs [n] — recent runs (default 5)",
+        "/last — the most recent run's digest",
+        "/digest <id> — what happened in a run",
+        "/search <text> — search across all runs",
+        "/live — agents running right now",
+        "/pass <id> [note] — score a run pass",
+        "/fail <id> [note] — score a run fail",
+        "/open <id> [note] — mark a run needs-review",
+        "/reset — start a fresh conversation",
+        "/help — this message",
+    ].join("\n");
+}
+
+export function usageText(cmd: string): string {
+    switch (cmd) {
+        case "digest":
+            return "usage: /digest <run-id>  (get an id from /runs)";
+        case "search":
+            return "usage: /search <text>";
+        case "pass":
+        case "fail":
+        case "open":
+            return `usage: /${cmd} <run-id> [note]`;
+        default:
+            return `unknown command /${cmd}. send /help for the list.`;
+    }
+}
+
+/** Split text into Telegram-sized pieces, preferring line/paragraph boundaries
+ *  and hard-splitting only when a single line exceeds the limit. */
+export function chunk(text: string, limit = TG_LIMIT): string[] {
+    if (text.length <= limit) return [text];
+    const out: string[] = [];
+    let cur = "";
+    for (const line of text.split("\n")) {
+        if (line.length > limit) {
+            // flush what we have, then hard-split the long line
+            if (cur) {
+                out.push(cur);
+                cur = "";
+            }
+            for (let i = 0; i < line.length; i += limit) out.push(line.slice(i, i + limit));
+            continue;
+        }
+        const add = cur ? `${cur}\n${line}` : line;
+        if (add.length > limit) {
+            out.push(cur);
+            cur = line;
+        } else {
+            cur = add;
+        }
+    }
+    if (cur) out.push(cur);
+    return out;
+}

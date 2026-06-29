@@ -447,6 +447,19 @@ agent, so set a token whenever the server is reachable beyond your own loopback 
 behind Tailscale or a proxy). Generate one with `openssl rand -hex 32`. Details in
 [`obs/API.md`](obs/API.md#authentication).
 
+**Talk to it from Telegram (`./run.sh --bridge`).** A messaging bridge lets you
+chat with your observability from your phone. It **long-polls** the Telegram Bot
+API (no inbound webhook, so the obs-server stays on loopback) and maps messages
+onto the API: free text chats with the assistant (it knows your runs; needs
+`PI_OBS_LLM=1`), and `/runs`, `/last`, `/digest <id>`, `/search <text>`, `/live`,
+`/pass`/`/fail` inspect and score runs. Replies **edit-stream** — one message
+grows as tokens arrive. Set `PI_OBS_TG_TOKEN` (a [@BotFather](https://t.me/BotFather)
+token) and `PI_OBS_TG_ALLOW` (the chat ids allowed — fail-closed; message the bot
+once and it replies with yours), then `./run.sh --bridge` (or `npm run obs:bridge`)
+alongside a running server. The bridge holds `PI_OBS_TOKEN` and calls the server
+locally, so the token never leaves the machine. See `example.env` and
+[`obs/API.md`](obs/API.md#telegram-bridge).
+
 **Run it in Docker.** The dashboard + API can run in a container (the bundled
 dashboard only — not the React app). Your agents still run on the host and write
 the event sink; the container tails it. `PI_OBS_TOKEN=$(openssl rand -hex 32)
