@@ -196,34 +196,37 @@ async function runChat(cfg: BridgeConfig, state: BridgeState, chatId: number, te
 
         const s = initStreamState();
         let lastSent = "...";
-        let lastEditAt = Date.now();
-        let flushing = false;
+        let lastEditAt = 0; // 0 ⇒ the first update edits immediately
+        // Serialize every edit through one chain so they never overlap or land
+        // out of order, and so the final edit is GUARANTEED to run (awaiting the
+        // chain below) instead of being dropped while an intermediate edit is in
+        // flight — that race is what truncated replies to the last partial frame.
+        let editChain: Promise<void> = Promise.resolve();
 
-        const flush = async (force: boolean) => {
-            if (flushing) return; // avoid overlapping/out-of-order edits
+        const enqueueEdit = (force: boolean): void => {
             const now = Date.now();
-            if (!force && now - lastEditAt < cfg.editThrottleMs) return;
-            const first = chunk(renderStream(s))[0] ?? renderStream(s); // live-edit only the first part
-            if (first === lastSent) return;
-            flushing = true;
-            lastSent = first;
+            if (!force && now - lastEditAt < cfg.editThrottleMs) return; // throttle the cadence, not the final edit
             lastEditAt = now;
-            try {
-                await tg(cfg, "editMessageText", { chat_id: chatId, message_id: messageId, text: first });
-            } catch {
-                /* "message is not modified" / rate limit — best effort */
-            } finally {
-                flushing = false;
-            }
+            editChain = editChain.then(async () => {
+                const body = chunk(renderStream(s))[0] ?? renderStream(s); // live-edit only the first Telegram-sized part
+                if (body === lastSent) return; // skip "message is not modified"
+                lastSent = body;
+                try {
+                    await tg(cfg, "editMessageText", { chat_id: chatId, message_id: messageId, text: body });
+                } catch {
+                    /* rate limit / transient — best effort, the final edit reconciles */
+                }
+            });
         };
 
         const sessionId = chatSessionId(chatId, state.salt.get(chatId) || 0);
         await streamChatSSE(cfg, { sessionId, text }, (ev) => {
             reduceChatEvent(s, ev);
-            if (ev.type === "token" || ev.type === "tool") void flush(false);
+            if (ev.type === "token" || ev.type === "tool") enqueueEdit(false);
         });
 
-        await flush(true); // final state, throttle-bypassed
+        enqueueEdit(true); // final edit: the complete text + cost footer, throttle-bypassed
+        await editChain; // wait for it (and any queued edit) to actually land
         // Anything past the first Telegram-sized part goes as follow-up messages.
         const parts = chunk(renderStream(s));
         for (let i = 1; i < parts.length; i++) await send(cfg, chatId, parts[i]);
