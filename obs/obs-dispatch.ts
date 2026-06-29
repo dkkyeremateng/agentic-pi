@@ -12,16 +12,18 @@
 //     dispatched.
 //   - CONFINED TO THE cwd: cwd-guard is FORCED on (PI_CONFINE_CWD), so the agent's
 //     FILE tools (read/write/edit/grep/find/ls) cannot escape the caller-provided
-//     cwd. `bash` is NOT confined by cwd-guard, so for true confinement (bash
+//     cwd. `bash` is NOT confined by cwd-guard, so for real WRITE confinement (bash
 //     included) set PI_OBS_DISPATCH_SANDBOX (macOS sandbox-exec) or
-//     PI_OBS_DISPATCH_SANDBOX_CMD (a bwrap/firejail/docker wrapper). Fail-closed.
+//     PI_OBS_DISPATCH_SANDBOX_CMD (a bwrap/firejail/docker wrapper). The macOS
+//     sandbox confines WRITES to the cwd (+ runtime caches/temp) while leaving
+//     reads/network/exec open so tools work — the agent can't MODIFY anything
+//     outside the project. Fail-closed.
 //   - The agent runs as its OWN root run, so it shows on the dashboard.
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter as pathDelimiter, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { parseChatLine, type ChatEvent } from "./obs-chat";
 import {
     type AgentDef,
@@ -90,10 +92,6 @@ export function dispatchConfig(env: NodeJS.ProcessEnv = process.env): DispatchCo
 // (bwrap/firejail/docker/…). FAIL-CLOSED: if a sandbox is requested but
 // unavailable, dispatch errors instead of running unconfined.
 
-// This repo's root — agents read their extensions/skills from here, so the
-// sandbox must allow reading it even though it sits outside the request cwd.
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-
 export interface SandboxConfig {
     mode: "off" | "auto" | "sandbox-exec" | "custom";
     /** PI_OBS_DISPATCH_SANDBOX_CMD — a wrapper argv ({cwd} is substituted). */
@@ -106,47 +104,40 @@ export function sandboxConfig(env: NodeJS.ProcessEnv = process.env): SandboxConf
     return { mode, customCmd };
 }
 
-function expandHome(p: string, home: string): string {
-    return p.startsWith("~") ? join(home, p.slice(1)) : p;
+/** Write roots a dispatched agent needs beyond the cwd: pi's own state plus the
+ *  runtime caches tools require (e.g. Playwright's ~/Library/Caches/ms-playwright,
+ *  fontconfig/npm caches). These are throwaway runtime data, not user content —
+ *  the agent still cannot modify your other projects/files/home. */
+function writeRootsFor(cwd: string, home: string, tmp: string): string[] {
+    return [
+        cwd,
+        join(home, ".pi"),
+        join(home, "Library", "Caches"), // macOS tool caches (Playwright, …)
+        join(home, ".cache"), // XDG caches (Playwright on Linux, fontconfig, …)
+        join(home, ".npm"), // npm cache
+        tmp,
+        "/private/var/folders",
+        "/private/tmp",
+        "/private/var/tmp",
+    ];
 }
 
-/** Home-dir paths a dispatched agent legitimately needs to READ even though we
- *  deny the rest of $HOME (other projects, secrets). Paths outside $HOME are
- *  harmless to include — the profile only denies $HOME. */
-function macReadRoots(env: NodeJS.ProcessEnv, home: string, bin: string): string[] {
-    const roots = [REPO_ROOT, join(home, ".nvm"), join(home, ".npm"), join(home, ".cache")];
-    if (env.PI_CODING_AGENT_DIR) roots.push(expandHome(env.PI_CODING_AGENT_DIR, home));
-    if (env.PI_WORKFLOW_SESSION_DIR) roots.push(expandHome(env.PI_WORKFLOW_SESSION_DIR, home));
-    for (const p of (env.PI_SKILLS_DIR || "").split(pathDelimiter)) if (p) roots.push(p);
-    if (bin && bin.includes("/")) roots.push(dirname(bin));
-    return roots;
-}
-
-/** Generate a macOS Seatbelt (SBPL) profile that confines an agent — bash
- *  included — to the cwd: writes only under cwd/~/.pi/temp, and reads of $HOME
- *  denied except cwd + the pi/node infra it needs. System reads/network/exec stay
- *  allowed so pi works. Pure. */
-export function macSandboxProfile(o: { cwd: string; home: string; tmp: string; readRoots: string[] }): string {
+/** Generate a macOS Seatbelt (SBPL) profile that confines an agent's WRITES —
+ *  bash included — to the cwd (+ runtime caches/temp). Reads, network, and exec
+ *  stay allowed so every tool finds its binaries/config and works. The agent
+ *  therefore cannot MODIFY anything outside the project (your other files and
+ *  projects are untouchable), but can read what it needs. Pure. */
+export function macSandboxProfile(o: { cwd: string; home: string; tmp: string }): string {
     const subs = (ps: string[]) =>
         ps
             .filter(Boolean)
             .map((p) => `(subpath ${JSON.stringify(p)})`)
             .join(" ");
-    const writeRoots = [o.cwd, join(o.home, ".pi"), o.tmp, "/private/var/folders", "/private/tmp", "/private/var/tmp"];
-    const readRoots = [...writeRoots, ...o.readRoots];
     return [
         "(version 1)",
-        "(allow default)", // reads of system paths, network, and exec stay allowed
+        "(allow default)", // reads, network, and exec stay allowed so tools work
         "(deny file-write*)",
-        `(allow file-write* ${subs(writeRoots)} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/stdout") (literal "/dev/stderr") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
-        // Hide the CONTENTS of the rest of $HOME (other projects, secrets). Deny
-        // only file-read-DATA (not metadata) so lstat/traversal still works — else
-        // Node's module loader (lstat on $HOME) breaks. The re-allow must be an
-        // explicit `file-read-data` (a wildcard `file-read*` does NOT override a
-        // specific `file-read-data` deny in SBPL); metadata stays allowed by
-        // `(allow default)`.
-        `(deny file-read-data (subpath ${JSON.stringify(o.home)}))`,
-        `(allow file-read-data ${subs(readRoots)})`,
+        `(allow file-write* ${subs(writeRootsFor(o.cwd, o.home, o.tmp))} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/stdout") (literal "/dev/stderr") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
     ].join("\n");
 }
 
@@ -169,7 +160,7 @@ export function buildSandboxLaunch(sb: SandboxConfig, cwd: string, bin: string, 
     if (!existsSync("/usr/bin/sandbox-exec")) return { error: "sandbox-exec not found at /usr/bin/sandbox-exec." };
     const home = env.HOME || homedir();
     const tmp = env.TMPDIR || "/tmp";
-    const profile = macSandboxProfile({ cwd, home, tmp, readRoots: macReadRoots(env, home, bin) });
+    const profile = macSandboxProfile({ cwd, home, tmp });
     return { cmd: "/usr/bin/sandbox-exec", argv: ["-p", profile, bin, ...args] };
 }
 

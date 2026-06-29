@@ -83,10 +83,10 @@ test("buildSandboxLaunch: sandbox-exec on darwin wraps with a generated profile"
     assert.match(r.argv[1], /\(version 1\)/);
 });
 
-test("macSandboxProfile confines writes to cwd and denies the rest of $HOME", () => {
-    const p = macSandboxProfile({ cwd: "/Users/me/proj", home: "/Users/me", tmp: "/tmp", readRoots: ["/repo"] });
+test("macSandboxProfile confines writes to cwd (+ caches) and leaves reads open", () => {
+    const p = macSandboxProfile({ cwd: "/Users/me/proj", home: "/Users/me", tmp: "/tmp" });
     assert.match(p, /\(deny file-write\*\)/);
     assert.match(p, /allow file-write\*[^\n]*"\/Users\/me\/proj"/);
-    assert.match(p, /\(deny file-read-data \(subpath "\/Users\/me"\)\)/); // data hidden, metadata/lstat allowed
-    assert.match(p, /allow file-read-data[^\n]*"\/repo"/); // repo readable despite being outside cwd
+    assert.match(p, /"\/Users\/me\/Library\/Caches"/); // Playwright/tool caches writable
+    assert.ok(!/file-read/.test(p)); // reads are open — no read restriction
 });

@@ -300,7 +300,7 @@ always confined to `cwd` (cwd-guard is forced on). cwd-guard does **not** confin
 
 | Env var | Effect |
 |---|---|
-| `PI_OBS_DISPATCH_SANDBOX=sandbox-exec` | macOS Seatbelt: bash writes confined to `cwd` (+ `~/.pi`/temp); reads of the rest of `$HOME` (other projects, secrets) denied; system reads + network + exec stay allowed. |
+| `PI_OBS_DISPATCH_SANDBOX=sandbox-exec` | macOS Seatbelt: bash **writes** confined to `cwd` (+ pi state, runtime caches like `~/Library/Caches`, temp). Reads, network, and exec stay open so tools work (Playwright, gh, git, …). The agent cannot **modify** anything outside the project, but can read what it needs. |
 | `PI_OBS_DISPATCH_SANDBOX=auto` | macOS → `sandbox-exec`; other platforms require the CMD form below. |
 | `PI_OBS_DISPATCH_SANDBOX_CMD=<argv>` | Any platform: a custom wrapper (`{cwd}` substituted), e.g. `bwrap`/`firejail`/`docker`. The cleanest full isolation on Linux/containers. |
 
