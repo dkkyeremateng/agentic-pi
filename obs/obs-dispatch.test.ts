@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isReadOnlyAgent, listAgents, resolveAgent } from "./obs-dispatch";
+import { buildSandboxLaunch, isReadOnlyAgent, listAgents, macSandboxProfile, resolveAgent, sandboxConfig } from "./obs-dispatch";
 import type { AgentDef } from "../utils/workflow/workflow-core";
 
 const def = (over: Partial<AgentDef>): AgentDef => ({
@@ -41,4 +41,52 @@ test("resolveAgent finds by name (case-insensitive) and returns null for unknown
     assert.equal(resolveAgent(process.cwd(), "SEEKER")?.name, "seeker");
     assert.equal(resolveAgent(process.cwd(), "definitely-not-an-agent"), null);
     assert.equal(resolveAgent(process.cwd(), ""), null);
+});
+
+// ── sandbox ──────────────────────────────────────────────────────────────────
+
+test("sandboxConfig: off by default, custom wins, named modes parse", () => {
+    assert.deepEqual(sandboxConfig({}), { mode: "off", customCmd: "" });
+    assert.equal(sandboxConfig({ PI_OBS_DISPATCH_SANDBOX: "auto" }).mode, "auto");
+    assert.equal(sandboxConfig({ PI_OBS_DISPATCH_SANDBOX: "sandbox-exec" }).mode, "sandbox-exec");
+    assert.equal(sandboxConfig({ PI_OBS_DISPATCH_SANDBOX: "nonsense" }).mode, "off");
+    const c = sandboxConfig({ PI_OBS_DISPATCH_SANDBOX: "off", PI_OBS_DISPATCH_SANDBOX_CMD: "bwrap {cwd}" });
+    assert.equal(c.mode, "custom");
+});
+
+test("buildSandboxLaunch: off runs the bin directly", () => {
+    const r = buildSandboxLaunch({ mode: "off", customCmd: "" }, "/proj", "pi", ["-p", "hi"]);
+    assert.deepEqual(r, { cmd: "pi", argv: ["-p", "hi"] });
+});
+
+test("buildSandboxLaunch: custom substitutes {cwd} and wraps the bin", () => {
+    const r = buildSandboxLaunch({ mode: "custom", customCmd: "bwrap --bind {cwd} {cwd}" }, "/proj", "pi", ["x"]);
+    assert.deepEqual(r, { cmd: "bwrap", argv: ["--bind", "/proj", "/proj", "pi", "x"] });
+});
+
+test("buildSandboxLaunch: fail-closed when the platform has no built-in", () => {
+    assert.ok("error" in buildSandboxLaunch({ mode: "auto", customCmd: "" }, "/proj", "pi", [], {}, "linux"));
+    assert.ok("error" in buildSandboxLaunch({ mode: "sandbox-exec", customCmd: "" }, "/proj", "pi", [], {}, "linux"));
+});
+
+test("buildSandboxLaunch: sandbox-exec on darwin wraps with a generated profile", () => {
+    const r = buildSandboxLaunch({ mode: "sandbox-exec", customCmd: "" }, "/proj", "pi", ["go"], { HOME: "/Users/me" }, "darwin");
+    if ("error" in r) {
+        // Only valid reason on a darwin CI without the binary.
+        assert.match(r.error, /sandbox-exec/);
+        return;
+    }
+    assert.equal(r.cmd, "/usr/bin/sandbox-exec");
+    assert.equal(r.argv[0], "-p");
+    assert.equal(r.argv[2], "pi");
+    assert.deepEqual(r.argv.slice(3), ["go"]);
+    assert.match(r.argv[1], /\(version 1\)/);
+});
+
+test("macSandboxProfile confines writes to cwd and denies the rest of $HOME", () => {
+    const p = macSandboxProfile({ cwd: "/Users/me/proj", home: "/Users/me", tmp: "/tmp", readRoots: ["/repo"] });
+    assert.match(p, /\(deny file-write\*\)/);
+    assert.match(p, /allow file-write\*[^\n]*"\/Users\/me\/proj"/);
+    assert.match(p, /\(deny file-read\* \(subpath "\/Users\/me"\)\)/);
+    assert.match(p, /allow file-read\*[^\n]*"\/repo"/); // repo readable despite being outside cwd
 });

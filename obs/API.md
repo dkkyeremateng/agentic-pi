@@ -295,10 +295,18 @@ match `^[\w.-]{1,64}$`) continues a prior dispatch for follow-ups; `model`
 overrides the agent's configured model. Disabled returns one `error` frame.
 
 **Confinement.** The agent's **file tools** (read/write/edit/grep/find/ls) are
-confined to `cwd` (cwd-guard is forced on). **`bash` is not confined in-process** —
-a shell command can still reach outside `cwd`; for hard isolation run the server in
-a container / OS sandbox. The route is gated on `PI_OBS_DISPATCH=1`, and (via the
-bridge) behind the chat-id allowlist.
+always confined to `cwd` (cwd-guard is forced on). cwd-guard does **not** confine
+`bash`; for real confinement (bash included) wrap the spawn in an OS sandbox via:
+
+| Env var | Effect |
+|---|---|
+| `PI_OBS_DISPATCH_SANDBOX=sandbox-exec` | macOS Seatbelt: bash writes confined to `cwd` (+ `~/.pi`/temp); reads of the rest of `$HOME` (other projects, secrets) denied; system reads + network + exec stay allowed. |
+| `PI_OBS_DISPATCH_SANDBOX=auto` | macOS → `sandbox-exec`; other platforms require the CMD form below. |
+| `PI_OBS_DISPATCH_SANDBOX_CMD=<argv>` | Any platform: a custom wrapper (`{cwd}` substituted), e.g. `bwrap`/`firejail`/`docker`. The cleanest full isolation on Linux/containers. |
+
+Sandboxing is **fail-closed**: a requested-but-unavailable sandbox makes dispatch
+error rather than run unconfined. The route is gated on `PI_OBS_DISPATCH=1`, and
+(via the bridge) behind the chat-id allowlist.
 
 ## Telegram bridge
 

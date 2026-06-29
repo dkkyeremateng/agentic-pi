@@ -12,11 +12,16 @@
 //     dispatched.
 //   - CONFINED TO THE cwd: cwd-guard is FORCED on (PI_CONFINE_CWD), so the agent's
 //     FILE tools (read/write/edit/grep/find/ls) cannot escape the caller-provided
-//     cwd. CAVEAT: `bash` is NOT confined in-process — a shell command can still
-//     reach outside the cwd; hard isolation needs an OS sandbox/container.
+//     cwd. `bash` is NOT confined by cwd-guard, so for true confinement (bash
+//     included) set PI_OBS_DISPATCH_SANDBOX (macOS sandbox-exec) or
+//     PI_OBS_DISPATCH_SANDBOX_CMD (a bwrap/firejail/docker wrapper). Fail-closed.
 //   - The agent runs as its OWN root run, so it shows on the dashboard.
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter as pathDelimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseChatLine, type ChatEvent } from "./obs-chat";
 import {
     type AgentDef,
@@ -78,6 +83,90 @@ export function dispatchConfig(env: NodeJS.ProcessEnv = process.env): DispatchCo
     return { timeoutMs: Number(env.PI_OBS_DISPATCH_TIMEOUT_MS) || 300_000 };
 }
 
+// ── OS-level sandbox (real bash confinement) ─────────────────────────────────
+// cwd-guard confines the agent's FILE TOOLS but not `bash`. For true confinement
+// (bash included) we wrap the spawn in an OS sandbox. macOS sandbox-exec is
+// supported out of the box; any platform can use a custom wrapper command
+// (bwrap/firejail/docker/…). FAIL-CLOSED: if a sandbox is requested but
+// unavailable, dispatch errors instead of running unconfined.
+
+// This repo's root — agents read their extensions/skills from here, so the
+// sandbox must allow reading it even though it sits outside the request cwd.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+export interface SandboxConfig {
+    mode: "off" | "auto" | "sandbox-exec" | "custom";
+    /** PI_OBS_DISPATCH_SANDBOX_CMD — a wrapper argv ({cwd} is substituted). */
+    customCmd: string;
+}
+export function sandboxConfig(env: NodeJS.ProcessEnv = process.env): SandboxConfig {
+    const customCmd = (env.PI_OBS_DISPATCH_SANDBOX_CMD || "").trim();
+    const raw = (env.PI_OBS_DISPATCH_SANDBOX || "").trim().toLowerCase();
+    const mode: SandboxConfig["mode"] = customCmd ? "custom" : raw === "auto" || raw === "sandbox-exec" ? raw : "off";
+    return { mode, customCmd };
+}
+
+function expandHome(p: string, home: string): string {
+    return p.startsWith("~") ? join(home, p.slice(1)) : p;
+}
+
+/** Home-dir paths a dispatched agent legitimately needs to READ even though we
+ *  deny the rest of $HOME (other projects, secrets). Paths outside $HOME are
+ *  harmless to include — the profile only denies $HOME. */
+function macReadRoots(env: NodeJS.ProcessEnv, home: string, bin: string): string[] {
+    const roots = [REPO_ROOT, join(home, ".nvm"), join(home, ".npm"), join(home, ".cache")];
+    if (env.PI_CODING_AGENT_DIR) roots.push(expandHome(env.PI_CODING_AGENT_DIR, home));
+    if (env.PI_WORKFLOW_SESSION_DIR) roots.push(expandHome(env.PI_WORKFLOW_SESSION_DIR, home));
+    for (const p of (env.PI_SKILLS_DIR || "").split(pathDelimiter)) if (p) roots.push(p);
+    if (bin && bin.includes("/")) roots.push(dirname(bin));
+    return roots;
+}
+
+/** Generate a macOS Seatbelt (SBPL) profile that confines an agent — bash
+ *  included — to the cwd: writes only under cwd/~/.pi/temp, and reads of $HOME
+ *  denied except cwd + the pi/node infra it needs. System reads/network/exec stay
+ *  allowed so pi works. Pure. */
+export function macSandboxProfile(o: { cwd: string; home: string; tmp: string; readRoots: string[] }): string {
+    const subs = (ps: string[]) =>
+        ps
+            .filter(Boolean)
+            .map((p) => `(subpath ${JSON.stringify(p)})`)
+            .join(" ");
+    const writeRoots = [o.cwd, join(o.home, ".pi"), o.tmp, "/private/var/folders", "/private/tmp", "/private/var/tmp"];
+    const readRoots = [...writeRoots, ...o.readRoots];
+    return [
+        "(version 1)",
+        "(allow default)", // reads of system paths, network, and exec stay allowed
+        "(deny file-write*)",
+        `(allow file-write* ${subs(writeRoots)} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/stdout") (literal "/dev/stderr") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
+        `(deny file-read* (subpath ${JSON.stringify(o.home)}))`, // hide the rest of $HOME (other projects, secrets)
+        `(allow file-read* ${subs(readRoots)})`,
+    ].join("\n");
+}
+
+export type SandboxLaunch = { cmd: string; argv: string[] } | { error: string };
+
+/** Resolve how to actually launch the agent: bare, sandbox-exec (macOS), or a
+ *  custom wrapper. Returns the final argv, or an error (fail-closed) when a
+ *  requested sandbox isn't usable. Pure given platform + the bin's dir. */
+export function buildSandboxLaunch(sb: SandboxConfig, cwd: string, bin: string, args: string[], env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): SandboxLaunch {
+    if (sb.mode === "off") return { cmd: bin, argv: args };
+    if (sb.mode === "custom") {
+        const toks = sb.customCmd.replace(/\{cwd\}/g, cwd).split(/\s+/).filter(Boolean);
+        if (!toks.length) return { error: "PI_OBS_DISPATCH_SANDBOX_CMD is empty" };
+        return { cmd: toks[0], argv: [...toks.slice(1), bin, ...args] };
+    }
+    if (sb.mode === "auto" && platform !== "darwin")
+        return { error: "no built-in sandbox for this platform — set PI_OBS_DISPATCH_SANDBOX_CMD (e.g. a bwrap/firejail/docker invocation) or run the server in a container." };
+    // sandbox-exec (explicit, or auto on darwin)
+    if (platform !== "darwin") return { error: "PI_OBS_DISPATCH_SANDBOX=sandbox-exec requires macOS." };
+    if (!existsSync("/usr/bin/sandbox-exec")) return { error: "sandbox-exec not found at /usr/bin/sandbox-exec." };
+    const home = env.HOME || homedir();
+    const tmp = env.TMPDIR || "/tmp";
+    const profile = macSandboxProfile({ cwd, home, tmp, readRoots: macReadRoots(env, home, bin) });
+    return { cmd: "/usr/bin/sandbox-exec", argv: ["-p", profile, bin, ...args] };
+}
+
 export type SpawnFn = typeof spawn;
 
 /** Spawn the named agent for one task and stream parsed ChatEvents to onEvent.
@@ -134,9 +223,18 @@ export function dispatchStream(
         delete env.PI_OBS_RUN;
         delete env.PI_OBS_DISPATCH_ID;
 
+        // Optional OS-level sandbox (real bash confinement). Fail-closed: a
+        // requested-but-unusable sandbox errors instead of running unconfined.
+        const launch = buildSandboxLaunch(sandboxConfig(), req.cwd, bin, args);
+        if ("error" in launch) {
+            onEvent({ type: "error", error: `sandbox: ${launch.error}` });
+            resolve();
+            return;
+        }
+
         let proc;
         try {
-            proc = spawnImpl(bin, args, { stdio: ["ignore", "pipe", "pipe"], env, cwd: req.cwd });
+            proc = spawnImpl(launch.cmd, launch.argv, { stdio: ["ignore", "pipe", "pipe"], env, cwd: req.cwd });
         } catch (e) {
             onEvent({ type: "error", error: String((e as Error)?.message || e) });
             reject(e);

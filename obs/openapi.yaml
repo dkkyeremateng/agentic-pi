@@ -447,10 +447,11 @@ paths:
         Opt-in (PI_OBS_DISPATCH=1). Spawns the named agent for one task — reusing
         the workflow's spawn recipe (the agent's prompt, tools, model) — and streams
         ChatEvent frames (same shape as /api/chat). The agent runs as its own root
-        run, so it appears on the dashboard. The agent's FILE tools are confined to
-        `cwd` (cwd-guard); `bash` is NOT confined in-process. Disabled / bad input
-        is delivered as a single `error` frame, not a non-2xx. GET with the same
-        params is also accepted (EventSource transport).
+        run, so it appears on the dashboard. The agent's FILE tools are always
+        confined to `cwd` (cwd-guard); `bash` is confined too when an OS sandbox is
+        configured (PI_OBS_DISPATCH_SANDBOX / _CMD, fail-closed). Disabled / bad
+        input is delivered as a single `error` frame, not a non-2xx. GET with the
+        same params is also accepted (EventSource transport).
       requestBody:
         required: true
         content:
