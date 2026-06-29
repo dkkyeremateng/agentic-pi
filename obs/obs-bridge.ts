@@ -27,6 +27,10 @@ if (!cfg.enabled) {
     console.error("obs-bridge: set PI_OBS_TG_TOKEN (a Telegram bot token from @BotFather) to start the bridge.");
     process.exit(1);
 }
+if (!cfg.cwd) {
+    console.error("obs-bridge: set PI_OBS_TG_CWD to the project directory the bridge operates in (required — no fallback). It scopes chat sessions and is the working directory for /dispatch.");
+    process.exit(1);
+}
 if (!cfg.allow.length) {
     console.warn("obs-bridge: PI_OBS_TG_ALLOW is empty — every message will be refused. Message the bot once; it replies with your chat id to add.");
 }

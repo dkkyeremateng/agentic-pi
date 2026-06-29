@@ -2832,14 +2832,14 @@ export function shouldApproveProjectForSpawn(
 //   PI_CONFINE_CWD=1 (it loads into every sub-agent, so it is gated to stay safe).
 // - dispatch.ts registers dispatch_agent/dispatch_parallel/select_agents, needed
 //   only by agents whose tools include one of them.
-export function subagentExtArgs(tools: string, readOnlyBash = false): string[] {
+export function subagentExtArgs(tools: string, readOnlyBash = false, opts?: { obs?: boolean; confineCwd?: boolean }): string[] {
     const extDir = join(UTILS_DIR, "..", "extensions");
     const args: string[] = [];
     const add = (name: string) => {
         const p = join(extDir, name);
         if (existsSync(p)) args.push("-e", p);
     };
-    if (process.env.PI_CONFINE_CWD === "1") {
+    if (opts?.confineCwd || process.env.PI_CONFINE_CWD === "1") {
         // Tell the guard which skill roots read-only tools may reach even though
         // they sit outside the cwd: the bundled skills (sibling of extensions/) plus
         // pi's global skills. Resolved here in the parent (reliable) and inherited by
@@ -2865,8 +2865,10 @@ export function subagentExtArgs(tools: string, readOnlyBash = false): string[] {
     if (hasBash && (!canWrite || readOnlyBash)) add("readonly-guard.ts");
     // Live observability: when PI_OBS=1, every sub-agent emits ObsEvents to the
     // shared sink so the dashboard shows the whole pipeline. PI_OBS_AGENT (set on
-    // the spawn env) labels which agent's lane the events land in.
-    if (process.env.PI_OBS === "1" || process.env.PI_OBS === "true")
+    // the spawn env) labels which agent's lane the events land in. opts.obs forces
+    // it on for callers whose own process isn't run with PI_OBS=1 (e.g. the
+    // obs-server dispatching a standalone agent), so those runs still show up.
+    if (opts?.obs || process.env.PI_OBS === "1" || process.env.PI_OBS === "true")
         add("obs-live.ts");
     return args;
 }

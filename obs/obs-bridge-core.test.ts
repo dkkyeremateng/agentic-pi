@@ -4,12 +4,15 @@ import {
     bridgeConfig,
     chatSessionId,
     chunk,
+    dispatchSessionId,
+    formatAgents,
     formatAttachable,
     formatLive,
     formatRuns,
     initStreamState,
     isAllowed,
     orchestrators,
+    parseBareDispatch,
     parseCommand,
     reduceChatEvent,
     renderStream,
@@ -50,6 +53,13 @@ test("bridgeConfig ignores non-integer allowlist entries", () => {
 });
 
 // ── allowlist (fail closed) ──────────────────────────────────────────────────
+
+test("bridgeConfig reads cwd and the opt-in bare-dispatch flag", () => {
+    assert.equal(bridgeConfig({ PI_OBS_TG_TOKEN: "t" }).dispatchBare, false);
+    const cfg = bridgeConfig({ PI_OBS_TG_TOKEN: "t", PI_OBS_TG_CWD: "/proj", PI_OBS_TG_BARE_DISPATCH: "1" });
+    assert.equal(cfg.cwd, "/proj");
+    assert.equal(cfg.dispatchBare, true);
+});
 
 test("isAllowed fails closed on an empty allowlist", () => {
     const cfg = bridgeConfig({ PI_OBS_TG_TOKEN: "t" });
@@ -105,6 +115,40 @@ test("verdict commands carry status, id, and an optional note", () => {
     assert.deepEqual(parseCommand("/fail run-abc flaky test"), { kind: "verdict", status: "fail", id: "run-abc", note: "flaky test" });
     assert.deepEqual(parseCommand("/open run-abc needs eyes"), { kind: "verdict", status: "open", id: "run-abc", note: "needs eyes" });
     assert.deepEqual(parseCommand("/pass"), { kind: "usage", cmd: "pass" });
+});
+
+test("/dispatch parses agent + prompt (comma or space); /agents has no args", () => {
+    assert.deepEqual(parseCommand("/dispatch seeker, ping https://x.com"), { kind: "dispatch", agent: "seeker", text: "ping https://x.com" });
+    assert.deepEqual(parseCommand("/dispatch seeker ping https://x.com"), { kind: "dispatch", agent: "seeker", text: "ping https://x.com" });
+    assert.deepEqual(parseCommand("/dispatch seeker:do it"), { kind: "dispatch", agent: "seeker", text: "do it" });
+    assert.deepEqual(parseCommand("/dispatch seeker"), { kind: "usage", cmd: "dispatch" });
+    assert.deepEqual(parseCommand("/dispatch"), { kind: "usage", cmd: "dispatch" });
+    assert.deepEqual(parseCommand("/agents"), { kind: "agents" });
+});
+
+test("parseBareDispatch needs a comma/colon AND a known agent", () => {
+    const names = ["seeker", "scout"];
+    assert.deepEqual(parseBareDispatch("seeker, ping https://x.com", names), { agent: "seeker", text: "ping https://x.com" });
+    assert.deepEqual(parseBareDispatch("Seeker: look it up", names), { agent: "Seeker", text: "look it up" });
+    assert.equal(parseBareDispatch("scout the area for me", names), null); // no separator -> normal chat
+    assert.equal(parseBareDispatch("nobody, do this", names), null); // unknown agent -> normal chat
+    assert.equal(parseBareDispatch("hello there", names), null);
+});
+
+test("dispatchSessionId is stable, agent-scoped, salt-rotated, and id-safe", () => {
+    assert.equal(dispatchSessionId(123, "seeker"), "tg-d-123-seeker");
+    assert.equal(dispatchSessionId(123, "Seeker", 2), "tg-d-123-seeker-2");
+    assert.match(dispatchSessionId(-100, "weird name!", 1), /^[\w.-]{1,64}$/);
+});
+
+test("formatAgents lists every agent and tags writers", () => {
+    const out = formatAgents([
+        { name: "scout", description: "recon", readOnly: true },
+        { name: "implementer", description: "writes code", readOnly: false },
+    ]);
+    assert.match(out, /scout/);
+    assert.match(out, /implementer \(writes\)/);
+    assert.ok(!/scout \(writes\)/.test(out)); // read-only agents aren't tagged
 });
 
 test("/attach takes a run id (else usage); /detach has no args", () => {

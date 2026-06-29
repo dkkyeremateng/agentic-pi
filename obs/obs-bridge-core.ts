@@ -33,6 +33,9 @@ export interface BridgeConfig {
     /** Allow the chat assistant to use tools (default false — text-only, no side
      *  effects). Steering a live agent is a separate, explicit surface. */
     chatTools: boolean;
+    /** Recognise the bare "<agent>, <prompt>" form (else only /dispatch works).
+     *  Off by default — opt-in to avoid mistaking a normal message for a dispatch. */
+    dispatchBare: boolean;
     /** Long-poll timeout (seconds) handed to Telegram getUpdates. */
     pollTimeoutS: number;
     /** Minimum gap between live message edits while a reply streams (ms). */
@@ -71,6 +74,7 @@ export function bridgeConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig
         model: (env.PI_OBS_TG_MODEL || "").trim(),
         cwd: (env.PI_OBS_TG_CWD || "").trim(),
         chatTools: env.PI_OBS_TG_TOOLS === "1" || env.PI_OBS_TG_TOOLS === "true",
+        dispatchBare: env.PI_OBS_TG_BARE_DISPATCH === "1" || env.PI_OBS_TG_BARE_DISPATCH === "true",
         pollTimeoutS: Number(env.PI_OBS_TG_POLL_S) || 50,
         editThrottleMs: Number(env.PI_OBS_TG_EDIT_MS) || 1200,
     };
@@ -89,6 +93,14 @@ export function chatSessionId(chatId: number, salt = 0): string {
     return `tg-${chatId}${salt ? `-${salt}` : ""}`;
 }
 
+/** Stable pi session id for a chat's dispatches to one agent, so follow-ups
+ *  (`seeker, …` again) continue that agent's context. Rotated by the same salt as
+ *  the chat session, so /reset clears it too. Stays within `^[\w.-]{1,64}$`. */
+export function dispatchSessionId(chatId: number, agent: string, salt = 0): string {
+    const key = agent.toLowerCase().replace(/[^\w.-]/g, "-").slice(0, 24);
+    return `tg-d-${chatId}-${key}${salt ? `-${salt}` : ""}`;
+}
+
 // ── command parsing ────────────────────────────────────────────────────────
 
 export type Command =
@@ -102,8 +114,42 @@ export type Command =
     | { kind: "live" }
     | { kind: "attach"; runArg: string }
     | { kind: "detach" }
+    | { kind: "agents" }
+    | { kind: "dispatch"; agent: string; text: string }
     | { kind: "reset" }
     | { kind: "usage"; cmd: string }; // recognised command, wrong/missing args
+
+/** Split "<agent>, <text>" (or "<agent> <text>") into its parts, preferring a
+ *  comma/colon separator. Returns null when either side is empty. */
+function splitAgentText(rest: string): { agent: string; text: string } | null {
+    const s = rest.trim();
+    if (!s) return null;
+    const sep = s.search(/[,:]/);
+    const ws = s.search(/\s/);
+    let agent: string, text: string;
+    if (sep !== -1 && (ws === -1 || sep < ws)) {
+        agent = s.slice(0, sep).trim();
+        text = s.slice(sep + 1).trim();
+    } else if (ws !== -1) {
+        agent = s.slice(0, ws).trim();
+        text = s.slice(ws + 1).trim();
+    } else {
+        return null; // only an agent name, no prompt
+    }
+    return agent && text ? { agent, text } : null;
+}
+
+/** Recognise the bare "<agent>, <prompt>" / "<agent>: <prompt>" form (opt-in via
+ *  PI_OBS_TG_BARE_DISPATCH). Strict: a comma/colon separator AND the leading word
+ *  must be a known agent — otherwise it's just a normal chat message. Pure. */
+export function parseBareDispatch(text: string, agentNames: string[]): { agent: string; text: string } | null {
+    const m = (text || "").trim().match(/^([A-Za-z0-9_.-]+)\s*[,:]\s+([\s\S]+)$/);
+    if (!m) return null;
+    const agent = m[1];
+    const prompt = m[2].trim();
+    if (!prompt) return null;
+    return agentNames.some((n) => n.toLowerCase() === agent.toLowerCase()) ? { agent, text: prompt } : null;
+}
 
 /** Map a raw message into a Command. A leading "/" is a slash command (Telegram
  *  may suffix it with @botname in groups — stripped); anything else is free-text
@@ -137,6 +183,13 @@ export function parseCommand(raw: string): Command {
             return rest ? { kind: "attach", runArg: rest.split(/\s+/)[0] } : { kind: "usage", cmd: "attach" };
         case "detach":
             return { kind: "detach" };
+        case "agents":
+            return { kind: "agents" };
+        case "dispatch":
+        case "run": {
+            const r = splitAgentText(rest);
+            return r ? { kind: "dispatch", agent: r.agent, text: r.text } : { kind: "usage", cmd: "dispatch" };
+        }
         case "digest":
             return rest ? { kind: "digest", id: rest.split(/\s+/)[0] } : { kind: "usage", cmd: "digest" };
         case "search":
@@ -341,6 +394,21 @@ export function formatAttachable(sessions: LiveView[], now: number): string {
         .join("\n");
 }
 
+export interface AgentInfo {
+    name: string;
+    description?: string;
+    model?: string;
+    readOnly?: boolean;
+}
+
+/** Render the /agents reply. Every agent is dispatchable (confined to the cwd);
+ *  write-capable ones are tagged so the extra blast radius is visible. */
+export function formatAgents(agents: AgentInfo[]): string {
+    if (!agents.length) return "no agents found.";
+    const line = (a: AgentInfo) => `• ${a.name}${a.readOnly ? "" : " (writes)"}${a.description ? ` — ${a.description}` : ""}`;
+    return "agents (all dispatchable, confined to the project dir):\n" + agents.map(line).join("\n") + "\n\nuse: /dispatch <agent>, <prompt>";
+}
+
 export function helpText(): string {
     return [
         "pi obs bridge — talk to your agent observability.",
@@ -356,6 +424,8 @@ export function helpText(): string {
         "/pass <id> [note] — score a run pass",
         "/fail <id> [note] — score a run fail",
         "/open <id> [note] — mark a run needs-review",
+        "/agents — list dispatchable agents",
+        "/dispatch <agent>, <prompt> — run an agent in the project dir (no run needed)",
         "/attach <run-id> — route your messages into a live run (drive it)",
         "/detach — stop routing; back to the assistant",
         "/reset — fresh conversation (also detaches)",
@@ -371,6 +441,8 @@ export function usageText(cmd: string): string {
             return "usage: /search <text>";
         case "attach":
             return "usage: /attach <run-id>  (a live run — see /runs or /live)";
+        case "dispatch":
+            return "usage: /dispatch <agent>, <prompt>  (see /agents)";
         case "pass":
         case "fail":
         case "open":

@@ -12,9 +12,12 @@ import * as https from "node:https";
 import { URL } from "node:url";
 import type { ChatEvent } from "./obs-chat";
 import {
+    type AgentInfo,
     type BridgeConfig,
     chatSessionId,
     chunk,
+    dispatchSessionId,
+    formatAgents,
     formatAttachable,
     formatLive,
     formatRuns,
@@ -23,6 +26,7 @@ import {
     isAllowed,
     type LiveView,
     orchestrators,
+    parseBareDispatch,
     parseCommand,
     reduceChatEvent,
     renderStream,
@@ -164,10 +168,24 @@ interface BridgeState {
     /** Chats currently /attached to a live run: their plain messages route into
      *  that run's orchestrator instead of the standalone assistant. */
     attached: Map<number, { runId: string; sessionId: string }>;
+    /** Cached agent-name set (for bare "<agent>, …" detection); fetched lazily. */
+    agentNames: string[] | null;
 }
 
 function newState(): BridgeState {
-    return { salt: new Map(), busy: new Set(), attached: new Map() };
+    return { salt: new Map(), busy: new Set(), attached: new Map(), agentNames: null };
+}
+
+/** Agent names for bare-dispatch detection — fetched once and cached. */
+async function getAgentNames(cfg: BridgeConfig, state: BridgeState): Promise<string[]> {
+    if (state.agentNames) return state.agentNames;
+    try {
+        const r = await apiGetJson<{ agents: AgentInfo[] }>(cfg, `/api/agents?cwd=${encodeURIComponent(cfg.cwd)}`);
+        state.agentNames = (r.agents || []).map((a) => a.name);
+    } catch {
+        state.agentNames = [];
+    }
+    return state.agentNames;
 }
 
 // ── search result formatting (transport-local; trivial) ──────────────────────
@@ -280,6 +298,23 @@ async function runAttach(cfg: BridgeConfig, state: BridgeState, chatId: number, 
     await send(cfg, chatId, `attached to ${shortId(runId)} — your messages now drive this live run. /detach to stop.`);
 }
 
+/** /agents -> list the workflow agents (read-only ones are dispatchable). */
+async function runAgents(cfg: BridgeConfig, chatId: number): Promise<void> {
+    const r = await apiGetJson<{ dispatchEnabled?: boolean; agents: AgentInfo[] }>(cfg, `/api/agents?cwd=${encodeURIComponent(cfg.cwd)}`);
+    let msg = formatAgents(r.agents || []);
+    if (r.dispatchEnabled === false) msg += "\n\n(dispatch is disabled — set PI_OBS_DISPATCH=1 on the server to enable it.)";
+    await sendChunked(cfg, chatId, msg);
+}
+
+/** /dispatch <agent>, <prompt> (or the bare form) -> run a read-only agent
+ *  standalone and edit-stream its reply. The agent uses its own model; a per-
+ *  chat+agent session gives follow-up continuity. */
+function runDispatch(cfg: BridgeConfig, state: BridgeState, chatId: number, agent: string, text: string): Promise<void> {
+    const sessionId = dispatchSessionId(chatId, agent, state.salt.get(chatId) || 0);
+    const params: Record<string, string> = { agent, text, cwd: cfg.cwd, sessionId };
+    return streamReply(cfg, state, chatId, (onEvent) => streamSSE(cfg, "/api/dispatch", params, onEvent));
+}
+
 // ── command dispatch ─────────────────────────────────────────────────────────
 
 async function handleMessage(cfg: BridgeConfig, state: BridgeState, chatId: number, text: string): Promise<void> {
@@ -348,11 +383,28 @@ async function handleMessage(cfg: BridgeConfig, state: BridgeState, chatId: numb
             await send(cfg, chatId, had ? "detached — messages go to the obs assistant again." : "you're not attached to a run.");
             return;
         }
+        case "agents":
+            await runAgents(cfg, chatId);
+            return;
+        case "dispatch":
+            await runDispatch(cfg, state, chatId, cmd.agent, cmd.text);
+            return;
         case "chat": {
             if (!cmd.text) return;
             const att = state.attached.get(chatId);
-            if (att) await runAttachedChat(cfg, state, chatId, att, cmd.text);
-            else await runChat(cfg, state, chatId, cmd.text);
+            if (att) {
+                await runAttachedChat(cfg, state, chatId, att, cmd.text);
+                return;
+            }
+            // Opt-in: a bare "<agent>, <prompt>" routes to dispatch (not attached).
+            if (cfg.dispatchBare) {
+                const bare = parseBareDispatch(cmd.text, await getAgentNames(cfg, state));
+                if (bare) {
+                    await runDispatch(cfg, state, chatId, bare.agent, bare.text);
+                    return;
+                }
+            }
+            await runChat(cfg, state, chatId, cmd.text);
             return;
         }
     }

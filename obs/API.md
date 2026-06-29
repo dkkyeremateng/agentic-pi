@@ -276,6 +276,30 @@ curl -s -X POST localhost:7616/api/runs/run-mqa9/verdict \
      -d '{"status":"pass","note":"verified manually"}'
 ```
 
+## Agent dispatch (opt-in `PI_OBS_DISPATCH=1`)
+
+Run a single named workflow agent **standalone** — no orchestrator or active run
+needed — reusing the workflow's own spawn recipe (the agent's prompt, tools, and
+model). The dispatched agent runs as its own root run, so it appears on the
+dashboard. **Off by default**; set `PI_OBS_DISPATCH=1` on the server to enable.
+
+### `GET /api/agents?cwd=`
+Lists the known agents (project `.pi/agents/` then bundled), `cwd`-scoped:
+`{ dispatchEnabled, agents: [{ name, description, model, readOnly }] }`. `readOnly`
+(no `write`/`edit` tool) is informational — **all** agents are dispatchable.
+
+### `POST /api/dispatch` (SSE) — `{ agent, text, cwd, model?, sessionId? }`
+Spawns `agent` for one `text` task in `cwd` and streams `ChatEvent` frames (same
+shape as `/api/chat`: `token`/`thinking`/`tool`/`done`/`error`). `sessionId` (must
+match `^[\w.-]{1,64}$`) continues a prior dispatch for follow-ups; `model`
+overrides the agent's configured model. Disabled returns one `error` frame.
+
+**Confinement.** The agent's **file tools** (read/write/edit/grep/find/ls) are
+confined to `cwd` (cwd-guard is forced on). **`bash` is not confined in-process** —
+a shell command can still reach outside `cwd`; for hard isolation run the server in
+a container / OS sandbox. The route is gated on `PI_OBS_DISPATCH=1`, and (via the
+bridge) behind the chat-id allowlist.
+
 ## Telegram bridge
 
 `obs/obs-bridge.ts` is a small client that lets you talk to this API from
@@ -300,8 +324,12 @@ bridge reaches out. It maps each message onto the API above:
   route to `GET /api/chat-live` (injected as a follow-up user message) and stream
   the orchestrator's reply. `/detach` unbinds; the bridge also auto-detaches if the
   run ends. Slash commands still work while attached.
-- `/reset` starts a fresh conversation (rotates the `sessionId`, and detaches if
-  attached); `/help` lists all.
+- `/agents` -> `GET /api/agents`; `/dispatch <agent>, <prompt>` -> `POST /api/dispatch`
+  runs a single named agent standalone (no run needed) and streams its reply. The
+  bare `<agent>, <prompt>` form is opt-in (`PI_OBS_TG_BARE_DISPATCH=1`). Per-
+  (chat, agent) sessions give follow-up continuity.
+- `/reset` starts a fresh conversation (rotates the `sessionId`, detaches if
+  attached, and resets dispatch sessions); `/help` lists all.
 
 **Auth & access.** The bridge holds `PI_OBS_TOKEN` and calls the server locally,
 so the token never leaves the machine (it's sent as the bearer header, and as

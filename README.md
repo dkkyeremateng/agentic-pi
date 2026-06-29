@@ -452,8 +452,10 @@ chat with your observability from your phone. It **long-polls** the Telegram Bot
 API (no inbound webhook, so the obs-server stays on loopback) and maps messages
 onto the API: free text chats with the assistant (it knows your runs; needs
 `PI_OBS_LLM=1`); `/runs`, `/last`, `/digest <id>`, `/search <text>`, `/live`,
-`/pass`/`/fail` inspect and score runs; and `/attach <run-id>` binds the chat to a
-**live run** so your messages drive that orchestrator until you `/detach`. Replies
+`/pass`/`/fail` inspect and score runs; `/attach <run-id>` binds the chat to a
+**live run** so your messages drive that orchestrator until you `/detach`; and
+`/dispatch <agent>, <prompt>` runs a single agent standalone (no run needed —
+file tools confined to `PI_OBS_TG_CWD`; needs `PI_OBS_DISPATCH=1`). Replies
 **edit-stream** — one message
 grows as tokens arrive. Set `PI_OBS_TG_TOKEN` (a [@BotFather](https://t.me/BotFather)
 token) and `PI_OBS_TG_ALLOW` (the chat ids allowed — fail-closed; message the bot
