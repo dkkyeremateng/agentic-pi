@@ -358,7 +358,7 @@ export function helpText(): string {
         "/open <id> [note] — mark a run needs-review",
         "/attach <run-id> — route your messages into a live run (drive it)",
         "/detach — stop routing; back to the assistant",
-        "/reset — start a fresh conversation",
+        "/reset — fresh conversation (also detaches)",
         "/help — this message",
     ].join("\n");
 }

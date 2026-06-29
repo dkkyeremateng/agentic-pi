@@ -291,10 +291,12 @@ async function handleMessage(cfg: BridgeConfig, state: BridgeState, chatId: numb
         case "usage":
             await send(cfg, chatId, usageText(cmd.cmd));
             return;
-        case "reset":
+        case "reset": {
             state.salt.set(chatId, (state.salt.get(chatId) || 0) + 1);
-            await send(cfg, chatId, "started a fresh conversation.");
+            const wasAttached = state.attached.delete(chatId);
+            await send(cfg, chatId, wasAttached ? "detached and started a fresh conversation." : "started a fresh conversation.");
             return;
+        }
         case "runs": {
             const runs = await apiGetJson<RunView[]>(cfg, `/api/runs?limit=${cmd.limit}`);
             await sendChunked(cfg, chatId, formatRuns(runs, Date.now()));

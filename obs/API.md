@@ -300,7 +300,8 @@ bridge reaches out. It maps each message onto the API above:
   route to `GET /api/chat-live` (injected as a follow-up user message) and stream
   the orchestrator's reply. `/detach` unbinds; the bridge also auto-detaches if the
   run ends. Slash commands still work while attached.
-- `/reset` starts a fresh conversation (rotates the `sessionId`); `/help` lists all.
+- `/reset` starts a fresh conversation (rotates the `sessionId`, and detaches if
+  attached); `/help` lists all.
 
 **Auth & access.** The bridge holds `PI_OBS_TOKEN` and calls the server locally,
 so the token never leaves the machine (it's sent as the bearer header, and as
