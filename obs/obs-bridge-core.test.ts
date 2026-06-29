@@ -8,11 +8,9 @@ import {
     formatRuns,
     initStreamState,
     isAllowed,
-    orchestrators,
     parseCommand,
     reduceChatEvent,
     renderStream,
-    resolveSteerTarget,
     shortId,
     TG_LIMIT,
 } from "./obs-bridge-core";
@@ -106,11 +104,6 @@ test("verdict commands carry status, id, and an optional note", () => {
     assert.deepEqual(parseCommand("/pass"), { kind: "usage", cmd: "pass" });
 });
 
-test("/steer requires text, else usage", () => {
-    assert.deepEqual(parseCommand("/steer roll back the migration"), { kind: "steer", text: "roll back the migration" });
-    assert.deepEqual(parseCommand("/steer"), { kind: "usage", cmd: "steer" });
-});
-
 test("/reset and /new map to reset; unknown slash → usage", () => {
     assert.deepEqual(parseCommand("/reset"), { kind: "reset" });
     assert.deepEqual(parseCommand("/new"), { kind: "reset" });
@@ -195,56 +188,6 @@ test("formatLive lists agent, project, and session id", () => {
 test("shortId drops the run- prefix", () => {
     assert.equal(shortId("run-mqa9m2kb-z027y"), "mqa9m2kb-z027y");
     assert.equal(shortId("no-prefix"), "no-prefix");
-});
-
-// ── steer target resolution ──────────────────────────────────────────────────
-
-const orch = (sessionId: string, runId: string): any => ({ sessionId, agent: "orchestrator", runId, cwd: "/x/proj", startedTs: 1 });
-const sub = (sessionId: string): any => ({ sessionId, agent: "implementer", runId: "run-z", cwd: "/x/proj", startedTs: 1 });
-
-test("orchestrators() keeps only root orchestrator sessions", () => {
-    const list = [orch("s1", "run-a"), sub("s2"), orch("s3", "run-b")];
-    assert.deepEqual(orchestrators(list).map((s) => s.sessionId), ["s1", "s3"]);
-});
-
-test("resolveSteerTarget: none when no orchestrator is live", () => {
-    assert.deepEqual(resolveSteerTarget([sub("s2")], "go"), { kind: "none" });
-    assert.deepEqual(resolveSteerTarget([], "go"), { kind: "none" });
-});
-
-test("resolveSteerTarget: a single orchestrator takes the whole text", () => {
-    const r = resolveSteerTarget([orch("sess-1", "run-a"), sub("s2")], "retry the failing test");
-    assert.equal(r.kind, "ok");
-    if (r.kind === "ok") {
-        assert.equal(r.target.sessionId, "sess-1");
-        assert.equal(r.text, "retry the failing test");
-    }
-});
-
-test("resolveSteerTarget: several orchestrators are ambiguous without a prefix", () => {
-    const r = resolveSteerTarget([orch("sess-aaaa", "run-a"), orch("sess-bbbb", "run-b")], "do the thing");
-    assert.equal(r.kind, "ambiguous");
-    if (r.kind === "ambiguous") assert.equal(r.options.length, 2);
-});
-
-test("resolveSteerTarget: a leading session-id prefix disambiguates", () => {
-    const r = resolveSteerTarget([orch("sess-aaaa", "run-a"), orch("sess-bbbb", "run-b")], "sess-bb ship it");
-    assert.equal(r.kind, "ok");
-    if (r.kind === "ok") {
-        assert.equal(r.target.sessionId, "sess-bbbb");
-        assert.equal(r.text, "ship it");
-    }
-});
-
-test("resolveSteerTarget: a run-id prefix also disambiguates", () => {
-    const r = resolveSteerTarget([orch("sess-aaaa", "run-alpha"), orch("sess-bbbb", "run-beta")], "run-beta hold on");
-    assert.equal(r.kind, "ok");
-    if (r.kind === "ok") assert.equal(r.target.sessionId, "sess-bbbb");
-});
-
-test("resolveSteerTarget: a too-short or non-matching prefix stays ambiguous", () => {
-    assert.equal(resolveSteerTarget([orch("sess-aaaa", "run-a"), orch("sess-bbbb", "run-b")], "go now").kind, "ambiguous");
-    assert.equal(resolveSteerTarget([orch("sess-aaaa", "run-a"), orch("sess-bbbb", "run-b")], "sess-zzzz hi").kind, "ambiguous");
 });
 
 // ── chunking ─────────────────────────────────────────────────────────────────

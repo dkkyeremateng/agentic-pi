@@ -451,9 +451,8 @@ behind Tailscale or a proxy). Generate one with `openssl rand -hex 32`. Details 
 chat with your observability from your phone. It **long-polls** the Telegram Bot
 API (no inbound webhook, so the obs-server stays on loopback) and maps messages
 onto the API: free text chats with the assistant (it knows your runs; needs
-`PI_OBS_LLM=1`), `/runs`, `/last`, `/digest <id>`, `/search <text>`, `/live`,
-`/pass`/`/fail` inspect and score runs, and `/steer <text>` drives the live
-orchestrator (injects a follow-up into the running agent). Replies **edit-stream** — one message
+`PI_OBS_LLM=1`), and `/runs`, `/last`, `/digest <id>`, `/search <text>`, `/live`,
+`/pass`/`/fail` inspect and score runs. Replies **edit-stream** — one message
 grows as tokens arrive. Set `PI_OBS_TG_TOKEN` (a [@BotFather](https://t.me/BotFather)
 token) and `PI_OBS_TG_ALLOW` (the chat ids allowed — fail-closed; message the bot
 once and it replies with yours), then `./run.sh --bridge` — which **cold-starts the
