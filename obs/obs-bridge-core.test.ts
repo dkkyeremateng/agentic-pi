@@ -126,6 +126,11 @@ test("/dispatch parses agent + prompt (comma or space); /agents has no args", ()
     assert.deepEqual(parseCommand("/agents"), { kind: "agents" });
 });
 
+test("/do parses a free-text task, else usage", () => {
+    assert.deepEqual(parseCommand("/do ping https://x.com and check it's up"), { kind: "do", text: "ping https://x.com and check it's up" });
+    assert.deepEqual(parseCommand("/do"), { kind: "usage", cmd: "do" });
+});
+
 test("parseBareDispatch needs a comma/colon AND a known agent", () => {
     const names = ["seeker", "scout"];
     assert.deepEqual(parseBareDispatch("seeker, ping https://x.com", names), { agent: "seeker", text: "ping https://x.com" });

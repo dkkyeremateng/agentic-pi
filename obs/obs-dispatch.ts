@@ -28,6 +28,7 @@ import { homedir } from "node:os";
 import { delimiter as pathDelimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseChatLine, type ChatEvent } from "./obs-chat";
+import { llmConfig, type LlmConfig, runPlayground } from "./obs-llm";
 import {
     type AgentDef,
     loadAgents,
@@ -70,6 +71,49 @@ export function resolveAgent(cwd: string, name: string): AgentDef | null {
         if (def.aliases?.some((a) => a.toLowerCase() === want)) return def;
     }
     return null;
+}
+
+// ── auto-select: pick the best agent for a task (the /do command) ────────────
+
+/** Tolerant parse of the selector's reply into a choice: a known agent name, or
+ *  "chat" (a question/conversation that needs no tools). Accepts a JSON object,
+ *  falls back to the first agent name mentioned, else "chat". Pure. */
+export function parseSelection(raw: string, agentNames: string[]): { choice: string; reason: string } {
+    const text = (raw || "").trim();
+    const byLower = new Map(agentNames.map((n) => [n.toLowerCase(), n]));
+    const m = text.match(/\{[\s\S]*\}/);
+    if (m) {
+        try {
+            const o = JSON.parse(m[0]) as { choice?: unknown; reason?: unknown };
+            const c = typeof o.choice === "string" ? o.choice.trim() : "";
+            const reason = typeof o.reason === "string" ? o.reason.trim() : "";
+            if (c.toLowerCase() === "chat") return { choice: "chat", reason };
+            if (byLower.has(c.toLowerCase())) return { choice: byLower.get(c.toLowerCase())!, reason };
+        } catch {
+            /* fall through to a name scan */
+        }
+    }
+    for (const n of agentNames) {
+        if (new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) return { choice: n, reason: "" };
+    }
+    return { choice: "chat", reason: "" };
+}
+
+/** Route a free-text task to the single best agent, or to "chat". One small pi
+ *  completion over the agent roster (their descriptions) — the same signal the
+ *  orchestrator's select_agents reasons over, distilled to a one-shot pick. */
+export async function selectAgent(cwd: string, task: string, cfg: LlmConfig = llmConfig()): Promise<{ choice: string; reason: string; model: string }> {
+    const agents = listAgents(cwd);
+    const roster = agents.map((a) => `- ${a.name}: ${a.description || "(no description)"}`).join("\n");
+    const system =
+        "You route a user request to the single best agent for the job, or to plain chat.\n" +
+        "Available agents:\n" +
+        roster +
+        "\n\n" +
+        'Reply with ONLY a JSON object {"choice": "<exact agent name>" or "chat", "reason": "<one short clause>"}. ' +
+        'Use "chat" when the request is a question or conversation that needs no tools. No prose, no code fences.';
+    const r = await runPlayground(system, task, cfg);
+    return { ...parseSelection(r.output, agents.map((a) => a.name)), model: r.model };
 }
 
 export interface DispatchRequest {

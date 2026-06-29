@@ -58,7 +58,7 @@ import {
     loadRepoEnv,
 } from "./obs-llm";
 import { streamChat } from "./obs-chat";
-import { dispatchStream, listAgents } from "./obs-dispatch";
+import { dispatchStream, listAgents, selectAgent } from "./obs-dispatch";
 import { listLiveSessions } from "./obs-chat-control";
 import { connect as netConnect } from "node:net";
 import { buildPromptRegistry } from "./obs-prompts";
@@ -677,6 +677,7 @@ function handleApi(
                 "POST /api/playground  {system, input, model?}  (safe one-shot prompt sandbox; opt-in PI_OBS_LLM=1)",
                 "POST /api/chat  {sessionId, text, model?, cwd?, tools?, forkFrom?}  (SSE stream of reply tokens; forkFrom attaches to a run's session; opt-in PI_OBS_LLM=1)",
                 "GET  /api/agents  ?cwd=  (known workflow agents; readOnly flag)",
+                "POST /api/select  {task, cwd}  (auto-pick the best agent for a task, or \"chat\"; opt-in PI_OBS_LLM=1)",
                 "POST /api/dispatch  {agent, text, cwd, model?, sessionId?}  (SSE; run any agent standalone, file tools confined to cwd, no run needed; opt-in PI_OBS_DISPATCH=1)",
                 "GET  /api/live-sessions  (agents running right now with a control channel — attachable)",
                 "GET  /api/chat-live  ?sessionId=&text=&deliverAs=&approve=  (SSE; steer a LIVE agent and stream its reply)",
@@ -925,6 +926,41 @@ function handleApi(
         } catch (e) {
             apiError(res, 500, `could not load agents: ${String((e as Error)?.message || e)}`);
         }
+        return;
+    }
+    // Auto-select the best agent for a free-text task (the bridge's /do). Returns
+    // a chosen agent name or "chat". Uses the LLM (opt-in PI_OBS_LLM=1).
+    if (a === "select" && req.method === "POST") {
+        let body = "";
+        req.on("data", (d) => {
+            body += d;
+            if (body.length > 256_000) req.destroy();
+        });
+        req.on("end", async () => {
+            let p: Record<string, unknown>;
+            try {
+                p = JSON.parse(body || "{}");
+            } catch {
+                apiError(res, 400, "invalid JSON body");
+                return;
+            }
+            const task = typeof p.task === "string" ? p.task : "";
+            const cwd = typeof p.cwd === "string" && p.cwd.trim() ? p.cwd : process.cwd();
+            if (!task.trim()) {
+                apiError(res, 400, "missing task");
+                return;
+            }
+            if (!llmConfig().enabled) {
+                apiJson(res, 200, { enabled: false, hint: "set PI_OBS_LLM=1 on the server to enable /do (agent selection)" });
+                return;
+            }
+            try {
+                const sel = await selectAgent(cwd, task);
+                apiJson(res, 200, { enabled: true, ...sel });
+            } catch (e) {
+                apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e) });
+            }
+        });
         return;
     }
     // Dispatch a single READ-ONLY agent standalone (no orchestrator/run needed)

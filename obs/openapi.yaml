@@ -438,6 +438,45 @@ paths:
                           type: boolean
                           description: No write/edit tool. Informational — all agents are dispatchable.
 
+  /api/select:
+    post:
+      tags: [dispatch]
+      operationId: selectAgent
+      summary: Auto-pick the best agent for a task (or "chat")
+      description: >
+        Opt-in (PI_OBS_LLM=1). One small LLM completion over the agent roster
+        (their descriptions) picks the single best agent for a free-text task, or
+        "chat" when it's a question needing no tools. Powers the bridge's /do.
+        Disabled returns `{enabled:false,hint}`; a failure returns
+        `{enabled:true,error}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task]
+              properties:
+                task: { type: string }
+                cwd: { type: string, description: Scope the agent roster (defaults to the server cwd). }
+      responses:
+        "200":
+          description: The routing decision (or a disabled/error envelope).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled]
+                properties:
+                  enabled: { type: boolean }
+                  choice: { type: string, description: An agent name, or "chat". }
+                  reason: { type: string }
+                  model: { type: string }
+                  hint: { type: string }
+                  error: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
   /api/dispatch:
     post:
       tags: [dispatch]

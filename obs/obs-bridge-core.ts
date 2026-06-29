@@ -116,6 +116,7 @@ export type Command =
     | { kind: "detach" }
     | { kind: "agents" }
     | { kind: "dispatch"; agent: string; text: string }
+    | { kind: "do"; text: string }
     | { kind: "reset" }
     | { kind: "usage"; cmd: string }; // recognised command, wrong/missing args
 
@@ -190,6 +191,8 @@ export function parseCommand(raw: string): Command {
             const r = splitAgentText(rest);
             return r ? { kind: "dispatch", agent: r.agent, text: r.text } : { kind: "usage", cmd: "dispatch" };
         }
+        case "do":
+            return rest ? { kind: "do", text: rest } : { kind: "usage", cmd: "do" };
         case "digest":
             return rest ? { kind: "digest", id: rest.split(/\s+/)[0] } : { kind: "usage", cmd: "digest" };
         case "search":
@@ -425,7 +428,8 @@ export function helpText(): string {
         "/fail <id> [note] — score a run fail",
         "/open <id> [note] — mark a run needs-review",
         "/agents — list dispatchable agents",
-        "/dispatch <agent>, <prompt> — run an agent in the project dir (no run needed)",
+        "/do <task> — auto-pick the best agent for a task (or just answer)",
+        "/dispatch <agent>, <prompt> — run a specific agent in the project dir",
         "/attach <run-id> — route your messages into a live run (drive it)",
         "/detach — stop routing; back to the assistant",
         "/reset — fresh conversation (also detaches)",
@@ -443,6 +447,8 @@ export function usageText(cmd: string): string {
             return "usage: /attach <run-id>  (a live run — see /runs or /live)";
         case "dispatch":
             return "usage: /dispatch <agent>, <prompt>  (see /agents)";
+        case "do":
+            return "usage: /do <task>  (auto-selects an agent, or answers if it's a question)";
         case "pass":
         case "fail":
         case "open":

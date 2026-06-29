@@ -288,6 +288,14 @@ Lists the known agents (project `.pi/agents/` then bundled), `cwd`-scoped:
 `{ dispatchEnabled, agents: [{ name, description, model, readOnly }] }`. `readOnly`
 (no `write`/`edit` tool) is informational — **all** agents are dispatchable.
 
+### `POST /api/select` — `{ task, cwd }`
+Auto-picks the best agent for a free-text `task` (the bridge's `/do`). One small
+LLM completion over the agent roster (their `description`s — the same signal the
+orchestrator's `select_agents` reasons over), returning `{ enabled, choice,
+reason, model }` where `choice` is an agent name or `"chat"` (a question/
+conversation that needs no tools). Opt-in (`PI_OBS_LLM=1`) — disabled returns
+`{ enabled: false, hint }`; a failure returns `{ enabled: true, error }`.
+
 ### `POST /api/dispatch` (SSE) — `{ agent, text, cwd, model?, sessionId? }`
 Spawns `agent` for one `text` task in `cwd` and streams `ChatEvent` frames (same
 shape as `/api/chat`: `token`/`thinking`/`tool`/`done`/`error`). `sessionId` (must
@@ -336,6 +344,9 @@ bridge reaches out. It maps each message onto the API above:
   runs a single named agent standalone (no run needed) and streams its reply. The
   bare `<agent>, <prompt>` form is opt-in (`PI_OBS_TG_BARE_DISPATCH=1`). Per-
   (chat, agent) sessions give follow-up continuity.
+- `/do <task>` -> `POST /api/select` then either `/api/dispatch` (auto-picks the
+  best agent and runs it) or the chat assistant (when it's a question). Echoes the
+  chosen agent first. Needs `PI_OBS_LLM=1` (selection) + `PI_OBS_DISPATCH=1` (run).
 - `/reset` starts a fresh conversation (rotates the `sessionId`, detaches if
   attached, and resets dispatch sessions); `/help` lists all.
 

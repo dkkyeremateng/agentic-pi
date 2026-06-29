@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSandboxLaunch, isReadOnlyAgent, listAgents, macSandboxProfile, resolveAgent, sandboxConfig } from "./obs-dispatch";
+import { buildSandboxLaunch, isReadOnlyAgent, listAgents, macSandboxProfile, parseSelection, resolveAgent, sandboxConfig } from "./obs-dispatch";
 import type { AgentDef } from "../utils/workflow/workflow-core";
 
 const def = (over: Partial<AgentDef>): AgentDef => ({
@@ -41,6 +41,25 @@ test("resolveAgent finds by name (case-insensitive) and returns null for unknown
     assert.equal(resolveAgent(process.cwd(), "SEEKER")?.name, "seeker");
     assert.equal(resolveAgent(process.cwd(), "definitely-not-an-agent"), null);
     assert.equal(resolveAgent(process.cwd(), ""), null);
+});
+
+// ── auto-select (/do) ────────────────────────────────────────────────────────
+
+test("parseSelection reads a JSON choice (agent or chat), case-insensitive", () => {
+    const names = ["seeker", "scout"];
+    assert.deepEqual(parseSelection('{"choice":"seeker","reason":"web check"}', names), { choice: "seeker", reason: "web check" });
+    assert.deepEqual(parseSelection('{"choice":"SCOUT","reason":"recon"}', names), { choice: "scout", reason: "recon" });
+    assert.deepEqual(parseSelection('{"choice":"chat","reason":"just a question"}', names), { choice: "chat", reason: "just a question" });
+});
+
+test("parseSelection tolerates prose/fences and falls back to a named agent", () => {
+    assert.equal(parseSelection("I think seeker is best here.", ["seeker", "scout"]).choice, "seeker");
+    assert.equal(parseSelection("```json\n{\"choice\":\"scout\"}\n```", ["seeker", "scout"]).choice, "scout");
+});
+
+test("parseSelection defaults to chat when nothing matches", () => {
+    assert.equal(parseSelection("no idea", ["seeker"]).choice, "chat");
+    assert.equal(parseSelection("", ["seeker"]).choice, "chat");
 });
 
 // ── sandbox ──────────────────────────────────────────────────────────────────

@@ -298,6 +298,32 @@ async function runAttach(cfg: BridgeConfig, state: BridgeState, chatId: number, 
     await send(cfg, chatId, `attached to ${shortId(runId)} — your messages now drive this live run. /detach to stop.`);
 }
 
+/** /do <task> -> auto-pick the best agent and dispatch it, or answer via chat. */
+async function runDo(cfg: BridgeConfig, state: BridgeState, chatId: number, task: string): Promise<void> {
+    await tg(cfg, "sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+    const { status, data } = await apiPostJson<any>(cfg, `/api/select`, { task, cwd: cfg.cwd });
+    if (status >= 400 || !data) {
+        await send(cfg, chatId, `could not route that (HTTP ${status}).`);
+        return;
+    }
+    if (data.enabled === false) {
+        await send(cfg, chatId, data.hint || "agent selection is disabled on the server.");
+        return;
+    }
+    if (data.error) {
+        await send(cfg, chatId, `routing failed: ${String(data.error).slice(0, 200)}`);
+        return;
+    }
+    const choice = typeof data.choice === "string" ? data.choice : "chat";
+    if (!choice || choice === "chat") {
+        await send(cfg, chatId, "→ answering directly");
+        await runChat(cfg, state, chatId, task);
+        return;
+    }
+    await send(cfg, chatId, `→ ${choice}${data.reason ? ` — ${data.reason}` : ""}`);
+    await runDispatch(cfg, state, chatId, choice, task);
+}
+
 /** /agents -> list the workflow agents (read-only ones are dispatchable). */
 async function runAgents(cfg: BridgeConfig, chatId: number): Promise<void> {
     const r = await apiGetJson<{ dispatchEnabled?: boolean; agents: AgentInfo[] }>(cfg, `/api/agents?cwd=${encodeURIComponent(cfg.cwd)}`);
@@ -388,6 +414,9 @@ async function handleMessage(cfg: BridgeConfig, state: BridgeState, chatId: numb
             return;
         case "dispatch":
             await runDispatch(cfg, state, chatId, cmd.agent, cmd.text);
+            return;
+        case "do":
+            await runDo(cfg, state, chatId, cmd.text);
             return;
         case "chat": {
             if (!cmd.text) return;
