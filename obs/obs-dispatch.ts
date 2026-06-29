@@ -139,8 +139,14 @@ export function macSandboxProfile(o: { cwd: string; home: string; tmp: string; r
         "(allow default)", // reads of system paths, network, and exec stay allowed
         "(deny file-write*)",
         `(allow file-write* ${subs(writeRoots)} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/stdout") (literal "/dev/stderr") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
-        `(deny file-read* (subpath ${JSON.stringify(o.home)}))`, // hide the rest of $HOME (other projects, secrets)
-        `(allow file-read* ${subs(readRoots)})`,
+        // Hide the CONTENTS of the rest of $HOME (other projects, secrets). Deny
+        // only file-read-DATA (not metadata) so lstat/traversal still works — else
+        // Node's module loader (lstat on $HOME) breaks. The re-allow must be an
+        // explicit `file-read-data` (a wildcard `file-read*` does NOT override a
+        // specific `file-read-data` deny in SBPL); metadata stays allowed by
+        // `(allow default)`.
+        `(deny file-read-data (subpath ${JSON.stringify(o.home)}))`,
+        `(allow file-read-data ${subs(readRoots)})`,
     ].join("\n");
 }
 

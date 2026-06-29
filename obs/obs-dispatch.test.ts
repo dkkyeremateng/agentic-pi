@@ -87,6 +87,6 @@ test("macSandboxProfile confines writes to cwd and denies the rest of $HOME", ()
     const p = macSandboxProfile({ cwd: "/Users/me/proj", home: "/Users/me", tmp: "/tmp", readRoots: ["/repo"] });
     assert.match(p, /\(deny file-write\*\)/);
     assert.match(p, /allow file-write\*[^\n]*"\/Users\/me\/proj"/);
-    assert.match(p, /\(deny file-read\* \(subpath "\/Users\/me"\)\)/);
-    assert.match(p, /allow file-read\*[^\n]*"\/repo"/); // repo readable despite being outside cwd
+    assert.match(p, /\(deny file-read-data \(subpath "\/Users\/me"\)\)/); // data hidden, metadata/lstat allowed
+    assert.match(p, /allow file-read-data[^\n]*"\/repo"/); // repo readable despite being outside cwd
 });
