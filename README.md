@@ -455,8 +455,9 @@ onto the API: free text chats with the assistant (it knows your runs; needs
 `/pass`/`/fail` inspect and score runs. Replies **edit-stream** — one message
 grows as tokens arrive. Set `PI_OBS_TG_TOKEN` (a [@BotFather](https://t.me/BotFather)
 token) and `PI_OBS_TG_ALLOW` (the chat ids allowed — fail-closed; message the bot
-once and it replies with yours), then `./run.sh --bridge` (or `npm run obs:bridge`)
-alongside a running server. The bridge holds `PI_OBS_TOKEN` and calls the server
+once and it replies with yours), then `./run.sh --bridge` — which **cold-starts the
+obs-server on `$PORT` if none is running** (use `npm run obs:bridge` instead when a
+server is already up). The bridge holds `PI_OBS_TOKEN` and calls the server
 locally, so the token never leaves the machine. See `example.env` and
 [`obs/API.md`](obs/API.md#telegram-bridge).
 

@@ -280,8 +280,9 @@ curl -s -X POST localhost:7616/api/runs/run-mqa9/verdict \
 
 `obs/obs-bridge.ts` is a small client that lets you talk to this API from
 Telegram — chat with the assistant and inspect/score runs from your phone. Run
-it with **`./run.sh --bridge`** (or `npm run obs:bridge`) next to a running
-server.
+it with **`./run.sh --bridge`**, which cold-starts the obs-server on `$PORT` if
+none is running (use `npm run obs:bridge` when a server is already up, or point
+the bridge at one with `PI_OBS_BRIDGE_API`).
 
 It **long-polls** the Telegram Bot API (`getUpdates`), so there is **no inbound
 webhook** — the obs-server keeps binding loopback exactly as before, and the
