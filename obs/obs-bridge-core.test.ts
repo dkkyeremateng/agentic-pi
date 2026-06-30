@@ -202,6 +202,30 @@ test("done sets final text + appends a cost footer", () => {
     assert.match(out, /anthropic\/claude-x/);
 });
 
+test("footer shows cached context separately from billable tokens", () => {
+    const s = initStreamState();
+    reduceChatEvent(s, {
+        type: "done",
+        text: "pong!",
+        costUsd: 0.0003,
+        tokens: 12,
+        cachedTokens: 69500,
+        model: "gemini-3-5-flash",
+    });
+    const out = renderStream(s);
+    // headline count is the billable input+output, not the cached reuse
+    assert.match(out, /12 tok/);
+    assert.match(out, /\(\+69\.5k cached\)/);
+    // the cached figure must not masquerade as the headline token count
+    assert.ok(!out.includes("69.5k tok"));
+});
+
+test("footer omits the cached parenthetical when there is no cache reuse", () => {
+    const s = initStreamState();
+    reduceChatEvent(s, { type: "done", text: "hi", costUsd: 0.001, tokens: 30, model: "m" });
+    assert.ok(!renderStream(s).includes("cached"));
+});
+
 test("error before any text renders an error line", () => {
     const s = initStreamState();
     reduceChatEvent(s, { type: "error", error: "set PI_OBS_LLM=1" });

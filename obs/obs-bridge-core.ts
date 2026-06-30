@@ -220,7 +220,8 @@ export interface StreamState {
     done: boolean;
     error?: string;
     costUsd: number;
-    tokens?: number;
+    tokens?: number; // billable (input+output) tokens
+    cachedTokens?: number; // reused cached context (cacheRead+cacheWrite)
     model?: string;
 }
 
@@ -254,6 +255,7 @@ export function reduceChatEvent(s: StreamState, ev: ChatEvent): StreamState {
             if (ev.text) s.text = ev.text; // authoritative final text
             s.costUsd = ev.costUsd || 0;
             s.tokens = ev.tokens;
+            s.cachedTokens = ev.cachedTokens;
             s.model = ev.model;
             s.activeTool = undefined;
             break;
@@ -276,6 +278,11 @@ function fmtTok(n: number | undefined): string {
     if (!n) return "0 tok";
     return n >= 1000 ? `${(n / 1000).toFixed(1)}k tok` : `${n} tok`;
 }
+/** Compact count without a unit suffix — for the cached parenthetical. */
+function fmtNum(n: number | undefined): string {
+    if (!n) return "0";
+    return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+}
 export function fmtAge(ms: number, now: number): string {
     const d = Math.max(0, now - ms);
     const s = Math.round(d / 1000);
@@ -296,8 +303,9 @@ export function renderStream(s: StreamState): string {
     if (!s.done && s.activeTool) body += `\n\n... running ${s.activeTool}`;
     if (s.done) {
         if (s.error) body += `\n\n(interrupted: ${s.error})`;
-        const foot = `${fmtCost(s.costUsd)} · ${fmtTok(s.tokens)}${s.model ? ` · ${s.model}` : ""}`;
-        if (s.costUsd || s.tokens) body += `\n\n— ${foot}`;
+        const cache = s.cachedTokens ? ` (+${fmtNum(s.cachedTokens)} cached)` : "";
+        const foot = `${fmtCost(s.costUsd)} · ${fmtTok(s.tokens)}${cache}${s.model ? ` · ${s.model}` : ""}`;
+        if (s.costUsd || s.tokens || s.cachedTokens) body += `\n\n— ${foot}`;
     }
     return body;
 }

@@ -56,7 +56,7 @@ export type ChatEvent =
     | { type: "token"; text: string } // assistant reply delta
     | { type: "thinking"; text: string } // reasoning delta
     | { type: "tool"; phase: "start" | "end"; name: string; detail?: string }
-    | { type: "done"; text: string; costUsd: number; tokens?: number; model?: string }
+    | { type: "done"; text: string; costUsd: number; tokens?: number; cachedTokens?: number; model?: string }
     | { type: "approval"; toolCallId: string; name: string; input?: unknown } // agent waiting for human allow/deny
     | { type: "error"; error: string };
 
@@ -107,7 +107,8 @@ export function parseChatLine(line: string): ChatEvent | null {
         const msgs = Array.isArray(o.messages) ? (o.messages as Record<string, unknown>[]) : [];
         let text = "";
         let costUsd = 0;
-        let tokens = 0;
+        let billable = 0; // fresh input + output — tokens charged at full rate
+        let cached = 0; // cacheRead + cacheWrite — reused context, billed at a fraction
         let model: string | undefined;
         for (const m of msgs) {
             if (str(m.role) !== "assistant") continue;
@@ -118,14 +119,28 @@ export function parseChatLine(line: string): ChatEvent | null {
             if (typeof cost?.total === "number") costUsd += cost.total;
             if (usage) {
                 const n = (k: string) => (typeof usage[k] === "number" ? (usage[k] as number) : 0);
-                tokens +=
-                    typeof usage.totalTokens === "number"
-                        ? (usage.totalTokens as number)
-                        : n("input") + n("output") + n("cacheRead") + n("cacheWrite");
+                const fresh = n("input") + n("output");
+                const reuse = n("cacheRead") + n("cacheWrite");
+                // Prefer the component split (so cached context isn't conflated with
+                // new work); fall back to totalTokens as "billable" only when the
+                // components are absent, so older payloads still carry a number.
+                if (fresh || reuse) {
+                    billable += fresh;
+                    cached += reuse;
+                } else if (typeof usage.totalTokens === "number") {
+                    billable += usage.totalTokens as number;
+                }
             }
             if (str(m.responseModel)) model = str(m.responseModel);
         }
-        return { type: "done", text, costUsd, model, ...(tokens ? { tokens } : {}) };
+        return {
+            type: "done",
+            text,
+            costUsd,
+            model,
+            ...(billable ? { tokens: billable } : {}),
+            ...(cached ? { cachedTokens: cached } : {}),
+        };
     }
 
     return null;
