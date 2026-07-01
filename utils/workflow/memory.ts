@@ -123,15 +123,26 @@ export function selectForInjection(lessons: Lesson[], topN: number = INJECT_TOP_
     return lessons.slice(-topN).reverse();
 }
 
-/** The text block appended to an agent's system prompt (empty when nothing). */
+/** A one-line nudge so an agent knows it HAS a memory even before it has any
+ *  lessons — otherwise a fresh agent is never told to start using `remember`
+ *  (the cold-start gap). */
+const REMEMBER_NUDGE =
+    "You have a `remember` tool: when you learn a durable, general lesson about how " +
+    "to do your job better (a pitfall to check, a step not to skip), call it to save " +
+    "the lesson for your future runs.";
+
+/** The text block appended to an agent's system prompt. Always present (when
+ *  enabled) so a fresh agent is nudged to use `remember`; grows to include the
+ *  agent's saved lessons once it has any. */
 export function renderInjection(agent: string, lessons: Lesson[], topN: number = INJECT_TOP_N): string {
     const picked = selectForInjection(lessons, topN);
-    if (!picked.length) return "";
+    if (!picked.length) return `\n\n## Memory\n${REMEMBER_NUDGE}\n`;
     const bullets = picked.map((l) => `- ${l.text}`).join("\n");
     return (
         `\n\n## Memory (lessons from your past runs)\n` +
         `Durable lessons you saved on prior ${agent} runs. Apply them; they are not the task.\n` +
-        `Call the \`remember\` tool to save a NEW durable, general lesson when you learn one.\n` +
+        REMEMBER_NUDGE +
+        "\n" +
         bullets +
         "\n"
     );
@@ -224,6 +235,23 @@ export interface MemoryIO {
     write(agent: string, lessons: Lesson[]): void;
 }
 const realIO: MemoryIO = { read: readMemory, write: writeMemory };
+
+/** Add lessons directly to an agent's memory (dedupe + cap), independent of the
+ *  per-run staging/pass-gate flow. Used by the failure reflector, which distils
+ *  lessons from a FAILED run (the agent-authored path only keeps successes).
+ *  Returns the number newly added. Gated + best-effort. */
+export function addLessons(agent: string, texts: string[], opts: { runId?: string; day?: string } = {}, io: MemoryIO = realIO): number {
+    if (!memoryEnabled() || !texts.length) return 0;
+    try {
+        const before = io.read(agent);
+        const after = foldStaged(before, texts, { runId: opts.runId, day: opts.day ?? today() });
+        const added = after.length - before.length;
+        if (added > 0) io.write(agent, after);
+        return Math.max(0, added);
+    } catch {
+        return 0;
+    }
+}
 
 function today(): string {
     return new Date().toISOString().slice(0, 10);
