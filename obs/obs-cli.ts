@@ -11,6 +11,7 @@
 //   tsx obs/obs-cli.ts score <runId|--last> --pass|--fail [--note <text>]
 //                                  [--sink <file>]
 //   tsx obs/obs-cli.ts explain <runId|--last> [--json] [--sink <file>]
+//   tsx obs/obs-cli.ts reap [--stale <minutes>] [--apply] [--json] [--sink <file>]
 //
 //   projectPath  defaults to the current directory. Its session dir is resolved
 //                the same way the workflow spawns sub-agents (projectSessionHash).
@@ -46,6 +47,8 @@ import {
 } from "./obs-events";
 import { RunIndexer, LineScanner, type RunSummary } from "./obs-run-index";
 import { buildRunDigest, formatRunDigest } from "./obs-explain";
+import { planReap, reapEvent } from "./obs-reap";
+import { listLiveSessions } from "./obs-chat-control";
 import {
     parseSession,
     aggregateRun,
@@ -483,6 +486,78 @@ function scoreCommand(argv: string[]): void {
     );
 }
 
+// ── reap: close orphaned lanes (session_start with no session_end) ───────────
+// A hard-killed session (SIGKILL, terminal closed, reboot, crash) never wrote a
+// session_end, so its lane shows as stalled forever on the Live wall. This
+// appends a synthetic session_end for each such lane older than --stale, never
+// touching a genuinely-live session. Dry-run by default; --apply to write.
+function reapCommand(argv: string[]): void {
+    let sinkArg: string | undefined;
+    let staleMin = 30;
+    let apply = false;
+    let json = false;
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (a === "--sink") sinkArg = argv[++i];
+        else if (a === "--stale") staleMin = Number(argv[++i]);
+        else if (a === "--apply") apply = true;
+        else if (a === "--json") json = true;
+        else {
+            console.error("usage: reap [--stale <minutes>] [--apply] [--json] [--sink <file>]");
+            process.exit(1);
+        }
+    }
+    if (!(staleMin >= 0)) {
+        console.error("--stale must be a non-negative number of minutes");
+        process.exit(1);
+    }
+    const sink = obsSinkPath(sinkArg);
+    if (!existsSync(sink)) {
+        console.error(`No obs sink at ${sink} — run a workflow with PI_OBS=1 first.`);
+        process.exit(1);
+    }
+    const events: ObsEvent[] = [];
+    for (const line of readLines(sink)) {
+        const ev = parseEventLine(line);
+        if (ev) events.push(ev);
+    }
+    const now = Date.now();
+    // Never reap a session that's still pid-alive with a fresh heartbeat.
+    const live = new Set(listLiveSessions().map((s) => s.sessionId));
+    const plan = planReap(events, now, staleMin * 60_000, live);
+
+    if (json) {
+        console.log(JSON.stringify({ ...plan, applied: apply }, null, 2));
+    } else if (!plan.orphans.length) {
+        console.log(
+            `No orphaned lanes to reap — ${plan.sessions} sessions ` +
+                `(${plan.ended} cleanly ended, ${plan.live} live, ${plan.fresh} too recent).`,
+        );
+    } else {
+        console.log(
+            `${plan.orphans.length} orphaned lane${plan.orphans.length === 1 ? "" : "s"} ` +
+                `(of ${plan.sessions} sessions; skipped ${plan.live} live, ${plan.fresh} too recent):`,
+        );
+        for (const o of plan.orphans) {
+            const age = Math.round((now - o.lastTs) / 60_000);
+            console.log(
+                `  ${o.sessionId}  ${o.agent}  ${o.events} ev  ` +
+                    `idle ${age}m${o.runId ? `  ${o.runId}` : ""}`,
+            );
+        }
+    }
+
+    if (!apply) {
+        if (plan.orphans.length && !json)
+            console.log(`\nDry run — re-run with --apply to write ${plan.orphans.length} session_end event(s).`);
+        return;
+    }
+    if (!plan.orphans.length) return;
+    const lines = plan.orphans.map((o) => serializeEvent(reapEvent(o, now))).join("\n") + "\n";
+    appendFileSync(sink, lines, "utf-8");
+    if (!json) console.log(`\nReaped ${plan.orphans.length} lane(s) — appended session_end to ${sink}.`);
+}
+
 // ── explain: LLM-ready digest of one run (anomalies, timeline, rollups) ──────
 // The metrics skill runs this and hands the output to pi — "what happened in
 // that run / why was it slow or expensive" without reading the raw sink.
@@ -531,6 +606,10 @@ function main() {
     }
     if (argv[0] === "explain") {
         explainCommand(argv.slice(1));
+        return;
+    }
+    if (argv[0] === "reap") {
+        reapCommand(argv.slice(1));
         return;
     }
     const opts = parseArgs(argv);
