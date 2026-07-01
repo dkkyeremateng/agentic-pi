@@ -15,7 +15,7 @@ export default function (pi: ExtensionAPI) {
         name: "remember",
         label: "Remember a lesson",
         description:
-            "Save a durable, GENERAL lesson for your FUTURE runs — a reusable insight about how to do your job better (e.g. a pitfall to check, a step you skipped). NOT task/PR/repo specifics. It is staged now and kept only if THIS run succeeds, then injected into your prompt next time. One imperative sentence.",
+            "Save a durable, GENERAL lesson for your FUTURE runs — a reusable insight that makes you better at your job. Record EITHER: (a) a BETTER WAY you found to do a task — a more effective/faster/cleaner technique, tool, command, or approach worth reusing; OR (b) a pitfall to avoid or a step not to skip. NOT task/PR/repo specifics. Staged now and kept only if THIS run succeeds, then injected into your prompt next time. One imperative sentence.",
         parameters: Type.Object({
             learning: Type.String({
                 description: "One durable, general, imperative lesson (< 280 chars).",

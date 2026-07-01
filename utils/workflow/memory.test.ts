@@ -12,6 +12,7 @@ import {
     foldStaged,
     selectForInjection,
     renderInjection,
+    addLessons,
     stageLearning,
     readStaged,
     clearStaged,
@@ -62,14 +63,30 @@ test("capLessons keeps the most recent cap; foldStaged = dedupe + cap", () => {
     assert.deepEqual(folded.map((l) => l.text), ["old", "new"]); // dup 'old' skipped
 });
 
-test("injection: most-recent first, capped, empty when none", () => {
-    assert.equal(renderInjection("reviewer", []), "");
+test("injection: nudges even when EMPTY (cold start); lessons most-recent first", () => {
+    // cold start: no lessons yet, but the agent must still be told it has `remember`
+    const empty = renderInjection("reviewer", []);
+    assert.match(empty, /## Memory/);
+    assert.match(empty, /remember/);
     const lessons = [L("first"), L("second"), L("third")];
     assert.deepEqual(selectForInjection(lessons, 2).map((l) => l.text), ["third", "second"]);
     const inj = renderInjection("reviewer", lessons);
     assert.match(inj, /## Memory/);
     assert.match(inj, /remember/); // nudges the tool
     assert.match(inj, /- third/);
+});
+
+test("addLessons writes directly (dedupe+cap), independent of the pass gate", () => {
+    const store = new Map<string, Lesson[]>();
+    const io: MemoryIO = { read: (a) => store.get(a) ?? [], write: (a, l) => void store.set(a, l) };
+    assert.equal(addLessons("validator", ["verify the project is a git repo before git checks"], { runId: "rF" }, io), 1);
+    assert.equal(store.get("validator")![0].text, "verify the project is a git repo before git checks");
+    // dedupe: adding the same lesson again is a no-op
+    assert.equal(addLessons("validator", ["Verify the project is a git repo before git checks."], {}, io), 0);
+    // disabled kill switch: no write
+    process.env.PI_AGENT_MEMORY = "0";
+    assert.equal(addLessons("validator", ["something new"], {}, io), 0);
+    delete process.env.PI_AGENT_MEMORY;
 });
 
 test("staging round-trips per-agent candidates under .agent/", () => {

@@ -36,6 +36,7 @@ import {
     shipTask,
 } from "./workflow-core";
 import { commitStagedLearnings } from "./memory";
+import { reflectFailedRun } from "../../obs/obs-reflect";
 import {
     type Verdict,
     type CritiqueVerdict,
@@ -870,12 +871,18 @@ async function runWorkflowCoreImpl(
         ...(prUrl ? { prUrl } : {}),
     });
 
-    // Agent-learning loop: commit the lessons agents staged via `remember` this run
-    // to their per-agent memory — but ONLY if the run objectively PASSED (the verdict
-    // gate against unverified lessons). Failed-run candidates are dropped. Best-effort
-    // + gated (PI_AGENT_MEMORY); never blocks the run. All agents. See
-    // docs/research/agent-self-improvement.md.
-    commitStagedLearnings(cwd, { passed, runId: process.env.PI_OBS_RUN });
+    // Agent-learning loop. On SUCCESS: commit the lessons agents staged via
+    // `remember` this run (the verdict gate against unverified lessons). On FAILURE:
+    // the agent-authored path keeps nothing, so distil per-agent lessons from the
+    // run's obs digest (its tool errors + anomalies) instead — where the most useful
+    // lessons actually are. Both best-effort + gated (PI_AGENT_MEMORY; the failure
+    // reflector also needs PI_OBS_LLM); never blocks the run.
+    if (passed) {
+        commitStagedLearnings(cwd, { passed, runId: process.env.PI_OBS_RUN });
+    } else {
+        commitStagedLearnings(cwd, { passed, runId: process.env.PI_OBS_RUN }); // clears staging
+        await reflectFailedRun(process.env.PI_OBS_RUN);
+    }
 
     h.ui.publishLogs();
     return { status, report };
