@@ -255,7 +255,8 @@ export default function obsLive(pi: any): void {
                 } catch {}
             }, HEARTBEAT_MS);
             heartbeatTimer.unref?.(); // don't keep the process alive for this
-            process.once("exit", cleanupControl);
+            // control teardown on exit is handled by the session-wide endSession()
+            // exit hook (registered in session_start) — no separate hook needed here.
         } catch {
             // never let control setup break the run
         }
@@ -305,6 +306,21 @@ export default function obsLive(pi: any): void {
         append(serializeEvent(ev));
     };
 
+    // Close the lane exactly once, then tear down the control channel. Called from
+    // pi's session_shutdown (reload, and /quit's async dispose) AND from process
+    // exit. The exit path is the safety net: /quit ends with process.exit(0), and
+    // the async session_shutdown emit can lose the race with process death, so
+    // without this the lane never gets a session_end and shows as stalled forever.
+    // appendFileSync is legal inside an "exit" handler, so this lands reliably.
+    let endEmitted = false;
+    const endSession = (reason?: string): void => {
+        if (!endEmitted && factory) {
+            endEmitted = true;
+            emit("session_end", { reason });
+        }
+        cleanupControl();
+    };
+
     pi.on("session_start", async (_e: any, ctx: any) => {
         liveCtx = ctx; // for stop/abort over the control channel
         const cwd: string = ctx?.cwd ?? process.cwd();
@@ -348,6 +364,11 @@ export default function obsLive(pi: any): void {
             // (so parallel runs of the same agent stay distinct).
             dispatchId: process.env.PI_OBS_DISPATCH_ID || undefined,
         });
+        // Safety net: guarantee a session_end even when pi's async session_shutdown
+        // loses the race with process.exit(0) (e.g. /quit), or never fires at all
+        // (hard exit). Runs before setupControl's own exit hook — endSession also
+        // tears the control channel down, so that hook becomes a harmless no-op.
+        process.once("exit", () => endSession("process_exit"));
         // Publish a control channel so the dashboard can steer this live agent.
         setupControl({ sessionId, agent, runId, parent, cwd, model: ctx?.model?.id });
     });
@@ -609,7 +630,6 @@ export default function obsLive(pi: any): void {
     });
 
     pi.on("session_shutdown", async (e: any) => {
-        emit("session_end", { reason: e?.reason });
-        cleanupControl();
+        endSession(e?.reason);
     });
 }
