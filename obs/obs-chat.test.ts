@@ -3,8 +3,19 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseChatLine, resolveSessionFile, streamChat } from "./obs-chat";
+import { parseChatLine, promptArg, resolveSessionFile, streamChat } from "./obs-chat";
 import { EventEmitter } from "node:events";
+
+test("promptArg neutralizes flag-shaped prompts so pi never parses them as flags", () => {
+    // a prompt that IS a pi flag would otherwise be interpreted (e.g. auto-approve)
+    assert.equal(promptArg("--approve"), " --approve");
+    assert.equal(promptArg("-a"), " -a");
+    assert.equal(promptArg("--no-session"), " --no-session");
+    // ordinary prompts are untouched
+    assert.equal(promptArg("review this PR"), "review this PR");
+    assert.equal(promptArg("what is 2+2?"), "what is 2+2?");
+    assert.equal(promptArg(""), "");
+});
 
 test("text_delta frames become token events", () => {
     const line = JSON.stringify({

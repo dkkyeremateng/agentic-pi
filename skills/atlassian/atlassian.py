@@ -217,20 +217,29 @@ def cmd_projects(a):
     out({"projects": vals[: a.limit]})
 
 
+def _jql_quote(value):
+    """Escape a user value for use inside a double-quoted JQL string literal.
+
+    JQL escapes backslash and double-quote with a backslash; without this a value
+    like `x" OR project = OTHER OR "x` would break out of the quotes and rewrite
+    the query (JQL injection / filter bypass)."""
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def cmd_tickets(a):
     clauses: list[str] = []
     if a.project:
-        clauses.append(f'project = "{a.project}"')
+        clauses.append(f"project = {_jql_quote(a.project)}")
     if a.assignee:
         clauses.append(
             "assignee = currentUser()"
             if a.assignee == "me"
-            else f'assignee = "{a.assignee}"'
+            else f"assignee = {_jql_quote(a.assignee)}"
         )
     if a.status:
-        clauses.append(f'status = "{a.status}"')
+        clauses.append(f"status = {_jql_quote(a.status)}")
     if a.query:
-        clauses.append(f'text ~ "{a.query}"')
+        clauses.append(f"text ~ {_jql_quote(a.query)}")
     # /search/jql rejects unbounded queries — with no filter, default to the
     # current user's tickets so a bare `tickets` still works (and is useful).
     if not clauses:

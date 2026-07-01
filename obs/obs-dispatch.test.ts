@@ -111,7 +111,10 @@ test("macSandboxProfile confines reads+writes to cwd + tool infra, hides the res
     // reads: $HOME data denied, cwd + tool infra re-allowed (explicit file-read-data)
     assert.match(p, /\(deny file-read-data \(subpath "\/Users\/me"\)\)/);
     assert.match(p, /allow file-read-data[^\n]*"\/Users\/me\/proj"/);
-    assert.match(p, /allow file-read-data[^\n]*"\/Users\/me\/\.config"/); // gh/git config readable
+    assert.match(p, /allow file-read-data[^\n]*"\/Users\/me\/\.config\/git"/); // only git config readable
+    // credentials are NOT exposed by default: no blanket ~/.config, no ~/.npmrc
+    assert.ok(!/"\/Users\/me\/\.config"/.test(p), "blanket ~/.config must not be readable");
+    assert.ok(!p.includes(".npmrc"), "~/.npmrc (npm _authToken) must not be readable by default");
 });
 
 test("macSandboxProfile honors PI_OBS_DISPATCH_{READ,WRITE}_EXTRA", () => {

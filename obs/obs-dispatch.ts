@@ -8,18 +8,22 @@
 //     spawnModelArg, …) so a dispatched agent is identical to one the orchestrator
 //     would spawn — same prompt, tools, model, guards.
 //   - STDLIB + workflow-core only; resolves pi via PI_OBS_PI_BIN.
-//   - OFF BY DEFAULT (the route is gated on PI_OBS_DISPATCH=1). ANY agent may be
-//     dispatched.
+//   - OFF BY DEFAULT (the route is gated on PI_OBS_DISPATCH=1). Read-only agents
+//     may be dispatched with no sandbox; WRITE-CAPABLE agents (write/edit) require
+//     an OS sandbox (see below) — dispatch fails closed otherwise.
 //   - CONFINED TO THE cwd: cwd-guard is FORCED on (PI_CONFINE_CWD), so the agent's
 //     FILE tools (read/write/edit/grep/find/ls) cannot escape the caller-provided
 //     cwd. `bash` is NOT confined by cwd-guard, so for real WRITE confinement (bash
 //     included) set PI_OBS_DISPATCH_SANDBOX (macOS sandbox-exec) or
 //     PI_OBS_DISPATCH_SANDBOX_CMD (a bwrap/firejail/docker wrapper). The macOS
 //     sandbox confines BOTH reads and writes to the cwd (+ the tool infra/caches
-//     an agent needs — node, this repo, ~/.pi, ~/.config, ~/Library/Caches, temp,
-//     plus PI_OBS_DISPATCH_{READ,WRITE}_EXTRA); the rest of $HOME (other projects,
-//     ~/.ssh, ~/.aws) is hidden. System reads + network + exec stay open so tools
-//     run. Fail-closed.
+//     an agent needs — node, this repo, ~/.pi, ~/.config/git, ~/Library/Caches,
+//     temp, plus PI_OBS_DISPATCH_{READ,WRITE}_EXTRA); the rest of $HOME (other
+//     projects, ~/.ssh, ~/.aws, ~/.npmrc, the rest of ~/.config) is hidden. System
+//     reads + network + exec stay open so tools run. Fail-closed.
+//   - CWD ALLOWLIST: set PI_OBS_DISPATCH_CWD to a root and every dispatch cwd must
+//     resolve inside it (else rejected) — so a raw API caller can't point the
+//     confinement root at an arbitrary directory (e.g. ~/.ssh).
 //   - The agent runs as its OWN root run, so it shows on the dashboard.
 
 import { spawn } from "node:child_process";
@@ -27,7 +31,8 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter as pathDelimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseChatLine, type ChatEvent } from "./obs-chat";
+import { parseChatLine, promptArg, type ChatEvent } from "./obs-chat";
+import { isOutsideCwd } from "../utils/guards/path-guard";
 import { llmConfig, type LlmConfig, runPlayground } from "./obs-llm";
 import {
     type AgentDef,
@@ -191,7 +196,10 @@ function readDataDirs(cwd: string, home: string, tmp: string, env: NodeJS.Proces
         ...writeRootsFor(cwd, home, tmp, env), // writable ⇒ readable
         REPO_ROOT,
         join(home, ".nvm"), // node (when installed via nvm, under $HOME)
-        join(home, ".config"), // tool config/state (gh, git, …)
+        // Only git's config dir by default — NOT all of ~/.config, which holds
+        // credentials (e.g. ~/.config/gh/hosts.yml). An agent that genuinely needs
+        // a tool's config/token (gh, cloud CLIs) gets it via PI_OBS_DISPATCH_READ_EXTRA.
+        join(home, ".config", "git"),
     ];
     if (env.PI_CODING_AGENT_DIR) roots.push(expandHome(env.PI_CODING_AGENT_DIR, home));
     if (env.PI_WORKFLOW_SESSION_DIR) roots.push(expandHome(env.PI_WORKFLOW_SESSION_DIR, home));
@@ -220,7 +228,10 @@ export function macSandboxProfile(o: { cwd: string; home: string; tmp: string; b
             .join(" ");
     const writeRoots = writeRootsFor(o.cwd, o.home, o.tmp, env);
     const readDirs = readDataDirs(o.cwd, o.home, o.tmp, env, o.bin || "");
-    const readFiles = [join(o.home, ".gitconfig"), join(o.home, ".npmrc")]; // common config FILES
+    // git identity/config is needed by git-using agents and is low-sensitivity;
+    // ~/.npmrc is NOT allowed by default (it carries the npm `_authToken`) — add it
+    // via PI_OBS_DISPATCH_READ_EXTRA only when a private-registry install needs it.
+    const readFiles = [join(o.home, ".gitconfig")]; // common config FILES
     return [
         "(version 1)",
         "(allow default)", // system reads, network, and exec stay allowed
@@ -262,8 +273,10 @@ export function buildSandboxLaunch(sb: SandboxConfig, cwd: string, bin: string, 
 export type SpawnFn = typeof spawn;
 
 /** Spawn the named agent for one task and stream parsed ChatEvents to onEvent.
- *  Validation failures (unknown agent / not read-only) surface as an `error`
- *  event then resolve (so the SSE route ends cleanly). Resolves when pi exits. */
+ *  Fail-closed validation surfaces as an `error` event then resolves (so the SSE
+ *  route ends cleanly): unknown agent; a write-capable agent without an OS sandbox;
+ *  or a cwd outside PI_OBS_DISPATCH_CWD when that root is set. Resolves when pi
+ *  exits. */
 export function dispatchStream(
     req: DispatchRequest,
     onEvent: (e: ChatEvent) => void,
@@ -274,6 +287,29 @@ export function dispatchStream(
         const def = resolveAgent(req.cwd, req.agent);
         if (!def) {
             onEvent({ type: "error", error: `unknown agent "${req.agent}". send /agents for the list.` });
+            resolve();
+            return;
+        }
+
+        // The cwd defines the confinement root, so a raw API caller must not be able
+        // to aim it at an arbitrary directory. When PI_OBS_DISPATCH_CWD is set, the
+        // request cwd must resolve inside it.
+        const cwdRoot = (process.env.PI_OBS_DISPATCH_CWD || "").trim();
+        if (cwdRoot && isOutsideCwd(cwdRoot, req.cwd)) {
+            onEvent({ type: "error", error: `cwd "${req.cwd}" is outside the allowed dispatch root (PI_OBS_DISPATCH_CWD).` });
+            resolve();
+            return;
+        }
+
+        // Write-capable agents (write/edit, or an unconfined bash) can mutate state,
+        // so dispatching one requires an OS sandbox for real confinement — cwd-guard
+        // alone does not confine bash. Read-only agents are allowed without one.
+        const sb = sandboxConfig();
+        if (!isReadOnlyAgent(def) && sb.mode === "off") {
+            onEvent({
+                type: "error",
+                error: `agent "${def.name}" can write/edit files; dispatching a write-capable agent requires an OS sandbox. Set PI_OBS_DISPATCH_SANDBOX=auto (macOS) or PI_OBS_DISPATCH_SANDBOX_CMD (a bwrap/firejail/docker wrapper).`,
+            });
             resolve();
             return;
         }
@@ -298,7 +334,7 @@ export function dispatchStream(
         args.push(...subagentExtArgs(def.tools, def.readOnlyBash, { obs: true, confineCwd: true }));
         const modelArg = spawnModelArg(req.model || def.model);
         if (modelArg) args.push("--model", modelArg);
-        args.push(req.text);
+        args.push(promptArg(req.text)); // never let a flag-shaped prompt inject pi flags
 
         // Standalone run: emit to the dashboard as a ROOT run named after the
         // agent (no PI_OBS_PARENT ⇒ obs-live treats it as root). Strip any
@@ -317,7 +353,7 @@ export function dispatchStream(
 
         // Optional OS-level sandbox (real bash confinement). Fail-closed: a
         // requested-but-unusable sandbox errors instead of running unconfined.
-        const launch = buildSandboxLaunch(sandboxConfig(), req.cwd, bin, args);
+        const launch = buildSandboxLaunch(sb, req.cwd, bin, args);
         if ("error" in launch) {
             onEvent({ type: "error", error: `sandbox: ${launch.error}` });
             resolve();
@@ -326,26 +362,38 @@ export function dispatchStream(
 
         let proc;
         try {
-            proc = spawnImpl(launch.cmd, launch.argv, { stdio: ["ignore", "pipe", "pipe"], env, cwd: req.cwd });
+            // detached ⇒ the child leads its own process group, so we can signal the
+            // WHOLE tree (sandbox wrapper + pi + its tool children), not just the
+            // immediate wrapper, on timeout/abort.
+            proc = spawnImpl(launch.cmd, launch.argv, { stdio: ["ignore", "pipe", "pipe"], env, cwd: req.cwd, detached: true });
         } catch (e) {
             onEvent({ type: "error", error: String((e as Error)?.message || e) });
             reject(e);
             return;
         }
 
+        // Kill the whole process group; escalate to SIGKILL if it lingers.
+        let killEscalation: ReturnType<typeof setTimeout> | undefined;
+        const killTree = (sig: NodeJS.Signals) => {
+            try {
+                if (typeof proc.pid === "number") process.kill(-proc.pid, sig);
+                else proc.kill(sig);
+            } catch {
+                try {
+                    proc.kill(sig);
+                } catch {}
+            }
+            if (sig !== "SIGKILL" && !killEscalation) killEscalation = setTimeout(() => killTree("SIGKILL"), 5_000).unref();
+        };
+
         let buf = "";
         let err = "";
         let sawDone = false;
-        const timer = setTimeout(() => proc.kill("SIGTERM"), cfg.timeoutMs);
+        const timer = setTimeout(() => killTree("SIGTERM"), cfg.timeoutMs);
 
         if (req.signal) {
-            if (req.signal.aborted) proc.kill("SIGTERM");
-            else
-                req.signal.addEventListener("abort", () => {
-                    try {
-                        proc.kill("SIGTERM");
-                    } catch {}
-                });
+            if (req.signal.aborted) killTree("SIGTERM");
+            else req.signal.addEventListener("abort", () => killTree("SIGTERM"));
         }
 
         proc.stdout?.on("data", (d: Buffer) => {
@@ -364,12 +412,14 @@ export function dispatchStream(
         proc.stderr?.on("data", (d: Buffer) => (err = (err + d.toString()).slice(-2000)));
         proc.on("error", (e) => {
             clearTimeout(timer);
+            if (killEscalation) clearTimeout(killEscalation);
             const hint = (e as NodeJS.ErrnoException).code === "ENOENT" ? ` — '${bin}' not on PATH; set PI_OBS_PI_BIN` : "";
             onEvent({ type: "error", error: `spawn ${bin}: ${e.message}${hint}` });
             reject(e);
         });
         proc.on("close", (code) => {
             clearTimeout(timer);
+            if (killEscalation) clearTimeout(killEscalation);
             const ev = parseChatLine(buf);
             if (ev) {
                 if (ev.type === "done") sawDone = true;

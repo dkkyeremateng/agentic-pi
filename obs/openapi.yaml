@@ -523,6 +523,9 @@ paths:
       description: >
         Server-side `POST` to an http(s) `url` (avoids browser CORS); the
         dashboard evaluates monitors client-side then posts new alerts here.
+        SSRF-guarded: a host that resolves to a private/loopback/link-local
+        address is refused, redirects are not followed, and an optional
+        `PI_OBS_NOTIFY_HOSTS` allowlist restricts the permitted hosts.
       requestBody:
         required: true
         content:
@@ -531,7 +534,7 @@ paths:
               type: object
               required: [url]
               properties:
-                url: { type: string, format: uri, description: http(s) webhook target. }
+                url: { type: string, format: uri, description: http(s) webhook target (must resolve to a public address). }
                 payload: { description: Arbitrary JSON forwarded as the POST body. }
       responses:
         "200":
@@ -547,6 +550,8 @@ paths:
                   error: { type: string }
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          description: Webhook host is not allowed — not in PI_OBS_NOTIFY_HOSTS, or it resolves to a non-public (private/loopback/link-local) address.
 
   /api/search:
     get:

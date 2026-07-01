@@ -112,16 +112,17 @@ async function apiPostJson<T = any>(cfg: BridgeConfig, path: string, body: unkno
 }
 
 /** Stream an obs SSE endpoint (/api/chat or /api/chat-live), calling onEvent for
- *  each ChatEvent frame and resolving when the stream ends. The token rides as a
- *  query param (the EventSource transport rule the server mirrors). */
+ *  each ChatEvent frame and resolving when the stream ends. The bridge is a Node
+ *  client (not a browser EventSource), so it authenticates with the Authorization
+ *  header — keeping the token OUT of the URL/query, where proxy and access logs
+ *  would otherwise capture it. */
 function streamSSE(cfg: BridgeConfig, path: string, params: Record<string, string>, onEvent: (e: ChatEvent) => void): Promise<void> {
     const u = new URL(cfg.apiBase + path);
     for (const [k, v] of Object.entries(params)) if (v) u.searchParams.set(k, v);
-    if (cfg.apiToken) u.searchParams.set("token", cfg.apiToken);
 
     return new Promise((resolve, reject) => {
         const mod = u.protocol === "https:" ? https : http;
-        const req = mod.get(u, (res) => {
+        const req = mod.get(u, { headers: apiHeaders(cfg) }, (res) => {
             if ((res.statusCode || 0) >= 400) {
                 res.resume();
                 reject(new Error(`obs ${path}: HTTP ${res.statusCode}`));
@@ -460,18 +461,25 @@ export async function runBridge(cfg: BridgeConfig): Promise<void> {
             if (!msg || typeof msg.text !== "string") continue;
             const chatId = msg.chat?.id;
             if (typeof chatId !== "number") continue;
-
-            if (!isAllowed(cfg, chatId)) {
-                // Reveal only the user's own chat id — it's what they need to get
+            // Authorize the SENDER, and only in private chats. Keying on chat.id
+            // alone would let every member of an allowlisted GROUP through (a group
+            // id authorizes the whole group); gating on from.id + private closes
+            // that. In a DM chat.id === from.id, so existing configs keep working.
+            const isPrivate = msg.chat?.type === "private";
+            const senderId = typeof msg.from?.id === "number" ? msg.from.id : undefined;
+            if (!isPrivate || senderId === undefined || !isAllowed(cfg, senderId)) {
+                // Reveal only the user's own id — it's what they need to get
                 // themselves added, and it leaks nothing about anyone else.
-                await send(cfg, chatId, `not authorized. your chat id is ${chatId} — add it to PI_OBS_TG_ALLOW to enable the bridge.`).catch(() => {});
+                await send(cfg, chatId, `not authorized. your chat id is ${senderId ?? chatId} — add it to PI_OBS_TG_ALLOW (private chat only) to enable the bridge.`).catch(() => {});
                 continue;
             }
             try {
                 await handleMessage(cfg, state, chatId, msg.text);
             } catch (e) {
+                // Log the detail server-side; tell the user only that it failed —
+                // server error bodies can carry filesystem paths / internals.
                 console.error("obs-bridge: handler error:", String((e as Error)?.message || e));
-                await send(cfg, chatId, `sorry — something went wrong handling that. (${String((e as Error)?.message || e).slice(0, 200)})`).catch(() => {});
+                await send(cfg, chatId, `sorry — something went wrong handling that. check the server logs.`).catch(() => {});
             }
         }
     }

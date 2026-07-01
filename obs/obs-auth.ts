@@ -46,6 +46,34 @@ export function tokensMatch(expected: string, presented: string): boolean {
     return timingSafeEqual(digest(expected), digest(presented));
 }
 
+// True for the loopback binds that are safe to run without a token (only local
+// processes can reach them). Everything else ("0.0.0.0", "::", a LAN IP, a
+// hostname) is reachable off-box and must carry a token.
+export function isLoopbackHost(host: string): boolean {
+    const h = (host || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+    return h === "127.0.0.1" || h === "::1" || h === "localhost" || h.startsWith("127.");
+}
+
+// Fail-closed bind check: refuse to expose the API off-box without auth. Returns
+// a human-readable reason to abort, or null when the bind is allowed. A non-
+// loopback bind with no token is blocked unless the operator explicitly opts in
+// with PI_OBS_ALLOW_INSECURE=1 (documented, for trusted private networks).
+export function insecureBindReason(
+    host: string,
+    token: string,
+    env: NodeJS.ProcessEnv = process.env,
+): string | null {
+    if (isLoopbackHost(host)) return null;
+    if (token) return null;
+    if (env.PI_OBS_ALLOW_INSECURE === "1" || env.PI_OBS_ALLOW_INSECURE === "true") return null;
+    return (
+        `refusing to bind ${host} without PI_OBS_TOKEN — the API (including control ` +
+        `routes that steer live agents and dispatch agents) would be open to the ` +
+        `network. Set PI_OBS_TOKEN, bind loopback (PI_OBS_HOST=127.0.0.1), or set ` +
+        `PI_OBS_ALLOW_INSECURE=1 to override on a trusted private network.`
+    );
+}
+
 // Convenience: is this request authorized for the given configured token?
 export function isAuthorized(
     expected: string,

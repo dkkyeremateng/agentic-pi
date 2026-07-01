@@ -116,6 +116,27 @@ class CommandTests(unittest.TestCase):
         atlassian.cmd_tickets(a)
         self.assertIn("assignee = currentUser()", search_jql.call_args[0][0])
 
+    def test_jql_quote_escapes_quotes_and_backslashes(self):
+        self.assertEqual(atlassian._jql_quote("ENG"), '"ENG"')
+        # a quote in the value must be escaped, not close the literal
+        self.assertEqual(
+            atlassian._jql_quote('x" OR project = OTHER OR "x'),
+            '"x\\" OR project = OTHER OR \\"x"',
+        )
+        self.assertEqual(atlassian._jql_quote("a\\b"), '"a\\\\b"')
+
+    @mock.patch.object(atlassian, "out")
+    @mock.patch.object(atlassian, "search_jql", return_value=[])
+    def test_tickets_query_is_injection_safe(self, search_jql, _out):
+        a = types.SimpleNamespace(
+            project="", assignee="", status="", query='x" OR project = OTHER OR "x', limit=25
+        )
+        atlassian.cmd_tickets(a)
+        jql = search_jql.call_args[0][0]
+        # the injected quote is escaped, so no bare `OR project = OTHER` clause leaks
+        self.assertIn('\\"', jql)
+        self.assertNotIn('text ~ "x" OR project', jql)
+
     @mock.patch.object(atlassian, "out")
     @mock.patch.object(atlassian, "api")
     def test_transition_resolves_name_to_id(self, api, _out):

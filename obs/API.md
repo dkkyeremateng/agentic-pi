@@ -58,6 +58,14 @@ curl -H "Authorization: Bearer $PI_OBS_TOKEN" http://127.0.0.1:7616/api/runs
 This is defense-in-depth, not a replacement for network controls: keep the server
 on loopback and front it with Tailscale/a reverse proxy for TLS and identity.
 
+**Fail-closed bind.** Binding beyond loopback (`PI_OBS_HOST` other than
+`127.0.0.1`/`::1`) **without** `PI_OBS_TOKEN` makes the server refuse to start —
+the API, including control routes that steer/dispatch live agents, would
+otherwise be open to the network. Set a token, keep the loopback bind, or opt in
+explicitly on a trusted private network with `PI_OBS_ALLOW_INSECURE=1`. Because
+`?token=` rides in the URL (proxy/access logs can capture it), prefer the
+`Authorization` header where the client can set one — the bridge does.
+
 ## Endpoints
 
 ### `GET /api`
@@ -286,7 +294,8 @@ dashboard. **Off by default**; set `PI_OBS_DISPATCH=1` on the server to enable.
 ### `GET /api/agents?cwd=`
 Lists the known agents (project `.pi/agents/` then bundled), `cwd`-scoped:
 `{ dispatchEnabled, agents: [{ name, description, model, readOnly }] }`. `readOnly`
-(no `write`/`edit` tool) is informational — **all** agents are dispatchable.
+(no `write`/`edit` tool) matters for dispatch: read-only agents dispatch as is,
+while **write-capable agents require an OS sandbox** (see Confinement below).
 
 ### `POST /api/select` — `{ task, cwd }`
 Auto-picks the best agent for a free-text `task` (the bridge's `/do`). One small
@@ -308,13 +317,17 @@ always confined to `cwd` (cwd-guard is forced on). cwd-guard does **not** confin
 
 | Env var | Effect |
 |---|---|
-| `PI_OBS_DISPATCH_SANDBOX=sandbox-exec` | macOS Seatbelt: bash **reads and writes** confined to `cwd` plus the tool infra an agent needs (node, this repo, `~/.pi`, `~/.config`, `~/Library/Caches`/`~/.cache`/`~/.npm`, temp). The rest of `$HOME` — other projects, `~/.ssh`, `~/.aws` — is hidden. System reads + network + exec stay open so tools work (Playwright, gh, git, …). Extend with `PI_OBS_DISPATCH_READ_EXTRA` / `PI_OBS_DISPATCH_WRITE_EXTRA` (`:`/`,`-lists). |
+| `PI_OBS_DISPATCH_SANDBOX=sandbox-exec` | macOS Seatbelt: bash **reads and writes** confined to `cwd` plus the tool infra an agent needs (node, this repo, `~/.pi`, `~/.config/git`, `~/Library/Caches`/`~/.cache`/`~/.npm`, temp). The rest of `$HOME` — other projects, `~/.ssh`, `~/.aws`, `~/.npmrc`, the rest of `~/.config` — is hidden. System reads + network + exec stay open so tools work. A tool that needs its own token dir (e.g. `~/.config/gh`, `~/.npmrc`) gets it via `PI_OBS_DISPATCH_READ_EXTRA` / `PI_OBS_DISPATCH_WRITE_EXTRA` (`:`/`,`-lists). |
 | `PI_OBS_DISPATCH_SANDBOX=auto` | macOS → `sandbox-exec`; other platforms require the CMD form below. |
 | `PI_OBS_DISPATCH_SANDBOX_CMD=<argv>` | Any platform: a custom wrapper (`{cwd}` substituted), e.g. `bwrap`/`firejail`/`docker`. The cleanest full isolation on Linux/containers. |
 
-Sandboxing is **fail-closed**: a requested-but-unavailable sandbox makes dispatch
-error rather than run unconfined. The route is gated on `PI_OBS_DISPATCH=1`, and
-(via the bridge) behind the chat-id allowlist.
+The route fails closed: **write-capable agents require an OS sandbox** (dispatch
+errors without one); a requested-but-unavailable sandbox errors rather than runs
+unconfined; and when `PI_OBS_DISPATCH_CWD` is set, a request `cwd` outside that
+root is rejected (so a caller can't aim confinement at an arbitrary directory).
+Concurrent dispatches are capped (`PI_OBS_DISPATCH_MAX_CONCURRENT`, default 6).
+The route is gated on `PI_OBS_DISPATCH=1`, and (via the bridge) behind the chat-id
+allowlist.
 
 ## Telegram bridge
 
@@ -352,9 +365,11 @@ bridge reaches out. It maps each message onto the API above:
 
 **Auth & access.** The bridge holds `PI_OBS_TOKEN` and calls the server locally,
 so the token never leaves the machine (it's sent as the bearer header, and as
-`?token=` for the SSE streams). Access is **fail-closed**: only chat ids in
-`PI_OBS_TG_ALLOW` are served; an unknown sender gets a one-line reply with *their
-own* chat id so you can add it.
+`?token=` for buffered requests and the `Authorization` header for SSE streams —
+never in the URL). Access is **fail-closed**: the bridge serves **private chats
+only** and authorizes the **sender** (`from.id`) against `PI_OBS_TG_ALLOW`, so a
+group id on the allowlist cannot grant every member access. An unauthorized sender
+gets a one-line reply with *their own* id so you can add it.
 
 While `/attach`ed the bridge **drives a live agent** (`/api/chat-live`), so treat
 the allowlist as a privilege boundary. It delivers as a follow-up with `approve`
