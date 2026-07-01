@@ -33,6 +33,7 @@ import {
 } from "path";
 import { fileURLToPath } from "url";
 import { defaultSkillRoots } from "../guards/path-guard";
+import { memoryEnabled, memoryInjection } from "./memory";
 import {
     secs,
     isModelFailure,
@@ -2756,6 +2757,9 @@ export function dispatchEnv(
         PI_SUBAGENT: "1",
         PI_DISPATCH_DEPTH: String(depth + 1),
         PI_DISPATCH_ANCESTRY: ancestry ? `${ancestry}>${name}` : name,
+        // Which agent this sub-process IS — always set (independent of PI_OBS) so
+        // the agent-memory extension can route `remember` to the right memory file.
+        PI_AGENT_NAME: name,
     };
     // Label this sub-agent's observability lane (obs-live.ts reads it) and carry
     // the trace linkage down: PI_OBS_RUN is the shared trace id (minted by the root
@@ -2870,6 +2874,10 @@ export function subagentExtArgs(tools: string, readOnlyBash = false, opts?: { ob
     // obs-server dispatching a standalone agent), so those runs still show up.
     if (opts?.obs || process.env.PI_OBS === "1" || process.env.PI_OBS === "true")
         add("obs-live.ts");
+    // Agent memory: give every agent the `remember` tool so it can save durable
+    // lessons for its future runs (staged now, committed on run success). Self-gates
+    // on PI_AGENT_MEMORY; only added when enabled so it's a true no-op when off.
+    if (memoryEnabled()) add("agent-memory.ts");
     return args;
 }
 
@@ -3161,7 +3169,7 @@ function spawnAgentWithModelFallback(
         "--tools",
         agentDef.tools,
         "--append-system-prompt",
-        agentDef.systemPrompt + TRIVIAL_PING_RULE,
+        agentDef.systemPrompt + TRIVIAL_PING_RULE + memoryInjection(agentDef.name),
         "--session",
         sessionFile,
         "--name",
@@ -3391,7 +3399,7 @@ export function spawnAgentWithModel(
         "--tools",
         agentDef.tools,
         "--append-system-prompt",
-        agentDef.systemPrompt + TRIVIAL_PING_RULE,
+        agentDef.systemPrompt + TRIVIAL_PING_RULE + memoryInjection(agentDef.name),
         "--session",
         sessionFile,
         "--name",
