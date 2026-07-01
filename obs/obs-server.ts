@@ -62,7 +62,9 @@ import { dispatchStream, listAgents, selectAgent } from "./obs-dispatch";
 import { listLiveSessions } from "./obs-chat-control";
 import { connect as netConnect } from "node:net";
 import { buildPromptRegistry } from "./obs-prompts";
-import { configuredToken, isAuthorized } from "./obs-auth";
+import { configuredToken, insecureBindReason, isAuthorized } from "./obs-auth";
+import { hostAllowed, isPrivateIp, notifyAllowlist } from "./obs-ssrf";
+import { lookup as dnsLookup } from "dns/promises";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // pi's extensions load the repo .env into the pi process; the server is a sibling
@@ -134,6 +136,11 @@ const store = new EventStore();
 // SSE clients; the value carries an optional runId filter (/api/stream?run=).
 const clients = new Map<import("http").ServerResponse, { run?: string }>();
 const STARTED_AT = Date.now();
+
+// Concurrency cap for /api/dispatch — each dispatch spawns a pi child process, so
+// an unbounded fan-out would exhaust processes/fds. Tunable via env.
+const MAX_DISPATCH = Math.max(1, Number(process.env.PI_OBS_DISPATCH_MAX_CONCURRENT) || 6);
+let inFlightDispatch = 0;
 const SCAN_CHUNK = 1 << 20;
 const PRIME_TAIL_BYTES = 2 * 1024 * 1024;
 
@@ -761,26 +768,60 @@ function handleApi(
                 return;
             }
             const url = typeof parsed.url === "string" ? parsed.url : "";
-            if (!/^https?:\/\//i.test(url)) {
+            let target: URL;
+            try {
+                target = new URL(url);
+            } catch {
+                apiError(res, 400, "invalid url");
+                return;
+            }
+            if (target.protocol !== "http:" && target.protocol !== "https:") {
                 apiError(res, 400, "url must be http(s)");
                 return;
             }
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 10_000);
-            fetch(url, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify(parsed.payload ?? {}),
-                signal: ctrl.signal,
-            })
-                .then((r) => apiJson(res, 200, { ok: r.ok, status: r.status }))
-                .catch((e) =>
-                    apiJson(res, 200, {
-                        ok: false,
-                        error: String((e as Error)?.message || e).slice(0, 300),
-                    }),
-                )
-                .finally(() => clearTimeout(timer));
+            // SSRF guard: an optional operator allowlist, then reject any host that
+            // resolves to a private/loopback/link-local address (cloud metadata,
+            // other local services, internal hosts). Redirects are not followed so
+            // a public host can't bounce us to an internal one.
+            const allow = notifyAllowlist();
+            if (allow && !hostAllowed(target.hostname, allow)) {
+                apiError(res, 403, "webhook host not in PI_OBS_NOTIFY_HOSTS allowlist");
+                return;
+            }
+            void (async () => {
+                try {
+                    // Resolve + reject non-public addresses. NOTE: fetch() re-resolves
+                    // the host, so a DNS-rebinding attacker with a very short TTL
+                    // could return public here and private to the fetch. For a
+                    // token-gated local tool this residual is accepted; the
+                    // PI_OBS_NOTIFY_HOSTS allowlist closes it when set.
+                    const host = target.hostname.replace(/^\[|\]$/g, "");
+                    const addrs = await dnsLookup(host, { all: true });
+                    if (!addrs.length || addrs.some((a) => isPrivateIp(a.address))) {
+                        apiError(res, 403, "webhook host resolves to a non-public address");
+                        return;
+                    }
+                } catch {
+                    apiError(res, 400, "could not resolve webhook host");
+                    return;
+                }
+                const ctrl = new AbortController();
+                const timer = setTimeout(() => ctrl.abort(), 10_000);
+                try {
+                    const r = await fetch(url, {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify(parsed.payload ?? {}),
+                        signal: ctrl.signal,
+                        redirect: "manual",
+                    });
+                    apiJson(res, 200, { ok: r.ok, status: r.status });
+                } catch (e) {
+                    apiJson(res, 200, { ok: false, error: String((e as Error)?.message || e).slice(0, 300) });
+                } finally {
+                    clearTimeout(timer);
+                }
+            })();
         });
         return;
     }
@@ -924,7 +965,8 @@ function handleApi(
         try {
             apiJson(res, 200, { dispatchEnabled: process.env.PI_OBS_DISPATCH === "1" || process.env.PI_OBS_DISPATCH === "true", agents: listAgents(cwd) });
         } catch (e) {
-            apiError(res, 500, `could not load agents: ${String((e as Error)?.message || e)}`);
+            console.error("obs-server: could not load agents:", String((e as Error)?.message || e));
+            apiError(res, 500, "could not load agents");
         }
         return;
     }
@@ -963,9 +1005,11 @@ function handleApi(
         });
         return;
     }
-    // Dispatch a single READ-ONLY agent standalone (no orchestrator/run needed)
-    // and stream its reply as SSE ChatEvents. Opt-in (PI_OBS_DISPATCH=1) because
-    // it executes an agent with its tools; read-only is enforced in dispatchStream.
+    // Dispatch a single agent standalone (no orchestrator/run needed) and stream
+    // its reply as SSE ChatEvents. Opt-in (PI_OBS_DISPATCH=1) because it executes
+    // an agent with its tools. dispatchStream fails closed: read-only agents run as
+    // is; write-capable agents require an OS sandbox; the cwd must sit inside
+    // PI_OBS_DISPATCH_CWD when that root is set.
     if (a === "dispatch" && (req.method === "GET" || req.method === "POST")) {
         const run = (p: Record<string, unknown>) => {
             res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", ...API_CORS });
@@ -991,13 +1035,24 @@ function handleApi(
             }
             const sessionId = typeof p.sessionId === "string" && /^[\w.-]{1,64}$/.test(p.sessionId) ? p.sessionId : undefined;
             const model = typeof p.model === "string" ? p.model.trim() : undefined;
+            // Bound concurrent dispatches — each spawns a pi child process, so an
+            // unbounded fan-out is a resource-exhaustion vector.
+            if (inFlightDispatch >= MAX_DISPATCH) {
+                emit({ type: "error", error: `too many concurrent dispatches (max ${MAX_DISPATCH}); try again shortly` });
+                res.end();
+                return;
+            }
+            inFlightDispatch++;
             const ac = new AbortController();
             req.on("close", () => ac.abort());
             dispatchStream({ agent, text, cwd, model, sessionId, signal: ac.signal }, emit)
                 .catch(() => {
                     /* error already emitted as an event */
                 })
-                .finally(() => res.end());
+                .finally(() => {
+                    inFlightDispatch--;
+                    res.end();
+                });
         };
         if (req.method === "GET") {
             run(Object.fromEntries(query));
@@ -1317,12 +1372,8 @@ function handleApi(
                     name: typeof p.name === "string" ? p.name : id,
                 });
             } catch (e) {
-                apiError(
-                    res,
-                    500,
-                    "could not store upload: " +
-                        String((e as Error)?.message || e),
-                );
+                console.error("obs-server: could not store upload:", String((e as Error)?.message || e));
+                apiError(res, 500, "could not store upload");
             }
         });
         return;
@@ -1592,11 +1643,8 @@ function handleApi(
                         "utf-8",
                     );
                 } catch (e: any) {
-                    apiError(
-                        res,
-                        500,
-                        `could not append verdict: ${e?.message}`,
-                    );
+                    console.error("obs-server: could not append verdict:", String(e?.message || e));
+                    apiError(res, 500, "could not append verdict");
                     return;
                 }
                 apiJson(res, 200, {
@@ -1790,6 +1838,13 @@ if (AUTO_VERDICT_ENABLED) {
 // port. Pair a non-loopback bind with PI_OBS_TOKEN (and a firewall/proxy).
 const HOST = (process.env.PI_OBS_HOST || "127.0.0.1").trim();
 const shownHost = HOST === "0.0.0.0" || HOST === "::" ? "localhost" : HOST;
+// Fail closed: never expose the API (control routes included) off-box without a
+// token unless the operator explicitly opts in (PI_OBS_ALLOW_INSECURE=1).
+const bindBlock = insecureBindReason(HOST, OBS_TOKEN);
+if (bindBlock) {
+    process.stderr.write(`\nobs-server: ${bindBlock}\n\n`);
+    process.exit(1);
+}
 server.listen(opts.port, HOST, () => {
     process.stdout.write(
         `\nAgent observability — live\n` +

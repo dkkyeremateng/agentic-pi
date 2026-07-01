@@ -146,6 +146,19 @@ export function parseChatLine(line: string): ChatEvent | null {
     return null;
 }
 
+/** Make a user prompt safe to pass as a pi positional argument.
+ *
+ *  pi's CLI parser has NO `--` end-of-options separator and matches known flags at
+ *  ANY argv position, so a prompt that is exactly a flag (e.g. `--approve`, `-a`,
+ *  `--no-session`) would be interpreted as that flag rather than as the message.
+ *  pi routes an argv token to the prompt only when it does NOT start with `-`
+ *  (a leading `-` otherwise errors as "Unknown option"). Prefixing a single space
+ *  when the text starts with `-` guarantees pi always treats it as the message,
+ *  never a flag — and it un-breaks prompts that legitimately start with a dash. */
+export function promptArg(text: string): string {
+    return text.startsWith("-") ? " " + text : text;
+}
+
 export interface ChatRequest {
     sessionId: string; // pi --session-id; stable per conversation for continuity
     text: string;
@@ -208,7 +221,7 @@ export function streamChat(
         if (model) args.push("--model", model);
         // image attachments as `@<path>` tokens (pi turns them into image content)
         for (const p of req.imagePaths ?? []) args.push(`@${p}`);
-        args.push(req.text);
+        args.push(promptArg(req.text)); // never let a flag-shaped prompt inject pi flags
 
         let proc: ChildProcessWithoutNullStreams;
         try {

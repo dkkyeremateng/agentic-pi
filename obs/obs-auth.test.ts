@@ -6,9 +6,26 @@ import {
     presentedToken,
     tokensMatch,
     isAuthorized,
+    isLoopbackHost,
+    insecureBindReason,
 } from "./obs-auth";
 
 const q = (s = "") => new URLSearchParams(s);
+
+test("isLoopbackHost recognizes loopback binds only", () => {
+    for (const h of ["127.0.0.1", "127.1.2.3", "::1", "localhost", "LOCALHOST", "[::1]"]) assert.equal(isLoopbackHost(h), true, h);
+    // a DNS name starting "127." must NOT be treated as loopback (was a bypass)
+    for (const h of ["0.0.0.0", "::", "192.168.1.10", "10.0.0.1", "example.com", "127.example.com", "127evil.com"]) assert.equal(isLoopbackHost(h), false, h);
+});
+
+test("insecureBindReason: loopback or token ⇒ allowed; non-loopback + no token ⇒ blocked", () => {
+    assert.equal(insecureBindReason("127.0.0.1", "", {}), null); // loopback, no token: fine
+    assert.equal(insecureBindReason("0.0.0.0", "secret", {}), null); // non-loopback but token set: fine
+    assert.match(insecureBindReason("0.0.0.0", "", {})!, /refusing to bind/); // blocked
+    assert.match(insecureBindReason("192.168.1.5", "", {})!, /PI_OBS_TOKEN/);
+    // explicit opt-in overrides
+    assert.equal(insecureBindReason("0.0.0.0", "", { PI_OBS_ALLOW_INSECURE: "1" }), null);
+});
 
 test("configuredToken reads + trims PI_OBS_TOKEN, empty when unset", () => {
     assert.equal(configuredToken({} as NodeJS.ProcessEnv), "");

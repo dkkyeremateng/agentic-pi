@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSandboxLaunch, isReadOnlyAgent, listAgents, macSandboxProfile, parseSelection, resolveAgent, sandboxConfig } from "./obs-dispatch";
+import { buildSandboxLaunch, isReadOnlyAgent, listAgents, macSandboxProfile, needsSandbox, parseSelection, resolveAgent, sandboxConfig } from "./obs-dispatch";
 import type { AgentDef } from "../utils/workflow/workflow-core";
 
 const def = (over: Partial<AgentDef>): AgentDef => ({
@@ -22,6 +22,17 @@ test("isReadOnlyAgent: no write/edit tool ⇒ read-only", () => {
 test("isReadOnlyAgent: a write or edit tool ⇒ not read-only", () => {
     assert.equal(isReadOnlyAgent(def({ tools: "read,write,bash" })), false);
     assert.equal(isReadOnlyAgent(def({ tools: "read,edit" })), false);
+});
+
+test("needsSandbox: write/edit OR bash requires a sandbox (bash isn't confined by cwd-guard)", () => {
+    // bash-only "read-only" agents still need it — bash can write anywhere unconfined
+    assert.equal(needsSandbox(def({ tools: "read,grep,find,bash,web" })), true);
+    assert.equal(needsSandbox(def({ tools: "read,write" })), true);
+    assert.equal(needsSandbox(def({ tools: "read,edit" })), true);
+    // only a pure read-only agent with NO bash may run unconfined
+    assert.equal(needsSandbox(def({ tools: "read,grep,find,web" })), false);
+    assert.equal(needsSandbox(def({ tools: "read" })), false);
+    assert.equal(needsSandbox(def({ tools: "" })), false);
 });
 
 // Against the real bundled agents/ definitions.
@@ -111,7 +122,10 @@ test("macSandboxProfile confines reads+writes to cwd + tool infra, hides the res
     // reads: $HOME data denied, cwd + tool infra re-allowed (explicit file-read-data)
     assert.match(p, /\(deny file-read-data \(subpath "\/Users\/me"\)\)/);
     assert.match(p, /allow file-read-data[^\n]*"\/Users\/me\/proj"/);
-    assert.match(p, /allow file-read-data[^\n]*"\/Users\/me\/\.config"/); // gh/git config readable
+    assert.match(p, /allow file-read-data[^\n]*"\/Users\/me\/\.config\/git"/); // only git config readable
+    // credentials are NOT exposed by default: no blanket ~/.config, no ~/.npmrc
+    assert.ok(!/"\/Users\/me\/\.config"/.test(p), "blanket ~/.config must not be readable");
+    assert.ok(!p.includes(".npmrc"), "~/.npmrc (npm _authToken) must not be readable by default");
 });
 
 test("macSandboxProfile honors PI_OBS_DISPATCH_{READ,WRITE}_EXTRA", () => {
