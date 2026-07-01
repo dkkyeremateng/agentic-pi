@@ -1194,8 +1194,19 @@ describe("subagentExtArgs", () => {
         if (savedConfine === undefined) delete process.env.PI_CONFINE_CWD;
         else process.env.PI_CONFINE_CWD = savedConfine;
     });
-    it("returns [] for an agent without a dispatch tool", () => {
-        assert.deepEqual(subagentExtArgs("read,write,grep,find,ls"), []);
+    it("adds agent-memory.ts by default; nothing else for a plain agent", () => {
+        const saved = process.env.PI_AGENT_MEMORY;
+        try {
+            // with memory off, a plain (no dispatch/guard) agent gets no extensions
+            process.env.PI_AGENT_MEMORY = "0";
+            assert.deepEqual(subagentExtArgs("read,write,grep,find,ls"), []);
+            // default on: every agent gets the remember tool
+            delete process.env.PI_AGENT_MEMORY;
+            assert.ok(subagentExtArgs("read,write,grep,find,ls").some((a) => a.endsWith("agent-memory.ts")));
+        } finally {
+            if (saved === undefined) delete process.env.PI_AGENT_MEMORY;
+            else process.env.PI_AGENT_MEMORY = saved;
+        }
     });
     it("passes -e dispatch.ts when tools include a dispatch tool", () => {
         const a = subagentExtArgs("read,dispatch_agent,ls");

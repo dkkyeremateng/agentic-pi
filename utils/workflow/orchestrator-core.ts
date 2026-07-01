@@ -35,6 +35,7 @@ import {
     validateTask,
     shipTask,
 } from "./workflow-core";
+import { commitStagedLearnings } from "./memory";
 import {
     type Verdict,
     type CritiqueVerdict,
@@ -869,6 +870,13 @@ async function runWorkflowCoreImpl(
         ...(prUrl ? { prUrl } : {}),
     });
 
+    // Agent-learning loop: commit the lessons agents staged via `remember` this run
+    // to their per-agent memory — but ONLY if the run objectively PASSED (the verdict
+    // gate against unverified lessons). Failed-run candidates are dropped. Best-effort
+    // + gated (PI_AGENT_MEMORY); never blocks the run. All agents. See
+    // docs/research/agent-self-improvement.md.
+    commitStagedLearnings(cwd, { passed, runId: process.env.PI_OBS_RUN });
+
     h.ui.publishLogs();
     return { status, report };
 }
@@ -924,7 +932,9 @@ const textResult = (text: string): ToolResult => ({
 // intentionally left alone — that belongs to the /revert checkpoint system.
 export function resetRunScratch(cwd: string): void {
     const agent = join(cwd, ".agent");
-    for (const f of ["plan.md", "plan.draft.md", "progress.md"]) {
+    // learnings.jsonl = this run's staged agent-memory candidates; clear it so a
+    // crashed prior run can't leak stale lessons into this run's commit.
+    for (const f of ["plan.md", "plan.draft.md", "progress.md", "learnings.jsonl"]) {
         try {
             rmSync(join(agent, f), { force: true });
         } catch {}
