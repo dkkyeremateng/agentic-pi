@@ -790,6 +790,11 @@ function handleApi(
             }
             void (async () => {
                 try {
+                    // Resolve + reject non-public addresses. NOTE: fetch() re-resolves
+                    // the host, so a DNS-rebinding attacker with a very short TTL
+                    // could return public here and private to the fetch. For a
+                    // token-gated local tool this residual is accepted; the
+                    // PI_OBS_NOTIFY_HOSTS allowlist closes it when set.
                     const host = target.hostname.replace(/^\[|\]$/g, "");
                     const addrs = await dnsLookup(host, { all: true });
                     if (!addrs.length || addrs.some((a) => isPrivateIp(a.address))) {

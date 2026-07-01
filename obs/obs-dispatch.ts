@@ -8,9 +8,10 @@
 //     spawnModelArg, …) so a dispatched agent is identical to one the orchestrator
 //     would spawn — same prompt, tools, model, guards.
 //   - STDLIB + workflow-core only; resolves pi via PI_OBS_PI_BIN.
-//   - OFF BY DEFAULT (the route is gated on PI_OBS_DISPATCH=1). Read-only agents
-//     may be dispatched with no sandbox; WRITE-CAPABLE agents (write/edit) require
-//     an OS sandbox (see below) — dispatch fails closed otherwise.
+//   - OFF BY DEFAULT (the route is gated on PI_OBS_DISPATCH=1). Only a PURE
+//     read-only agent (no write/edit AND no bash) may be dispatched with no
+//     sandbox; anything with write/edit or bash requires an OS sandbox (see below)
+//     — dispatch fails closed otherwise, because cwd-guard does not confine bash.
 //   - CONFINED TO THE cwd: cwd-guard is FORCED on (PI_CONFINE_CWD), so the agent's
 //     FILE tools (read/write/edit/grep/find/ls) cannot escape the caller-provided
 //     cwd. `bash` is NOT confined by cwd-guard, so for real WRITE confinement (bash
@@ -29,7 +30,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter as pathDelimiter, dirname, join } from "node:path";
+import { delimiter as pathDelimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseChatLine, promptArg, type ChatEvent } from "./obs-chat";
 import { isOutsideCwd } from "../utils/guards/path-guard";
@@ -50,6 +51,17 @@ import {
  *  the plan-writers (planner/refiner, which write .agent/plan.md). */
 export function isReadOnlyAgent(def: AgentDef): boolean {
     return !/\b(write|edit)\b/.test(def.tools || "");
+}
+
+/** Whether an agent can mutate state OUTSIDE the cwd without an OS sandbox — and
+ *  therefore must NOT be dispatched unconfined. True if it has `write`/`edit`
+ *  (cwd-guard confines those to the cwd, but only the OS sandbox confines the
+ *  process fully) OR `bash` (which is NOT confined by cwd-guard at all — the
+ *  read-only bash guard only blocks mutating git/gh, so `bash` can still write
+ *  anywhere). So a "read-only" agent (no write/edit) with `bash` still needs the
+ *  sandbox. Pure. */
+export function needsSandbox(def: AgentDef): boolean {
+    return !isReadOnlyAgent(def) || /\bbash\b/.test(def.tools || "");
 }
 
 export interface AgentInfo {
@@ -284,7 +296,13 @@ export function dispatchStream(
     spawnImpl: SpawnFn = spawn,
 ): Promise<void> {
     return new Promise((resolve, reject) => {
-        const def = resolveAgent(req.cwd, req.agent);
+        // Resolve the cwd to an absolute path ONCE and use it everywhere (the
+        // allowlist check, the spawn cwd, and the sandbox profile) so they can't
+        // disagree — a relative req.cwd would otherwise be checked against the root
+        // but resolved against the server's cwd at spawn time.
+        const cwd = resolvePath(req.cwd || ".");
+
+        const def = resolveAgent(cwd, req.agent);
         if (!def) {
             onEvent({ type: "error", error: `unknown agent "${req.agent}". send /agents for the list.` });
             resolve();
@@ -295,20 +313,20 @@ export function dispatchStream(
         // to aim it at an arbitrary directory. When PI_OBS_DISPATCH_CWD is set, the
         // request cwd must resolve inside it.
         const cwdRoot = (process.env.PI_OBS_DISPATCH_CWD || "").trim();
-        if (cwdRoot && isOutsideCwd(cwdRoot, req.cwd)) {
-            onEvent({ type: "error", error: `cwd "${req.cwd}" is outside the allowed dispatch root (PI_OBS_DISPATCH_CWD).` });
+        if (cwdRoot && isOutsideCwd(resolvePath(cwdRoot), cwd)) {
+            onEvent({ type: "error", error: `cwd "${cwd}" is outside the allowed dispatch root (PI_OBS_DISPATCH_CWD).` });
             resolve();
             return;
         }
 
-        // Write-capable agents (write/edit, or an unconfined bash) can mutate state,
-        // so dispatching one requires an OS sandbox for real confinement — cwd-guard
-        // alone does not confine bash. Read-only agents are allowed without one.
+        // Agents that can mutate state outside the cwd (write/edit, or bash — which
+        // cwd-guard does NOT confine) require an OS sandbox for real confinement.
+        // Only a pure read-only agent with no bash may run unconfined.
         const sb = sandboxConfig();
-        if (!isReadOnlyAgent(def) && sb.mode === "off") {
+        if (needsSandbox(def) && sb.mode === "off") {
             onEvent({
                 type: "error",
-                error: `agent "${def.name}" can write/edit files; dispatching a write-capable agent requires an OS sandbox. Set PI_OBS_DISPATCH_SANDBOX=auto (macOS) or PI_OBS_DISPATCH_SANDBOX_CMD (a bwrap/firejail/docker wrapper).`,
+                error: `agent "${def.name}" can run bash or write/edit files, which is not confined without an OS sandbox. Set PI_OBS_DISPATCH_SANDBOX=auto (macOS) or PI_OBS_DISPATCH_SANDBOX_CMD (a bwrap/firejail/docker wrapper).`,
             });
             resolve();
             return;
@@ -324,10 +342,10 @@ export function dispatchStream(
             "--append-system-prompt",
             def.systemPrompt + TRIVIAL_PING_RULE,
             "--name",
-            spawnSessionName(req.cwd, def.name),
+            spawnSessionName(cwd, def.name),
         ];
         if (req.sessionId) args.push("--session-id", req.sessionId);
-        if (shouldApproveProjectForSpawn(req.cwd)) args.push("--approve");
+        if (shouldApproveProjectForSpawn(cwd)) args.push("--approve");
         // Force cwd confinement: cwd-guard keeps the agent's FILE tools inside the
         // cwd regardless of the server's own PI_CONFINE_CWD. (bash is not confined
         // in-process — see the header note.)
@@ -345,7 +363,7 @@ export function dispatchStream(
             PI_OBS: "1",
             PI_OBS_AGENT: def.name.toLowerCase(),
             PI_SUBAGENT: "1",
-            PI_CONFINE_CWD: "1", // confine the agent's file tools to req.cwd
+            PI_CONFINE_CWD: "1", // confine the agent's file tools to cwd
         };
         delete env.PI_OBS_PARENT;
         delete env.PI_OBS_RUN;
@@ -353,7 +371,7 @@ export function dispatchStream(
 
         // Optional OS-level sandbox (real bash confinement). Fail-closed: a
         // requested-but-unusable sandbox errors instead of running unconfined.
-        const launch = buildSandboxLaunch(sb, req.cwd, bin, args);
+        const launch = buildSandboxLaunch(sb, cwd, bin, args);
         if ("error" in launch) {
             onEvent({ type: "error", error: `sandbox: ${launch.error}` });
             resolve();
@@ -365,7 +383,7 @@ export function dispatchStream(
             // detached ⇒ the child leads its own process group, so we can signal the
             // WHOLE tree (sandbox wrapper + pi + its tool children), not just the
             // immediate wrapper, on timeout/abort.
-            proc = spawnImpl(launch.cmd, launch.argv, { stdio: ["ignore", "pipe", "pipe"], env, cwd: req.cwd, detached: true });
+            proc = spawnImpl(launch.cmd, launch.argv, { stdio: ["ignore", "pipe", "pipe"], env, cwd, detached: true });
         } catch (e) {
             onEvent({ type: "error", error: String((e as Error)?.message || e) });
             reject(e);
@@ -376,7 +394,9 @@ export function dispatchStream(
         let killEscalation: ReturnType<typeof setTimeout> | undefined;
         const killTree = (sig: NodeJS.Signals) => {
             try {
-                if (typeof proc.pid === "number") process.kill(-proc.pid, sig);
+                // pid > 0 guard: process.kill(-0) would signal the SERVER's own
+                // process group. Real spawns give a positive pid or undefined.
+                if (typeof proc.pid === "number" && proc.pid > 0) process.kill(-proc.pid, sig);
                 else proc.kill(sig);
             } catch {
                 try {

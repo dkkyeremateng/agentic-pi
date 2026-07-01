@@ -14,7 +14,8 @@ const q = (s = "") => new URLSearchParams(s);
 
 test("isLoopbackHost recognizes loopback binds only", () => {
     for (const h of ["127.0.0.1", "127.1.2.3", "::1", "localhost", "LOCALHOST", "[::1]"]) assert.equal(isLoopbackHost(h), true, h);
-    for (const h of ["0.0.0.0", "::", "192.168.1.10", "10.0.0.1", "example.com"]) assert.equal(isLoopbackHost(h), false, h);
+    // a DNS name starting "127." must NOT be treated as loopback (was a bypass)
+    for (const h of ["0.0.0.0", "::", "192.168.1.10", "10.0.0.1", "example.com", "127.example.com", "127evil.com"]) assert.equal(isLoopbackHost(h), false, h);
 });
 
 test("insecureBindReason: loopback or token ⇒ allowed; non-loopback + no token ⇒ blocked", () => {

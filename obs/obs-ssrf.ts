@@ -7,13 +7,8 @@
  *  must never let /api/notify reach (cloud metadata 169.254.169.254, other local
  *  services, internal hosts). Conservative: unknown/unparseable ⇒ treated private. */
 export function isPrivateIp(ip: string): boolean {
-    const addr = (ip || "").trim().toLowerCase();
+    const addr = (ip || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
     if (!addr) return true;
-
-    // IPv4-mapped / -embedded IPv6 (::ffff:1.2.3.4, ::1.2.3.4) — judge the v4 part.
-    const mapped = addr.match(/^::(?:ffff:)?(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isPrivateIp(mapped[1]);
-
     if (addr.includes(":")) return isPrivateIp6(addr);
     return isPrivateIp4(addr);
 }
@@ -38,15 +33,51 @@ function isPrivateIp4(addr: string): boolean {
 }
 
 function isPrivateIp6(addr: string): boolean {
-    const a = addr.replace(/^\[|\]$/g, "");
-    if (a === "::1" || a === "::") return true; // loopback / unspecified
-    const head = a.split(":")[0] || "";
-    const h = parseInt(head || "0", 16);
-    if (Number.isNaN(h)) return true;
+    const g = expandIp6(addr);
+    if (!g) return true; // unparseable → treat as private (fail closed)
+    // loopback (::1) and unspecified (::)
+    if (g.slice(0, 7).every((x) => x === 0) && (g[7] === 0 || g[7] === 1)) return true;
+    // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) — judge the v4
+    // part, so e.g. `::ffff:7f00:1` (what new URL() emits for ::ffff:127.0.0.1)
+    // is caught, not just the dotted form.
+    if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0) && !(g[5] === 0 && g[6] === 0 && g[7] === 0)) {
+        const v4 = `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
+        return isPrivateIp4(v4);
+    }
+    const h = g[0];
     if ((h & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
     if ((h & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
     if ((h & 0xff00) === 0xff00) return true; // ff00::/8 multicast
     return false;
+}
+
+/** Expand an IPv6 literal (incl. `::` compression and an embedded IPv4 tail) into
+ *  its 8 16-bit groups, or null if it doesn't parse. */
+function expandIp6(addr: string): number[] | null {
+    let a = addr.trim().toLowerCase().replace(/^\[|\]$/g, "");
+    if (!a) return null;
+    // fold an embedded IPv4 tail (::ffff:1.2.3.4) into two hex groups
+    const v4 = a.match(/^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (v4) {
+        const o = v4[2].split(".").map(Number);
+        if (o.some((n) => n > 255)) return null;
+        a = v4[1] + (((o[0] << 8) | o[1]) >>> 0).toString(16) + ":" + (((o[2] << 8) | o[3]) >>> 0).toString(16);
+    }
+    const halves = a.split("::");
+    if (halves.length > 2) return null;
+    const head = halves[0] ? halves[0].split(":") : [];
+    let groups: string[];
+    if (halves.length === 1) {
+        groups = head;
+    } else {
+        const tail = halves[1] ? halves[1].split(":") : [];
+        const missing = 8 - head.length - tail.length;
+        if (missing < 0) return null;
+        groups = [...head, ...Array(missing).fill("0"), ...tail];
+    }
+    if (groups.length !== 8) return null;
+    const nums = groups.map((s) => (/^[0-9a-f]{1,4}$/.test(s) ? parseInt(s, 16) : -1));
+    return nums.some((n) => n < 0) ? null : nums;
 }
 
 /** Operator allowlist of webhook hostnames (PI_OBS_NOTIFY_HOSTS, comma/space

@@ -51,7 +51,9 @@ export function tokensMatch(expected: string, presented: string): boolean {
 // hostname) is reachable off-box and must carry a token.
 export function isLoopbackHost(host: string): boolean {
     const h = (host || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
-    return h === "127.0.0.1" || h === "::1" || h === "localhost" || h.startsWith("127.");
+    // Match the 127.0.0.0/8 loopback block by IP shape only — NOT a `127.` prefix,
+    // which would wrongly treat a DNS name like "127.example.com" as loopback.
+    return h === "::1" || h === "localhost" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
 }
 
 // Fail-closed bind check: refuse to expose the API off-box without auth. Returns
