@@ -109,7 +109,8 @@ interface Capture {
     send: SendFrame;
     buf: string; // accumulated assistant text (the reply)
     cost: number; // summed turn cost across the run
-    tokens: number; // summed turn tokens across the run
+    tokens: number; // summed billable (input+output) tokens across the run
+    cached: number; // summed cached (cacheRead+cacheWrite) tokens across the run
     model?: string;
     approve: boolean; // gate risky tools on human approval for this turn
     done: boolean;
@@ -129,7 +130,7 @@ export class LiveChatControl {
      *  `approve` gates the turn's risky tools on human approval. */
     beginPrompt(send: SendFrame, approve = false): boolean {
         if (this.busy()) return false;
-        this.pending = { send, buf: "", cost: 0, tokens: 0, model: undefined, approve, done: false };
+        this.pending = { send, buf: "", cost: 0, tokens: 0, cached: 0, model: undefined, approve, done: false };
         return true;
     }
 
@@ -171,11 +172,12 @@ export class LiveChatControl {
         c.send({ type: "tool", phase, name });
     }
 
-    onTurnEnd(costUsd: number, model?: string, tokens?: number): void {
+    onTurnEnd(costUsd: number, model?: string, tokens?: number, cachedTokens?: number): void {
         const c = this.active;
         if (!c) return;
         if (costUsd) c.cost += costUsd;
         if (tokens) c.tokens += tokens;
+        if (cachedTokens) c.cached += cachedTokens;
         if (model) c.model = model;
     }
 
@@ -183,7 +185,14 @@ export class LiveChatControl {
         const c = this.active;
         if (!c || c.done) return;
         c.done = true;
-        c.send({ type: "done", text: c.buf, costUsd: c.cost, model: c.model, ...(c.tokens ? { tokens: c.tokens } : {}) });
+        c.send({
+            type: "done",
+            text: c.buf,
+            costUsd: c.cost,
+            model: c.model,
+            ...(c.tokens ? { tokens: c.tokens } : {}),
+            ...(c.cached ? { cachedTokens: c.cached } : {}),
+        });
         this.active = null;
     }
 

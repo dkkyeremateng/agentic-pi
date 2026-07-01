@@ -42,11 +42,11 @@ test("LiveChatControl sums tokens across turns into the done frame", () => {
     c.beginPrompt((f) => frames.push(f));
     c.onAgentStart();
     c.onAssistantEvent({ type: "text_delta", delta: "ok" });
-    c.onTurnEnd(0.001, "m", 120);
-    c.onTurnEnd(0.002, "m", 80); // a second turn (tool use) in the same run
+    c.onTurnEnd(0.001, "m", 120, 5000);
+    c.onTurnEnd(0.002, "m", 80, 3000); // a second turn (tool use) in the same run
     c.onAgentEnd();
     const done = frames.find((f) => f.type === "done");
-    assert.deepEqual(done, { type: "done", text: "ok", costUsd: 0.003, model: "m", tokens: 200 });
+    assert.deepEqual(done, { type: "done", text: "ok", costUsd: 0.003, model: "m", tokens: 200, cachedTokens: 8000 });
 });
 
 test("LiveChatControl tracks approve mode and routes approval frames to the active turn", () => {

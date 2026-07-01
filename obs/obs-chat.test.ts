@@ -41,6 +41,28 @@ test("agent_end resolves final assistant text + cost + model", () => {
     assert.deepEqual(parseChatLine(line), { type: "done", text: "PONG-ONE", costUsd: 0.0052, model: "glm-5-2" });
 });
 
+test("agent_end splits billable (input+output) from cached (cacheRead+cacheWrite) tokens", () => {
+    const line = JSON.stringify({
+        type: "agent_end",
+        messages: [
+            {
+                role: "assistant",
+                content: [{ type: "text", text: "pong!" }],
+                usage: { input: 8, output: 4, cacheRead: 69000, cacheWrite: 500, cost: { total: 0.0003 } },
+                responseModel: "gemini-3-5-flash",
+            },
+        ],
+    });
+    assert.deepEqual(parseChatLine(line), {
+        type: "done",
+        text: "pong!",
+        costUsd: 0.0003,
+        model: "gemini-3-5-flash",
+        tokens: 12, // input + output, NOT the cached reuse
+        cachedTokens: 69500, // cacheRead + cacheWrite
+    });
+});
+
 test("tool_execution_start/end frames map to tool events", () => {
     assert.deepEqual(parseChatLine(JSON.stringify({ type: "tool_execution_start", toolName: "bash", toolCallId: "c1" })), {
         type: "tool",
