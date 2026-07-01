@@ -127,9 +127,10 @@ export function selectForInjection(lessons: Lesson[], topN: number = INJECT_TOP_
  *  lessons — otherwise a fresh agent is never told to start using `remember`
  *  (the cold-start gap). */
 const REMEMBER_NUDGE =
-    "You have a `remember` tool: when you learn a durable, general lesson about how " +
-    "to do your job better (a pitfall to check, a step not to skip), call it to save " +
-    "the lesson for your future runs.";
+    "You have a `remember` tool: when you learn a durable, general lesson that would " +
+    "make you better next time — a BETTER way to do a task (a more effective technique, " +
+    "tool, or approach worth reusing) or a pitfall to avoid — call it to save the lesson " +
+    "for your future runs.";
 
 /** The text block appended to an agent's system prompt. Always present (when
  *  enabled) so a fresh agent is nudged to use `remember`; grows to include the
