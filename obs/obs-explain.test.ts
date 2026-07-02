@@ -234,6 +234,27 @@ test("orchestration wrapper tools/turns are excluded from slow-tool/slow-turn; r
     assert.match(slowTurns[0].detail, /median turn 5s/);
 });
 
+test("digest activeMs is the leaf-work makespan, not wall clock; busyMs sums it", () => {
+    const orc = makeFactory({ sessionId: "orc", agent: "orchestrator", runId: "r", cwd: "/p" });
+    const wrk = makeFactory({ sessionId: "wrk", agent: "worker", runId: "r", parent: "orchestrator" });
+    const T = 1_000_000;
+    const d = buildRunDigest([
+        orc.next("session_start", { model: "m" }, T),
+        orc.next("tool_end", { toolName: "dispatch_agent", durationMs: 300_000 }, T + 300_000),
+        orc.next("turn_end", { turnIndex: 0, tokens: { total: 10 }, costUsd: 0.01, durationMs: 300_000 }, T + 300_001),
+        // worker: 40s tool + 50s turn (tool nested in the turn window)
+        wrk.next("tool_end", { toolName: "bash", durationMs: 40_000 }, T + 100_000),
+        wrk.next("turn_end", { turnIndex: 0, tokens: { total: 10 }, costUsd: 0.01, durationMs: 50_000 }, T + 110_000),
+        // …then lingers open for 20h before closing
+        orc.next("session_end", {}, T + 20 * 3_600_000),
+    ]);
+    assert.equal(d.wallMs, 20 * 3_600_000); // raw span is the misleading 20h
+    assert.equal(d.activeMs, 50_000); // wrapper + orchestrator turn excluded; worker union = 50s
+    assert.equal(d.busyMs, 90_000); // 40s tool + 50s turn, summed (no overlap collapse)
+    const text = formatRunDigest(d).join("\n");
+    assert.match(text, /active 50s · wall 1200m/);
+});
+
 test("slow-tool is relative to the tool's own median: a routinely-slow tool is quiet, an outlier fires", () => {
     const f = makeFactory({ sessionId: "s", agent: "worker", runId: "r", cwd: "/p" });
     const call = (id: string, ms: number, at: number) => [

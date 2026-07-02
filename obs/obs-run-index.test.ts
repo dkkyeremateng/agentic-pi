@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LineScanner, RunIndexer } from "./obs-run-index";
+import { LineScanner, RunIndexer, intervalUnionMs } from "./obs-run-index";
 import {
     makeFactory,
     parseEventLine,
@@ -239,4 +239,60 @@ test("agent-scoped verdicts do not become the run-level verdict", () => {
         ]),
     );
     assert.equal(idx.get("run-av")?.verdict, undefined); // run stays unscored
+});
+
+// ── active makespan ──────────────────────────────────────────────────────────
+
+test("intervalUnionMs: merges overlaps, sums disjoint, ignores empties", () => {
+    assert.equal(intervalUnionMs([]), 0);
+    assert.equal(intervalUnionMs([[0, 100]]), 100);
+    assert.equal(intervalUnionMs([[0, 100], [50, 150]]), 150); // overlap counted once
+    assert.equal(intervalUnionMs([[0, 100], [100, 150]]), 150); // touching
+    assert.equal(intervalUnionMs([[0, 100], [200, 250]]), 150); // 100 + 50, the gap excluded
+    assert.equal(intervalUnionMs([[0, 100], [10, 20]]), 100); // fully contained
+    assert.equal(intervalUnionMs([[50, 50], [0, 10]]), 10); // zero-length dropped
+});
+
+test("activeMs excludes the idle/abandoned tail (the 20h-latency bug)", () => {
+    const f = makeFactory({ sessionId: "s", agent: "worker", runId: "run-idle" });
+    const T = 1_000_000;
+    const idx = new RunIndexer();
+    idx.feed(
+        sinkOf([
+            f.next("session_start", { model: "m" }, T),
+            f.next("tool_end", { toolName: "bash", durationMs: 60_000 }, T + 60_000),
+            f.next("turn_end", { durationMs: 120_000, tokens: { total: 10 } }, T + 180_000),
+            // …then the session lingers open and a close event lands 20h later
+            f.next("session_end", {}, T + 20 * 3_600_000),
+        ]),
+    );
+    const r = idx.get("run-idle")!;
+    assert.equal(r.lastTs - r.firstTs, 20 * 3_600_000); // wall clock is the misleading 20h
+    // active = union of the 60s tool span and the 120s turn span (they overlap: the
+    // tool ran inside the turn window T+60s..T+180s) → 180s, NOT 20h.
+    assert.equal(r.activeMs, 180_000);
+});
+
+test("activeMs excludes orchestrator blocking turns and wrapper tools; counts real leaf work", () => {
+    const orc = makeFactory({ sessionId: "orc", agent: "orchestrator", runId: "run-orch" });
+    const wrk = makeFactory({ sessionId: "wrk", agent: "worker", runId: "run-orch", parent: "orchestrator" });
+    const T = 1_000_000;
+    const idx = new RunIndexer();
+    idx.feed(
+        sinkOf([
+            orc.next("session_start", { model: "m" }, T),
+            // orchestrator dispatches the worker: the wrapper tool_end (flags the
+            // orchestrator) precedes the orchestrator's own blocking turn_end.
+            orc.next("tool_end", { toolName: "dispatch_agent", durationMs: 300_000 }, T + 300_000),
+            orc.next("turn_end", { durationMs: 300_000, tokens: { total: 10 } }, T + 300_001),
+            // the worker did 40s of real tool work + a 50s turn inside that window
+            wrk.next("tool_end", { toolName: "bash", durationMs: 40_000 }, T + 100_000),
+            wrk.next("turn_end", { durationMs: 50_000, tokens: { total: 10 } }, T + 110_000),
+            orc.next("session_end", {}, T + 300_002),
+        ]),
+    );
+    const r = idx.get("run-orch")!;
+    // wrapper tool (300s) and orchestrator turn (300s) excluded; only the worker's
+    // 40s tool + 50s turn count, unioned over T+60s..T+110s → 50s.
+    assert.equal(r.activeMs, 50_000);
 });

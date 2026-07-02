@@ -743,11 +743,19 @@ components:
 
     RunSummary:
       type: object
-      required: [runId, firstTs, lastTs, events, agents, costUsd, errors, startOffset, endOffset]
+      required: [runId, firstTs, lastTs, activeMs, events, agents, costUsd, errors, startOffset, endOffset]
       properties:
         runId: { type: string }
         firstTs: { type: integer, description: Epoch ms. }
         lastTs: { type: integer, description: Epoch ms. }
+        activeMs:
+          type: integer
+          description: >-
+            Active makespan (ms): the union of leaf turn/tool span durations —
+            idle gaps and any abandoned/lingering tail removed, concurrent work
+            counted once. The meaningful run latency; lastTs - firstTs over-reports
+            idle time. Orchestration wrapper tools (dispatch_agent, run_agent_workflow)
+            and orchestrators' blocking turns are excluded.
         events: { type: integer }
         agents:
           type: array
@@ -799,14 +807,24 @@ components:
 
     RunDigest:
       type: object
-      required: [runId, startTs, endTs, wallMs, totals, models, agents, tools, anomalies]
+      required: [runId, startTs, endTs, wallMs, activeMs, busyMs, totals, models, agents, tools, anomalies]
       properties:
         runId: { type: string }
         name: { type: string }
         cwd: { type: string }
         startTs: { type: integer }
         endTs: { type: integer }
-        wallMs: { type: integer }
+        wallMs: { type: integer, description: "endTs - startTs; includes idle + lingering tail." }
+        activeMs:
+          type: integer
+          description: >-
+            Active makespan (ms): union of leaf turn/tool spans (idle gaps + abandoned
+            tail removed, concurrency counted once). The run's meaningful latency.
+        busyMs:
+          type: integer
+          description: >-
+            Total leaf work summed without collapsing overlap (ms). busyMs / activeMs
+            is the effective parallelism; busyMs >= activeMs.
         verdict:
           type: object
           properties:

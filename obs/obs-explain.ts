@@ -8,6 +8,7 @@
 // "what happened / why was this run slow or expensive". Pure — no I/O.
 
 import { type ObsEvent } from "./obs-events";
+import { ORCH_WRAPPER_TOOLS, intervalUnionMs } from "./obs-run-index";
 
 export interface AgentDigest {
     agent: string;
@@ -57,7 +58,13 @@ export interface RunDigest {
     cwd?: string;
     startTs: number;
     endTs: number;
-    wallMs: number;
+    wallMs: number; // endTs - startTs: the raw span, includes idle + lingering tail
+    // Active makespan: union of leaf turn/tool spans (idle gaps and the abandoned
+    // tail removed, concurrent work counted once) — the run's meaningful latency.
+    activeMs: number;
+    // Total leaf work summed (concurrency NOT collapsed); busyMs / activeMs is the
+    // effective parallelism. busyMs >= activeMs always.
+    busyMs: number;
     verdict?: { status: string; outcome?: string; note?: string; source?: string };
     // verdicts scoped to a single agent's run (keyed by agent name); separate
     // from the run-level `verdict` above.
@@ -106,14 +113,12 @@ function median(sorted: number[]): number {
     return sorted[Math.floor(sorted.length / 2)];
 }
 
-// Orchestration wrapper tools whose duration is an AGGREGATE of the child spans
-// they block on (dispatch_agent → a whole sub-agent's lifetime; run_agent_workflow
-// → the whole run). Flagging them as "slow tools" is tautological — that time is
-// already represented by the children's own turns/tools and by the run wall-clock —
-// so they're excluded from slow-tool detection. Agents that call them are tracked
-// as orchestrators and excluded from slow-TURN detection too (their turns block on
-// children rather than doing model work).
-const ORCH_WRAPPER_TOOLS = new Set(["run_agent_workflow", "dispatch_agent", "dispatch_parallel"]);
+// Orchestration wrapper tools (dispatch_agent, run_agent_workflow, …) whose
+// duration is an AGGREGATE of the child spans they block on — imported from
+// obs-run-index (single source, also used by active-time). Flagging them as "slow
+// tools" is tautological (the time is already in the children's turns/tools and the
+// run wall-clock), so they're excluded from slow-tool detection; agents that call
+// them are tracked as orchestrators and excluded from slow-turn detection too.
 
 // Slow-tool gating. A call is only flagged if it clears an absolute floor AND is a
 // genuine outlier vs the SAME tool's median — so a tool that's routinely slow (a
@@ -134,6 +139,8 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
         startTs: 0,
         endTs: 0,
         wallMs: 0,
+        activeMs: 0,
+        busyMs: 0,
         totals: {
             costUsd: 0,
             tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -160,6 +167,12 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
     // judged against each tool's OWN norm (a 40s test is normal if every test is 40s;
     // a 120s one among 5s peers is not) rather than a flat cutoff.
     const toolDur = new Map<string, number[]>();
+    // Leaf work spans for the active-makespan union, reconstructed from *_end
+    // durations. Turn spans carry their agent so orchestrator (blocking) turns can
+    // be dropped once the full orchestrator set is known; tool spans are already
+    // wrapper-filtered at collection.
+    const turnSpans: { agent: string; s: number; e: number }[] = [];
+    const toolSpans: Array<[number, number]> = [];
     const anomalies: Anomaly[] = [];
     // Agents that invoked an orchestration wrapper tool (see ORCH_WRAPPER_TOOLS).
     // Their turn durations are dominated by BLOCKING on sub-agents, not by their own
@@ -260,6 +273,8 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
                 d.totals.costUsd += p.costUsd || 0;
                 a.costUsd += p.costUsd || 0;
                 a.turnMs += p.durationMs || 0;
+                if ((p.durationMs || 0) > 0)
+                    turnSpans.push({ agent: ev.agent, s: ev.ts - p.durationMs, e: ev.ts });
                 if (p.prefillMs) {
                     a.prefillSum += p.prefillMs;
                     a.prefillN++;
@@ -318,6 +333,8 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
                     const durs = toolDur.get(name) ?? [];
                     durs.push(p.durationMs || 0);
                     toolDur.set(name, durs);
+                    if ((p.durationMs || 0) > 0)
+                        toolSpans.push([ev.ts - p.durationMs, ev.ts]);
                     if ((p.durationMs || 0) >= SLOW_TOOL_FLOOR_MS)
                         slowToolRecs.push({
                             agent: ev.agent,
@@ -442,6 +459,14 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
     }
 
     d.wallMs = d.endTs - d.startTs;
+    // Active makespan: non-wrapper tool spans + non-orchestrator turn spans (an
+    // orchestrator's turns block on sub-agents, so their wall time isn't its work).
+    // busyMs is the same set summed without collapsing overlap → parallelism = busy/active.
+    const activeSpans: Array<[number, number]> = toolSpans.concat(
+        turnSpans.filter((t) => !orchestratorAgents.has(t.agent)).map((t) => [t.s, t.e]),
+    );
+    d.activeMs = intervalUnionMs(activeSpans);
+    d.busyMs = activeSpans.reduce((sum, [s, e]) => sum + Math.max(0, e - s), 0);
     d.models = [...models];
     d.agents = [...agents.values()]
         .map((a) => ({
@@ -491,7 +516,8 @@ export function formatRunDigest(d: RunDigest): string[] {
     out.push(`# Run digest — ${d.runId}${d.name ? ` ("${d.name}")` : ""}`);
     const when = (ts: number) => new Date(ts).toISOString().replace("T", " ").slice(0, 19);
     out.push(
-        `${d.cwd ? `project ${d.cwd} · ` : ""}${when(d.startTs)} → ${when(d.endTs).slice(11)} · wall ${dur(d.wallMs)}`,
+        `${d.cwd ? `project ${d.cwd} · ` : ""}${when(d.startTs)} → ${when(d.endTs).slice(11)} · ` +
+            `active ${dur(d.activeMs)} · wall ${dur(d.wallMs)}`,
     );
     if (d.verdict)
         out.push(

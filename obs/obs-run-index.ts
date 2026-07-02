@@ -11,6 +11,36 @@
 
 import { parseEventLine } from "./obs-events";
 
+// Orchestration wrapper tools whose duration is an AGGREGATE of the child spans
+// they block on (dispatch_agent → a whole sub-agent's lifetime; run_agent_workflow
+// → the whole run). Excluded from active-time so a run's makespan reflects real
+// leaf work rather than the blocking wrappers — which, if counted, would re-absorb
+// exactly the idle/child time active-time exists to remove. Shared with the digest.
+export const ORCH_WRAPPER_TOOLS = new Set(["run_agent_workflow", "dispatch_agent", "dispatch_parallel"]);
+
+// Length of the union of a set of [start, end] intervals: concurrent work counted
+// once, idle gaps between intervals excluded. The basis for a run's "active" time —
+// the wall-clock actually spanned by work, as opposed to lastTs - firstTs, which
+// also counts idle waits and an abandoned/lingering tail.
+export function intervalUnionMs(spans: Array<[number, number]>): number {
+    const sorted = spans.filter(([s, e]) => e > s).sort((a, b) => a[0] - b[0]);
+    if (!sorted.length) return 0;
+    let total = 0;
+    let curS = sorted[0][0];
+    let curE = sorted[0][1];
+    for (let i = 1; i < sorted.length; i++) {
+        const [s, e] = sorted[i];
+        if (s > curE) {
+            total += curE - curS;
+            curS = s;
+            curE = e;
+        } else if (e > curE) {
+            curE = e;
+        }
+    }
+    return total + (curE - curS);
+}
+
 // Newline-delimited scanner over sequentially-fed Buffers. Reports each line
 // with its absolute byte range [start, end) where `end` is just past the
 // newline. Splitting happens on raw bytes (not decoded strings), so UTF-8
@@ -70,6 +100,10 @@ export interface RunSummary {
     runId: string;
     firstTs: number;
     lastTs: number;
+    // Active makespan: union of leaf turn/tool span durations (idle gaps and the
+    // abandoned tail removed, concurrent work counted once). The meaningful
+    // "latency" of a run — lastTs - firstTs over-reports idle/lingering time.
+    activeMs: number;
     events: number;
     agents: string[];
     cwd?: string; // first seen — runs are per-project in practice
@@ -106,6 +140,12 @@ interface RunRec {
     modelCost: Map<string, number>;
     errors: number;
     verdict?: RunVerdict;
+    // Leaf work intervals [start, end] for the active-makespan union: non-wrapper
+    // tool spans plus turn spans from non-orchestrator agents (an orchestrator's
+    // turns block on sub-agents, so their wall time isn't its own work). Both
+    // reconstructed from *_end.durationMs, so no start/end pairing is needed.
+    spans: Array<[number, number]>;
+    orchestrators: Set<string>; // agents that issued a wrapper tool (turns excluded)
     startOffset: number;
     endOffset: number;
 }
@@ -152,6 +192,8 @@ export class RunIndexer {
                 sessionModel: new Map(),
                 modelCost: new Map(),
                 errors: 0,
+                spans: [],
+                orchestrators: new Set(),
                 startOffset: start,
                 endOffset: end,
             };
@@ -199,8 +241,24 @@ export class RunIndexer {
                 r.models.add(m);
                 r.modelCost.set(m, (r.modelCost.get(m) ?? 0) + cost);
             }
+            // Leaf model-work span, unless this agent is an orchestrator whose turns
+            // block on sub-agents. A dispatch turn's wrapper tool_end always precedes
+            // its own turn_end (tools finish before the turn does), so the agent is
+            // already flagged by the time its dispatch turns arrive — only genuine
+            // pre-dispatch work turns are counted.
+            const dur = Number(p?.durationMs ?? 0);
+            if (dur > 0 && !r.orchestrators.has(ev.agent)) r.spans.push([ev.ts - dur, ev.ts]);
         }
         if (ev.type === "tool_start") r.toolCalls++;
+        if (ev.type === "tool_end") {
+            const name = String(p?.toolName ?? "");
+            if (ORCH_WRAPPER_TOOLS.has(name)) {
+                r.orchestrators.add(ev.agent);
+            } else {
+                const dur = Number(p?.durationMs ?? 0);
+                if (dur > 0) r.spans.push([ev.ts - dur, ev.ts]);
+            }
+        }
         if (ev.type === "error" || (ev.type === "tool_end" && p?.isError))
             r.errors++;
     }
@@ -223,6 +281,7 @@ function toSummary(r: RunRec): RunSummary {
         runId: r.runId,
         firstTs: r.firstTs,
         lastTs: r.lastTs,
+        activeMs: intervalUnionMs(r.spans),
         events: r.events,
         agents: [...r.agents],
         cwd: r.cwd,
