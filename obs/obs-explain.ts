@@ -106,6 +106,24 @@ function median(sorted: number[]): number {
     return sorted[Math.floor(sorted.length / 2)];
 }
 
+// Orchestration wrapper tools whose duration is an AGGREGATE of the child spans
+// they block on (dispatch_agent → a whole sub-agent's lifetime; run_agent_workflow
+// → the whole run). Flagging them as "slow tools" is tautological — that time is
+// already represented by the children's own turns/tools and by the run wall-clock —
+// so they're excluded from slow-tool detection. Agents that call them are tracked
+// as orchestrators and excluded from slow-TURN detection too (their turns block on
+// children rather than doing model work).
+const ORCH_WRAPPER_TOOLS = new Set(["run_agent_workflow", "dispatch_agent", "dispatch_parallel"]);
+
+// Slow-tool gating. A call is only flagged if it clears an absolute floor AND is a
+// genuine outlier vs the SAME tool's median — so a tool that's routinely slow (a
+// test/build that always takes ~30s) doesn't cry wolf, but the one call that runs
+// 3× its peers does. When a tool has too few samples to establish a norm, the floor
+// alone decides (a single long call still surfaces).
+const SLOW_TOOL_FLOOR_MS = 30_000;
+const SLOW_TOOL_REL = 3; // ≥3× the tool's own median
+const SLOW_TOOL_MIN_SAMPLES = 3; // need this many calls before the relative gate applies
+
 export function buildRunDigest(events: ObsEvent[]): RunDigest {
     const evs = [...events].sort((a, b) => a.ts - b.ts);
     const first = evs[0];
@@ -138,7 +156,17 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
     const toolArgs = new Map<string, string>(); // toolCallId -> arg preview
     const turnRecs: { agent: string; idx: unknown; ms: number; cost: number }[] = [];
     const slowToolRecs: { agent: string; tool: string; ms: number; arg: string }[] = [];
+    // All non-wrapper tool-call durations, grouped by tool name, so slow-tool can be
+    // judged against each tool's OWN norm (a 40s test is normal if every test is 40s;
+    // a 120s one among 5s peers is not) rather than a flat cutoff.
+    const toolDur = new Map<string, number[]>();
     const anomalies: Anomaly[] = [];
+    // Agents that invoked an orchestration wrapper tool (see ORCH_WRAPPER_TOOLS).
+    // Their turn durations are dominated by BLOCKING on sub-agents, not by their own
+    // model latency, so they're excluded from slow-turn detection (and from its
+    // median) — otherwise every dispatch turn trips the flag and masks real leaf
+    // outliers. Their per-turn COST is still their own work, so cost-outlier keeps them.
+    const orchestratorAgents = new Set<string>();
     // Per-agent overflow-compaction detail (count + largest pre-compaction size),
     // used to enrich that agent's compaction anomaly below.
     const compactInfo = new Map<string, { overflow: number; tokensBefore: number }>();
@@ -267,6 +295,7 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
                 break;
             case "tool_end": {
                 const name = String(p.toolName || "?");
+                if (ORCH_WRAPPER_TOOLS.has(name)) orchestratorAgents.add(ev.agent);
                 const t = tools.get(name) ?? { tool: name, calls: 0, totalMs: 0, errors: 0 };
                 t.calls++;
                 t.totalMs += p.durationMs || 0;
@@ -285,13 +314,18 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
                     });
                 }
                 tools.set(name, t);
-                if ((p.durationMs || 0) >= 10_000)
-                    slowToolRecs.push({
-                        agent: ev.agent,
-                        tool: name,
-                        ms: p.durationMs,
-                        arg: toolArgs.get(String(p.toolCallId)) || "",
-                    });
+                if (!ORCH_WRAPPER_TOOLS.has(name)) {
+                    const durs = toolDur.get(name) ?? [];
+                    durs.push(p.durationMs || 0);
+                    toolDur.set(name, durs);
+                    if ((p.durationMs || 0) >= SLOW_TOOL_FLOOR_MS)
+                        slowToolRecs.push({
+                            agent: ev.agent,
+                            tool: name,
+                            ms: p.durationMs,
+                            arg: toolArgs.get(String(p.toolCallId)) || "",
+                        });
+                }
                 break;
             }
             case "dispatch_retry":
@@ -342,9 +376,16 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
         }
     }
 
-    // Slow tools: worst 5 of the ≥10s calls; flag is the listing itself.
-    slowToolRecs.sort((x, y) => y.ms - x.ms);
-    for (const r of slowToolRecs.slice(0, 5))
+    // Slow tools: of the calls over the floor, keep those that are also outliers
+    // vs their own tool's median (sparse tools fall back to the floor). Worst 5.
+    const slowTools = slowToolRecs.filter((r) => {
+        const durs = toolDur.get(r.tool) ?? [];
+        if (durs.length < SLOW_TOOL_MIN_SAMPLES) return true; // no norm yet → floor decides
+        const med = median([...durs].sort((x, y) => x - y));
+        return med <= 0 || r.ms >= SLOW_TOOL_REL * med;
+    });
+    slowTools.sort((x, y) => y.ms - x.ms);
+    for (const r of slowTools.slice(0, 5))
         anomalies.push({
             kind: "slow-tool",
             agent: r.agent,
@@ -353,10 +394,15 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
                 (r.arg ? `: "${cap(r.arg, 80)}"` : ""),
         });
 
-    // Slow turns / cost outliers, judged against this run's own medians.
-    const medMs = median(turnRecs.map((t) => t.ms).sort((x, y) => x - y));
+    // Slow turns / cost outliers, judged against this run's own medians. Slow-turn
+    // excludes orchestrator turns (they block on sub-agents, so their wall time is
+    // not model latency) — both from the candidate set AND from the median, so a
+    // blocking dispatch turn neither trips the flag nor inflates the baseline and
+    // masks a real leaf outlier. Cost-outlier keeps every turn (cost is own work).
+    const leafTurns = turnRecs.filter((t) => !orchestratorAgents.has(t.agent));
+    const medMs = median(leafTurns.map((t) => t.ms).sort((x, y) => x - y));
     const medCost = median(turnRecs.map((t) => t.cost).sort((x, y) => x - y));
-    for (const t of [...turnRecs].sort((x, y) => y.ms - x.ms).slice(0, 3))
+    for (const t of [...leafTurns].sort((x, y) => y.ms - x.ms).slice(0, 3))
         if (t.ms >= 60_000 && t.ms >= 2 * medMs)
             anomalies.push({
                 kind: "slow-turn",

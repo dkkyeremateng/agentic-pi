@@ -196,3 +196,71 @@ test("overflow compaction enriches the agent's compaction anomaly; routine stays
     assert.equal(r.length, 1);
     assert.doesNotMatch(r[0].detail, /overflow/);
 });
+
+test("orchestration wrapper tools/turns are excluded from slow-tool/slow-turn; real leaf outliers still fire", () => {
+    const orc = makeFactory({ sessionId: "orc", agent: "orchestrator", runId: "r", cwd: "/p" });
+    const wrk = makeFactory({ sessionId: "wrk", agent: "worker", runId: "r", parent: "orchestrator" });
+    const T = 1_000;
+    const turn = (idx: number, ms: number) =>
+        ({ turnIndex: idx, tokens: { total: 100 }, costUsd: 0.01, durationMs: ms });
+    const d = buildRunDigest([
+        orc.next("session_start", { model: "m" }, T),
+        // wrapper tools: huge durations, must NOT be flagged as slow tools
+        orc.next("tool_start", { toolCallId: "w1", toolName: "run_agent_workflow" }, T + 1),
+        orc.next("tool_end", { toolCallId: "w1", toolName: "run_agent_workflow", durationMs: 300_000 }, T + 2),
+        orc.next("tool_start", { toolCallId: "w2", toolName: "dispatch_agent", arg: "worker: do it" }, T + 3),
+        orc.next("tool_end", { toolCallId: "w2", toolName: "dispatch_agent", durationMs: 280_000 }, T + 4),
+        // orchestrator's own turn blocks on the dispatch → huge, must NOT be a slow turn
+        orc.next("turn_end", turn(0, 300_000), T + 5),
+        // worker: a genuinely slow leaf tool → SHOULD be a slow tool
+        wrk.next("tool_start", { toolCallId: "b1", toolName: "bash", arg: "build" }, T + 6),
+        wrk.next("tool_end", { toolCallId: "b1", toolName: "bash", durationMs: 40_000 }, T + 7),
+        // worker turns: two quick, one genuinely slow → the slow one SHOULD fire
+        wrk.next("turn_end", turn(0, 5_000), T + 8),
+        wrk.next("turn_end", turn(1, 5_000), T + 9),
+        wrk.next("turn_end", turn(2, 90_000), T + 10),
+        orc.next("session_end", {}, T + 11),
+    ]);
+    const slowTools = d.anomalies.filter((a) => a.kind === "slow-tool");
+    assert.equal(slowTools.length, 1);
+    assert.match(slowTools[0].detail, /bash took 40s in worker/);
+    assert.ok(!slowTools.some((a) => /run_agent_workflow|dispatch_agent/.test(a.detail)), "wrapper tools must not be slow-tool");
+
+    const slowTurns = d.anomalies.filter((a) => a.kind === "slow-turn");
+    assert.equal(slowTurns.length, 1);
+    assert.match(slowTurns[0].detail, /worker turn 2 took 90s/);
+    assert.ok(!slowTurns.some((a) => a.agent === "orchestrator"), "orchestrator blocking turns must not be slow-turn");
+    // median is computed over LEAF turns (5s), not the 300s orchestrator turn that would mask it
+    assert.match(slowTurns[0].detail, /median turn 5s/);
+});
+
+test("slow-tool is relative to the tool's own median: a routinely-slow tool is quiet, an outlier fires", () => {
+    const f = makeFactory({ sessionId: "s", agent: "worker", runId: "r", cwd: "/p" });
+    const call = (id: string, ms: number, at: number) => [
+        f.next("tool_start", { toolCallId: id, toolName: "bash", arg: "test" }, at),
+        f.next("tool_end", { toolCallId: id, toolName: "bash", durationMs: ms }, at + 1),
+    ];
+    // Four bash runs all ~35-40s (routinely slow) → none is an outlier vs its own median.
+    const routine = buildRunDigest([
+        f.next("session_start", { model: "m" }, 0),
+        ...call("a", 35_000, 10),
+        ...call("b", 36_000, 20),
+        ...call("c", 38_000, 30),
+        ...call("d", 40_000, 40),
+        f.next("session_end", {}, 100),
+    ]);
+    assert.equal(routine.anomalies.filter((a) => a.kind === "slow-tool").length, 0, "routinely-slow tool must not flag");
+
+    // Same tool, but one call runs 4× its peers → that one is flagged.
+    const outlier = buildRunDigest([
+        f.next("session_start", { model: "m" }, 0),
+        ...call("a", 5_000, 10),
+        ...call("b", 6_000, 20),
+        ...call("c", 5_000, 30),
+        ...call("d", 120_000, 40),
+        f.next("session_end", {}, 200),
+    ]);
+    const flagged = outlier.anomalies.filter((a) => a.kind === "slow-tool");
+    assert.equal(flagged.length, 1);
+    assert.match(flagged[0].detail, /bash took 120s in worker/);
+});
