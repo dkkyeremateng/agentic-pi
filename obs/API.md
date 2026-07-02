@@ -104,6 +104,7 @@ Each run summary:
 {
   "runId": "run-mqa9m2kb-z027y",
   "firstTs": 1781233558000, "lastTs": 1781233775000,
+  "activeMs": 214300,
   "events": 412,
   "agents": ["orchestrator", "scout", "implementer"],
   "cwd": "/Users/you/projects/plp",
@@ -121,6 +122,13 @@ Each run summary:
 models from the orchestrator.
 
 (`startOffset`/`endOffset` are internal sink byte ranges — ignore them.)
+`activeMs` is the run's **active makespan** — the union of its leaf turn/tool span
+durations, with idle gaps and any abandoned/lingering tail removed and concurrent
+work counted once. It is the meaningful "latency" of a run; `lastTs - firstTs`
+over-reports idle time (an interactive session left open, or a late close event,
+can make it hours). Orchestration wrapper tools (`dispatch_agent`,
+`run_agent_workflow`) and orchestrators' blocking turns are excluded so the number
+reflects real work, not the wrappers that block on it.
 `tokens`/`toolCalls` let a UI spot a do-nothing run: the bundled dashboard hides
 runs with `costUsd`, `tokens`, and `toolCalls` all `0` once they've gone quiet
 (a live run that hasn't taken its first turn is kept).
@@ -135,11 +143,14 @@ live buffer dropped it). Array of `ObsEvent` (schema below), file order.
 ### `GET /api/runs/:id/digest?format=json|text`
 The anomaly digest behind `obs-cli explain` — the highest-leverage endpoint
 for integrations ("what happened in that run?"). JSON by default:
-`{ runId, name?, cwd?, startTs, endTs, wallMs, verdict?, totals: { costUsd,
+`{ runId, name?, cwd?, startTs, endTs, wallMs, activeMs, busyMs, verdict?, totals: { costUsd,
 tokens, turns, toolCalls, toolErrors, providerErrors, retries, compactions },
 models, agents: [AgentDigest], tools: [ToolDigest], anomalies: [{ kind, agent?,
 detail }] }`. Anomaly kinds: `retry · dispatch-error · truncated · tool-error ·
 provider-error · slow-tool · slow-turn · cost-outlier · compaction · context`.
+`activeMs` is the active makespan (as on the run summary above); `busyMs` is the
+same leaf work summed without collapsing overlap, so `busyMs / activeMs` is the
+run's effective parallelism (`busyMs >= activeMs`).
 `format=text` returns the human/LLM-ready markdown rendering instead.
 
 ### `GET /api/runs/:id/explain`
