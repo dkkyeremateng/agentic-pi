@@ -466,9 +466,17 @@ export default function obsLive(pi: any): void {
                 ? e.toolResults.length
                 : 0,
         });
-        // feed the live-chat capture: tally this turn's cost + tokens + model
+        // feed the live-chat capture: tally this turn's cost + tokens + model.
+        // Split billable (fresh input+output) from cached (cacheRead+cacheWrite) so an
+        // /attached run's Telegram footer reads the same as the spawned-chat path
+        // (obs-chat.ts) — passing usage.total here conflated reused cache into "tok".
         try {
-            control?.onTurnEnd(usage?.costUsd ?? 0, e?.message?.model ?? e?.message?.responseModel, usage?.total ?? 0);
+            control?.onTurnEnd(
+                usage?.costUsd ?? 0,
+                e?.message?.model ?? e?.message?.responseModel,
+                (usage?.input ?? 0) + (usage?.output ?? 0),
+                (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0),
+            );
         } catch {}
         // reset per-turn timing so a turn without a provider call doesn't reuse
         // the previous turn's numbers
