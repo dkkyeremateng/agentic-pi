@@ -16,6 +16,7 @@ import {
     buildPhaseMap,
     buildWorkflowMetrics,
     spawnModelArg,
+    spawnTaskArg,
     failPhase,
     renderTemplate,
     tokenNote,
@@ -1712,5 +1713,21 @@ describe("spawnModelArg", () => {
         assert.equal(spawnModelArg(""), null);
         assert.equal(spawnModelArg("   "), null);
         assert.equal(spawnModelArg("two words"), null);
+    });
+});
+
+// ── spawnTaskArg ─────────────────────────────────
+
+describe("spawnTaskArg", () => {
+    it("passes a normal task through unchanged", () => {
+        assert.equal(spawnTaskArg("implement the plan"), "implement the plan");
+        assert.equal(spawnTaskArg(""), "");
+    });
+
+    it("neutralizes a dash-leading task so pi parses it as the prompt, not a flag", () => {
+        // pi has no `--` separator and errors on an unknown `-x`; a leading space
+        // forces the token to be read as the positional prompt.
+        assert.equal(spawnTaskArg("-v then verify"), " -v then verify");
+        assert.equal(spawnTaskArg("--help the user"), " --help the user");
     });
 });

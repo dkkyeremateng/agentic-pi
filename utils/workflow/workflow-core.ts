@@ -1103,6 +1103,14 @@ export function spawnModelArg(model: string | undefined): string | null {
     return clean;
 }
 
+// pi routes a positional argv token to the prompt only when it does NOT start with
+// `-` (there is no `--` end-of-options separator; an unknown `-x` errors the spawn).
+// A task that begins with a dash would break the spawn, so prefix a space to force
+// it to parse as the prompt (mirrors obs-chat.ts's promptArg).
+export function spawnTaskArg(task: string): string {
+    return task.startsWith("-") ? " " + task : task;
+}
+
 // Combined per-agent config env var: PI_AGENT_<NAME>, an object that can set the
 // model AND the context window in one place, e.g.
 //   PI_AGENT_VALIDATOR={"model":"gateframe_yoda/qwen-max-3-7-yoda-2","contextWindow":1000000}
@@ -3103,191 +3111,6 @@ export function projectSessionHash(cwd: string): string {
     return `${safe.slice(0, 40)}-${hash}`;
 }
 
-// Fallback version of spawnAgentWithModel that uses the main session directory
-// without creating project-specific subdirectories. Used when subdirectory
-// creation fails (e.g., permission issues).
-function spawnAgentWithModelFallback(
-    agentDef: AgentDef,
-    task: string,
-    phase: PhaseState,
-    cwd: string,
-    model: string,
-    config: SpawnConfig,
-): Promise<SpawnResult> {
-    const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
-    const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
-
-    // Use the main session directory with project hash in filename
-    const projectHash = projectSessionHash(cwd);
-
-    // Each agent runs in its own per-agent session file (parallel-safe). pi
-    // stores sessions as JSONL — use the .jsonl extension to match (the content
-    // is line-delimited JSON regardless; this just names it correctly).
-    const sessionFile = join(
-        config.sessionDir,
-        `${sessionKey}-${projectHash}.jsonl`,
-    );
-
-    // Validate session file before using it
-    let hasSession = false;
-    if (existsSync(sessionFile)) {
-        try {
-            const stats = statSync(sessionFile);
-            if (stats.size < 10 || stats.size > 10 * 1024 * 1024) {
-                console.error(
-                    `[spawnAgentWithModel] Session file ${sessionFile} has suspicious size (${stats.size} bytes), deleting and starting fresh`,
-                );
-                unlinkSync(sessionFile);
-            } else {
-                const content = readFileSync(sessionFile, "utf-8");
-                const firstLine = content.split("\n")[0];
-                JSON.parse(firstLine);
-                hasSession = true;
-            }
-        } catch (error) {
-            console.error(
-                `[spawnAgentWithModel] Session file ${sessionFile} is corrupted or invalid, deleting and starting fresh:`,
-                error instanceof Error ? error.message : String(error),
-            );
-            try {
-                unlinkSync(sessionFile);
-            } catch (deleteError) {
-                console.error(
-                    `[spawnAgentWithModel] Failed to delete corrupted session file:`,
-                    deleteError instanceof Error
-                        ? deleteError.message
-                        : String(deleteError),
-                );
-            }
-        }
-    }
-
-    const args = [
-        "--mode",
-        "json",
-        "-p",
-        "--tools",
-        agentDef.tools,
-        "--append-system-prompt",
-        agentDef.systemPrompt + TRIVIAL_PING_RULE + memoryInjection(agentDef.name),
-        "--session",
-        sessionFile,
-        "--name",
-        spawnSessionName(cwd, agentDef.name),
-        ...(shouldApproveProjectForSpawn(cwd, config.isProjectTrusted?.())
-            ? ["--approve"]
-            : []),
-        ...subagentExtArgs(agentDef.tools, agentDef.readOnlyBash),
-    ];
-
-    const cleanModel = model?.trim();
-    const modelArg = spawnModelArg(model);
-    if (modelArg) args.push("--model", modelArg);
-    if (hasSession) args.push("-c");
-    args.push(task);
-
-    phase.activeModel = cleanModel || undefined;
-
-    const state: SpawnEventState = {
-        answer: [],
-        finalText: "",
-        finalError: "",
-        activity: "",
-        stderrTail: "",
-        droppedLines: 0,
-        toolCount: 0,
-        contextPct: 0,
-        configuredContextWindow:
-            agentDef.contextWindow ||
-            config.getFallbackContextWindow?.(model) ||
-            0,
-        cumulativeTokens: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-        },
-        costUsd: 0,
-    };
-    const start = Date.now();
-
-    return new Promise((resolve) => {
-        const proc = spawn("pi", args, {
-            stdio: ["ignore", "pipe", "pipe"],
-            env: { ...process.env, ...dispatchEnv(agentDef.name, phase.dispatchId) },
-            cwd,
-        });
-
-        config.setCurrentProc(proc);
-
-        const watchdog = config.agentTimeoutMs
-            ? setTimeout(() => {
-                  console.error(
-                      `[spawnAgentWithModel] Agent ${agentDef.name} timed out after ${config.agentTimeoutMs}ms, killing process`,
-                  );
-                  proc.kill("SIGTERM");
-                  setTimeout(() => {
-                      if (!proc.killed) {
-                          proc.kill("SIGKILL");
-                      }
-                  }, 5000);
-              }, config.agentTimeoutMs)
-            : null;
-
-        proc.stdout?.on("data", (data: Buffer) => {
-            const lines = data.toString().split("\n");
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    handleSpawnEvent(event, state, phase, () => {});
-                } catch (error) {
-                    state.droppedLines++;
-                }
-            }
-        });
-
-        proc.stderr?.on("data", (data: Buffer) => {
-            const stderrText = data.toString();
-            state.stderrTail += stderrText;
-            if (state.stderrTail.length > STDERR_TAIL_CAP) {
-                state.stderrTail = state.stderrTail.slice(-STDERR_TAIL_CAP);
-            }
-        });
-
-        proc.on("close", (code) => {
-            if (watchdog) clearTimeout(watchdog);
-            config.setCurrentProc(null);
-
-            const elapsed = Date.now() - start;
-            const timedOut = elapsed >= (config.agentTimeoutMs || Infinity);
-
-            const result = computeSpawnResult(
-                state,
-                code,
-                timedOut,
-                config.agentTimeoutMs || 0,
-                state.stderrTail,
-            );
-
-            resolve(result);
-        });
-
-        proc.on("error", (error) => {
-            if (watchdog) clearTimeout(watchdog);
-            config.setCurrentProc(null);
-            console.error(
-                `[spawnAgentWithModel] Failed to spawn pi process for ${agentDef.name}:`,
-                error.message,
-            );
-            resolve({
-                output: `[spawn error] ${error.message}`,
-                exitCode: 1,
-            });
-        });
-    });
-}
-
 export function spawnAgentWithModel(
     agentDef: AgentDef,
     task: string,
@@ -3300,34 +3123,30 @@ export function spawnAgentWithModel(
     // Use dispatchId for unique session files when running parallel instances
     const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
 
-    // Create project-specific subdirectory for better session organization
+    // Prefer a per-project subdirectory: <sessionDir>/<hash>/<key>.jsonl. If it
+    // can't be created (permissions, etc.), fall back to a flat filename in the main
+    // session dir — same session, just a different path. (Previously a whole second
+    // spawn function; folded in so both paths share one validated, framed spawn.)
     const projectHash = projectSessionHash(cwd);
     const projectSessionDir = join(config.sessionDir, projectHash);
-
-    // Ensure the project session directory exists
-    if (!existsSync(projectSessionDir)) {
+    let sessionFile: string;
+    if (existsSync(projectSessionDir)) {
+        sessionFile = join(projectSessionDir, `${sessionKey}.jsonl`);
+    } else {
         try {
             mkdirSync(projectSessionDir, { recursive: true });
+            sessionFile = join(projectSessionDir, `${sessionKey}.jsonl`);
         } catch (error) {
             console.error(
-                `[spawnAgentWithModel] Failed to create project session directory ${projectSessionDir}:`,
+                `[spawnAgentWithModel] Failed to create project session directory ${projectSessionDir}, using the flat session path:`,
                 error instanceof Error ? error.message : String(error),
             );
-            // Fall back to the main session directory if subdirectory creation fails
-            return spawnAgentWithModelFallback(
-                agentDef,
-                task,
-                phase,
-                cwd,
-                model,
-                config,
+            sessionFile = join(
+                config.sessionDir,
+                `${sessionKey}-${projectHash}.jsonl`,
             );
         }
     }
-
-    // Each agent runs in its own per-agent session file (parallel-safe). pi
-    // stores sessions as JSONL — use the .jsonl extension to match.
-    const sessionFile = join(projectSessionDir, `${sessionKey}.jsonl`);
 
     // Validate session file before using it
     let hasSession = false;
@@ -3416,7 +3235,7 @@ export function spawnAgentWithModel(
     const modelArg = spawnModelArg(model);
     if (modelArg) args.push("--model", modelArg);
     if (hasSession) args.push("-c");
-    args.push(task);
+    args.push(spawnTaskArg(task));
 
     // Record the model this run is actually using so the card reflects it.
     phase.activeModel = cleanModel || undefined;
@@ -3445,27 +3264,42 @@ export function spawnAgentWithModel(
     const start = Date.now();
 
     return new Promise((resolve) => {
+        // detached ⇒ the child leads its own process group, so the watchdog can
+        // signal the WHOLE tree (pi + its tool children) on timeout, not just pi.
         const proc = spawn("pi", args, {
             stdio: ["ignore", "pipe", "pipe"],
             env: { ...process.env, ...dispatchEnv(agentDef.name, phase.dispatchId) },
             cwd,
+            detached: true,
         });
         config.setCurrentProc(proc);
+
+        // Kill the whole process group; escalate to SIGKILL if it lingers. The
+        // escalation must fire UNCONDITIONALLY — proc.killed is set by the SIGTERM
+        // itself, so gating on it (as before) made the SIGKILL dead code and let a
+        // pi child that ignores SIGTERM survive the timeout. Signalling a dead group
+        // just yields ESRCH, which we swallow.
+        let killEscalation: ReturnType<typeof setTimeout> | undefined;
+        const killTree = (sig: NodeJS.Signals) => {
+            try {
+                // pid > 0 guard: process.kill(-0) would signal our OWN group.
+                if (typeof proc.pid === "number" && proc.pid > 0) process.kill(-proc.pid, sig);
+                else proc.kill(sig);
+            } catch {
+                try {
+                    proc.kill(sig);
+                } catch {}
+            }
+            if (sig !== "SIGKILL" && !killEscalation)
+                killEscalation = setTimeout(() => killTree("SIGKILL"), 5000);
+        };
 
         let timedOut = false;
         const watchdog =
             config.agentTimeoutMs > 0
                 ? setTimeout(() => {
                       timedOut = true;
-                      try {
-                          proc.kill("SIGTERM");
-                      } catch {}
-                      // Escalate to SIGKILL after 5s if SIGTERM doesn't work
-                      setTimeout(() => {
-                          if (!proc.killed) {
-                              proc.kill("SIGKILL");
-                          }
-                      }, 5000);
+                      killTree("SIGTERM");
                   }, config.agentTimeoutMs)
                 : null;
 
@@ -3524,6 +3358,7 @@ export function spawnAgentWithModel(
             }
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
+            if (killEscalation) clearTimeout(killEscalation);
             phase.elapsed = Date.now() - start;
             phase.note =
                 state.answer.join("") || state.finalText
@@ -3547,6 +3382,7 @@ export function spawnAgentWithModel(
             config.setCurrentProc(null);
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
+            if (killEscalation) clearTimeout(killEscalation);
             resolve({
                 output: `Error spawning agent: ${err.message}`,
                 exitCode: 1,
