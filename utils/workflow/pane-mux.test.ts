@@ -12,6 +12,7 @@ import {
     panesReason,
     publishHasUi,
     interactivePi,
+    paneSplitDir,
 } from "./pane-mux";
 
 test("detectMux picks the multiplexer from env (tmux → zellij → wezterm → kitty)", () => {
@@ -63,24 +64,40 @@ test("shquote wraps in single quotes and escapes embedded quotes", () => {
     assert.equal(shquote("it's"), `'it'\\''s'`);
 });
 
-test("paneOpenCommand builds a per-mux open command; tmux gets one shell-quoted string, others get argv", () => {
+test("paneOpenCommand builds a per-mux open command, horizontal (side-by-side) by default", () => {
     const cmd = ["/usr/bin/node", "--run", "run-1", "--agent", "scout"];
     const tmux = paneOpenCommand({ kind: "tmux" }, cmd, "scout");
     assert.equal(tmux.file, "tmux");
-    assert.deepEqual(tmux.argv.slice(0, 5), ["split-window", "-d", "-P", "-F", "#{pane_id}"]);
-    assert.equal(tmux.argv[5], cmd.map(shquote).join(" ")); // whole command as ONE arg
+    assert.deepEqual(tmux.argv.slice(0, 6), ["split-window", "-h", "-d", "-P", "-F", "#{pane_id}"]); // -h = horizontal
+    assert.equal(tmux.argv[6], cmd.map(shquote).join(" ")); // whole command as ONE arg
     assert.equal(tmux.idFromStdout, true);
 
     const wt = paneOpenCommand({ kind: "wezterm" }, cmd, "scout");
-    assert.deepEqual(wt.argv, ["cli", "split-pane", "--", ...cmd]); // argv passed through
+    assert.deepEqual(wt.argv, ["cli", "split-pane", "--horizontal", "--", ...cmd]);
     assert.equal(wt.idFromStdout, true);
 
     const zj = paneOpenCommand({ kind: "zellij" }, cmd, "scout");
-    assert.deepEqual(zj.argv, ["run", "--close-on-exit", "--name", "scout", "--", ...cmd]);
+    assert.deepEqual(zj.argv, ["run", "--close-on-exit", "--direction", "right", "--name", "scout", "--", ...cmd]);
     assert.equal(zj.idFromStdout, false); // no id to capture
 
     const kt = paneOpenCommand({ kind: "kitty" }, cmd, "scout");
-    assert.deepEqual(kt.argv, ["@", "launch", "--type=window", "--title", "scout", ...cmd]);
+    assert.deepEqual(kt.argv, ["@", "launch", "--type=window", "--location", "vsplit", "--title", "scout", ...cmd]);
+});
+
+test("paneOpenCommand honors a 'down' (stacked) split", () => {
+    const cmd = ["/n", "--run", "r"];
+    assert.deepEqual(paneOpenCommand({ kind: "tmux" }, cmd, "s", "down").argv.slice(0, 2), ["split-window", "-v"]);
+    assert.deepEqual(paneOpenCommand({ kind: "wezterm" }, cmd, "s", "down").argv, ["cli", "split-pane", "--", ...cmd]); // no --horizontal
+    assert.equal(paneOpenCommand({ kind: "zellij" }, cmd, "s", "down").argv[3], "down");
+    assert.equal(paneOpenCommand({ kind: "kitty" }, cmd, "s", "down").argv[4], "hsplit");
+});
+
+test("paneSplitDir defaults to horizontal (right); env can stack it", () => {
+    assert.equal(paneSplitDir({}), "right");
+    assert.equal(paneSplitDir({ PI_WORKFLOW_PANE_SPLIT: "right" }), "right");
+    assert.equal(paneSplitDir({ PI_WORKFLOW_PANE_SPLIT: "down" }), "down");
+    assert.equal(paneSplitDir({ PI_WORKFLOW_PANE_SPLIT: "vertical" }), "down");
+    assert.equal(paneSplitDir({ PI_WORKFLOW_PANE_SPLIT: "stacked" }), "down");
 });
 
 test("paneCloseCommand targets a pane by id, or null when unsupported/idless", () => {

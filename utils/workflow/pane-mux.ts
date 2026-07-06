@@ -98,27 +98,42 @@ export function shquote(s: string): string {
 }
 const shjoin = (argv: string[]) => argv.map(shquote).join(" ");
 
-/** Build the mux command that opens a pane running `cmd` (an argv). `idFromStdout`
- *  says whether the mux prints the new pane/window id on stdout (so we can kill it
- *  later). Pure. */
+/** Where the new pane goes relative to the orchestrator: "right" is a horizontal
+ *  (side-by-side) split; "down" is a vertical (stacked) split. */
+export type PaneSplit = "right" | "down";
+
+/** Read the desired split orientation. Default "right" (horizontal / side-by-side);
+ *  PI_WORKFLOW_PANE_SPLIT=down (or v/vertical/stacked/below) stacks it instead. */
+export function paneSplitDir(env: NodeJS.ProcessEnv = process.env): PaneSplit {
+    const v = (env.PI_WORKFLOW_PANE_SPLIT || "").trim().toLowerCase();
+    if (["down", "v", "vertical", "stacked", "below", "bottom"].includes(v)) return "down";
+    return "right";
+}
+
+/** Build the mux command that opens a pane running `cmd` (an argv), split `dir`.
+ *  `idFromStdout` says whether the mux prints the new pane/window id on stdout (so
+ *  we can kill it later). Pure. */
 export function paneOpenCommand(
     mux: Mux,
     cmd: string[],
     title: string,
+    dir: PaneSplit = "right",
 ): { file: string; argv: string[]; idFromStdout: boolean } {
+    const right = dir === "right";
     switch (mux.kind) {
         case "tmux":
-            // -d: don't steal focus from the orchestrator; -PF: print the new pane id.
-            return { file: "tmux", argv: ["split-window", "-d", "-P", "-F", "#{pane_id}", shjoin(cmd)], idFromStdout: true };
+            // -h horizontal (side-by-side) / -v vertical (stacked); -d: don't steal
+            // focus from the orchestrator; -PF: print the new pane id.
+            return { file: "tmux", argv: ["split-window", right ? "-h" : "-v", "-d", "-P", "-F", "#{pane_id}", shjoin(cmd)], idFromStdout: true };
         case "wezterm":
-            // Splits the current pane; prints the new pane id on stdout.
-            return { file: "wezterm", argv: ["cli", "split-pane", "--", ...cmd], idFromStdout: true };
+            // --horizontal → new pane to the right; default (omitted) → below.
+            return { file: "wezterm", argv: ["cli", "split-pane", ...(right ? ["--horizontal"] : []), "--", ...cmd], idFromStdout: true };
         case "zellij":
             // No reliable kill-by-id, so lean on --close-on-exit + the viewer self-exiting.
-            return { file: "zellij", argv: ["run", "--close-on-exit", "--name", title, "--", ...cmd], idFromStdout: false };
+            return { file: "zellij", argv: ["run", "--close-on-exit", "--direction", right ? "right" : "down", "--name", title, "--", ...cmd], idFromStdout: false };
         case "kitty":
-            // Needs allow_remote_control; prints the new window id on stdout.
-            return { file: "kitty", argv: ["@", "launch", "--type=window", "--title", title, ...cmd], idFromStdout: true };
+            // Needs allow_remote_control; vsplit → side-by-side, hsplit → stacked.
+            return { file: "kitty", argv: ["@", "launch", "--type=window", "--location", right ? "vsplit" : "hsplit", "--title", title, ...cmd], idFromStdout: true };
     }
 }
 
@@ -228,7 +243,7 @@ export function openAgentPane(agent: string, env: NodeJS.ProcessEnv = process.en
             log("skip — no PI_OBS_RUN (obs collector hasn't minted a run id yet)");
             return null;
         }
-        const open = paneOpenCommand(mux, viewerArgv(runId, agent, { sink: env.PI_OBS_SINK }), agent.toLowerCase());
+        const open = paneOpenCommand(mux, viewerArgv(runId, agent, { sink: env.PI_OBS_SINK }), agent.toLowerCase(), paneSplitDir(env));
         const r = spawnSync(open.file, open.argv, { encoding: "utf-8", timeout: 3000 });
         if (r.error || (typeof r.status === "number" && r.status !== 0)) {
             log(`skip — ${mux.kind} open failed: ${r.error?.message || `exit ${r.status}`}${r.stderr ? ` — ${String(r.stderr).trim()}` : ""}`);
