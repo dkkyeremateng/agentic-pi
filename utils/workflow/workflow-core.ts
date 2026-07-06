@@ -169,6 +169,8 @@ export interface PhaseState {
     activeModel?: string; // the model the agent is actually running on (set at spawn; reflects fallback)
     tokens?: TokenUsage; // per-phase token usage captured from the agent's message_end event
     lastStopReason?: string; // stopReason of the last assistant message ("length" = output-token truncation)
+    paneActive?: boolean; // a multiplexer viewer pane is live-tailing this agent — the
+    // orchestrator collapses its inline streamed log (the pane shows it instead)
 }
 
 // ── Active-workflow detection ────────────────────
@@ -513,12 +515,18 @@ export function appendLiveLog(
                     "   " + theme.fg(c, theme.bold(clip(agentLabel(p), 3))),
                 );
                 const allot = baseLog + (i < extra ? 1 : 0);
-                for (const l of recentLog(p, allot))
-                    lines.push("      " + theme.fg(c, clip(l, 6)));
+                // Pane-active agents stream in their own pane — show a pointer, not
+                // the duplicated log (final pad below keeps the panel height stable).
+                if (p.paneActive) {
+                    lines.push("      " + theme.fg("dim", "→ live log in its own pane"));
+                } else {
+                    for (const l of recentLog(p, allot))
+                        lines.push("      " + theme.fg(c, clip(l, 6)));
+                }
             });
         } else {
             runningPhases.slice(0, maxRows).forEach((p, i) => {
-                const tail = recentLog(p, 1)[0] || "";
+                const tail = p.paneActive ? "→ in its own pane" : recentLog(p, 1)[0] || "";
                 const row = ` ${agentLabel(p)}${tail ? " — " + tail : ""}`;
                 lines.push("   " + theme.fg(colorOf(i), clip(row, 3)));
             });
@@ -540,6 +548,13 @@ export function appendLiveLog(
     const rule = "─".repeat(Math.max(0, width - visibleWidth(label) - 1));
     lines.push("");
     lines.push(theme.fg("dim", label + rule));
+    // This agent has its own viewer pane — its streamed log lives there, so collapse
+    // the inline panel to a one-line pointer instead of duplicating the stream.
+    if (active?.paneActive) {
+        lines.push("   " + theme.fg("dim", "→ live log in this agent's own pane"));
+        lines.push("");
+        return;
+    }
     const logLines = (active?.log || "")
         .split("\n")
         .map((l) => l.replace(/\s+$/, ""))
@@ -3301,7 +3316,10 @@ export function spawnAgentWithModel(
         // Opt-in: open a multiplexer pane that live-views this agent's obs lane. A
         // passive viewer fed by obs — it does not touch the child's stdout/kill path.
         // No-op unless PI_WORKFLOW_PANES + PI_OBS are on and we're in a multiplexer.
+        // When a pane IS open, the orchestrator collapses this agent's inline streamed
+        // log (appendLiveLog) — the pane shows it, so we don't duplicate it.
         const pane = openAgentPane(agentDef.name);
+        phase.paneActive = !!pane;
 
         // detached ⇒ the child leads its own process group, so the watchdog can
         // signal the WHOLE tree (pi + its tool children) on timeout, not just pi.
@@ -3399,6 +3417,7 @@ export function spawnAgentWithModel(
             if (watchdog) clearTimeout(watchdog);
             if (killEscalation) clearTimeout(killEscalation);
             pane?.close();
+            phase.paneActive = false;
             phase.elapsed = Date.now() - start;
             phase.note =
                 state.answer.join("") || state.finalText
@@ -3424,6 +3443,7 @@ export function spawnAgentWithModel(
             if (watchdog) clearTimeout(watchdog);
             if (killEscalation) clearTimeout(killEscalation);
             pane?.close();
+            phase.paneActive = false;
             resolve({
                 output: `Error spawning agent: ${err.message}`,
                 exitCode: 1,

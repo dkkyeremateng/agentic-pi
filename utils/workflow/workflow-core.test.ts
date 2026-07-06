@@ -17,6 +17,7 @@ import {
     buildWorkflowMetrics,
     spawnModelArg,
     spawnTaskArg,
+    appendLiveLog,
     failPhase,
     renderTemplate,
     tokenNote,
@@ -1762,5 +1763,28 @@ describe("spawnTaskArg", () => {
         // forces the token to be read as the positional prompt.
         assert.equal(spawnTaskArg("-v then verify"), " -v then verify");
         assert.equal(spawnTaskArg("--help the user"), " --help the user");
+    });
+});
+
+describe("appendLiveLog pane collapse", () => {
+    const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+    const vw = (s: string) => s.length;
+    const phase = (over: any) =>
+        ({ label: "Seeker", status: "running", log: "line one\nline two\nreport body", toolCount: 2, ...over }) as any;
+
+    it("shows the streamed log inline when the agent has NO pane", () => {
+        const out: string[] = [];
+        appendLiveLog(out, 80, theme, [phase({ paneActive: false })], true, vw);
+        const t = out.join("\n");
+        assert.match(t, /Seeker · live/);
+        assert.match(t, /report body/); // streamed lines present
+    });
+
+    it("collapses to a pane pointer (no streamed lines) when the agent HAS a pane", () => {
+        const out: string[] = [];
+        appendLiveLog(out, 80, theme, [phase({ paneActive: true })], true, vw);
+        const t = out.join("\n");
+        assert.match(t, /live log in this agent's own pane/);
+        assert.doesNotMatch(t, /report body/); // streamed lines moved to the pane
     });
 });
