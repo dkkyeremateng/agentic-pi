@@ -3320,14 +3320,9 @@ export function spawnAgentWithModel(
         // passive viewer fed by obs — it does not touch the child's stdout/kill path.
         // No-op unless PI_WORKFLOW_PANES + PI_OBS are on and we're in a multiplexer.
         // When a pane IS open, the orchestrator collapses this agent's inline streamed
-        // log (appendLiveLog) — the pane shows it, so we don't duplicate it. paneActive
-        // is flipped by the callback: synchronously for CLI muxes, asynchronously for
-        // herdr (whose socket open confirms a beat later) — so a failed open leaves the
-        // inline log in place instead of collapsing it to a pane that never appeared.
-        phase.paneActive = false;
-        const pane = openAgentPane(agentDef.name, phase.dispatchId, undefined, (ok) => {
-            phase.paneActive = ok;
-        });
+        // log (appendLiveLog) — the pane shows it, so we don't duplicate it.
+        const pane = openAgentPane(agentDef.name, phase.dispatchId);
+        phase.paneActive = !!pane;
 
         // detached ⇒ the child leads its own process group, so the watchdog can
         // signal the WHOLE tree (pi + its tool children) on timeout, not just pi.
