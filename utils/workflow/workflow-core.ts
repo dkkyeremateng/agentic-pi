@@ -34,6 +34,7 @@ import {
 import { fileURLToPath } from "url";
 import { defaultSkillRoots } from "../guards/path-guard";
 import { memoryEnabled, memoryInjection } from "./memory";
+import { openAgentPane } from "./pane-mux";
 import {
     secs,
     isModelFailure,
@@ -168,6 +169,8 @@ export interface PhaseState {
     activeModel?: string; // the model the agent is actually running on (set at spawn; reflects fallback)
     tokens?: TokenUsage; // per-phase token usage captured from the agent's message_end event
     lastStopReason?: string; // stopReason of the last assistant message ("length" = output-token truncation)
+    paneActive?: boolean; // a multiplexer viewer pane is live-tailing this agent — the
+    // orchestrator collapses its inline streamed log (the pane shows it instead)
 }
 
 // ── Active-workflow detection ────────────────────
@@ -512,12 +515,18 @@ export function appendLiveLog(
                     "   " + theme.fg(c, theme.bold(clip(agentLabel(p), 3))),
                 );
                 const allot = baseLog + (i < extra ? 1 : 0);
-                for (const l of recentLog(p, allot))
-                    lines.push("      " + theme.fg(c, clip(l, 6)));
+                // Pane-active agents stream in their own pane — show a pointer, not
+                // the duplicated log (final pad below keeps the panel height stable).
+                if (p.paneActive) {
+                    lines.push("      " + theme.fg("dim", "→ live log in its own pane"));
+                } else {
+                    for (const l of recentLog(p, allot))
+                        lines.push("      " + theme.fg(c, clip(l, 6)));
+                }
             });
         } else {
             runningPhases.slice(0, maxRows).forEach((p, i) => {
-                const tail = recentLog(p, 1)[0] || "";
+                const tail = p.paneActive ? "→ in its own pane" : recentLog(p, 1)[0] || "";
                 const row = ` ${agentLabel(p)}${tail ? " — " + tail : ""}`;
                 lines.push("   " + theme.fg(colorOf(i), clip(row, 3)));
             });
@@ -539,18 +548,28 @@ export function appendLiveLog(
     const rule = "─".repeat(Math.max(0, width - visibleWidth(label) - 1));
     lines.push("");
     lines.push(theme.fg("dim", label + rule));
-    const logLines = (active?.log || "")
-        .split("\n")
-        .map((l) => l.replace(/\s+$/, ""))
-        .filter((l) => l.length);
     const rows = process.stdout.rows || 24;
     // Fill the available height: everything below the grid except the rows kept clear
     // for the editor + footer, so the log uses the full space and pushes the editor +
-    // footer to the bottom of the screen.
+    // footer to the bottom of the screen. The panel MUST keep this height every frame
+    // (a shrinking widget ghosts) — including when collapsed for a pane-active agent,
+    // which pads to the SAME height rather than returning short.
     const maxLogRows = Math.max(
         3,
         Math.min(LOG_PANEL_MAX_ROWS, rows - lines.length - LOG_PANEL_RESERVE),
     );
+    // This agent has its own viewer pane — its streamed log lives there, so collapse
+    // the inline panel to a one-line pointer (padded to the stable height) instead of
+    // duplicating the stream.
+    if (active?.paneActive) {
+        lines.push("   " + theme.fg("dim", "→ live log in this agent's own pane"));
+        for (let i = 1; i < maxLogRows; i++) lines.push("");
+        return;
+    }
+    const logLines = (active?.log || "")
+        .split("\n")
+        .map((l) => l.replace(/\s+$/, ""))
+        .filter((l) => l.length);
     const colW = width - 4;
     // Reserve the first panel row for the "earlier lines" notice (blank when not
     // needed) so the panel height is constant.
@@ -3297,14 +3316,34 @@ export function spawnAgentWithModel(
     const start = Date.now();
 
     return new Promise((resolve) => {
+        // Opt-in: open a multiplexer pane that live-views this agent's obs lane. A
+        // passive viewer fed by obs — it does not touch the child's stdout/kill path.
+        // No-op unless PI_WORKFLOW_PANES + PI_OBS are on and we're in a multiplexer.
+        // When a pane IS open, the orchestrator collapses this agent's inline streamed
+        // log (appendLiveLog) — the pane shows it, so we don't duplicate it.
+        const pane = openAgentPane(agentDef.name, phase.dispatchId);
+        phase.paneActive = !!pane;
+
         // detached ⇒ the child leads its own process group, so the watchdog can
         // signal the WHOLE tree (pi + its tool children) on timeout, not just pi.
-        const proc = spawn("pi", args, {
-            stdio: ["ignore", "pipe", "pipe"],
-            env: subagentEnv(agentDef.name, phase.dispatchId),
-            cwd,
-            detached: true,
-        });
+        // Guard the spawn: it can throw synchronously (bad argv/env). If it does, the
+        // pane is already open, so close it here — the close/error handlers below
+        // aren't attached yet — and resolve rather than reject (the caller awaits
+        // without a catch and expects an always-resolved result).
+        let proc: ReturnType<typeof spawn>;
+        try {
+            proc = spawn("pi", args, {
+                stdio: ["ignore", "pipe", "pipe"],
+                env: subagentEnv(agentDef.name, phase.dispatchId),
+                cwd,
+                detached: true,
+            });
+        } catch (err: any) {
+            pane?.close();
+            phase.paneActive = false;
+            resolve({ output: `Error spawning agent: ${err?.message || err}`, exitCode: 1 });
+            return;
+        }
         config.setCurrentProc(proc);
 
         // Kill the whole process group; escalate to SIGKILL if it lingers. The
@@ -3392,6 +3431,8 @@ export function spawnAgentWithModel(
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
             if (killEscalation) clearTimeout(killEscalation);
+            pane?.close();
+            phase.paneActive = false;
             phase.elapsed = Date.now() - start;
             phase.note =
                 state.answer.join("") || state.finalText
@@ -3416,6 +3457,8 @@ export function spawnAgentWithModel(
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
             if (killEscalation) clearTimeout(killEscalation);
+            pane?.close();
+            phase.paneActive = false;
             resolve({
                 output: `Error spawning agent: ${err.message}`,
                 exitCode: 1,
