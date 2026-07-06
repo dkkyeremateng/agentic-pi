@@ -57,12 +57,35 @@ export function formatWatchEvent(ev: ObsEvent): string | null {
             if (p.stopReason === "length" || p.stopReason === "max_tokens") bits.push(red("TRUNCATED"));
             return `${t} ${bits.join(" · ")}`;
         }
+        case "tool_start": {
+            // The command / call detail — the most useful "what is it doing" line.
+            const name = String(p.toolName || "tool");
+            const arg = String(p.arg || "").replace(/\s+/g, " ").trim();
+            return `${t}   ${yellow("→ " + name)}${arg ? " " + dim(arg) : ""}`;
+        }
         case "tool_end": {
             const name = String(p.toolName || "tool");
             const ms = Number(p.durationMs ?? 0);
             const mark = p.isError ? red("✖") : green("✓");
             const dur = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-            return `${t}   ${mark} ${name} ${dim(dur)}`;
+            let line = `${t}   ${mark} ${name} ${dim(dur)}`;
+            // Tool output — the other half of the detail (result preview is single-line).
+            const result = String(p.result || "").replace(/\s+/g, " ").trim();
+            if (result) line += `\n           ${(p.isError ? red : dim)(result)}`;
+            return line;
+        }
+        case "message": {
+            // The agent's own prose (reasoning / report). Only present when the
+            // sub-agent runs with PI_OBS_CONTENT=1; otherwise these events never emit.
+            const text = String(p.text || "").replace(/\s+$/, "");
+            if (!text.trim()) return null;
+            const thinking = p.kind === "thinking";
+            const head = `${t} ${thinking ? dim("… thinking") : cyan("„ assistant")}`;
+            const body = text
+                .split("\n")
+                .map((l) => "     " + (thinking ? dim(l) : l))
+                .join("\n");
+            return `${head}\n${body}`;
         }
         case "error":
             return `${t} ${red("✖ provider error")}${p.status ? dim(` (status ${p.status})`) : ""}`;
