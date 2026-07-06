@@ -16,6 +16,7 @@ import {
     buildPhaseMap,
     buildWorkflowMetrics,
     spawnModelArg,
+    spawnTaskArg,
     failPhase,
     renderTemplate,
     tokenNote,
@@ -26,6 +27,7 @@ import {
     mkPhase,
     freshPhases,
     dispatchEnv,
+    stripInheritedSecrets,
     renderWorkflowFooter,
     formatContextUsage,
     stickyContextUsage,
@@ -1007,6 +1009,38 @@ describe("dispatchEnv", () => {
     });
 });
 
+describe("stripInheritedSecrets", () => {
+    it("removes the bridge secrets but keeps provider/skill creds and everything else", () => {
+        const env = stripInheritedSecrets(
+            {
+                PI_OBS_TOKEN: "server-secret",
+                PI_OBS_TG_TOKEN: "bot-token",
+                ATLASSIAN_API_TOKEN: "keep-me",
+                LINEAR_API_KEY: "keep-me-too",
+                ANTHROPIC_API_KEY: "provider-key",
+                PATH: "/usr/bin",
+            },
+            {},
+        );
+        assert.equal(env.PI_OBS_TOKEN, undefined);
+        assert.equal(env.PI_OBS_TG_TOKEN, undefined);
+        assert.equal(env.ATLASSIAN_API_TOKEN, "keep-me");
+        assert.equal(env.LINEAR_API_KEY, "keep-me-too");
+        assert.equal(env.ANTHROPIC_API_KEY, "provider-key");
+        assert.equal(env.PATH, "/usr/bin");
+    });
+
+    it("also strips operator-specified extra keys (PI_SUBAGENT_ENV_STRIP)", () => {
+        const env = stripInheritedSecrets(
+            { PI_OBS_TOKEN: "x", MY_SECRET: "y", OTHER: "z", KEEP: "k" },
+            { PI_SUBAGENT_ENV_STRIP: "MY_SECRET, OTHER" },
+        );
+        assert.equal(env.MY_SECRET, undefined);
+        assert.equal(env.OTHER, undefined);
+        assert.equal(env.KEEP, "k");
+    });
+});
+
 describe("stickyContextUsage", () => {
     const known = { percent: 42, tokens: 13000, contextWindow: 1_000_000 };
     const idle = { percent: null, tokens: null, contextWindow: 1_000_000 };
@@ -1712,5 +1746,21 @@ describe("spawnModelArg", () => {
         assert.equal(spawnModelArg(""), null);
         assert.equal(spawnModelArg("   "), null);
         assert.equal(spawnModelArg("two words"), null);
+    });
+});
+
+// ── spawnTaskArg ─────────────────────────────────
+
+describe("spawnTaskArg", () => {
+    it("passes a normal task through unchanged", () => {
+        assert.equal(spawnTaskArg("implement the plan"), "implement the plan");
+        assert.equal(spawnTaskArg(""), "");
+    });
+
+    it("neutralizes a dash-leading task so pi parses it as the prompt, not a flag", () => {
+        // pi has no `--` separator and errors on an unknown `-x`; a leading space
+        // forces the token to be read as the positional prompt.
+        assert.equal(spawnTaskArg("-v then verify"), " -v then verify");
+        assert.equal(spawnTaskArg("--help the user"), " --help the user");
     });
 });

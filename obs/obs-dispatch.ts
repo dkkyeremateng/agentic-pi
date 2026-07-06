@@ -41,6 +41,7 @@ import {
     shouldApproveProjectForSpawn,
     spawnModelArg,
     spawnSessionName,
+    stripInheritedSecrets,
     subagentExtArgs,
     TRIVIAL_PING_RULE,
 } from "../utils/workflow/workflow-core";
@@ -368,6 +369,10 @@ export function dispatchStream(
         delete env.PI_OBS_PARENT;
         delete env.PI_OBS_RUN;
         delete env.PI_OBS_DISPATCH_ID;
+        // Least privilege: this agent is spawned BY the obs server (which holds the
+        // bridge secrets), often into an OS sandbox — it must not inherit the bot
+        // token or the obs API secret. Provider/skill creds are kept.
+        stripInheritedSecrets(env);
 
         // Optional OS-level sandbox (real bash confinement). Fail-closed: a
         // requested-but-unusable sandbox errors instead of running unconfined.
