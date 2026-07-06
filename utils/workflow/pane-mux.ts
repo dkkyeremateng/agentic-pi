@@ -20,11 +20,15 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { connect as netConnect } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type MuxKind = "tmux" | "zellij" | "wezterm" | "kitty" | "iterm2";
+// "herdr" (herdr.dev) is not a CLI-split surface like the others — it's driven over a
+// newline-delimited JSON socket (a multi-step split → find-new-pane → run sequence),
+// so it bypasses paneOpenCommand/paneCloseCommand and uses openHerdrPane() below.
+export type MuxKind = "tmux" | "zellij" | "wezterm" | "kitty" | "iterm2" | "herdr";
 export interface Mux {
     kind: MuxKind;
 }
@@ -44,6 +48,11 @@ const asEscape = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 export function detectMux(env: NodeJS.ProcessEnv = process.env): Mux | null {
     if (env.TMUX) return { kind: "tmux" };
     if (env.ZELLIJ || env.ZELLIJ_SESSION_NAME) return { kind: "zellij" };
+    // herdr is the immediate surface when pi runs inside a herdr pane. It must beat
+    // wezterm/kitty/iTerm2 because the terminal UNDER herdr leaks its own env (e.g.
+    // TERM_PROGRAM=iTerm.app) into herdr panes; but stay below tmux/zellij so
+    // tmux-inside-herdr still targets tmux. Needs HERDR_PANE_ID to know which pane to split.
+    if (truthy(env.HERDR_ENV) && env.HERDR_PANE_ID) return { kind: "herdr" };
     if (env.WEZTERM_PANE) return { kind: "wezterm" };
     if (env.KITTY_WINDOW_ID) return { kind: "kitty" };
     if (env.TERM_PROGRAM === "iTerm.app" || env.ITERM_SESSION_ID) return { kind: "iterm2" };
@@ -157,6 +166,9 @@ export function paneOpenCommand(
                 `end tell`;
             return { file: "osascript", argv: ["-e", script], idFromStdout: true };
         }
+        case "herdr":
+            // Unreachable: herdr is handled by openHerdrPane over the socket.
+            throw new Error("herdr panes use the socket, not paneOpenCommand");
     }
 }
 
@@ -187,7 +199,8 @@ export function paneCloseCommand(mux: Mux, paneId: string): { file: string; argv
             return { file: "osascript", argv: ["-e", script] };
         }
         case "zellij":
-            return null;
+        case "herdr":
+            return null; // zellij: close-on-exit; herdr: closed over the socket
     }
 }
 
@@ -250,10 +263,250 @@ export interface PaneHandle {
     close(): void;
 }
 
+// ── herdr backend (JSON socket) ──────────────────────────────────────────────
+// pi inside a herdr pane drives herdr's newline-delimited JSON socket to open the
+// viewer beside itself (persistent + remotely attachable, unlike a tmux split).
+// The pure request-builders below are unit-tested; the socket IO can only be
+// verified against a live herdr, so every call is wrapped + debug-logged.
+
+const errMsg = (e: unknown) => (e as Error)?.message || String(e);
+
+/** The herdr control socket: HERDR_SOCKET_PATH (injected into managed panes) else the
+ *  default per-user socket. */
+export function herdrSockPath(env: NodeJS.ProcessEnv = process.env): string {
+    return env.HERDR_SOCKET_PATH || join(homedir(), ".config", "herdr", "herdr.sock");
+}
+
+/** pane.split params: split the orchestrator's own pane (HERDR_PANE_ID) the chosen way. */
+export function herdrSplitParams(parentPaneId: string, dir: PaneSplit): { pane_id: string; direction: string; ratio: number } {
+    return { pane_id: parentPaneId, direction: dir === "right" ? "right" : "down", ratio: 0.4 };
+}
+
+/** Ordered attempts to launch the viewer in a pane — pane.split takes no command, so
+ *  this is a separate step. herdr's exact "run in pane" schema is unconfirmed, so try
+ *  the likely shapes in order (first success wins): pane.run{command} → pane.run{argv}
+ *  → pane.send_input{text+enter}. */
+export function herdrRunAttempts(paneId: string, cmd: string[]): { method: string; params: Record<string, unknown> }[] {
+    const cmdStr = shjoin(cmd);
+    return [
+        { method: "pane.run", params: { pane_id: paneId, command: cmdStr } },
+        { method: "pane.run", params: { pane_id: paneId, argv: cmd } },
+        { method: "pane.send_input", params: { pane_id: paneId, text: cmdStr + "\n" } },
+    ];
+}
+
+/** Recursively collect every `pane_id` string from a layout/list result — robust to the
+ *  exact nesting. Used to find the NEW pane (the one not present before the split). */
+export function extractPaneIds(result: unknown): string[] {
+    const out: string[] = [];
+    const walk = (v: unknown) => {
+        if (!v || typeof v !== "object") return;
+        if (Array.isArray(v)) return void v.forEach(walk);
+        for (const [k, val] of Object.entries(v)) {
+            if (k === "pane_id" && typeof val === "string") out.push(val);
+            else walk(val);
+        }
+    };
+    walk(result);
+    return out;
+}
+
+interface HerdrClient {
+    call(method: string, params: Record<string, unknown>): Promise<unknown>;
+    end(): void;
+}
+
+/** Connect to herdr's Unix socket and speak newline-delimited JSON-RPC. Resolves once
+ *  connected; each call() writes one request line and matches its response by id. */
+function herdrConnect(sockPath: string, timeoutMs = 3000): Promise<HerdrClient> {
+    return new Promise((resolve, reject) => {
+        const sock = netConnect(sockPath);
+        sock.setEncoding("utf8");
+        let nextId = 1;
+        const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void; timer: ReturnType<typeof setTimeout> }>();
+        let buf = "";
+        const connectTimer = setTimeout(() => {
+            sock.destroy();
+            reject(new Error("herdr connect timeout"));
+        }, timeoutMs);
+        sock.on("connect", () => {
+            clearTimeout(connectTimer);
+            resolve(client);
+        });
+        sock.on("error", (e) => {
+            clearTimeout(connectTimer);
+            for (const p of pending.values()) {
+                clearTimeout(p.timer);
+                p.reject(e);
+            }
+            pending.clear();
+            reject(e);
+        });
+        sock.on("data", (chunk: string) => {
+            buf += chunk;
+            let nl: number;
+            while ((nl = buf.indexOf("\n")) >= 0) {
+                const line = buf.slice(0, nl);
+                buf = buf.slice(nl + 1);
+                if (!line.trim()) continue;
+                let msg: any;
+                try {
+                    msg = JSON.parse(line);
+                } catch {
+                    continue;
+                }
+                const p = msg && pending.get(msg.id);
+                if (!p) continue;
+                clearTimeout(p.timer);
+                pending.delete(msg.id);
+                if (msg.error) p.reject(new Error(msg.error.message || msg.error.code || "herdr error"));
+                else p.resolve(msg.result);
+            }
+        });
+        const client: HerdrClient = {
+            call(method, params) {
+                return new Promise((res, rej) => {
+                    const id = "pi-" + nextId++;
+                    const timer = setTimeout(() => {
+                        if (pending.delete(id)) rej(new Error("herdr call timeout: " + method));
+                    }, timeoutMs);
+                    pending.set(id, { resolve: res, reject: rej, timer });
+                    sock.write(JSON.stringify({ id, method, params }) + "\n");
+                });
+            },
+            end() {
+                try {
+                    sock.end();
+                } catch {
+                    /* best-effort */
+                }
+            },
+        };
+    });
+}
+
+/** Open a viewer pane inside herdr: split our pane, find the new pane by diffing the
+ *  pane list, run the viewer in it. Returns the new pane_id or null. Best-effort. */
+async function openHerdrPane(
+    sockPath: string,
+    parentPaneId: string,
+    dir: PaneSplit,
+    cmd: string[],
+    log: (m: string) => void,
+): Promise<string | null> {
+    let client: HerdrClient;
+    try {
+        client = await herdrConnect(sockPath);
+    } catch (e) {
+        log(`skip — herdr connect failed: ${errMsg(e)}`);
+        return null;
+    }
+    try {
+        const before = extractPaneIds(await client.call("pane.list", {}));
+        await client.call("pane.split", herdrSplitParams(parentPaneId, dir));
+        const after = extractPaneIds(await client.call("pane.list", {}));
+        const newId = after.find((id) => !before.includes(id));
+        if (!newId) {
+            log("skip — herdr split produced no new pane id");
+            return null;
+        }
+        let ran = false;
+        for (const a of herdrRunAttempts(newId, cmd)) {
+            try {
+                await client.call(a.method, a.params);
+                ran = true;
+                break;
+            } catch (e) {
+                log(`herdr ${a.method} failed: ${errMsg(e)}`);
+            }
+        }
+        if (!ran) {
+            try {
+                await client.call("pane.close", { pane_id: newId });
+            } catch {
+                /* best-effort */
+            }
+            log("skip — herdr could not run the viewer in the new pane");
+            return null;
+        }
+        log(`opened herdr pane ${newId}`);
+        return newId;
+    } catch (e) {
+        log(`skip — herdr open failed: ${errMsg(e)}`);
+        return null;
+    } finally {
+        client.end();
+    }
+}
+
+// Serialize herdr opens so the pane.list diff can't race across concurrent dispatches
+// (dispatch_parallel) — two simultaneous splits would make "the new pane" ambiguous.
+let herdrChain: Promise<unknown> = Promise.resolve();
+function serializeHerdr<T>(fn: () => Promise<T>): Promise<T> {
+    const p = herdrChain.then(fn, fn);
+    herdrChain = p.then(
+        () => {},
+        () => {},
+    );
+    return p;
+}
+
+/** The herdr branch of openAgentPane: kick off the async socket open (serialized),
+ *  flip paneActive on success, and return a handle whose close() pane.close's it. */
+function openHerdrAgentPane(
+    runId: string,
+    agent: string,
+    dispatchId: string | undefined,
+    env: NodeJS.ProcessEnv,
+    setActive: ((v: boolean) => void) | undefined,
+    log: (m: string) => void,
+): PaneHandle | null {
+    const parentPaneId = env.HERDR_PANE_ID;
+    if (!parentPaneId) {
+        log("skip — herdr: no HERDR_PANE_ID");
+        return null;
+    }
+    const sockPath = herdrSockPath(env);
+    const cmd = viewerArgv(runId, agent, { sink: env.PI_OBS_SINK, dispatchId });
+    let paneId: string | null = null;
+    let closed = false;
+    const opened = serializeHerdr(() => openHerdrPane(sockPath, parentPaneId, paneSplitDir(env), cmd, log))
+        .then((id) => {
+            paneId = id;
+            if (id) setActive?.(true);
+        })
+        .catch(() => {});
+    return {
+        close() {
+            if (closed) return;
+            closed = true;
+            void opened.then(async () => {
+                if (!paneId) return;
+                try {
+                    const c = await herdrConnect(sockPath);
+                    try {
+                        await c.call("pane.close", { pane_id: paneId });
+                    } finally {
+                        c.end();
+                    }
+                } catch (e) {
+                    log(`herdr close failed: ${errMsg(e)}`);
+                }
+            });
+        },
+    };
+}
+
 /** Open a viewer pane for a dispatched sub-agent's obs lane. Returns a handle whose
  *  close() best-effort kills the pane, or null when panes are disabled/unsupported or
- *  anything goes wrong. Never throws. */
-export function openAgentPane(agent: string, dispatchId?: string, env: NodeJS.ProcessEnv = process.env): PaneHandle | null {
+ *  anything goes wrong. `setActive(true)` is called once a pane is actually shown (sync
+ *  for CLI muxes; async for herdr, whose socket open confirms later). Never throws. */
+export function openAgentPane(
+    agent: string,
+    dispatchId?: string,
+    env: NodeJS.ProcessEnv = process.env,
+    setActive?: (v: boolean) => void,
+): PaneHandle | null {
     // Opt-in debug trace: when PI_WORKFLOW_PANES_DEBUG is set, record why each dispatch
     // did or didn't open a pane to ~/.pi/agent/obs/pane-debug.log (stderr would corrupt
     // the TUI). Makes this otherwise-silent, best-effort feature diagnosable.
@@ -284,6 +537,8 @@ export function openAgentPane(agent: string, dispatchId?: string, env: NodeJS.Pr
             log("skip — no PI_OBS_RUN (obs collector hasn't minted a run id yet)");
             return null;
         }
+        // herdr is driven over its JSON socket (async, multi-step), not a spawnSync CLI.
+        if (mux.kind === "herdr") return openHerdrAgentPane(runId, agent, dispatchId, env, setActive, log);
         const open = paneOpenCommand(mux, viewerArgv(runId, agent, { sink: env.PI_OBS_SINK, dispatchId }), agent.toLowerCase(), paneSplitDir(env));
         const r = spawnSync(open.file, open.argv, { encoding: "utf-8", timeout: 3000 });
         if (r.error || (typeof r.status === "number" && r.status !== 0)) {
@@ -292,6 +547,7 @@ export function openAgentPane(agent: string, dispatchId?: string, env: NodeJS.Pr
         }
         const paneId = open.idFromStdout ? (r.stdout || "").trim().split("\n")[0]?.trim() || "" : "";
         log(`opened ${mux.kind} pane${paneId ? ` ${paneId}` : ""}`);
+        setActive?.(true); // CLI muxes confirm synchronously
         let closed = false;
         return {
             close() {

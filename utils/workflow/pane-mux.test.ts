@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
+import { unlinkSync } from "node:fs";
 import {
     detectMux,
     panesEnabled,
@@ -13,6 +15,11 @@ import {
     publishHasUi,
     interactivePi,
     paneSplitDir,
+    openAgentPane,
+    herdrSockPath,
+    herdrSplitParams,
+    herdrRunAttempts,
+    extractPaneIds,
 } from "./pane-mux";
 
 test("detectMux picks the split surface from env (tmux → zellij → wezterm → kitty → iTerm2)", () => {
@@ -26,6 +33,93 @@ test("detectMux picks the split surface from env (tmux → zellij → wezterm �
     assert.equal(detectMux({}), null);
     // tmux wins when nested inside iTerm2 (tmux is the visible surface)
     assert.equal(detectMux({ TMUX: "x", TERM_PROGRAM: "iTerm.app" })?.kind, "tmux");
+    // herdr: the immediate surface when pi runs inside a herdr pane
+    assert.equal(detectMux({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p2" })?.kind, "herdr");
+    assert.equal(detectMux({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p2", TERM_PROGRAM: "iTerm.app" })?.kind, "herdr"); // beats leaked iTerm2 env
+    assert.equal(detectMux({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p2", TMUX: "x" })?.kind, "tmux"); // tmux still closer
+    assert.equal(detectMux({ HERDR_ENV: "1" }), null); // no pane id → can't split → not herdr
+});
+
+test("herdr request builders (sock path, split params, run attempts, pane-id extraction)", () => {
+    assert.equal(herdrSockPath({ HERDR_SOCKET_PATH: "/x/h.sock" }), "/x/h.sock");
+    assert.match(herdrSockPath({}), /\.config\/herdr\/herdr\.sock$/);
+
+    assert.deepEqual(herdrSplitParams("w1:p1", "right"), { pane_id: "w1:p1", direction: "right", ratio: 0.4 });
+    assert.equal(herdrSplitParams("w1:p1", "down").direction, "down");
+
+    const attempts = herdrRunAttempts("w1:p2", ["/n", "--agent", "scout"]);
+    assert.equal(attempts[0].method, "pane.run");
+    assert.equal(attempts[0].params.pane_id, "w1:p2");
+    assert.match(String(attempts[0].params.command), /'--agent' 'scout'/);
+    assert.deepEqual(attempts[1].params.argv, ["/n", "--agent", "scout"]); // argv fallback
+    assert.equal(attempts[2].method, "pane.send_input"); // send-input fallback
+    assert.match(String(attempts[2].params.text), /\n$/); // ends with enter
+
+    assert.deepEqual(extractPaneIds({ panes: [{ pane_id: "w1:p1" }, { pane_id: "w1:p2" }] }), ["w1:p1", "w1:p2"]);
+    assert.deepEqual(extractPaneIds({ workspace: { tabs: [{ panes: [{ pane_id: "w2:p9" }] }] } }), ["w2:p9"]);
+    assert.deepEqual(extractPaneIds(null), []);
+});
+
+test("herdr backend end-to-end against a mock socket: split → run viewer in new pane → close", async () => {
+    const sockPath = `/tmp/pi-herdr-${process.pid}.sock`;
+    try {
+        unlinkSync(sockPath);
+    } catch {}
+    const seen: { method: string; params: any }[] = [];
+    let panes = ["w1:p1"]; // grows to include the new pane after pane.split
+    const server = createServer((sock) => {
+        sock.setEncoding("utf8");
+        let buf = "";
+        sock.on("data", (d: string) => {
+            buf += d;
+            let nl: number;
+            while ((nl = buf.indexOf("\n")) >= 0) {
+                const line = buf.slice(0, nl);
+                buf = buf.slice(nl + 1);
+                if (!line.trim()) continue;
+                const msg = JSON.parse(line);
+                seen.push({ method: msg.method, params: msg.params });
+                let result: any = { ok: true };
+                if (msg.method === "pane.list") result = { panes: panes.map((pane_id) => ({ pane_id })) };
+                if (msg.method === "pane.split") panes = ["w1:p1", "w1:p2"];
+                sock.write(JSON.stringify({ id: msg.id, result }) + "\n");
+            }
+        });
+    });
+    await new Promise<void>((res) => server.listen(sockPath, res));
+    publishHasUi(() => true); // interactive so the gates pass
+    try {
+        const env = {
+            PI_WORKFLOW_PANES: "1",
+            PI_OBS: "1",
+            PI_OBS_RUN: "run-1",
+            HERDR_ENV: "1",
+            HERDR_PANE_ID: "w1:p1",
+            HERDR_SOCKET_PATH: sockPath,
+        };
+        let resolveActive: (v: boolean) => void;
+        const active = new Promise<boolean>((r) => (resolveActive = r));
+        const handle = openAgentPane("scout", "scout-1", env, (ok) => resolveActive(ok));
+        assert.ok(handle, "herdr returns a handle");
+        assert.equal(await active, true, "paneActive flipped true on socket success");
+
+        assert.ok(seen.some((e) => e.method === "pane.split"), "sent pane.split");
+        const run = seen.find((e) => e.method === "pane.run");
+        assert.ok(run, "ran the viewer");
+        assert.equal(run!.params.pane_id, "w1:p2", "ran in the NEW pane, not the orchestrator's");
+        assert.match(String(run!.params.command), /obs-watch/, "ran the obs-watch viewer");
+
+        handle!.close();
+        await new Promise((r) => setTimeout(r, 80));
+        const close = seen.find((e) => e.method === "pane.close");
+        assert.ok(close && close.params.pane_id === "w1:p2", "closed the new pane by id");
+    } finally {
+        publishHasUi(() => process.stdout.isTTY === true);
+        server.close();
+        try {
+            unlinkSync(sockPath);
+        } catch {}
+    }
 });
 
 test("panesEnabled requires the flag, obs, an interactive TTY, a mux, AND root depth", () => {
