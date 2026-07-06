@@ -35,6 +35,7 @@ import {
     type LiveSessionMeta,
 } from "../obs/obs-chat-control";
 import type { ChatEvent } from "../obs/obs-chat";
+import { publishExternalSteer } from "../utils/workflow/pane-mux";
 
 // Cap (chars) for the full args/result captured for the expand-on-click view.
 // Default is unlimited — tool args/results are the agent's working I/O and we
@@ -163,6 +164,10 @@ export default function obsLive(pi: any): void {
                 chmodSync(controlDir(), 0o700); // enforce even if the dir pre-existed
             } catch {}
             control = new LiveChatControl();
+            // Let the workflow pane layer see when THIS process is servicing an
+            // externally-injected prompt (Telegram /attach or pi-obs chat), so it can
+            // suppress viewer panes for those dispatches even on an interactive TTY.
+            publishExternalSteer(() => control?.busy() ?? false);
             ctrlToken = randomBytes(18).toString("hex"); // shared secret for this session
             const sock = sockPath(meta.sessionId);
             try {

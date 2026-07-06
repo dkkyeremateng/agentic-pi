@@ -134,6 +134,33 @@ export function viewerArgv(
     ];
 }
 
+// ── external-steer signal (same-process, cross-module) ───────────────────────
+// A getter published by obs-live that returns true while the orchestrator is
+// servicing an externally-INJECTED prompt — a Telegram /attach or a pi-obs chat
+// message, both of which drive the live run through LiveChatControl. Local terminal
+// typing never goes through that path, so it never sets this. openAgentPane
+// suppresses panes while it's true: even an INTERACTIVE orchestrator that a Telegram
+// user has /attached to and is steering gets no panes for those dispatches — only
+// dispatches the human initiated at the pi terminal do.
+const EXTERNAL_STEER_GLOBAL = "__pi_externalSteerActive__";
+
+/** Publish the external-steer getter (called by obs-live with () => control.busy()). */
+export function publishExternalSteer(fn: () => boolean): void {
+    (globalThis as any)[EXTERNAL_STEER_GLOBAL] = fn;
+}
+
+/** True while an externally-injected (Telegram / pi-obs chat) prompt is being
+ *  serviced. False when no getter was published (obs-live absent → no control
+ *  server → no external steer possible). Never throws. */
+export function externalSteerActive(): boolean {
+    try {
+        const fn = (globalThis as any)[EXTERNAL_STEER_GLOBAL];
+        return typeof fn === "function" && fn() === true;
+    } catch {
+        return false;
+    }
+}
+
 export interface PaneHandle {
     close(): void;
 }
@@ -144,6 +171,9 @@ export interface PaneHandle {
 export function openAgentPane(agent: string, env: NodeJS.ProcessEnv = process.env): PaneHandle | null {
     try {
         if (!panesEnabled(env)) return null;
+        // Suppress panes for a dispatch initiated by an injected Telegram / pi-obs
+        // chat prompt, even on an interactive orchestrator (see externalSteerActive).
+        if (externalSteerActive()) return null;
         const mux = detectMux(env);
         const runId = env.PI_OBS_RUN;
         if (!mux || !runId) return null;

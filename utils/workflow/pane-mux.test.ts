@@ -7,6 +7,8 @@ import {
     paneOpenCommand,
     paneCloseCommand,
     viewerArgv,
+    publishExternalSteer,
+    externalSteerActive,
 } from "./pane-mux";
 
 test("detectMux picks the multiplexer from env (tmux → zellij → wezterm → kitty)", () => {
@@ -66,6 +68,17 @@ test("paneCloseCommand targets a pane by id, or null when unsupported/idless", (
     assert.deepEqual(paneCloseCommand({ kind: "kitty" }, "9"), { file: "kitty", argv: ["@", "close-window", "--match", "id:9"] });
     assert.equal(paneCloseCommand({ kind: "zellij" }, "x"), null); // close-on-exit only
     assert.equal(paneCloseCommand({ kind: "tmux" }, ""), null); // no id captured
+});
+
+test("externalSteerActive reflects the published getter (Telegram/chat steer → no panes)", () => {
+    assert.equal(externalSteerActive(), false); // nothing published yet
+    let busy = false;
+    publishExternalSteer(() => busy); // obs-live publishes () => control.busy()
+    assert.equal(externalSteerActive(), false); // idle: local terminal dispatch
+    busy = true;
+    assert.equal(externalSteerActive(), true); // servicing an injected Telegram/chat prompt
+    publishExternalSteer(() => false); // reset so we don't leak into other tests
+    assert.equal(externalSteerActive(), false);
 });
 
 test("viewerArgv runs this node over obs-watch scoped to run + agent (+ optional sink)", () => {
