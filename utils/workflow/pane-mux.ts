@@ -24,7 +24,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type MuxKind = "tmux" | "zellij" | "wezterm" | "kitty";
+export type MuxKind = "tmux" | "zellij" | "wezterm" | "kitty" | "iterm2";
 export interface Mux {
     kind: MuxKind;
 }
@@ -34,12 +34,19 @@ const truthy = (v: string | undefined) => {
     return s === "1" || s === "true" || s === "on";
 };
 
-/** Detect the surrounding multiplexer from env (tmux → zellij → wezterm → kitty). */
+/** Escape a string for embedding inside an AppleScript "…" literal (iTerm2 path). */
+const asEscape = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+/** Detect the surrounding split surface (tmux → zellij → wezterm → kitty → iTerm2).
+ *  tmux/zellij come first so tmux-inside-iTerm2 correctly targets tmux. WezTerm, kitty
+ *  and iTerm2 are GUI terminals whose OWN split works with no multiplexer — which is
+ *  how panes work outside tmux. */
 export function detectMux(env: NodeJS.ProcessEnv = process.env): Mux | null {
     if (env.TMUX) return { kind: "tmux" };
     if (env.ZELLIJ || env.ZELLIJ_SESSION_NAME) return { kind: "zellij" };
     if (env.WEZTERM_PANE) return { kind: "wezterm" };
     if (env.KITTY_WINDOW_ID) return { kind: "kitty" };
+    if (env.TERM_PROGRAM === "iTerm.app" || env.ITERM_SESSION_ID) return { kind: "iterm2" };
     return null;
 }
 
@@ -79,7 +86,7 @@ export function panesReason(
     // multiplexer (which would leak $TMUX/$ZELLIJ into the child).
     if (!isTty) return "not an interactive pi session (headless — e.g. Telegram / pi-obs chat)";
     if ((parseInt(env.PI_DISPATCH_DEPTH || "0", 10) || 0) !== 0) return "not the root orchestrator (nested dispatch)";
-    if (detectMux(env) === null) return "no supported multiplexer (tmux/zellij/WezTerm/kitty)";
+    if (detectMux(env) === null) return "no supported split surface (tmux/zellij/WezTerm/kitty/iTerm2)";
     return null;
 }
 
@@ -134,6 +141,22 @@ export function paneOpenCommand(
         case "kitty":
             // Needs allow_remote_control; vsplit → side-by-side, hsplit → stacked.
             return { file: "kitty", argv: ["@", "launch", "--type=window", "--location", right ? "vsplit" : "hsplit", "--title", title, ...cmd], idFromStdout: true };
+        case "iterm2": {
+            // iTerm2 has no split CLI — drive it via AppleScript. "vertically" = side
+            // by side, "horizontally" = stacked. The shell command is embedded as the
+            // pane's `command`; the script returns the new session id (stdout) so we
+            // can close it. Needs macOS Automation permission (prompts on first use).
+            const verb = right ? "vertically" : "horizontally";
+            const asCmd = asEscape(shjoin(cmd));
+            const script =
+                `tell application "iTerm2"\n` +
+                `  tell current session of current tab of current window\n` +
+                `    set s to (split ${verb} with default profile command "${asCmd}")\n` +
+                `  end tell\n` +
+                `  return id of s\n` +
+                `end tell`;
+            return { file: "osascript", argv: ["-e", script], idFromStdout: true };
+        }
     }
 }
 
@@ -148,6 +171,21 @@ export function paneCloseCommand(mux: Mux, paneId: string): { file: string; argv
             return { file: "wezterm", argv: ["cli", "kill-pane", "--pane-id", paneId] };
         case "kitty":
             return { file: "kitty", argv: ["@", "close-window", "--match", `id:${paneId}`] };
+        case "iterm2": {
+            // Find the session by the id captured at open and close it.
+            const id = asEscape(paneId);
+            const script =
+                `tell application "iTerm2"\n` +
+                `  repeat with w in windows\n` +
+                `    repeat with t in tabs of w\n` +
+                `      repeat with s in sessions of t\n` +
+                `        if id of s is "${id}" then close s\n` +
+                `      end repeat\n` +
+                `    end repeat\n` +
+                `  end repeat\n` +
+                `end tell`;
+            return { file: "osascript", argv: ["-e", script] };
+        }
         case "zellij":
             return null;
     }

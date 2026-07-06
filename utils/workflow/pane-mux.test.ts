@@ -15,15 +15,17 @@ import {
     paneSplitDir,
 } from "./pane-mux";
 
-test("detectMux picks the multiplexer from env (tmux → zellij → wezterm → kitty)", () => {
+test("detectMux picks the split surface from env (tmux → zellij → wezterm → kitty → iTerm2)", () => {
     assert.equal(detectMux({ TMUX: "/tmp/tmux-1/default,123,0" })?.kind, "tmux");
     assert.equal(detectMux({ ZELLIJ: "0" })?.kind, "zellij");
     assert.equal(detectMux({ ZELLIJ_SESSION_NAME: "s" })?.kind, "zellij");
     assert.equal(detectMux({ WEZTERM_PANE: "3" })?.kind, "wezterm");
     assert.equal(detectMux({ KITTY_WINDOW_ID: "7" })?.kind, "kitty");
+    assert.equal(detectMux({ TERM_PROGRAM: "iTerm.app" })?.kind, "iterm2"); // GUI terminal, no tmux needed
+    assert.equal(detectMux({ ITERM_SESSION_ID: "w0t0p0:UUID" })?.kind, "iterm2");
     assert.equal(detectMux({}), null);
-    // tmux wins when nested
-    assert.equal(detectMux({ TMUX: "x", ZELLIJ: "0" })?.kind, "tmux");
+    // tmux wins when nested inside iTerm2 (tmux is the visible surface)
+    assert.equal(detectMux({ TMUX: "x", TERM_PROGRAM: "iTerm.app" })?.kind, "tmux");
 });
 
 test("panesEnabled requires the flag, obs, an interactive TTY, a mux, AND root depth", () => {
@@ -47,7 +49,9 @@ test("panesReason names the failing gate, null when all pass", () => {
     assert.match(panesReason({ ...base, PI_OBS: "" }, true)!, /PI_OBS/);
     assert.match(panesReason(base, false)!, /interactive/); // headless (Telegram/chat)
     assert.match(panesReason({ ...base, PI_DISPATCH_DEPTH: "2" }, true)!, /root orchestrator/);
-    assert.match(panesReason({ PI_WORKFLOW_PANES: "1", PI_OBS: "1" }, true)!, /multiplexer/);
+    assert.match(panesReason({ PI_WORKFLOW_PANES: "1", PI_OBS: "1" }, true)!, /split surface/);
+    // iTerm2 alone (no tmux) satisfies the surface gate
+    assert.equal(panesReason({ PI_WORKFLOW_PANES: "1", PI_OBS: "1", TERM_PROGRAM: "iTerm.app" }, true), null);
 });
 
 test("interactivePi prefers pi's published hasUI over stdout.isTTY", () => {
@@ -82,6 +86,15 @@ test("paneOpenCommand builds a per-mux open command, horizontal (side-by-side) b
 
     const kt = paneOpenCommand({ kind: "kitty" }, cmd, "scout");
     assert.deepEqual(kt.argv, ["@", "launch", "--type=window", "--location", "vsplit", "--title", "scout", ...cmd]);
+
+    // iTerm2: an osascript split; horizontal (right) = AppleScript "vertically"
+    const it = paneOpenCommand({ kind: "iterm2" }, cmd, "scout");
+    assert.equal(it.file, "osascript");
+    assert.equal(it.argv[0], "-e");
+    assert.match(it.argv[1], /split vertically with default profile command/);
+    assert.match(it.argv[1], /'--agent' 'scout'/); // the shell command is embedded
+    assert.match(it.argv[1], /return id of s/); // prints the new session id
+    assert.equal(it.idFromStdout, true);
 });
 
 test("paneOpenCommand honors a 'down' (stacked) split", () => {
@@ -90,6 +103,7 @@ test("paneOpenCommand honors a 'down' (stacked) split", () => {
     assert.deepEqual(paneOpenCommand({ kind: "wezterm" }, cmd, "s", "down").argv, ["cli", "split-pane", "--", ...cmd]); // no --horizontal
     assert.equal(paneOpenCommand({ kind: "zellij" }, cmd, "s", "down").argv[3], "down");
     assert.equal(paneOpenCommand({ kind: "kitty" }, cmd, "s", "down").argv[4], "hsplit");
+    assert.match(paneOpenCommand({ kind: "iterm2" }, cmd, "s", "down").argv[1], /split horizontally/); // stacked
 });
 
 test("paneSplitDir defaults to horizontal (right); env can stack it", () => {
@@ -104,6 +118,9 @@ test("paneCloseCommand targets a pane by id, or null when unsupported/idless", (
     assert.deepEqual(paneCloseCommand({ kind: "tmux" }, "%3"), { file: "tmux", argv: ["kill-pane", "-t", "%3"] });
     assert.deepEqual(paneCloseCommand({ kind: "wezterm" }, "5"), { file: "wezterm", argv: ["cli", "kill-pane", "--pane-id", "5"] });
     assert.deepEqual(paneCloseCommand({ kind: "kitty" }, "9"), { file: "kitty", argv: ["@", "close-window", "--match", "id:9"] });
+    const it = paneCloseCommand({ kind: "iterm2" }, "S-42");
+    assert.equal(it!.file, "osascript");
+    assert.match(it!.argv[1], /if id of s is "S-42" then close s/);
     assert.equal(paneCloseCommand({ kind: "zellij" }, "x"), null); // close-on-exit only
     assert.equal(paneCloseCommand({ kind: "tmux" }, ""), null); // no id captured
 });
