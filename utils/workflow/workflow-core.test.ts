@@ -27,6 +27,7 @@ import {
     mkPhase,
     freshPhases,
     dispatchEnv,
+    stripInheritedSecrets,
     renderWorkflowFooter,
     formatContextUsage,
     stickyContextUsage,
@@ -1005,6 +1006,38 @@ describe("dispatchEnv", () => {
             assert.equal(env.PI_OBS_AGENT, "seeker");
             assert.equal(env.PI_OBS_DISPATCH_ID, undefined);
         });
+    });
+});
+
+describe("stripInheritedSecrets", () => {
+    it("removes the bridge secrets but keeps provider/skill creds and everything else", () => {
+        const env = stripInheritedSecrets(
+            {
+                PI_OBS_TOKEN: "server-secret",
+                PI_OBS_TG_TOKEN: "bot-token",
+                ATLASSIAN_API_TOKEN: "keep-me",
+                LINEAR_API_KEY: "keep-me-too",
+                ANTHROPIC_API_KEY: "provider-key",
+                PATH: "/usr/bin",
+            },
+            {},
+        );
+        assert.equal(env.PI_OBS_TOKEN, undefined);
+        assert.equal(env.PI_OBS_TG_TOKEN, undefined);
+        assert.equal(env.ATLASSIAN_API_TOKEN, "keep-me");
+        assert.equal(env.LINEAR_API_KEY, "keep-me-too");
+        assert.equal(env.ANTHROPIC_API_KEY, "provider-key");
+        assert.equal(env.PATH, "/usr/bin");
+    });
+
+    it("also strips operator-specified extra keys (PI_SUBAGENT_ENV_STRIP)", () => {
+        const env = stripInheritedSecrets(
+            { PI_OBS_TOKEN: "x", MY_SECRET: "y", OTHER: "z", KEEP: "k" },
+            { PI_SUBAGENT_ENV_STRIP: "MY_SECRET, OTHER" },
+        );
+        assert.equal(env.MY_SECRET, undefined);
+        assert.equal(env.OTHER, undefined);
+        assert.equal(env.KEEP, "k");
     });
 });
 

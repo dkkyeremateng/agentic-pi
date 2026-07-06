@@ -2784,6 +2784,39 @@ export function dispatchEnv(
     return env;
 }
 
+// Secrets that belong to the obs/Telegram bridge infrastructure — the Telegram bot
+// token and the obs HTTP server's shared secret. They're read only by the bridge
+// poller and the obs server (top-level, long-lived processes); a spawned sub-agent
+// is never either, and it writes observability events to the sink FILE directly, so
+// it has no use for them. Strip them from every sub-agent's env out of least
+// privilege — one wedged or prompt-injected agent shouldn't be able to read the bot
+// token or call the obs API as the server. NOTE: provider API keys and skill
+// credentials (ATLASSIAN_API_TOKEN, LINEAR_API_KEY, …) are deliberately kept —
+// sub-agents need those to do their work.
+export const SUBAGENT_SECRET_ENV = ["PI_OBS_TOKEN", "PI_OBS_TG_TOKEN"];
+
+// Delete the bridge secrets (and any operator-specified extras via
+// PI_SUBAGENT_ENV_STRIP, comma-separated) from an env object in place. Returns it
+// for chaining.
+export function stripInheritedSecrets<T extends NodeJS.ProcessEnv>(
+    env: T,
+    base: NodeJS.ProcessEnv = process.env,
+): T {
+    for (const k of SUBAGENT_SECRET_ENV) delete env[k];
+    for (const k of (base.PI_SUBAGENT_ENV_STRIP || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean))
+        delete env[k];
+    return env;
+}
+
+// The full env for a spawned sub-agent: the parent env plus the dispatch-context
+// overrides (dispatchEnv), with the bridge secrets stripped (stripInheritedSecrets).
+export function subagentEnv(agentName: string, dispatchId?: string): NodeJS.ProcessEnv {
+    return stripInheritedSecrets({ ...process.env, ...dispatchEnv(agentName, dispatchId) });
+}
+
 // Whether a spawned (headless) sub-agent should be told to trust the project's
 // local inputs (AGENTS.md/CLAUDE.md, .pi settings/resources/skills) via --approve.
 //
@@ -3268,7 +3301,7 @@ export function spawnAgentWithModel(
         // signal the WHOLE tree (pi + its tool children) on timeout, not just pi.
         const proc = spawn("pi", args, {
             stdio: ["ignore", "pipe", "pipe"],
-            env: { ...process.env, ...dispatchEnv(agentDef.name, phase.dispatchId) },
+            env: subagentEnv(agentDef.name, phase.dispatchId),
             cwd,
             detached: true,
         });
