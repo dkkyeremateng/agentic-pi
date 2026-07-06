@@ -20,14 +20,18 @@ test("detectMux picks the multiplexer from env (tmux → zellij → wezterm → 
     assert.equal(detectMux({ TMUX: "x", ZELLIJ: "0" })?.kind, "tmux");
 });
 
-test("panesEnabled requires the flag, obs, a mux, AND root depth", () => {
+test("panesEnabled requires the flag, obs, an interactive TTY, a mux, AND root depth", () => {
     const base = { PI_WORKFLOW_PANES: "1", PI_OBS: "1", TMUX: "x" };
-    assert.equal(panesEnabled(base), true);
-    assert.equal(panesEnabled({ ...base, PI_WORKFLOW_PANES: "0" }), false); // flag off
-    assert.equal(panesEnabled({ ...base, PI_OBS: "" }), false); // obs off
-    assert.equal(panesEnabled({ PI_WORKFLOW_PANES: "1", PI_OBS: "1" }), false); // no mux
-    assert.equal(panesEnabled({ ...base, PI_DISPATCH_DEPTH: "1" }), false); // nested, not root
-    assert.equal(panesEnabled({ ...base, PI_WORKFLOW_PANES: "true" }), true); // truthy variants
+    const tty = true;
+    assert.equal(panesEnabled(base, tty), true);
+    assert.equal(panesEnabled({ ...base, PI_WORKFLOW_PANES: "0" }, tty), false); // flag off
+    assert.equal(panesEnabled({ ...base, PI_OBS: "" }, tty), false); // obs off
+    assert.equal(panesEnabled({ PI_WORKFLOW_PANES: "1", PI_OBS: "1" }, tty), false); // no mux
+    assert.equal(panesEnabled({ ...base, PI_DISPATCH_DEPTH: "1" }, tty), false); // nested, not root
+    assert.equal(panesEnabled({ ...base, PI_WORKFLOW_PANES: "true" }, tty), true); // truthy variants
+    // no interactive terminal (Telegram / pi-obs chat drive the agent headless) → no panes,
+    // even with the flag, obs, a mux, and $TMUX all present (inherited from the bridge).
+    assert.equal(panesEnabled(base, false), false);
 });
 
 test("shquote wraps in single quotes and escapes embedded quotes", () => {

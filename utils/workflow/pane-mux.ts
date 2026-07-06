@@ -1,12 +1,18 @@
 // pane-mux.ts — OPT-IN terminal-multiplexer panes for dispatched sub-agents.
 //
 // When the root orchestrator dispatches a sub-agent AND (a) PI_WORKFLOW_PANES is on,
-// (b) PI_OBS is on, and (c) we're running inside a supported multiplexer, this opens
-// a dedicated pane that live-tails THAT agent's obs lane (obs/obs-watch.ts). The pane
-// is a passive VIEWER fed by the existing obs telemetry — it does NOT take over the
-// child's stdout, so the orchestrator's capture/kill invariants are untouched. Every
-// hook is best-effort and a clean no-op when disabled/unsupported: panes never affect
-// whether or how a run succeeds.
+// (b) PI_OBS is on, (c) the run is driven from an INTERACTIVE pi terminal, and (d)
+// we're inside a supported multiplexer, this opens a dedicated pane that live-tails
+// THAT agent's obs lane (obs/obs-watch.ts). The pane is a passive VIEWER fed by the
+// existing obs telemetry — it does NOT take over the child's stdout, so the
+// orchestrator's capture/kill invariants are untouched. Every hook is best-effort and
+// a clean no-op when disabled/unsupported: panes never affect whether or how a run
+// succeeds.
+//
+// Condition (c) — an interactive TTY — is deliberate: dispatches initiated through
+// Telegram or the pi-obs chat run the agent HEADLESS (no TTY), so they never get
+// panes even if the bridge/server runs inside a multiplexer. Panes are for the pi
+// session a human is actually sitting in front of.
 //
 // Supported: tmux ($TMUX), zellij ($ZELLIJ), WezTerm ($WEZTERM_PANE), kitty
 // ($KITTY_WINDOW_ID, needs remote control). Detection + command building are pure and
@@ -35,12 +41,23 @@ export function detectMux(env: NodeJS.ProcessEnv = process.env): Mux | null {
     return null;
 }
 
-/** Panes are opened only when explicitly enabled, obs is on (the viewer reads the
- *  sink), a multiplexer exists, AND this process is the ROOT orchestrator (depth 0) —
- *  so a nested sub-orchestrator doesn't spawn panes-of-panes. */
-export function panesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+/** Panes are opened only when: explicitly enabled; obs is on (the viewer reads the
+ *  sink); the dispatch was initiated from an INTERACTIVE pi terminal (isTty); this
+ *  process is the ROOT orchestrator (depth 0, so a nested sub-orchestrator doesn't
+ *  spawn panes-of-panes); and a multiplexer exists.
+ *
+ *  The isTty gate is what excludes Telegram- and pi-obs-chat-initiated dispatches:
+ *  those run the orchestrator/agent HEADLESS (`pi --mode json -p`, stdout piped), so
+ *  isTty is false even when the bridge or obs-server itself sits inside a multiplexer
+ *  (which would otherwise leak $TMUX/$ZELLIJ into the child). Only a pi session a
+ *  human is actually attached to has a TTY. Injectable for tests. */
+export function panesEnabled(
+    env: NodeJS.ProcessEnv = process.env,
+    isTty: boolean = process.stdout.isTTY === true,
+): boolean {
     if (!truthy(env.PI_WORKFLOW_PANES)) return false;
     if (!truthy(env.PI_OBS)) return false;
+    if (!isTty) return false;
     if ((parseInt(env.PI_DISPATCH_DEPTH || "0", 10) || 0) !== 0) return false;
     return detectMux(env) !== null;
 }
