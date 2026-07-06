@@ -1787,4 +1787,12 @@ describe("appendLiveLog pane collapse", () => {
         assert.match(t, /live log in this agent's own pane/);
         assert.doesNotMatch(t, /report body/); // streamed lines moved to the pane
     });
+
+    it("keeps the panel the SAME height collapsed vs not (stable height → no ghosting)", () => {
+        const noPane: string[] = [];
+        appendLiveLog(noPane, 80, theme, [phase({ paneActive: false })], true, vw);
+        const withPane: string[] = [];
+        appendLiveLog(withPane, 80, theme, [phase({ paneActive: true })], true, vw);
+        assert.equal(withPane.length, noPane.length); // collapse pads to the same rows
+    });
 });

@@ -124,4 +124,6 @@ test("viewerArgv runs this node over obs-watch scoped to run + agent (+ optional
     assert.deepEqual(argv, ["/n", "--no-warnings", "--experimental-strip-types", "/w.ts", "--run", "run-9", "--agent", "scout"]);
     const withSink = viewerArgv("run-9", "scout", { execPath: "/n", script: "/w.ts", sink: "/s.jsonl" });
     assert.deepEqual(withSink.slice(-2), ["--sink", "/s.jsonl"]);
+    const withDispatch = viewerArgv("run-9", "scout", { execPath: "/n", script: "/w.ts", dispatchId: "scout-42" });
+    assert.equal(withDispatch[withDispatch.indexOf("--dispatch") + 1], "scout-42");
 });

@@ -52,8 +52,9 @@ test("formatWatchEvent flags a truncated turn and skips empty/uninteresting even
     assert.equal(formatWatchEvent(f.next("boot", {}, 0)), null);
 });
 
-test("parseArgs reads --run/--agent/--sink and lowercases the agent", () => {
+test("parseArgs reads --run/--agent/--sink/--dispatch and lowercases the agent", () => {
     assert.deepEqual(parseArgs(["--run", "r1", "--agent", "Scout", "--sink", "/s"]), { run: "r1", agent: "scout", sink: "/s" });
+    assert.deepEqual(parseArgs(["--run", "r1", "--agent", "scout", "--dispatch", "scout-9"]), { run: "r1", agent: "scout", dispatch: "scout-9" });
     assert.deepEqual(parseArgs([]), {});
 });
 

@@ -102,13 +102,14 @@ export function formatWatchEvent(ev: ObsEvent): string | null {
 
 // ── args + sink ──────────────────────────────────────────────────────────────
 
-export function parseArgs(argv: string[]): { run?: string; agent?: string; sink?: string } {
-    const out: { run?: string; agent?: string; sink?: string } = {};
+export function parseArgs(argv: string[]): { run?: string; agent?: string; sink?: string; dispatch?: string } {
+    const out: { run?: string; agent?: string; sink?: string; dispatch?: string } = {};
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === "--run") out.run = argv[++i];
         else if (a === "--agent") out.agent = (argv[++i] || "").toLowerCase();
         else if (a === "--sink") out.sink = argv[++i];
+        else if (a === "--dispatch") out.dispatch = argv[++i];
     }
     return out;
 }
@@ -121,7 +122,7 @@ export function sinkPath(env: NodeJS.ProcessEnv = process.env): string {
 // ── tail loop (IO) ───────────────────────────────────────────────────────────
 
 function run(): void {
-    const { run: runId, agent, sink: sinkArg } = parseArgs(process.argv.slice(2));
+    const { run: runId, agent, sink: sinkArg, dispatch } = parseArgs(process.argv.slice(2));
     if (!runId || !agent) {
         process.stderr.write("obs-watch: --run <id> and --agent <name> are required\n");
         process.exit(2);
@@ -130,7 +131,7 @@ function run(): void {
 
     process.stdout.write(`${bold(cyan(`⧉ ${agent}`))} ${dim(`· run ${runId} · tailing obs lane`)}\n`);
 
-    let locked: string | null = null; // sessionId we've pinned to (first match wins)
+    let locked: string | null = null; // sessionId we've pinned to
     let pos = existsSync(sink) ? statSync(sink).size : 0; // start at EOF: only new events
     let leftover = ""; // partial trailing line held until its newline arrives
 
@@ -144,7 +145,17 @@ function run(): void {
             return;
         }
         if (!ev || ev.runId !== runId || ev.agent !== agent) return;
-        if (locked === null) locked = ev.sessionId;
+        if (locked === null) {
+            if (dispatch) {
+                // Concurrent same-agent instances share run+agent; lock precisely onto
+                // the one carrying our dispatch id (its session_start payload). Ignore
+                // everything until that session_start arrives.
+                if (ev.type === "session_start" && (ev.payload as any)?.dispatchId === dispatch) locked = ev.sessionId;
+                else return;
+            } else {
+                locked = ev.sessionId; // no dispatch id (single dispatch): first match wins
+            }
+        }
         if (ev.sessionId !== locked) return; // ignore other concurrent instances
         const out = formatWatchEvent(ev);
         if (out) process.stdout.write(out + "\n");

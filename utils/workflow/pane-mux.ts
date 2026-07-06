@@ -163,7 +163,7 @@ function watchScript(): string {
 export function viewerArgv(
     runId: string,
     agent: string,
-    opts: { sink?: string; execPath?: string; script?: string } = {},
+    opts: { sink?: string; execPath?: string; script?: string; dispatchId?: string } = {},
 ): string[] {
     return [
         opts.execPath ?? process.execPath,
@@ -174,6 +174,9 @@ export function viewerArgv(
         runId,
         "--agent",
         agent.toLowerCase(),
+        // Disambiguates concurrent instances of the SAME agent (dispatch_parallel): the
+        // viewer locks onto the session whose session_start carries this dispatch id.
+        ...(opts.dispatchId ? ["--dispatch", opts.dispatchId] : []),
         ...(opts.sink ? ["--sink", opts.sink] : []),
     ];
 }
@@ -212,7 +215,7 @@ export interface PaneHandle {
 /** Open a viewer pane for a dispatched sub-agent's obs lane. Returns a handle whose
  *  close() best-effort kills the pane, or null when panes are disabled/unsupported or
  *  anything goes wrong. Never throws. */
-export function openAgentPane(agent: string, env: NodeJS.ProcessEnv = process.env): PaneHandle | null {
+export function openAgentPane(agent: string, dispatchId?: string, env: NodeJS.ProcessEnv = process.env): PaneHandle | null {
     // Opt-in debug trace: when PI_WORKFLOW_PANES_DEBUG is set, record why each dispatch
     // did or didn't open a pane to ~/.pi/agent/obs/pane-debug.log (stderr would corrupt
     // the TUI). Makes this otherwise-silent, best-effort feature diagnosable.
@@ -243,7 +246,7 @@ export function openAgentPane(agent: string, env: NodeJS.ProcessEnv = process.en
             log("skip — no PI_OBS_RUN (obs collector hasn't minted a run id yet)");
             return null;
         }
-        const open = paneOpenCommand(mux, viewerArgv(runId, agent, { sink: env.PI_OBS_SINK }), agent.toLowerCase(), paneSplitDir(env));
+        const open = paneOpenCommand(mux, viewerArgv(runId, agent, { sink: env.PI_OBS_SINK, dispatchId }), agent.toLowerCase(), paneSplitDir(env));
         const r = spawnSync(open.file, open.argv, { encoding: "utf-8", timeout: 3000 });
         if (r.error || (typeof r.status === "number" && r.status !== 0)) {
             log(`skip — ${mux.kind} open failed: ${r.error?.message || `exit ${r.status}`}${r.stderr ? ` — ${String(r.stderr).trim()}` : ""}`);
@@ -258,7 +261,15 @@ export function openAgentPane(agent: string, env: NodeJS.ProcessEnv = process.en
                 closed = true;
                 try {
                     const c = paneCloseCommand(mux, paneId);
-                    if (c) spawn(c.file, c.argv, { stdio: "ignore" }).unref();
+                    if (c) {
+                        // MUST attach an error listener: spawn reports a missing/gone
+                        // binary via an ASYNC 'error' event (ENOENT), and an unhandled
+                        // 'error' event crashes the whole orchestrator process — the
+                        // try/catch here only guards synchronous throws.
+                        const killer = spawn(c.file, c.argv, { stdio: "ignore" });
+                        killer.on("error", () => {});
+                        killer.unref();
+                    }
                 } catch {
                     /* best-effort */
                 }
