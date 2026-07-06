@@ -34,6 +34,7 @@ import {
 import { fileURLToPath } from "url";
 import { defaultSkillRoots } from "../guards/path-guard";
 import { memoryEnabled, memoryInjection } from "./memory";
+import { openAgentPane } from "./pane-mux";
 import {
     secs,
     isModelFailure,
@@ -3297,6 +3298,11 @@ export function spawnAgentWithModel(
     const start = Date.now();
 
     return new Promise((resolve) => {
+        // Opt-in: open a multiplexer pane that live-views this agent's obs lane. A
+        // passive viewer fed by obs — it does not touch the child's stdout/kill path.
+        // No-op unless PI_WORKFLOW_PANES + PI_OBS are on and we're in a multiplexer.
+        const pane = openAgentPane(agentDef.name);
+
         // detached ⇒ the child leads its own process group, so the watchdog can
         // signal the WHOLE tree (pi + its tool children) on timeout, not just pi.
         const proc = spawn("pi", args, {
@@ -3392,6 +3398,7 @@ export function spawnAgentWithModel(
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
             if (killEscalation) clearTimeout(killEscalation);
+            pane?.close();
             phase.elapsed = Date.now() - start;
             phase.note =
                 state.answer.join("") || state.finalText
@@ -3416,6 +3423,7 @@ export function spawnAgentWithModel(
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
             if (killEscalation) clearTimeout(killEscalation);
+            pane?.close();
             resolve({
                 output: `Error spawning agent: ${err.message}`,
                 exitCode: 1,
