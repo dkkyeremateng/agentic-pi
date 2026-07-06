@@ -35,7 +35,7 @@ import {
     type LiveSessionMeta,
 } from "../obs/obs-chat-control";
 import type { ChatEvent } from "../obs/obs-chat";
-import { publishExternalSteer } from "../utils/workflow/pane-mux";
+import { publishExternalSteer, publishHasUi } from "../utils/workflow/pane-mux";
 
 // Cap (chars) for the full args/result captured for the expand-on-click view.
 // Default is unlimited — tool args/results are the agent's working I/O and we
@@ -328,6 +328,10 @@ export default function obsLive(pi: any): void {
 
     pi.on("session_start", async (_e: any, ctx: any) => {
         liveCtx = ctx; // for stop/abort over the control channel
+        // Tell the workflow pane layer whether THIS pi process is interactive
+        // (ctx.hasUI) — the authoritative signal, unlike process.stdout.isTTY which
+        // pi's TUI doesn't reliably keep. Sub-agents/headless runs report false.
+        publishHasUi(() => (liveCtx as any)?.hasUI === true);
         const cwd: string = ctx?.cwd ?? process.cwd();
         sink = sinkPath(cwd);
         try {

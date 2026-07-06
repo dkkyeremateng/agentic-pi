@@ -9,6 +9,9 @@ import {
     viewerArgv,
     publishExternalSteer,
     externalSteerActive,
+    panesReason,
+    publishHasUi,
+    interactivePi,
 } from "./pane-mux";
 
 test("detectMux picks the multiplexer from env (tmux → zellij → wezterm → kitty)", () => {
@@ -34,6 +37,24 @@ test("panesEnabled requires the flag, obs, an interactive TTY, a mux, AND root d
     // no interactive terminal (Telegram / pi-obs chat drive the agent headless) → no panes,
     // even with the flag, obs, a mux, and $TMUX all present (inherited from the bridge).
     assert.equal(panesEnabled(base, false), false);
+});
+
+test("panesReason names the failing gate, null when all pass", () => {
+    const base = { PI_WORKFLOW_PANES: "1", PI_OBS: "1", TMUX: "x" };
+    assert.equal(panesReason(base, true), null);
+    assert.match(panesReason({ ...base, PI_WORKFLOW_PANES: "0" }, true)!, /PI_WORKFLOW_PANES/);
+    assert.match(panesReason({ ...base, PI_OBS: "" }, true)!, /PI_OBS/);
+    assert.match(panesReason(base, false)!, /interactive/); // headless (Telegram/chat)
+    assert.match(panesReason({ ...base, PI_DISPATCH_DEPTH: "2" }, true)!, /root orchestrator/);
+    assert.match(panesReason({ PI_WORKFLOW_PANES: "1", PI_OBS: "1" }, true)!, /multiplexer/);
+});
+
+test("interactivePi prefers pi's published hasUI over stdout.isTTY", () => {
+    publishHasUi(() => true);
+    assert.equal(interactivePi(), true);
+    publishHasUi(() => false); // pi says headless → not interactive, even under a TTY
+    assert.equal(interactivePi(), false);
+    publishHasUi(() => process.stdout.isTTY === true); // reset for other tests
 });
 
 test("shquote wraps in single quotes and escapes embedded quotes", () => {

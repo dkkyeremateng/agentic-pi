@@ -19,6 +19,8 @@
 // unit-tested; the spawn/kill IO is a thin, guarded wrapper.
 
 import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,25 +43,52 @@ export function detectMux(env: NodeJS.ProcessEnv = process.env): Mux | null {
     return null;
 }
 
-/** Panes are opened only when: explicitly enabled; obs is on (the viewer reads the
- *  sink); the dispatch was initiated from an INTERACTIVE pi terminal (isTty); this
- *  process is the ROOT orchestrator (depth 0, so a nested sub-orchestrator doesn't
- *  spawn panes-of-panes); and a multiplexer exists.
- *
- *  The isTty gate is what excludes Telegram- and pi-obs-chat-initiated dispatches:
- *  those run the orchestrator/agent HEADLESS (`pi --mode json -p`, stdout piped), so
- *  isTty is false even when the bridge or obs-server itself sits inside a multiplexer
- *  (which would otherwise leak $TMUX/$ZELLIJ into the child). Only a pi session a
- *  human is actually attached to has a TTY. Injectable for tests. */
+// pi's authoritative "is this an interactive session" flag (ctx.hasUI), published
+// by obs-live at session_start. Preferred over process.stdout.isTTY, which pi's TUI
+// does not reliably keep as a TTY. Falls back to isTTY when obs-live hasn't published
+// (e.g. obs off — but then panes are disabled anyway).
+const HAS_UI_GLOBAL = "__pi_hasUiGetter__";
+
+/** Publish pi's hasUI flag (called by obs-live with () => ctx.hasUI). */
+export function publishHasUi(fn: () => boolean): void {
+    (globalThis as any)[HAS_UI_GLOBAL] = fn;
+}
+
+/** Whether this is an interactive pi session a human is attached to. Prefers pi's
+ *  ctx.hasUI (published by obs-live); falls back to process.stdout.isTTY. */
+export function interactivePi(): boolean {
+    try {
+        const fn = (globalThis as any)[HAS_UI_GLOBAL];
+        if (typeof fn === "function") return fn() === true;
+    } catch {
+        /* fall through */
+    }
+    return process.stdout.isTTY === true;
+}
+
+/** The reason panes are NOT enabled for this env, or null when they ARE. Powers both
+ *  panesEnabled and openAgentPane's debug log. `isTty` is injectable for tests. */
+export function panesReason(
+    env: NodeJS.ProcessEnv = process.env,
+    isTty: boolean = interactivePi(),
+): string | null {
+    if (!truthy(env.PI_WORKFLOW_PANES)) return "disabled — PI_WORKFLOW_PANES not set";
+    if (!truthy(env.PI_OBS)) return "PI_OBS not set (the pane viewer reads the obs sink)";
+    // Interactive pi ONLY: Telegram / pi-obs-chat dispatches run the agent HEADLESS
+    // (hasUI false), so they never get panes even when the bridge/server sits inside a
+    // multiplexer (which would leak $TMUX/$ZELLIJ into the child).
+    if (!isTty) return "not an interactive pi session (headless — e.g. Telegram / pi-obs chat)";
+    if ((parseInt(env.PI_DISPATCH_DEPTH || "0", 10) || 0) !== 0) return "not the root orchestrator (nested dispatch)";
+    if (detectMux(env) === null) return "no supported multiplexer (tmux/zellij/WezTerm/kitty)";
+    return null;
+}
+
+/** Panes are opened only when panesReason() is null. */
 export function panesEnabled(
     env: NodeJS.ProcessEnv = process.env,
-    isTty: boolean = process.stdout.isTTY === true,
+    isTty: boolean = interactivePi(),
 ): boolean {
-    if (!truthy(env.PI_WORKFLOW_PANES)) return false;
-    if (!truthy(env.PI_OBS)) return false;
-    if (!isTty) return false;
-    if ((parseInt(env.PI_DISPATCH_DEPTH || "0", 10) || 0) !== 0) return false;
-    return detectMux(env) !== null;
+    return panesReason(env, isTty) === null;
 }
 
 /** POSIX single-quote a token so an argv can be embedded in a shell-command string
@@ -169,18 +198,44 @@ export interface PaneHandle {
  *  close() best-effort kills the pane, or null when panes are disabled/unsupported or
  *  anything goes wrong. Never throws. */
 export function openAgentPane(agent: string, env: NodeJS.ProcessEnv = process.env): PaneHandle | null {
+    // Opt-in debug trace: when PI_WORKFLOW_PANES_DEBUG is set, record why each dispatch
+    // did or didn't open a pane to ~/.pi/agent/obs/pane-debug.log (stderr would corrupt
+    // the TUI). Makes this otherwise-silent, best-effort feature diagnosable.
+    const debug = truthy(env.PI_WORKFLOW_PANES_DEBUG);
+    const log = (msg: string) => {
+        if (!debug) return;
+        try {
+            appendFileSync(join(homedir(), ".pi", "agent", "obs", "pane-debug.log"), `${new Date().toISOString()} ${agent}: ${msg}\n`);
+        } catch {
+            /* best-effort */
+        }
+    };
     try {
-        if (!panesEnabled(env)) return null;
+        const reason = panesReason(env);
+        if (reason) {
+            log(`skip — ${reason}`);
+            return null;
+        }
         // Suppress panes for a dispatch initiated by an injected Telegram / pi-obs
         // chat prompt, even on an interactive orchestrator (see externalSteerActive).
-        if (externalSteerActive()) return null;
-        const mux = detectMux(env);
+        if (externalSteerActive()) {
+            log("skip — external steer (Telegram / pi-obs chat prompt)");
+            return null;
+        }
+        const mux = detectMux(env)!;
         const runId = env.PI_OBS_RUN;
-        if (!mux || !runId) return null;
+        if (!runId) {
+            log("skip — no PI_OBS_RUN (obs collector hasn't minted a run id yet)");
+            return null;
+        }
         const open = paneOpenCommand(mux, viewerArgv(runId, agent, { sink: env.PI_OBS_SINK }), agent.toLowerCase());
         const r = spawnSync(open.file, open.argv, { encoding: "utf-8", timeout: 3000 });
-        if (r.error || (typeof r.status === "number" && r.status !== 0)) return null;
+        if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+            log(`skip — ${mux.kind} open failed: ${r.error?.message || `exit ${r.status}`}${r.stderr ? ` — ${String(r.stderr).trim()}` : ""}`);
+            return null;
+        }
         const paneId = open.idFromStdout ? (r.stdout || "").trim().split("\n")[0]?.trim() || "" : "";
+        log(`opened ${mux.kind} pane${paneId ? ` ${paneId}` : ""}`);
         let closed = false;
         return {
             close() {
@@ -194,7 +249,8 @@ export function openAgentPane(agent: string, env: NodeJS.ProcessEnv = process.en
                 }
             },
         };
-    } catch {
+    } catch (e) {
+        log(`skip — exception: ${(e as Error)?.message || e}`);
         return null;
     }
 }
