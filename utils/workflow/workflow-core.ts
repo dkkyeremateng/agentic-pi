@@ -225,17 +225,11 @@ export function selectedWorkflowExtension(): string | null {
     return null;
 }
 
-// Whether the extension with the given SELF_NAME owns the on-screen chrome.
-export function isActiveWorkflow(selfName: string): boolean {
-    const sel = selectedWorkflowExtension();
-    return sel ? sel === selfName : selfName === "agent-workflow";
-}
-
 // True when extensions/agent-workflow.ts is among the loaded `-e` extensions. Lets
 // the workflow's companion extensions (footer, revert, lsp-panel) gate themselves
 // so they activate ONLY alongside agent-workflow. argv-based — known at load time,
-// so there's no session_start ordering or globalThis timing to coordinate. Unlike
-// isActiveWorkflow() this never defaults to true: no agent-workflow `-e`, no go.
+// so there's no session_start ordering or globalThis timing to coordinate. Note
+// this never defaults to true: no agent-workflow `-e`, no go.
 export function agentWorkflowLoaded(): boolean {
     return selectedWorkflowExtension() === "agent-workflow";
 }
@@ -2523,6 +2517,10 @@ export async function runAgentWithFallback(
             msg: string,
             level: "success" | "error" | "warning" | "info",
         ) => void;
+        // True when the run was cancelled (e.g. escape-cancel killed the
+        // subprocess). Checked before every retry so a killed agent — whose
+        // output can look like a transient/model failure — is never re-spawned.
+        isAborted?: () => boolean;
     },
 ): Promise<{ output: string; exitCode: number }> {
     const agentName = displayName(agentDef.name);
@@ -2539,6 +2537,7 @@ export async function runAgentWithFallback(
         for (
             let tries = 1;
             tries <= maxTransient &&
+            !opts.isAborted?.() &&
             r.exitCode !== 0 &&
             isTransientError(r.output) &&
             !isModelFailure(r.output);
@@ -2567,6 +2566,8 @@ export async function runAgentWithFallback(
     // Only model-specific load/run failures trigger a fallback — timeouts,
     // tool failures, and bad output are not retried.
     if (result.exitCode !== 0 && isModelFailure(result.output)) {
+        // User cancellation: don't burn a fallback retry on a killed run.
+        if (opts.isAborted?.()) return result;
 
         // If the agent is already on the primary agent's model (no distinct
         // fallback), there is nothing to fall back to — tell the user.
