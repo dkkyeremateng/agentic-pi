@@ -259,6 +259,31 @@ describe("dispatchAgentCore", () => {
         }
     });
 
+    it("disables dispatch entirely when PI_DISPATCH_MAX_DEPTH=0", async () => {
+        const saved = saveDispatchEnv();
+        try {
+            delete process.env.PI_DISPATCH_DEPTH; // top level: depth 0
+            process.env.PI_DISPATCH_MAX_DEPTH = "0";
+            const result = await dispatchAgentCore(
+                mkState(),
+                mkHost(),
+                "scout",
+                "task",
+                undefined,
+                mkCtx(),
+            );
+            const first: unknown = result.content[0];
+            assert.ok(first && typeof first === "object" && "text" in first);
+            assert.ok(typeof first.text === "string");
+            assert.ok(
+                first.text.includes("depth limit"),
+                "depth 0 is already at the limit when max is 0",
+            );
+        } finally {
+            restoreDispatchEnv(saved);
+        }
+    });
+
     it("refuses a cycle when the agent is already an ancestor", async () => {
         const saved = saveDispatchEnv();
         try {
@@ -1248,6 +1273,59 @@ describe("selectAgentsCore", () => {
         );
     });
 
+    it("creates one phase per duplicate occurrence; an unknown name never becomes a card", () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("seeker", mkAgent("seeker"));
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = selectAgentsCore(
+            st,
+            host,
+            ["seeker", "seeker", "bogus"],
+            mkCtx(),
+        );
+        assert.equal(st.phases.length, 2, "two seeker instances, no bogus card");
+        assert.ok(st.phases.every((p) => p.agent === "seeker"));
+        const details: unknown = result.details;
+        assert.ok(details && typeof details === "object" && "order" in details);
+        assert.equal(details.order, "Seeker ∥ Seeker");
+    });
+
+    it("re-selection with duplicates reuses an existing phase at most once", () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("seeker", mkAgent("seeker"));
+        const existingPhase: PhaseState = {
+            label: "Seeker",
+            agent: "seeker",
+            status: "done",
+            elapsed: 1200,
+            note: "",
+            log: "",
+            droppedLines: 0,
+            toolCount: 2,
+            contextPct: 5,
+            attempt: 1,
+            modelFallback: false,
+        };
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+        });
+        const st = mkStateWithAgents(agents, {
+            dispatchMode: true,
+            freshDispatchSession: false,
+            phases: [existingPhase],
+        });
+        selectAgentsCore(st, host, ["seeker", "seeker"], mkCtx());
+        assert.equal(st.phases.length, 2);
+        assert.equal(st.phases[0], existingPhase, "the prior phase is reused once");
+        assert.ok(
+            st.phases[0] !== st.phases[1],
+            "the same PhaseState object is never inserted twice",
+        );
+    });
+
     it("does not reload agents when freshDispatchSession is false", () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
@@ -1558,6 +1636,7 @@ Build feature X according to the requirements.
         assert.equal(result.status, "error");
         assert.match(result.report, /failed unexpectedly: boom/);
         assert.equal(st.running, false); // not stuck — the command stays usable
+        assert.equal(st.lastStatus, "error"); // the dashboard must not keep reading "running"
     });
 
     it("runs the refiner between planner and implementer; the hardened plan on disk is the source of truth", async () => {
@@ -1689,6 +1768,41 @@ Build feature X according to the requirements.
         // reviewer: REVISE then APPROVED; implementer: first pass + the review fix.
         assert.equal(reviewerCalls, 2);
         assert.equal(implementerCalls, 2);
+    });
+
+    it("runs the reviewer when the roster has no implementer (review-only)", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("reviewer", mkAgent("reviewer"));
+        let reviewerCalls = 0;
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "reviewer") {
+                        reviewerCalls++;
+                        return {
+                            output: "APPROVED\nWorking tree looks good",
+                            ok: true,
+                        };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(
+            st,
+            host,
+            "Review the working tree changes",
+            3,
+            mkCtx(),
+        );
+        assert.equal(result.status, "done");
+        assert.equal(
+            reviewerCalls,
+            1,
+            "the reviewer reviews the working tree instead of being skipped",
+        );
     });
 
     it("handles validation FAIL → re-implementation loop", async () => {
@@ -2124,6 +2238,39 @@ describe("runWorkflowCore (resume / build team)", () => {
         );
     });
 
+    it("fails a resume on an invalid saved plan.md, removes it, and never implements", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("implementer", mkAgent("implementer"));
+        const cwd = mkdtempSync(join(tmpdir(), "resume-badplan-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        const planPath = join(cwd, ".agent", "plan.md");
+        // Garbage from an interrupted earlier run — no phases, no criteria.
+        writeFileSync(planPath, "TODO: figure the approach out later", "utf-8");
+
+        const runPhaseCalls: string[] = [];
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    runPhaseCalls.push(phase.agent);
+                    return { output: "impl output", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Continue X", 3, { cwd });
+
+        assert.equal(result.status, "error");
+        assert.match(result.report, /not a usable plan/);
+        assert.match(result.report, /has been removed/);
+        assert.ok(!existsSync(planPath), "the unusable plan was deleted");
+        assert.deepEqual(
+            runPhaseCalls,
+            [],
+            "the implementer never ran from a garbage plan",
+        );
+    });
+
     it("still wipes scratch when a planner IS present (fresh plan, no stale resume)", async () => {
         const agents = new Map<string, AgentDef>();
         for (const n of ["planner", "implementer", "reviewer", "validator", "shipper"])
@@ -2161,6 +2308,163 @@ describe("runWorkflowCore (resume / build team)", () => {
             !implSawPlan.includes("STALE PLAN") && implSawPlan.includes("Fresh"),
             "the stale plan was wiped and replaced by the planner's fresh plan",
         );
+    });
+});
+
+// ── runWorkflowCore — error exits (finalizeError) & pre-run validation ──
+
+describe("runWorkflowCore (error bookkeeping / pre-run validation)", () => {
+    function plannerOnly(): Map<string, AgentDef> {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        return agents;
+    }
+    // Last line of the append-only .agent/metrics.jsonl trend log.
+    function lastMetricsLine(cwd: string): unknown {
+        const lines = readFileSync(join(cwd, ".agent", "metrics.jsonl"), "utf-8")
+            .trim()
+            .split("\n");
+        return JSON.parse(lines[lines.length - 1]);
+    }
+
+    it("a failing phase writes workflow-report.md and appends an error metrics line", async () => {
+        const agents = plannerOnly();
+        const cwd = mkdtempSync(join(tmpdir(), "errfail-"));
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async () => ({
+                    output: "provider quota exhausted",
+                    ok: false,
+                }),
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Build feature X", 3, {
+            cwd,
+        });
+
+        assert.equal(result.status, "error");
+        assert.equal(st.lastStatus, "error");
+        // The failure is persisted, not just returned: report file + metrics line.
+        const report = readFileSync(join(cwd, "workflow-report.md"), "utf-8");
+        assert.match(report, /Planning failed/);
+        assert.match(report, /provider quota exhausted/);
+        const metrics = lastMetricsLine(cwd);
+        assert.ok(metrics && typeof metrics === "object" && "status" in metrics);
+        assert.equal(metrics.status, "error");
+    });
+
+    it("an inline validation error (garbage plan) is bookkept the same way", async () => {
+        const agents = plannerOnly();
+        const cwd = mkdtempSync(join(tmpdir(), "errval-"));
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                // A summary instead of a plan — fails validatePlan, not the phase.
+                runPhase: async () => ({
+                    output: "I wrote the plan to .agent/plan.md.",
+                    ok: true,
+                }),
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Design feature Y", 3, {
+            cwd,
+        });
+
+        assert.equal(result.status, "error");
+        assert.equal(st.lastStatus, "error");
+        assert.match(
+            readFileSync(join(cwd, "workflow-report.md"), "utf-8"),
+            /missing required structure/i,
+        );
+        const metrics = lastMetricsLine(cwd);
+        assert.ok(metrics && typeof metrics === "object" && "status" in metrics);
+        assert.equal(metrics.status, "error");
+    });
+
+    it("an abort exit does NOT clobber the previous report or append metrics", async () => {
+        const agents = plannerOnly();
+        const cwd = mkdtempSync(join(tmpdir(), "errabort-"));
+        writeFileSync(
+            join(cwd, "workflow-report.md"),
+            "PREVIOUS RUN REPORT",
+            "utf-8",
+        );
+        const controller = new AbortController();
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                // User cancels mid-phase: the killed phase surfaces a failure.
+                runPhase: async () => {
+                    controller.abort();
+                    return { output: "killed", ok: false };
+                },
+            },
+            signal: controller.signal,
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Build feature X", 3, {
+            cwd,
+        });
+
+        assert.equal(result.status, "aborted");
+        assert.equal(
+            readFileSync(join(cwd, "workflow-report.md"), "utf-8"),
+            "PREVIOUS RUN REPORT",
+        );
+        assert.ok(!existsSync(join(cwd, ".agent", "metrics.jsonl")));
+    });
+
+    it("missing agent definitions fail BEFORE any destructive setup", async () => {
+        const agents = plannerOnly();
+        const cwd = mkdtempSync(join(tmpdir(), "preval-"));
+        let sessionSetups = 0;
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {
+                    sessionSetups++;
+                },
+            },
+        });
+        const previousPhases: PhaseState[] = [
+            {
+                label: "Planner",
+                agent: "planner",
+                status: "done",
+                elapsed: 5000,
+                note: "from the previous run",
+                log: "",
+                droppedLines: 0,
+                toolCount: 3,
+                contextPct: 10,
+                attempt: 1,
+                modelFallback: false,
+            },
+        ];
+        const st = mkStateWithAgents(agents, {
+            teams: { broken: ["planner", "ghost"] },
+            activeTeamName: "broken",
+            phases: previousPhases,
+        });
+        const result = await runWorkflowCore(st, host, "Build feature X", 3, {
+            cwd,
+        });
+
+        assert.equal(result.status, "error");
+        assert.match(result.report, /Missing agent definitions: ghost/);
+        assert.equal(sessionSetups, 0, "no session wipe on a misconfigured roster");
+        assert.equal(st.phases, previousPhases, "previous phases untouched");
+        // Still fully bookkept as an error exit.
+        assert.match(
+            readFileSync(join(cwd, "workflow-report.md"), "utf-8"),
+            /Missing agent definitions/,
+        );
+        const metrics = lastMetricsLine(cwd);
+        assert.ok(metrics && typeof metrics === "object" && "status" in metrics);
+        assert.equal(metrics.status, "error");
     });
 });
 
@@ -2888,14 +3192,14 @@ describe("planArchiveName", () => {
     it("is <YYYY-MM-DD>-<slug>.md", () => {
         const name = planArchiveName(
             "Add the Login Page!",
-            new Date("2026-06-08T10:00:00Z"),
+            new Date(2026, 5, 8, 10, 0, 0), // June 8, LOCAL time (names use local dates)
         );
         assert.equal(name, "2026-06-08-add-the-login-page.md");
     });
 });
 
 describe("archivePlan", () => {
-    const now = new Date("2026-06-08T10:00:00Z");
+    const now = new Date(2026, 5, 8, 10, 0, 0); // June 8, LOCAL time (archive dates are local)
 
     it("writes the plan with an outcome header and returns the repo-relative path", () => {
         const cwd = mkdtempSync(join(tmpdir(), "arch-"));
@@ -3025,11 +3329,14 @@ describe("selectPlan", () => {
         assert.equal(r.output, VALID); // the planner's draft
     });
 
-    it("keeps the first non-empty candidate when nothing validates (caller errors)", () => {
+    it("keeps the first non-empty candidate when nothing validates (caller errors) without persisting it", () => {
         const cwd = tmp();
         const r = selectPlan(ra(), cwd, ["", SHORT, "also not a plan"]);
         assert.equal(r.output, SHORT); // surfaced for the downstream validatePlan error
         assert.ok(r.ok); // selectPlan itself never throws; validity is checked by the caller
+        // The garbage must NOT land in .agent/plan.md, where a later planner-less
+        // (build) run would resume from it.
+        assert.ok(!existsSync(join(cwd, ".agent", "plan.md")));
     });
 
     it("readPlanFile returns '' for a missing file", () => {

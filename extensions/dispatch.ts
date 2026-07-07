@@ -11,7 +11,8 @@
 //
 // The agent-workflow extension depends on this extension for dispatch: it no longer
 // registers dispatch_agent/select_agents itself and instead subscribes to
-// DISPATCH_UPDATE on pi.events. Load both together (dispatch first).
+// DISPATCH_UPDATE on pi.events. Load both together (order doesn't matter — the
+// dashboard subscribes on pi.events before any dispatch can fire).
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -29,6 +30,7 @@ import {
     displayName,
     renderDispatchAgentCall,
     renderDispatchAgentResult,
+    renderDispatchParallelResult,
     renderSelectAgentsCall,
     renderSelectAgentsResult,
     type AgentDef,
@@ -73,10 +75,23 @@ export default function (pi: ExtensionAPI) {
     // All live sub-agent subprocesses. A Set (not a single ref) so cancellation
     // kills EVERY running agent — parallel dispatch can have several at once.
     const liveProcs = new Set<any>();
+    // Set when the turn is aborted (or the session shuts down) — checked by
+    // runAgentWithFallback so a killed agent is never re-spawned by the
+    // transient/fallback retry paths. Reset at each turn start.
+    let dispatchAborted = false;
     const killAllProcs = () => {
+        dispatchAborted = true;
         for (const p of liveProcs) {
             try {
                 p.kill("SIGTERM");
+                // Escalate if SIGTERM is ignored — unref'd so the timer can't
+                // keep the process alive; killing an exited proc is a no-op.
+                setTimeout(() => {
+                    try {
+                        if (p.exitCode == null && p.signalCode == null)
+                            p.kill("SIGKILL");
+                    } catch {}
+                }, 2000).unref?.();
             } catch {}
         }
         liveProcs.clear();
@@ -132,6 +147,7 @@ export default function (pi: ExtensionAPI) {
             phases: st.phases.map((p) => ({ ...p })),
             dispatchMode: st.dispatchMode,
             dispatchElapsedMs: st.dispatchElapsedMs,
+            dispatchedThisTurn: st.dispatchedThisTurn,
         };
         pi.events.emit(DISPATCH_UPDATE, payload);
     }
@@ -186,6 +202,8 @@ export default function (pi: ExtensionAPI) {
             {
                 updateWidget: () => emitUpdate(),
                 notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
+                // Stops in-place transient/fallback retries once cancelled.
+                isAborted: () => dispatchAborted,
             },
         );
     }
@@ -322,6 +340,16 @@ export default function (pi: ExtensionAPI) {
                 0,
             );
         },
+        renderResult(result, options, theme) {
+            return renderDispatchParallelResult(
+                result,
+                options,
+                theme,
+                Text,
+                Markdown,
+                getMarkdownTheme(),
+            );
+        },
     });
 
     // ── select_agents — declare the agents the work will use (dashboard plan) ─
@@ -367,6 +395,8 @@ export default function (pi: ExtensionAPI) {
     pi.on("agent_start", async () => {
         st.primaryTurnStartedAt = Date.now();
         st.dispatchesThisTurn = 0;
+        st.dispatchedThisTurn = false;
+        dispatchAborted = false;
     });
 
     // Teardown: pi fires session_shutdown on /new, /resume, /fork, /reload, and

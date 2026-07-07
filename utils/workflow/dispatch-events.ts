@@ -20,4 +20,8 @@ export interface DispatchUpdate {
     phases: PhaseState[];
     dispatchMode: boolean;
     dispatchElapsedMs: number;
+    // True once any dispatch ran this turn — lets a dashboard's agent_end hook
+    // fold the turn time and emit its completion ping (the flag lives on the
+    // dispatch extension's state, which owns the tools).
+    dispatchedThisTurn: boolean;
 }

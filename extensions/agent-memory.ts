@@ -21,7 +21,7 @@ export default function (pi: ExtensionAPI) {
                 description: "One durable, general, imperative lesson (< 280 chars).",
             }),
         }),
-        async execute(_id: any, params: any, _signal: any, _onUpdate: any, _ctx: any) {
+        async execute(_id: unknown, params: unknown, _signal: unknown, _onUpdate: unknown, ctx: { cwd?: string }) {
             const text = (item: string) => ({ content: [{ type: "text", text: item }], details: undefined });
             const learning = String((params as { learning?: unknown })?.learning || "").trim();
             if (!learning) return text("nothing to remember (empty learning).");
@@ -29,7 +29,7 @@ export default function (pi: ExtensionAPI) {
                 // Which agent this process IS — always set by dispatchEnv, independent
                 // of PI_OBS. Falls back to PI_OBS_AGENT, then a generic bucket.
                 const agent = (process.env.PI_AGENT_NAME || process.env.PI_OBS_AGENT || "agent").trim().toLowerCase();
-                stageLearning(process.cwd(), agent, learning);
+                stageLearning(ctx?.cwd || process.cwd(), agent, learning);
                 return text("Saved to your memory (pending this run's success).");
             } catch (e) {
                 return text("could not save the lesson: " + String((e as Error)?.message || e));

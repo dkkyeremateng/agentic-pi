@@ -73,13 +73,24 @@ export default function (pi: ExtensionAPI) {
             let backup = "";
             try {
                 backup = run(["stash", "create"]);
+                // `stash create` alone leaves only a dangling commit (absent
+                // from `git stash list`, gc-able) — store it so the backup is
+                // durable and discoverable.
+                if (backup)
+                    run([
+                        "stash",
+                        "store",
+                        "-m",
+                        "pre-revert backup (pi /revert)",
+                        backup,
+                    ]);
             } catch {}
             try {
                 for (const cmd of revertCommands(cp)) run(cmd);
                 ctx.ui.notify(
                     `Reverted to ${describeCheckpoint(cp)}.` +
                         (backup
-                            ? ` Previous state backed up — restore with: git stash apply ${backup.slice(0, 12)}`
+                            ? ` Previous state backed up to the stash list — restore with: git stash apply ${backup.slice(0, 12)}`
                             : "") +
                         " Any untracked files the run created were left in place.",
                     "info",

@@ -38,13 +38,15 @@ import type { ChatEvent } from "../obs/obs-chat";
 import { publishExternalSteer, publishHasUi } from "../utils/workflow/pane-mux";
 
 // Cap (chars) for the full args/result captured for the expand-on-click view.
-// Default is unlimited — tool args/results are the agent's working I/O and we
-// want them whole. Set PI_OBS_TOOL_MAX=<n> to cap (e.g. to bound the sink size).
+// Default caps each capture at 262144 chars (256 KB) to bound the sink size.
+// Set PI_OBS_TOOL_MAX=<n> for a different cap, or 0/"full" for unlimited
+// (tool args/results are the agent's working I/O — "full" keeps them whole).
 function toolMax(): number {
     const v = process.env.PI_OBS_TOOL_MAX;
-    if (!v || v === "0" || v.toLowerCase() === "full") return Infinity;
+    if (v === "0" || v?.toLowerCase() === "full") return Infinity;
+    if (!v) return 262_144;
     const n = parseInt(v, 10);
-    return Number.isNaN(n) ? Infinity : Math.max(0, n);
+    return Number.isNaN(n) ? 262_144 : Math.max(0, n);
 }
 function isTruncated(len: number, cap: number): boolean {
     return Number.isFinite(cap) && cap > 0 && len > cap;
@@ -56,13 +58,16 @@ function enabled(): boolean {
 
 // (b) Message/thinking CONTENT is opt-in separately from structural events,
 // because it can be large and may echo file contents or secrets. Off unless
-// PI_OBS_CONTENT=1; each block capped to PI_OBS_CONTENT_MAX chars (default 2000).
+// PI_OBS_CONTENT=1; each block capped to PI_OBS_CONTENT_MAX chars (default
+// 2000, 0 = emit no content at all).
 function contentEnabled(): boolean {
     return (
         process.env.PI_OBS_CONTENT === "1" ||
         process.env.PI_OBS_CONTENT === "true"
     );
 }
+// 0 = emit nothing (enforced at the emission sites — downstream capText treats
+// <=0 as no-limit, so a 0 cap must never reach it).
 function contentMax(): number {
     const n = parseInt(process.env.PI_OBS_CONTENT_MAX ?? "2000", 10);
     return Number.isNaN(n) ? 2000 : Math.max(0, n);
@@ -129,7 +134,8 @@ export default function obsLive(pi: any): void {
     const writeSidecar = (): void => {
         if (!liveMeta) return;
         try {
-            writeFileSync(sidecarPath(liveMeta.sessionId), JSON.stringify(liveMeta), "utf-8");
+            // 0o600: the sidecar carries the control token (defense in depth on the 0700 dir)
+            writeFileSync(sidecarPath(liveMeta.sessionId), JSON.stringify(liveMeta), { encoding: "utf-8", mode: 0o600 });
         } catch {}
     };
 
@@ -156,7 +162,7 @@ export default function obsLive(pi: any): void {
     };
 
     const setupControl = (meta: Omit<LiveSessionMeta, "pid" | "startedTs" | "sock">): void => {
-        if (process.env.PI_OBS_CHAT === "0") return; // opt-out
+        if (process.env.PI_OBS_CHAT === "0" || process.env.PI_OBS_CHAT === "false") return; // opt-out
         if (typeof pi.sendUserMessage !== "function") return; // not steerable in this mode
         try {
             mkdirSync(controlDir(), { recursive: true, mode: 0o700 }); // user-only
@@ -171,9 +177,12 @@ export default function obsLive(pi: any): void {
             ctrlToken = randomBytes(18).toString("hex"); // shared secret for this session
             const sock = sockPath(meta.sessionId);
             try {
-                unlinkSync(sock); // clear any stale socket from a crashed predecessor
+                // Defensive no-op: the sock path embeds this process's fresh
+                // sessionId, so no crashed predecessor can already occupy it.
+                unlinkSync(sock);
             } catch {}
             ctrlServer = createServer((conn: Socket) => {
+                conn.unref?.(); // idle control connections must not pin the process
                 let buf = "";
                 const send = (f: ChatEvent): void => {
                     try {
@@ -239,6 +248,8 @@ export default function obsLive(pi: any): void {
                             control.fail("inject failed: " + (e?.message || e));
                         }
                     }
+                    // pre-auth memory bound: drop peers streaming an unframed >1 MB line
+                    if (buf.length > 1_048_576) conn.destroy();
                 });
                 conn.on("error", () => {});
             });
@@ -248,6 +259,7 @@ export default function obsLive(pi: any): void {
                     chmodSync(sock, 0o600); // user-only socket
                 } catch {}
             });
+            ctrlServer.unref(); // the control server must not keep the process alive
             liveMeta = { ...meta, pid: process.pid, startedTs: Date.now(), sock, token: ctrlToken };
             liveSid = meta.sessionId;
             writeSidecar();
@@ -328,6 +340,16 @@ export default function obsLive(pi: any): void {
 
     pi.on("session_start", async (_e: any, ctx: any) => {
         liveCtx = ctx; // for stop/abort over the control channel
+        // pi re-fires session_start on /new, /resume, /fork and /reload within
+        // the same process. Tear down the previous session's control channel and
+        // re-arm the per-session one-shot latches so this session emits its own
+        // boot + session_end and publishes a fresh control socket. The exit hook
+        // stays double-emit safe: endEmitted only re-arms here, on a new session.
+        cleanupControl();
+        ctrlCleaned = false;
+        endEmitted = false;
+        bootEmitted = false;
+        dead = false;
         // Tell the workflow pane layer whether THIS pi process is interactive
         // (ctx.hasUI) — the authoritative signal, unlike process.stdout.isTTY which
         // pi's TUI doesn't reliably keep. Sub-agents/headless runs report false.
@@ -416,12 +438,13 @@ export default function obsLive(pi: any): void {
             // otherwise all collapse to the project name in the runs list)
             request: isRoot && titleEnabled() && typeof e?.prompt === "string" && e.prompt.trim() ? shortTitle(e.prompt) : undefined,
         });
-        // (b) the user's prompt, when content capture is on.
-        if (contentEnabled() && typeof e?.prompt === "string" && e.prompt.trim())
+        // (b) the user's prompt, when content capture is on (cap 0 = emit nothing).
+        const cmax = contentMax();
+        if (contentEnabled() && cmax > 0 && typeof e?.prompt === "string" && e.prompt.trim())
             emit("message", {
                 role: "user",
                 kind: "user",
-                text: capText(e.prompt.trim(), contentMax()),
+                text: capText(e.prompt.trim(), cmax),
             });
     });
 
@@ -521,9 +544,12 @@ export default function obsLive(pi: any): void {
             const out = usageFrom(msg)?.output ?? 0;
             genTps = genMs > 0 && out > 0 ? Math.round((out / genMs) * 1000) : 0;
         }
-        // (b) assistant text + thinking content (opt-in via PI_OBS_CONTENT).
+        // (b) assistant text + thinking content (opt-in via PI_OBS_CONTENT;
+        // cap 0 = emit nothing).
         if (!contentEnabled()) return;
-        const { text, thinking } = messageContent(msg, contentMax());
+        const cmax = contentMax();
+        if (cmax === 0) return;
+        const { text, thinking } = messageContent(msg, cmax);
         if (thinking)
             emit("message", { role: "assistant", kind: "thinking", text: thinking });
         if (text) emit("message", { role: "assistant", kind: "assistant", text });
@@ -542,10 +568,14 @@ export default function obsLive(pi: any): void {
             const sent = control.emitToActive({ type: "approval", toolCallId, name, input: e?.input });
             if (!sent) return; // no chat consumer listening — don't stall the agent
             const decision = await new Promise<"allow" | "deny">((resolve) => {
-                pendingApprovals.set(toolCallId, resolve);
-                setTimeout(() => {
+                const timer = setTimeout(() => {
                     if (pendingApprovals.delete(toolCallId)) resolve("deny");
                 }, approveTimeoutMs);
+                timer.unref?.(); // an unanswered approval must not pin the event loop
+                pendingApprovals.set(toolCallId, (d) => {
+                    clearTimeout(timer);
+                    resolve(d);
+                });
             });
             if (decision === "deny") return { block: true, reason: "denied by human in chat" };
         } catch {

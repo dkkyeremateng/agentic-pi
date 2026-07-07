@@ -1,9 +1,9 @@
-// ABOUTME: Shared orchestration for the agent-workflow extension.
-// ABOUTME: runWorkflow / dispatchAgent / selectAgents are byte-
-// ABOUTME: identical between the two except the per-agent vs single model strategy
-// ABOUTME: and the SHARED_CONTEXT flag, so they live here over a shared state object
-// ABOUTME: (held by the extension, also read by its widget/footer) and a host of
-// ABOUTME: per-extension callbacks. The extension keeps the model-specific bits.
+// ABOUTME: Shared orchestration for the agent-workflow extension: the full
+// ABOUTME: pipeline (runWorkflowCore), free-form dispatch (dispatchAgentCore /
+// ABOUTME: dispatchParallelCore), and selection (selectAgentsCore), driven over
+// ABOUTME: a shared state object (held by the extension, also read by its
+// ABOUTME: widget/footer) and a host of per-extension callbacks. The extension
+// ABOUTME: keeps the model-specific bits (per-agent models, subprocess spawns).
 
 // Type-only import (erased at runtime, so this module stays pi-free at runtime):
 // align our tool-result shape with pi's real AgentToolResult so the registered
@@ -188,15 +188,14 @@ type RunResult = { status: string; report: string };
 type ToolResult = AgentToolResult<unknown>;
 
 // ── Shared command handler ───────────────────────
-// runWorkflowCommand is used by the agent-workflow extension
-// (same notifications, same dropped-lines warning, same publishReport call).
-// Extracted here so both extensions share one copy.
+// The /agent-workflow command path: notifications, the dropped-lines warning, and
+// the publishReport call around runWorkflowCore.
 
 export async function runFullWorkflowCommand(
     s: OrchestratorState,
     h: OrchestratorHost,
     request: string,
-    ctx: any,
+    ctx: { cwd: string; ui: { notify(msg: string, level: string): void } },
     publishReport: (report: string) => void,
     maxLoops: number = DEFAULT_MAX_LOOPS,
 ): Promise<void> {
@@ -213,16 +212,22 @@ export async function runFullWorkflowCommand(
                 result.status === "failed-after-retries"
               ? "error"
               : "warning";
-    // Clickable link to the on-disk report (degrades to plain text where OSC 8
-    // isn't supported).
-    const reportLink = fileLink(
-        join(ctx.cwd, "workflow-report.md"),
-        "workflow-report.md",
-    );
-    ctx.ui.notify(
-        `Workflow ${result.status} in ${secs(s.runElapsedMs)}. Report: ${reportLink} (also shown below).`,
-        level as any,
-    );
+    if (result.status === "aborted") {
+        // No report file is written for an abort (it would clobber the previous
+        // run's report with a stub), so don't link one.
+        ctx.ui.notify(`Workflow aborted in ${secs(s.runElapsedMs)}.`, level);
+    } else {
+        // Clickable link to the on-disk report (degrades to plain text where OSC 8
+        // isn't supported). Error exits write the file too (finalizeError).
+        const reportLink = fileLink(
+            join(ctx.cwd, "workflow-report.md"),
+            "workflow-report.md",
+        );
+        ctx.ui.notify(
+            `Workflow ${result.status} in ${secs(s.runElapsedMs)}. Report: ${reportLink} (also shown below).`,
+            level,
+        );
+    }
     if (s.totalDroppedLines > 0) {
         ctx.ui.notify(
             `Heads up: ${s.totalDroppedLines} malformed JSON line(s) were dropped from agent output — possible pi subprocess issue (see report diagnostic).`,
@@ -271,9 +276,55 @@ const FAIL_AGENT: Record<string, string> = {
     Shipping: "shipper",
 };
 
+// Terminal bookkeeping for an error exit: mark state, persist the report and a
+// metrics line — so failed runs are visible in workflow-report.md and the
+// .agent/metrics.jsonl trends, not just the conversation — and repaint. The abort
+// path stays out on purpose: it must not clobber the previous report with a stub.
+function finalizeError(
+    s: OrchestratorState,
+    h: OrchestratorHost,
+    cwd: string,
+    request: string,
+    report: string,
+    phases: PhaseState[] = s.phases,
+): RunResult {
+    s.running = false;
+    s.lastStatus = "error";
+    s.runElapsedMs = Date.now() - s.runStartedAt;
+    writeReport(h, cwd, report);
+    writeMetrics(
+        h,
+        cwd,
+        buildWorkflowMetrics({
+            request,
+            status: "error",
+            verdict: "unknown",
+            passes: s.iteration,
+            maxLoops: s.maxLoopsRef,
+            passed: false,
+            prUrl: "",
+            team: s.activeTeamName || undefined,
+            startedAt: s.runStartedAt || undefined,
+            endedAt: Date.now(),
+            totals: {
+                runElapsedMs: s.runElapsedMs,
+                totalToolCalls: s.totalToolCalls,
+                totalTokens: s.totalTokens,
+                totalDroppedLines: s.totalDroppedLines,
+                totalCostUsd: s.totalCostUsd,
+            },
+            phases,
+        }),
+    );
+    h.ui.updateWidget();
+    return { status: "error", report };
+}
+
 function fail(
     s: OrchestratorState,
     h: OrchestratorHost,
+    cwd: string,
+    request: string,
     label: string,
     output: string,
 ): RunResult {
@@ -281,8 +332,6 @@ function fail(
     // the aborted status and skip the obs "fail" verdicts.
     const aborted = checkAbort(s, h);
     if (aborted) return aborted;
-    s.running = false;
-    s.lastStatus = "error";
     // Per-agent auto-verdict for the failing agent (scoped), then the run-level
     // verdict. Both are no-ops when PI_OBS is off.
     const agent = FAIL_AGENT[label];
@@ -300,7 +349,7 @@ function fail(
         note: label,
         source: "workflow",
     });
-    return failPhase(label, output);
+    return finalizeError(s, h, cwd, request, failPhase(label, output).report);
 }
 
 // Check if the workflow was aborted externally (e.g. user pressed escape).
@@ -345,10 +394,14 @@ export async function runWorkflowCore(
     }
     try {
         return await runWorkflowCoreImpl(s, h, request, maxLoops, ctx);
-    } catch (e: any) {
+    } catch (e) {
+        // Surfaced as a failed RunResult; also stamp the state so the dashboard
+        // doesn't keep reading "running" after a crash.
+        s.lastStatus = "error";
+        if (s.runStartedAt) s.runElapsedMs = Date.now() - s.runStartedAt;
         return {
             status: "error",
-            report: `Workflow failed unexpectedly: ${e?.message || String(e)}`,
+            report: `Workflow failed unexpectedly: ${e instanceof Error ? e.message : String(e)}`,
         };
     } finally {
         s.running = false;
@@ -389,6 +442,9 @@ async function runWorkflowCoreImpl(
         s.running = true;
         h.ui.updateWidget();
 
+        const pingAborted = checkAbort(s, h);
+        if (pingAborted) return pingAborted;
+
         // Run them all at once — independent health checks, no ordering.
         const results = await Promise.all(
             s.phases.map(async (phase) => {
@@ -425,6 +481,49 @@ async function runWorkflowCoreImpl(
     let members = activeMembers(s);
     if (members.length === 0) members = Array.from(s.agents.keys());
 
+    // ── Pre-run validation ──
+    // Runs BEFORE any destructive setup (session wipe, phase/state reset) so a
+    // misconfigured team can't erase the previous run's state on its way to an
+    // error. Every roster member must resolve to a loaded agent definition.
+    const roster = s.teams[s.activeTeamName] || [];
+    const missing = roster.filter((m) => !s.agents.has(m.toLowerCase()));
+    if (missing.length) {
+        s.runStartedAt = Date.now();
+        return finalizeError(
+            s,
+            h,
+            cwd,
+            request,
+            `Missing agent definitions: ${missing.join(", ")}. Expected them in .pi/agents/.`,
+            [],
+        );
+    }
+
+    // Resume support: a planner-less roster (e.g. the `build` team) CONTINUES from
+    // a plan a previous run already wrote, instead of regenerating it. Detect the
+    // existing plan BEFORE the scratch wipe below (which would delete it).
+    const hasPlanner = members.some((m) => m.toLowerCase() === "planner");
+    const hasImplementer = members.some(
+        (m) => m.toLowerCase() === "implementer",
+    );
+    const planPath = join(cwd, ".agent", "plan.md");
+    const hasExistingPlan = existsSync(planPath);
+    const resuming = !hasPlanner && hasExistingPlan;
+    if (hasImplementer && !hasPlanner && !hasExistingPlan) {
+        // Nothing to build from: no planner to produce a plan, and none on disk.
+        s.runStartedAt = Date.now();
+        return finalizeError(
+            s,
+            h,
+            cwd,
+            request,
+            "This team has no planner and there is no .agent/plan.md to build from. " +
+                "Run a team that includes a planner (e.g. plan-build or spec) first, then " +
+                "re-run the build team to resume the implementation from the saved plan.",
+            [],
+        );
+    }
+
     // A predefined team runs the canonical pipeline (scout → … → ship); only the
     // pipeline roles in its roster execute. Non-pipeline specialists are not run as
     // teams — research and other ad-hoc work goes through the orchestrator, which
@@ -446,18 +545,6 @@ async function runWorkflowCoreImpl(
     s.running = true;
     h.ui.updateWidget();
 
-    // Every roster member must resolve to a loaded agent definition.
-    const roster = s.teams[s.activeTeamName] || [];
-    const missing = roster.filter((m) => !s.agents.has(m.toLowerCase()));
-    if (missing.length) {
-        s.running = false;
-        s.lastStatus = "error";
-        return {
-            status: "error",
-            report: `Missing agent definitions: ${missing.join(", ")}. Expected them in .pi/agents/.`,
-        };
-    }
-
     const runArtifacts: RunArtifacts = {};
     const shared = (task: string, phaseAgent: string) => {
         if (!h.config.sharedContext) return task;
@@ -474,26 +561,8 @@ async function runWorkflowCoreImpl(
     const valP = pm.validator;
     const shipP = pm.shipper;
 
-    // Resume support: a planner-less roster (e.g. the `build` team) CONTINUES from a
-    // plan a previous run already wrote, instead of regenerating it. Detect an
-    // existing plan BEFORE the scratch wipe (which would delete it).
-    const planPath = join(cwd, ".agent", "plan.md");
-    const hasExistingPlan = existsSync(planPath);
-    const resuming = !planP && hasExistingPlan;
-    if (implP && !planP && !hasExistingPlan) {
-        // Nothing to build from: no planner to produce a plan, and none on disk.
-        s.running = false;
-        s.lastStatus = "error";
-        return {
-            status: "error",
-            report:
-                "This team has no planner and there is no .agent/plan.md to build from. " +
-                "Run a team that includes a planner (e.g. plan-build or spec) first, then " +
-                "re-run the build team to resume the implementation from the saved plan.",
-        };
-    }
-    // Wipe per-run scratch EXCEPT when resuming — then keep plan.md and the progress
-    // ledger so the implementer picks up exactly where it stopped.
+    // Wipe per-run scratch EXCEPT when resuming — then keep plan.md and the
+    // progress ledger so the implementer picks up exactly where it stopped.
     if (!resuming) resetRunScratch(cwd);
 
     let aborted: RunResult | null;
@@ -508,7 +577,7 @@ async function runWorkflowCoreImpl(
             scoutTask(request),
             cwd,
         );
-        if (!scoutRes.ok) return fail(s, h, "Scouting", scoutRes.output);
+        if (!scoutRes.ok) return fail(s, h, cwd, request, "Scouting", scoutRes.output);
         emitAgentVerdict(scoutP, "pass", "completed");
         scoutFindings = scoutRes.output;
         runArtifacts.recon = scoutFindings;
@@ -524,7 +593,7 @@ async function runWorkflowCoreImpl(
             planTask(request, scoutFindings),
             cwd,
         );
-        if (!plan.ok) return fail(s, h, "Planning", plan.output);
+        if (!plan.ok) return fail(s, h, cwd, request, "Planning", plan.output);
         emitAgentVerdict(planP, "pass", "completed");
         // The planner writes the full plan to .agent/plan.md and emits a short
         // confirmation; older models emit it inline. Take whichever is a valid plan
@@ -539,7 +608,7 @@ async function runWorkflowCoreImpl(
     // ── Refine (review + harden the plan before implementation) ──
     // The refiner reviews the planner's draft against the codebase and rewrites a
     // hardened plan; that becomes THE plan threaded to the implementer/reviewer.
-    if (refinerP && planP && plan.ok) {
+    if (refinerP && planP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
         // Keep the planner's draft before the refiner overwrites .agent/plan.md.
@@ -549,7 +618,7 @@ async function runWorkflowCoreImpl(
             shared(refineTask(request, scoutFindings), "refiner"),
             cwd,
         );
-        if (!refine.ok) return fail(s, h, "Refining", refine.output);
+        if (!refine.ok) return fail(s, h, cwd, request, "Refining", refine.output);
         emitAgentVerdict(refinerP, "pass", "completed");
         // The refiner writes the hardened plan to .agent/plan.md and emits a short
         // confirmation; older models emit it inline. Take whichever is a valid plan
@@ -565,26 +634,35 @@ async function runWorkflowCoreImpl(
 
     // Resuming a planner-less run: no planner produced the plan in-message this run,
     // so load the persisted plan as THE plan for the implementer/validator and the
-    // ledger seed (it was already validated when first written).
+    // ledger seed.
     if (resuming) {
         try {
             plan = { output: readFileSync(planPath, "utf-8"), ok: true };
         } catch {}
     }
 
-    // Enforce plan structure on the FINAL plan (post-refine) whenever a planner
-    // ran — the plan is the deliverable for a plan-only team (spec) too, and a
-    // malformed plan (e.g. the agent emitted a summary instead of a plan) must
-    // fail loudly rather than ship as garbage.
-    if (planP) {
+    // Enforce plan structure on the FINAL plan whenever one drives the rest of the
+    // pipeline: post-refine when a planner ran (the plan is the deliverable for a
+    // plan-only team too), and on resume (a stale, truncated, or corrupt
+    // .agent/plan.md must not silently drive an implementation). A malformed plan
+    // fails loudly rather than shipping as garbage.
+    if (planP || resuming) {
         const planCheck = validatePlan(plan.output);
         if (!planCheck.ok) {
-            s.running = false;
-            s.lastStatus = "error";
-            return {
-                status: "error",
-                report: `Plan is missing required structure. The plan lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe plan is unusable (the planner/refiner may have emitted a summary instead of the full plan). Re-run with a more specific request, or check that the planner/refiner agent definitions are complete.`,
-            };
+            // Remove the unusable plan so a later planner-less (build) run can't
+            // resume from it.
+            try {
+                rmSync(planPath, { force: true });
+            } catch {}
+            return finalizeError(
+                s,
+                h,
+                cwd,
+                request,
+                resuming
+                    ? `The saved .agent/plan.md is not a usable plan — it lacks:\n- ${planCheck.missing.join("\n- ")}\n\nIt has been removed. Run a planning team (e.g. plan-build or spec) to produce a fresh plan, then re-run the build team.`
+                    : `Plan is missing required structure. The plan lacks:\n- ${planCheck.missing.join("\n- ")}\n\nThe plan is unusable (the planner/refiner may have emitted a summary instead of the full plan). Re-run with a more specific request, or check that the planner/refiner agent definitions are complete.`,
+            );
         }
     }
 
@@ -610,7 +688,7 @@ async function runWorkflowCoreImpl(
             shared(implementTask(request), "implementer"),
             cwd,
         );
-        if (!impl.ok) return fail(s, h, "Implementing", impl.output);
+        if (!impl.ok) return fail(s, h, cwd, request, "Implementing", impl.output);
         runArtifacts.implSummary = impl.output;
     }
 
@@ -621,7 +699,9 @@ async function runWorkflowCoreImpl(
     let review = { output: "", ok: true };
     let reviewVerdict: CritiqueVerdict = "unknown";
     let priorReview = ""; // last round's findings — threaded into a re-review
-    if (reviewerP && impl.ok) {
+    // (!implP || impl.ok): a roster can carry a reviewer without an implementer —
+    // then the reviewer still reviews the working tree instead of being skipped.
+    if (reviewerP && (!implP || impl.ok)) {
         for (let loop = 1; loop <= maxLoops; loop++) {
             aborted = checkAbort(s, h);
             if (aborted) return aborted;
@@ -632,7 +712,7 @@ async function runWorkflowCoreImpl(
                 shared(reviewTask(request, impl.output, priorReview), "reviewer"),
                 cwd,
             );
-            if (!review.ok) return fail(s, h, "Review", review.output);
+            if (!review.ok) return fail(s, h, cwd, request, "Review", review.output);
 
             reviewVerdict = detectCritique(review.output);
             if (reviewVerdict !== "revise") break;
@@ -657,7 +737,7 @@ async function runWorkflowCoreImpl(
                 ),
                 cwd,
             );
-            if (!impl.ok) return fail(s, h, "Implementing", impl.output);
+            if (!impl.ok) return fail(s, h, cwd, request, "Implementing", impl.output);
             runArtifacts.implSummary = `[review fix] ${impl.output}`;
             // The findings the implementer just addressed — the next review
             // verifies they're resolved instead of re-reviewing cold.
@@ -688,7 +768,7 @@ async function runWorkflowCoreImpl(
                 shared(validateTask(request, impl.output), "validator"),
                 cwd,
             );
-            if (!val.ok) return fail(s, h, "Validation", val.output);
+            if (!val.ok) return fail(s, h, cwd, request, "Validation", val.output);
 
             verdict = detectVerdict(val.output);
             if (verdict !== "fail") break;
@@ -713,7 +793,7 @@ async function runWorkflowCoreImpl(
                 ),
                 cwd,
             );
-            if (!impl.ok) return fail(s, h, "Implementing", impl.output);
+            if (!impl.ok) return fail(s, h, cwd, request, "Implementing", impl.output);
             runArtifacts.implSummary = `[attempt ${implP.attempt}] ${impl.output}`;
         }
     }
@@ -758,7 +838,7 @@ async function runWorkflowCoreImpl(
             shared(shipTask(request, val.output), "shipper"),
             cwd,
         );
-        if (!ship.ok) return fail(s, h, "Shipping", ship.output);
+        if (!ship.ok) return fail(s, h, cwd, request, "Shipping", ship.output);
     }
 
     // ── Terminal status, from whichever phases ran ──
@@ -881,17 +961,14 @@ async function runWorkflowCoreImpl(
     });
 
     // Agent-learning loop. On SUCCESS: commit the lessons agents staged via
-    // `remember` this run (the verdict gate against unverified lessons). On FAILURE:
-    // the agent-authored path keeps nothing, so distil per-agent lessons from the
-    // run's obs digest (its tool errors + anomalies) instead — where the most useful
-    // lessons actually are. Both best-effort + gated (PI_AGENT_MEMORY; the failure
-    // reflector also needs PI_OBS_LLM); never blocks the run.
-    if (passed) {
-        commitStagedLearnings(cwd, { passed, runId: process.env.PI_OBS_RUN });
-    } else {
-        commitStagedLearnings(cwd, { passed, runId: process.env.PI_OBS_RUN }); // clears staging
-        await reflectFailedRun(process.env.PI_OBS_RUN);
-    }
+    // `remember` this run (the verdict gate against unverified lessons); on failure
+    // the same call clears the staging. On FAILURE additionally distil per-agent
+    // lessons from the run's obs digest (its tool errors + anomalies) — where the
+    // most useful lessons actually are. Gated (PI_AGENT_MEMORY; the reflector also
+    // needs PI_OBS_LLM). The reflector is an LLM call, so it is fire-and-forget —
+    // it never throws (fully caught) and must never delay the run's report.
+    commitStagedLearnings(cwd, { passed, runId: process.env.PI_OBS_RUN });
+    if (!passed) void reflectFailedRun(process.env.PI_OBS_RUN);
 
     h.ui.publishLogs();
     return { status, report };
@@ -900,9 +977,9 @@ async function runWorkflowCoreImpl(
 function writeReport(h: OrchestratorHost, cwd: string, report: string): void {
     try {
         writeFileSync(join(cwd, "workflow-report.md"), report, "utf-8");
-    } catch (e: any) {
+    } catch (e) {
         h.ui.notify(
-            `Could not write workflow-report.md: ${e.message}`,
+            `Could not write workflow-report.md: ${e instanceof Error ? e.message : String(e)}`,
             "warning",
         );
     }
@@ -925,8 +1002,11 @@ function writeMetrics(
             encoding: "utf-8",
             flag: "a",
         });
-    } catch (e: any) {
-        h.ui.notify(`Could not write .agent/metrics.json: ${e.message}`, "warning");
+    } catch (e) {
+        h.ui.notify(
+            `Could not write .agent/metrics.json: ${e instanceof Error ? e.message : String(e)}`,
+            "warning",
+        );
     }
 }
 
@@ -1015,10 +1095,17 @@ export function markAllPhasesDone(cwd: string): void {
     } catch {}
 }
 
-// File name for an archived plan: <YYYY-MM-DD>-<slug>.md.
+// <YYYY-MM-DD> in LOCAL time — plan archives are human records of when the run
+// happened here, not UTC bookkeeping (an evening run must not date as tomorrow).
+function localDateStamp(now: Date): string {
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${now.getFullYear()}-${m}-${d}`;
+}
+
+// File name for an archived plan: <YYYY-MM-DD>-<slug>.md (local date).
 export function planArchiveName(request: string, now: Date = new Date()): string {
-    const date = now.toISOString().slice(0, 10);
-    return `${date}-${slugifyBranch(request)}.md`;
+    return `${localDateStamp(now)}-${slugifyBranch(request)}.md`;
 }
 
 // Save a run's final plan to docs/plans/<date>-<slug>.md as a durable, reviewable
@@ -1053,7 +1140,7 @@ export function archivePlan(
             name = baseName.replace(/\.md$/, `-${n}.md`);
         }
         const header = outcome
-            ? `> **Run outcome:** ${outcome} — ${now.toISOString().slice(0, 10)}\n\n`
+            ? `> **Run outcome:** ${outcome} — ${localDateStamp(now)}\n\n`
             : "";
         // Fold the final phase-completion status into the durable record, so it
         // captures which phases landed (not just the plan) — the .agent/ ledger is
@@ -1132,23 +1219,28 @@ export function readPlanFile(cwd: string, name = "plan.md"): string {
 //   - full plan in the message      -> the message is used (backward compatible);
 //   - a truncated/garbage file      -> falls through to the next candidate (for the
 //     refiner, the planner's saved draft) instead of failing the whole run.
-// When nothing validates, the first non-empty candidate is kept so the caller's
-// validatePlan still fires with useful content. The chosen plan is the source of
-// truth from here on.
+// When nothing validates, the first non-empty candidate is returned so the
+// caller's validatePlan still fires with useful content — but it is NOT persisted
+// to .agent/plan.md, where a later planner-less (build) run would resume from it.
+// The chosen plan is the source of truth from here on.
 export function selectPlan(
     runArtifacts: RunArtifacts,
     cwd: string,
     candidates: string[],
 ): { output: string; ok: boolean } {
     let chosen = "";
+    let valid = false;
     for (const c of candidates) {
         if (c && validatePlan(c).ok) {
             chosen = c;
+            valid = true;
             break;
         }
     }
     if (!chosen) chosen = candidates.find((c) => c) ?? "";
-    capturePlan(runArtifacts, cwd, chosen);
+    // Persist only a structurally valid plan; record the artifact either way.
+    if (valid) capturePlan(runArtifacts, cwd, chosen);
+    else runArtifacts.plan = chosen;
     return { output: chosen, ok: true };
 }
 
@@ -1218,6 +1310,15 @@ async function runAgentWithEmptyRetry(
     return res;
 }
 
+// Dispatch depth guard values from the env (set on the way down by dispatchEnv).
+// PI_DISPATCH_MAX_DEPTH=0 is honored — it disables dispatch entirely; a missing
+// or garbage value falls back to the default of 1 (only the top level dispatches).
+function dispatchDepthLimits(): { depth: number; max: number } {
+    const depth = parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
+    const rawMax = parseInt(process.env.PI_DISPATCH_MAX_DEPTH ?? "", 10);
+    return { depth, max: Number.isNaN(rawMax) || rawMax < 0 ? 1 : rawMax };
+}
+
 // ── dispatch_agent: run one specialist on a focused task ──
 export async function dispatchAgentCore(
     s: OrchestratorState,
@@ -1238,10 +1339,8 @@ export async function dispatchAgentCore(
     // ancestry catches cycles (A dispatches B dispatches A). Default max depth 1 =
     // single level (only the top dispatches); raise PI_DISPATCH_MAX_DEPTH to allow
     // sub-agents to dispatch further.
-    const dispatchDepth =
-        parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
-    const maxDispatchDepth =
-        parseInt(process.env.PI_DISPATCH_MAX_DEPTH || "1", 10) || 1;
+    const { depth: dispatchDepth, max: maxDispatchDepth } =
+        dispatchDepthLimits();
     if (dispatchDepth >= maxDispatchDepth)
         return textResult(
             `Dispatch depth limit reached (max ${maxDispatchDepth}). This agent is ${dispatchDepth} dispatch level(s) deep — do the work yourself or report back instead of dispatching further. (Raise PI_DISPATCH_MAX_DEPTH to allow deeper nesting.)`,
@@ -1466,10 +1565,8 @@ export async function dispatchParallelCore(
             "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
         );
 
-    const dispatchDepth =
-        parseInt(process.env.PI_DISPATCH_DEPTH || "0", 10) || 0;
-    const maxDispatchDepth =
-        parseInt(process.env.PI_DISPATCH_MAX_DEPTH || "1", 10) || 1;
+    const { depth: dispatchDepth, max: maxDispatchDepth } =
+        dispatchDepthLimits();
     if (dispatchDepth >= maxDispatchDepth)
         return textResult(
             `Dispatch depth limit reached (max ${maxDispatchDepth}). This agent is ${dispatchDepth} level(s) deep — do the work yourself or report back. (Raise PI_DISPATCH_MAX_DEPTH to allow deeper nesting.)`,
@@ -1584,6 +1681,7 @@ export async function dispatchParallelCore(
                 res.output.trim().length < h.config.minDispatchOutputChars &&
                 phase.toolCount === 0;
             const ok = res.exitCode === 0 && !emptyOutput;
+            const modelFail = !ok && isModelFailure(res.output);
             phase.status = ok ? "done" : "error";
             phase.elapsed = Date.now() - t0;
             obsEmit("dispatch_end", {
@@ -1597,7 +1695,9 @@ export async function dispatchParallelCore(
                         ? "truncated"
                         : emptyOutput
                           ? "empty"
-                          : undefined,
+                          : modelFail
+                            ? "model-failure"
+                            : undefined,
             });
             h.ui.updateWidget();
             const truncated = clampOutput(res.output, perItemBudget);
@@ -1669,6 +1769,13 @@ export function selectAgentsCore(
         }
     }
 
+    // Canonical key per REQUESTED occurrence (aliases resolved, unknowns
+    // dropped) — duplicates preserved, so a repeated agent still means parallel
+    // intent, but an unknown name can never become a dashboard card.
+    const canonical = names
+        .map((n) => resolveAgent(s.agents, n)?.name.toLowerCase())
+        .filter((k): k is string => !!k);
+
     if (resolved.length === 0) {
         const available = Array.from(s.agents.values())
             .map((d) => d.name)
@@ -1706,24 +1813,26 @@ export function selectAgentsCore(
         : new Map(s.phases.map((p) => [p.agent, p]));
     s.freshDispatchSession = false;
 
-    // Check if the original request had duplicates (parallel dispatch intent)
-    const originalNames = names.map((n) => n.toLowerCase());
-    const hasDuplicates = new Set(originalNames).size < originalNames.length;
+    // Did the request name the same agent more than once? (parallel intent)
+    const hasDuplicates = new Set(canonical).size < canonical.length;
 
-    // For parallel execution, create one phase per requested agent (including duplicates)
-    // For sequential execution, create one phase per unique agent
+    // For parallel execution, create one phase per requested occurrence
+    // (including duplicates); for sequential execution, one per unique agent.
     if (hasDuplicates) {
-        // Parallel: create a phase for each request with a unique dispatchId
-        // so that multiple instances of the same agent can be distinguished
-        s.phases = originalNames.map((key, index) => {
+        // Parallel: one phase per occurrence, each with a unique dispatchId so
+        // multiple instances of the same agent stay distinct. An existing phase
+        // is reused at most ONCE — never inserted twice by reference.
+        const claimed = new Set<PhaseState>();
+        s.phases = canonical.map((key, index) => {
             const existing = byAgent.get(key);
-            if (existing) return existing;
-            // Assign a unique dispatchId for parallel instances
-            const dispatchId = `${key}-${index + 1}`;
-            return mkPhase(displayName(key), key, dispatchId);
+            if (existing && !claimed.has(existing)) {
+                claimed.add(existing);
+                return existing;
+            }
+            return mkPhase(displayName(key), key, `${key}-${index + 1}`);
         });
     } else {
-        // Sequential: create one phase per unique agent (no dispatchId needed)
+        // Sequential: one phase per unique agent (no dispatchId needed).
         s.phases = resolved.map(
             (key) => byAgent.get(key) ?? mkPhase(displayName(key), key),
         );
@@ -1739,7 +1848,7 @@ export function selectAgentsCore(
     // and the dashboard/footer show ∥ live while several actually run at once.)
     const isParallel = hasDuplicates;
     const separator = isParallel ? " ∥ " : " → ";
-    const displayNames = names.map((n) => displayName(n.toLowerCase()));
+    const displayNames = canonical.map((k) => displayName(k));
     const order = displayNames.join(separator);
 
     const warn = unknown.length

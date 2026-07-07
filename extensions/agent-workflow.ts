@@ -247,7 +247,32 @@ export default function (pi: ExtensionAPI) {
         } catch {}
     };
     let sessionDir = "";
-    let currentProc: any = null;
+    // ALL live pipeline sub-agent subprocesses. A Set (not a single ref): the
+    // pipeline runs its phases sequentially, but ping mode runs every agent in
+    // PARALLEL through the same spawn wrapper — cancellation must kill them all.
+    type ChildProc = {
+        kill(signal?: string): void;
+        once?: (event: string, listener: () => void) => void;
+        exitCode?: number | null;
+        signalCode?: string | null;
+    };
+    const liveProcs = new Set<ChildProc>();
+    // SIGTERM every live proc, escalating to SIGKILL after 2s if one ignores it
+    // (unref'd timers; killing an exited proc is a harmless no-op).
+    const killLiveProcs = () => {
+        for (const p of liveProcs) {
+            try {
+                p.kill("SIGTERM");
+                setTimeout(() => {
+                    try {
+                        if (p.exitCode == null && p.signalCode == null)
+                            p.kill("SIGKILL");
+                    } catch {}
+                }, 2000).unref?.();
+            } catch {}
+        }
+        liveProcs.clear();
+    };
     // The command path's cancellation controller: escape-cancel's kill hook and
     // session teardown abort it so the pipeline stops at the next between-phase
     // check (the tool path composes it with pi's own turn AbortSignal).
@@ -760,7 +785,13 @@ export default function (pi: ExtensionAPI) {
         agentTimeoutMs: AGENT_TIMEOUT_MS,
         updateWidget: () => updateWidget(),
         setCurrentProc: (p: any) => {
-            currentProc = p;
+            // Track every spawned proc; each removes itself on exit, so the
+            // wrapper's setCurrentProc(null) calls are harmless no-ops here.
+            if (p) {
+                liveProcs.add(p);
+                p.once?.("close", () => liveProcs.delete(p));
+                p.once?.("exit", () => liveProcs.delete(p));
+            }
         },
         // pi's authoritative project-trust answer (pi >= 0.79.1), used to decide
         // --approve for each spawn instead of re-reading ~/.pi/agent/trust.json by
@@ -1349,6 +1380,10 @@ export default function (pi: ExtensionAPI) {
         st.phases = u.phases;
         st.dispatchMode = u.dispatchMode;
         st.dispatchElapsedMs = u.dispatchElapsedMs;
+        // Restores the dispatch-done ping + turn-time fold in agent_end: since
+        // the dispatch tools moved to extensions/dispatch.ts, only its state ever
+        // sets this flag — mirror it so our per-turn hooks still see it.
+        st.dispatchedThisTurn = u.dispatchedThisTurn ?? st.dispatchedThisTurn;
         updateWidget();
     });
 
@@ -1544,34 +1579,15 @@ export default function (pi: ExtensionAPI) {
         // These are single global slots, so they assume ONE pi session per process
         // (pi's model) — two sessions sharing a process would collide on them.
         installedKillHook = (): boolean => {
-            // Kill the running agent subprocess so a cancelled workflow doesn't keep
-            // running detached. The pipeline runs phases SEQUENTIALLY, so at most one
-            // sub-agent proc is live at a time — a single `currentProc` ref suffices.
-            // (Parallel dispatch is owned by extensions/dispatch.ts, which tracks every
-            // proc in a Set and kills them all; this hook only covers the pipeline.)
+            // Kill every live agent subprocess so a cancelled workflow doesn't
+            // keep running detached — the pipeline is sequential, but ping mode
+            // runs all agents in parallel, so there can be several. (Parallel
+            // dispatch procs are owned and killed by extensions/dispatch.ts.)
             // Also stop the pipeline at its next between-phase abort check —
-            // the kill below only takes down the currently-running subprocess.
+            // the kills only take down the currently-running subprocesses.
             runAbort?.abort();
             runAbort = null;
-            const proc = currentProc;
-            currentProc = null;
-            if (proc) {
-                try {
-                    proc.kill("SIGTERM");
-                    // Escalate to SIGKILL if it ignores SIGTERM and is still alive.
-                    // Unref the timer so it can't keep the process alive; killing an
-                    // already-exited proc is a harmless no-op.
-                    setTimeout(() => {
-                        try {
-                            if (
-                                proc.exitCode == null &&
-                                proc.signalCode == null
-                            )
-                                proc.kill("SIGKILL");
-                        } catch {}
-                    }, 2000).unref?.();
-                } catch {}
-            }
+            killLiveProcs();
             st.running = false;
             return true;
         };
@@ -1652,23 +1668,10 @@ export default function (pi: ExtensionAPI) {
         // Stop a command-path pipeline at its next between-phase check.
         runAbort?.abort();
         runAbort = null;
-        // Kill the pipeline's live sub-agent subprocess so it doesn't outlive the
-        // session. SIGTERM, then SIGKILL if it ignores it (unref'd so the timer
-        // can't keep the process alive). Parallel-dispatch procs are owned and torn
-        // down by extensions/dispatch.ts.
-        const proc = currentProc;
-        currentProc = null;
-        if (proc) {
-            try {
-                proc.kill("SIGTERM");
-                setTimeout(() => {
-                    try {
-                        if (proc.exitCode == null && proc.signalCode == null)
-                            proc.kill("SIGKILL");
-                    } catch {}
-                }, 2000).unref?.();
-            } catch {}
-        }
+        // Kill the pipeline's live sub-agent subprocesses so none outlive the
+        // session (SIGTERM → SIGKILL escalation inside killLiveProcs). Parallel-
+        // dispatch procs are owned and torn down by extensions/dispatch.ts.
+        killLiveProcs();
         st.running = false;
         // Release the cross-extension globalThis bridges we own, but only if
         // they are still ours — identity-checked so a stale shutdown can't
