@@ -251,7 +251,7 @@ function activeMembers(s: OrchestratorState): string[] {
 // payload.agent; a manual UI/CLI score overrides it later — last verdict wins).
 // No-op when PI_OBS is off or the phase didn't run.
 function emitAgentVerdict(
-    phase: PhaseState | undefined,
+    phase: PhaseState | null | undefined,
     status: "pass" | "fail" | "open",
     outcome?: string,
 ): void {
