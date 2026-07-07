@@ -891,6 +891,72 @@ export function renderDispatchAgentResult(
     return new TextCtor(header, 0, 0);
 }
 
+// Render the dispatch_parallel tool result: one ✓/✗ line per agent when
+// collapsed, the full combined output (Markdown) when expanded.
+export function renderDispatchParallelResult(
+    result: {
+        content?: { type?: string; text?: string }[];
+        details?: unknown;
+    },
+    options: { isPartial?: boolean; expanded?: boolean },
+    theme: { fg(color: string, s: string): string },
+    TextCtor: new (text: string, a: number, b: number) => unknown,
+    MarkdownCtor: new (
+        text: string,
+        a: number,
+        b: number,
+        mdTheme: unknown,
+    ) => unknown,
+    mdTheme: unknown,
+): unknown {
+    const d = result.details as
+        | {
+              parallel?: boolean;
+              results?: { agent?: string; status?: string; elapsed?: number }[];
+              skipped?: string[];
+          }
+        | undefined;
+    if (!d?.parallel || !Array.isArray(d.results)) {
+        const t = result.content?.[0];
+        return new TextCtor(t?.type === "text" ? t.text || "" : "", 0, 0);
+    }
+    if (options.isPartial)
+        return new TextCtor(
+            theme.fg("accent", "● dispatch_parallel") +
+                theme.fg("dim", " working..."),
+            0,
+            0,
+        );
+    if (options.expanded) {
+        const t = result.content?.[0];
+        const body = t?.type === "text" ? t.text || "" : "";
+        return new MarkdownCtor(
+            body.length > 8000
+                ? body.slice(0, 8000) + "\n... [truncated]"
+                : body,
+            1,
+            0,
+            mdTheme,
+        );
+    }
+    const lines = d.results.map((r) => {
+        const ok = r.status === "done";
+        return (
+            theme.fg(
+                ok ? "success" : "error",
+                `${ok ? "✓" : "✗"} ${r.agent || "?"}`,
+            ) +
+            theme.fg(
+                "dim",
+                ` ${secs(typeof r.elapsed === "number" ? r.elapsed : 0)}`,
+            )
+        );
+    });
+    if (d.skipped?.length)
+        lines.push(theme.fg("dim", `skipped: ${d.skipped.join(", ")}`));
+    return new TextCtor(lines.join("\n"), 0, 0);
+}
+
 // Render the run_agent_{pipeline,team} tool call. Parameterized over the tool
 // name string — the only difference between extensions.
 export function renderRunWorkflowCall(
