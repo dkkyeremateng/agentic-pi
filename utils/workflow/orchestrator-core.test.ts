@@ -1873,6 +1873,33 @@ Build feature X according to the requirements.
         assert.equal(result.status, "aborted");
         assert.ok(st.running === false);
     });
+
+    it("returns aborted (not error) when a phase fails because the run was cancelled mid-phase", async () => {
+        const agents = mkFullAgentSet();
+        const controller = new AbortController();
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            execution: {
+                // The user cancels mid-phase: the subprocess is killed, the abort
+                // fires, and the phase surfaces a failure — which must be reported
+                // as an abort, not a phase error.
+                runPhase: async () => {
+                    controller.abort();
+                    return { output: "killed", ok: false };
+                },
+            },
+            signal: controller.signal,
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Build feature X", 3, mkCtx());
+        assert.equal(result.status, "aborted");
+        assert.equal(st.lastStatus, "aborted");
+        assert.equal(st.running, false);
+    });
 });
 
 // ── runWorkflowCore — spec-shaped teams (planner-only) ──

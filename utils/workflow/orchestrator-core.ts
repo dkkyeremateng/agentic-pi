@@ -271,7 +271,16 @@ const FAIL_AGENT: Record<string, string> = {
     Shipping: "shipper",
 };
 
-function fail(s: OrchestratorState, label: string, output: string): RunResult {
+function fail(
+    s: OrchestratorState,
+    h: OrchestratorHost,
+    label: string,
+    output: string,
+): RunResult {
+    // A phase killed by user cancellation is an abort, not a regression — prefer
+    // the aborted status and skip the obs "fail" verdicts.
+    const aborted = checkAbort(s, h);
+    if (aborted) return aborted;
     s.running = false;
     s.lastStatus = "error";
     // Per-agent auto-verdict for the failing agent (scoped), then the run-level
@@ -499,7 +508,7 @@ async function runWorkflowCoreImpl(
             scoutTask(request),
             cwd,
         );
-        if (!scoutRes.ok) return fail(s, "Scouting", scoutRes.output);
+        if (!scoutRes.ok) return fail(s, h, "Scouting", scoutRes.output);
         emitAgentVerdict(scoutP, "pass", "completed");
         scoutFindings = scoutRes.output;
         runArtifacts.recon = scoutFindings;
@@ -515,7 +524,7 @@ async function runWorkflowCoreImpl(
             planTask(request, scoutFindings),
             cwd,
         );
-        if (!plan.ok) return fail(s, "Planning", plan.output);
+        if (!plan.ok) return fail(s, h, "Planning", plan.output);
         emitAgentVerdict(planP, "pass", "completed");
         // The planner writes the full plan to .agent/plan.md and emits a short
         // confirmation; older models emit it inline. Take whichever is a valid plan
@@ -540,7 +549,7 @@ async function runWorkflowCoreImpl(
             shared(refineTask(request, scoutFindings), "refiner"),
             cwd,
         );
-        if (!refine.ok) return fail(s, "Refining", refine.output);
+        if (!refine.ok) return fail(s, h, "Refining", refine.output);
         emitAgentVerdict(refinerP, "pass", "completed");
         // The refiner writes the hardened plan to .agent/plan.md and emits a short
         // confirmation; older models emit it inline. Take whichever is a valid plan
@@ -601,7 +610,7 @@ async function runWorkflowCoreImpl(
             shared(implementTask(request), "implementer"),
             cwd,
         );
-        if (!impl.ok) return fail(s, "Implementing", impl.output);
+        if (!impl.ok) return fail(s, h, "Implementing", impl.output);
         runArtifacts.implSummary = impl.output;
     }
 
@@ -623,7 +632,7 @@ async function runWorkflowCoreImpl(
                 shared(reviewTask(request, impl.output, priorReview), "reviewer"),
                 cwd,
             );
-            if (!review.ok) return fail(s, "Review", review.output);
+            if (!review.ok) return fail(s, h, "Review", review.output);
 
             reviewVerdict = detectCritique(review.output);
             if (reviewVerdict !== "revise") break;
@@ -648,7 +657,7 @@ async function runWorkflowCoreImpl(
                 ),
                 cwd,
             );
-            if (!impl.ok) return fail(s, "Implementing", impl.output);
+            if (!impl.ok) return fail(s, h, "Implementing", impl.output);
             runArtifacts.implSummary = `[review fix] ${impl.output}`;
             // The findings the implementer just addressed — the next review
             // verifies they're resolved instead of re-reviewing cold.
@@ -679,7 +688,7 @@ async function runWorkflowCoreImpl(
                 shared(validateTask(request, impl.output), "validator"),
                 cwd,
             );
-            if (!val.ok) return fail(s, "Validation", val.output);
+            if (!val.ok) return fail(s, h, "Validation", val.output);
 
             verdict = detectVerdict(val.output);
             if (verdict !== "fail") break;
@@ -704,7 +713,7 @@ async function runWorkflowCoreImpl(
                 ),
                 cwd,
             );
-            if (!impl.ok) return fail(s, "Implementing", impl.output);
+            if (!impl.ok) return fail(s, h, "Implementing", impl.output);
             runArtifacts.implSummary = `[attempt ${implP.attempt}] ${impl.output}`;
         }
     }
@@ -749,7 +758,7 @@ async function runWorkflowCoreImpl(
             shared(shipTask(request, val.output), "shipper"),
             cwd,
         );
-        if (!ship.ok) return fail(s, "Shipping", ship.output);
+        if (!ship.ok) return fail(s, h, "Shipping", ship.output);
     }
 
     // ── Terminal status, from whichever phases ran ──

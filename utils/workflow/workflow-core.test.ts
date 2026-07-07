@@ -1216,18 +1216,24 @@ describe("parseAgentFile aliases", () => {
 });
 
 describe("subagentExtArgs", () => {
-    // subagentExtArgs reads PI_CONFINE_CWD from the ambient env; a project .env
-    // (PI_CONFINE_CWD=1) would otherwise inject cwd-guard.ts and break the
-    // default-case assertions. Pin it unset per test; the dedicated toggle test
-    // sets and restores it within its own try/finally.
+    // subagentExtArgs reads PI_CONFINE_CWD and PI_OBS from the ambient env; a
+    // project .env (PI_CONFINE_CWD=1 / PI_OBS=1) would otherwise inject
+    // cwd-guard.ts / obs-live.ts and break the default-case assertions. Pin both
+    // unset per test; the dedicated toggle test sets and restores its own value
+    // within try/finally.
     let savedConfine: string | undefined;
+    let savedObs: string | undefined;
     beforeEach(() => {
         savedConfine = process.env.PI_CONFINE_CWD;
         delete process.env.PI_CONFINE_CWD;
+        savedObs = process.env.PI_OBS;
+        delete process.env.PI_OBS;
     });
     afterEach(() => {
         if (savedConfine === undefined) delete process.env.PI_CONFINE_CWD;
         else process.env.PI_CONFINE_CWD = savedConfine;
+        if (savedObs === undefined) delete process.env.PI_OBS;
+        else process.env.PI_OBS = savedObs;
     });
     it("adds agent-memory.ts by default; nothing else for a plain agent", () => {
         const saved = process.env.PI_AGENT_MEMORY;
@@ -1592,6 +1598,48 @@ describe("runAgentWithFallback transient retry", () => {
         const r = await runAgentWithFallback(agent, "t", mkPhase("T", "tester-agent"), "/x", "primary", "", spawn, noopOpts);
         assert.equal(r.exitCode, 1);
         assert.equal(n, 3); // initial + 2 retries
+    });
+
+    it("does NOT retry a transient error when the run was aborted", async () => {
+        let n = 0;
+        const spawn = async () => {
+            n++;
+            return { output: "[agent error] Stream ended without finish_reason", exitCode: 1 };
+        };
+        const r = await runAgentWithFallback(agent, "t", mkPhase("T", "tester-agent"), "/x", "primary", "fallback", spawn, { ...noopOpts, isAborted: () => true });
+        assert.equal(n, 1); // killed run — never re-spawned despite transient-looking output
+        // The failed result comes back as-is, not massaged into a retry outcome.
+        assert.deepEqual(r, { output: "[agent error] Stream ended without finish_reason", exitCode: 1 });
+    });
+
+    it("does NOT fall back to another model when the run was aborted", async () => {
+        const models: string[] = [];
+        const notified: string[] = [];
+        const spawn = async (_d: AgentDef, _t: string, _p: PhaseState, _c: string, model: string) => {
+            models.push(model);
+            return { output: 'Error: Model "primary" not found — try --list-models', exitCode: 1 };
+        };
+        const r = await runAgentWithFallback(agent, "t", mkPhase("T", "tester-agent"), "/x", "primary", "fallback", spawn, {
+            updateWidget: () => {},
+            notify: (msg) => { notified.push(msg); },
+            isAborted: () => true,
+        });
+        assert.equal(r.exitCode, 1);
+        assert.deepEqual(models, ["primary"]); // no fallback retry on a killed run
+        assert.ok(!notified.some((m) => m.includes("falling back")), `unexpected fallback notify: ${notified.join(" | ")}`);
+    });
+
+    it("still retries a transient error when isAborted reports false", async () => {
+        let n = 0;
+        const spawn = async () => {
+            n++;
+            return n === 1
+                ? { output: "[agent error] Stream ended without finish_reason", exitCode: 1 }
+                : { output: "ok", exitCode: 0 };
+        };
+        const r = await runAgentWithFallback(agent, "t", mkPhase("T", "tester-agent"), "/x", "primary", "fallback", spawn, { ...noopOpts, isAborted: () => false });
+        assert.equal(r.exitCode, 0);
+        assert.equal(n, 2); // the abort check alone must not suppress the retry
     });
 });
 

@@ -87,7 +87,6 @@ import {
     chooseTeam as chooseTeamCore,
     inferWorkflowTeam,
     loadedExplicitly as loadedExplicitlyCore,
-    isActiveWorkflow as isActiveWorkflowCore,
     loadAgents as loadAgentsCore,
     loadTeams as loadTeamsCore,
     loadSkills,
@@ -121,13 +120,17 @@ import {
 // Run before any process.env reads below (WORKER_MODEL, …).
 loadDotEnv(process.cwd());
 
-// This file is "agent-workflow". See workflow-core for loadedExplicitly /
-// selectedWorkflowExtension / isActiveWorkflow (shared, parameterized over name).
-const SELF_NAME = "agent-workflow";
-
+// Whether the user launched pi with `-e …/agent-workflow.ts` explicitly (vs.
+// auto-discovered) — gates the startup banner only.
 const loadedExplicitly = () =>
     loadedExplicitlyCore(import.meta.url, "agent-workflow.ts");
-const isActiveWorkflow = () => isActiveWorkflowCore(SELF_NAME);
+
+// Typed view of the cross-extension globalThis bridges this extension installs.
+// `as unknown as`: globalThis has no declared shape for these slots.
+const bridges = globalThis as unknown as {
+    __piKillWorkflowProc?: () => boolean;
+    __piHasRunningWorkflow?: () => boolean;
+} & Record<string, unknown>;
 
 // The agents shipped alongside this extension serve as a fallback so the
 // pipeline works when launched (e.g. via `-e`) from a project that has no
@@ -230,8 +233,30 @@ export default function (pi: ExtensionAPI) {
             writeFileSync(file, `${existing}${prefix}${entry}\n`, "utf8");
         } catch {}
     };
+
+    // Snapshot the workspace before a run so /revert can undo it (best-effort;
+    // never blocks a run on checkpointing). Used by BOTH the /agent-workflow
+    // command and the run_agent_workflow tool.
+    const writeCheckpoint = (cwd: string, request: string) => {
+        try {
+            const cp = createCheckpoint(git(cwd), request);
+            if (cp) {
+                mkdirSync(dirname(checkpointPath(cwd)), { recursive: true });
+                writeFileSync(checkpointPath(cwd), JSON.stringify(cp, null, 2));
+            }
+        } catch {}
+    };
     let sessionDir = "";
     let currentProc: any = null;
+    // The command path's cancellation controller: escape-cancel's kill hook and
+    // session teardown abort it so the pipeline stops at the next between-phase
+    // check (the tool path composes it with pi's own turn AbortSignal).
+    let runAbort: AbortController | null = null;
+    // The bridge closures THIS instance installed — teardown compares against
+    // them so a stale shutdown never deletes a newer instance's bridges.
+    let installedKillHook: (() => boolean) | undefined;
+    let installedHasRunning: (() => boolean) | undefined;
+    let installedFooterState: (() => WorkflowFooterState) | undefined;
 
     // Callbacks + config the shared orchestration delegates back to.
     const host: OrchestratorHost = {
@@ -388,15 +413,19 @@ export default function (pi: ExtensionAPI) {
 
         const anyRunning = st.phases.some((p) => p.status === "running");
         const doneCount = st.phases.filter((p) => p.status === "done").length;
-        const allDone =
+        const errCount = st.phases.filter((p) => p.status === "error").length;
+        const allSettled =
             selectedCount > 0 &&
             st.phases.every((p) => p.status === "done" || p.status === "error");
-        // Badge reflects the determined plan: queued before any run, working while
-        // an agent runs, done once every selected agent has finished.
+        // Badge reflects the determined plan: queued before any run, working
+        // while an agent runs, done once every selected agent finished — and
+        // flagged failed (not a success check) when any of them errored.
         const [selIcon, selColor, selWord] = anyRunning
             ? ["●", "accent", "working"]
-            : allDone
-              ? ["✓", "success", "done"]
+            : allSettled
+              ? errCount > 0
+                  ? ["✗", "error", `done, ${errCount} failed`]
+                  : ["✓", "success", "done"]
               : ["◌", "accent", "queued"];
         const badge =
             selectedCount > 0
@@ -765,15 +794,10 @@ export default function (pi: ExtensionAPI) {
         phase: PhaseState,
         cwd: string,
     ): Promise<{ output: string; exitCode: number }> {
-        // Per-agent model: check the agent's own .md frontmatter first, then the
-        // team config (env var override), then fall back to the global default.
+        // Per-agent model — same resolution the dashboard cards show
+        // (frontmatter → env/team override → global fallback).
         const agentKey = agentDef.name.toLowerCase();
-        const primaryModel = resolveAgentModel(
-            agentKey,
-            st.agents,
-            WORKER_MODEL,
-            fallbackModel(),
-        );
+        const agentModel = modelFor(agentKey);
         // Fallback: the model the current pi session is running on (the primary
         // agent's model). If an agent's configured model fails to load, we retry
         // with the session model since it's known to work — pi itself is using it.
@@ -781,7 +805,7 @@ export default function (pi: ExtensionAPI) {
         const sessionModel =
             sm?.provider && sm?.id ? `${sm.provider}/${sm.id}` : sm?.id || "";
         const modelFallback =
-            sessionModel && sessionModel !== primaryModel ? sessionModel : "";
+            sessionModel && sessionModel !== agentModel ? sessionModel : "";
 
         // Delegate to shared core (eliminates ~50 lines of near-identical
         // fallback logic with notification API drift).
@@ -790,12 +814,15 @@ export default function (pi: ExtensionAPI) {
             task,
             phase,
             cwd,
-            primaryModel,
+            agentModel,
             modelFallback,
             spawnAgentWithModel,
             {
                 updateWidget,
                 notify: (msg, level) => widgetCtx?.ui?.notify?.(msg, level),
+                // The composed turn/escape-cancel signal — stops in-place
+                // transient/fallback retries once the run is cancelled.
+                isAborted: () => host.signal?.aborted === true,
             },
         );
     }
@@ -815,76 +842,67 @@ export default function (pi: ExtensionAPI) {
     }
 
     // ── Custom message renderer for workflow reports ──
-    // Only the active extension registers renderers — both files use the same
-    // customType strings, so registering in both would double up.
 
-    if (isActiveWorkflow())
-        pi.registerMessageRenderer(
-            WORKFLOW_REPORT_TYPE,
-            (message, _options, _theme) => {
-                const report = (message.content || "") as string;
-                const mdTheme = getMarkdownTheme();
-                const trimmed =
-                    report.length > WORKFLOW_REPORT_MAX
-                        ? report.slice(0, WORKFLOW_REPORT_MAX) +
-                          "\n\n... [truncated — full report saved to workflow-report.md]"
-                        : report;
-                return new Markdown(trimmed, 1, 0, mdTheme);
-            },
-        );
+    pi.registerMessageRenderer(
+        WORKFLOW_REPORT_TYPE,
+        (message, _options, _theme) => {
+            const report = (message.content || "") as string;
+            const mdTheme = getMarkdownTheme();
+            const trimmed =
+                report.length > WORKFLOW_REPORT_MAX
+                    ? report.slice(0, WORKFLOW_REPORT_MAX) +
+                      "\n\n... [truncated — full report saved to workflow-report.md]"
+                    : report;
+            return new Markdown(trimmed, 1, 0, mdTheme);
+        },
+    );
 
     const publishReport = (report: string) =>
         publishReportCore(pi, report, st.lastStatus);
 
     // ── Consolidated activity log → one scrollable conversation message ──
 
-    if (isActiveWorkflow())
-        pi.registerMessageRenderer(
-            WORKFLOW_LOG_TYPE,
-            (message, { expanded }, theme) => {
-                const d = (message.details || {}) as { phases?: number };
-                if (!expanded) {
-                    const count = d.phases
-                        ? ` (${d.phases} phase${d.phases === 1 ? "" : "s"})`
-                        : "";
-                    return new Text(
-                        theme.fg("accent", "▤ ") +
-                            theme.fg("muted", "Activity logs") +
-                            theme.fg("dim", `${count} — expand to read`),
-                        0,
-                        0,
-                    );
-                }
-                return new Markdown(
-                    (message.content || "") as string,
-                    1,
+    pi.registerMessageRenderer(
+        WORKFLOW_LOG_TYPE,
+        (message, { expanded }, theme) => {
+            const d = (message.details || {}) as { phases?: number };
+            if (!expanded) {
+                const count = d.phases
+                    ? ` (${d.phases} phase${d.phases === 1 ? "" : "s"})`
+                    : "";
+                return new Text(
+                    theme.fg("accent", "▤ ") +
+                        theme.fg("muted", "Activity logs") +
+                        theme.fg("dim", `${count} — expand to read`),
                     0,
-                    getMarkdownTheme(),
+                    0,
                 );
-            },
-        );
+            }
+            return new Markdown(
+                (message.content || "") as string,
+                1,
+                0,
+                getMarkdownTheme(),
+            );
+        },
+    );
 
     const publishLogs = () => publishLogsCore(pi, st.phaseLogs);
 
     // ── Command ──────────────────────────────────
 
-    // Register commands + tool only when this is the active workflow extension.
-    const active = isActiveWorkflow();
-
-    // CLI flags (active extension only, so they register once). They surface the
-    // most common env knobs at launch: `--max-loops N` and `--confine-cwd`.
-    if (active) {
-        pi.registerFlag?.("max-loops", {
-            description:
-                "Default implement/validate retries for workflow runs (overrides DEFAULT_MAX_LOOPS)",
-            type: "string",
-        });
-        pi.registerFlag?.("confine-cwd", {
-            description:
-                "Confine sub-agents' file tools to the working directory (sets PI_CONFINE_CWD)",
-            type: "boolean",
-        });
-    }
+    // CLI flags — surface the most common env knobs at launch: `--max-loops N`
+    // and `--confine-cwd`.
+    pi.registerFlag?.("max-loops", {
+        description:
+            "Default implement/validate retries for workflow runs (overrides DEFAULT_MAX_LOOPS)",
+        type: "string",
+    });
+    pi.registerFlag?.("confine-cwd", {
+        description:
+            "Confine sub-agents' file tools to the working directory (sets PI_CONFINE_CWD)",
+        type: "boolean",
+    });
 
     // A startup `--confine-cwd` flag is equivalent to PI_CONFINE_CWD=1; set the env
     // early so subagentExtArgs picks it up when spawning sub-agents.
@@ -894,98 +912,114 @@ export default function (pi: ExtensionAPI) {
     const flagMaxLoops = parseInt(String(pi.getFlag?.("max-loops") ?? ""), 10);
     const defaultMaxLoops = flagMaxLoops > 0 ? flagMaxLoops : DEFAULT_MAX_LOOPS;
 
-    if (active)
-        pi.registerCommand("agent-workflow", {
-            description:
-                "Run a workflow: '/agent-workflow <request>' to pick a team then run; name a team first to skip the picker (e.g. '/agent-workflow spec <request>')",
-            handler: async (args, ctx) => {
-                widgetCtx = ctx;
-                if (st.running) {
-                    ctx.ui.notify("A workflow is already running.", "warning");
+    pi.registerCommand("agent-workflow", {
+        description:
+            "Run a workflow: '/agent-workflow <request>' to pick a team then run; name a team first to skip the picker (e.g. '/agent-workflow spec <request>')",
+        handler: async (args, ctx) => {
+            widgetCtx = ctx;
+            if (st.running) {
+                ctx.ui.notify("A workflow is already running.", "warning");
+                return;
+            }
+
+            st.agents = loadAgents(ctx.cwd);
+            st.teams = loadTeams(ctx.cwd);
+            if (Object.keys(st.teams).length === 0)
+                st.teams = { all: Array.from(st.agents.keys()) };
+            // Per-team membership is checked inside runWorkflowCore (every
+            // roster member must resolve to a loaded agent). Here we only need
+            // at least one agent to exist at all.
+            if (st.agents.size === 0) {
+                ctx.ui.notify("No agents found in .pi/agents/.", "error");
+                return;
+            }
+
+            let rawArgs = (args || "").trim();
+
+            // Optional `loops=N` token (anywhere) overrides the retry limit.
+            let maxLoops = defaultMaxLoops;
+            const loopsMatch = rawArgs.match(
+                /(?:^|\s)loops=(\d+)(?=\s|$)/i,
+            );
+            if (loopsMatch) {
+                const n = parseInt(loopsMatch[1], 10);
+                if (n > 0) maxLoops = n;
+                rawArgs = (
+                    rawArgs.slice(0, loopsMatch.index!) +
+                    rawArgs.slice(loopsMatch.index! + loopsMatch[0].length)
+                ).trim();
+            }
+            // The first token may name a team (e.g. `/agent-workflow spec
+            // <request>`); otherwise show the Select Team picker. The chosen
+            // team's roster IS the pipeline — the team is the only "mode".
+            const firstTok = rawArgs.split(/\s+/)[0] || "";
+            const namedTeam = st.teams[firstTok] ? firstTok : "";
+
+            // A team is selected per job: naming a team selects it, otherwise
+            // the picker does. The team is deactivated once the job finishes
+            // (below), so each run starts from a clean "no team" state.
+            let request: string;
+            const inferredTeam = namedTeam
+                ? ""
+                : inferWorkflowTeam(rawArgs, st.teams);
+            if (namedTeam) {
+                activateTeam(namedTeam);
+                request = rawArgs.slice(firstTok.length).trim();
+            } else if (inferredTeam) {
+                // "build/implement the (implementation) plan" → the build team,
+                // no picker: it resumes from the saved .agent/plan.md.
+                activateTeam(inferredTeam);
+                request = rawArgs;
+            } else {
+                const picked = await chooseTeam(ctx);
+                if (picked === null) return; // user cancelled the picker
+                activateTeam(picked);
+                request = rawArgs;
+            }
+            updateWidget();
+            // Move the active marker to the selected team and surface it.
+            ctx.ui.notify(
+                `Active team → ${st.activeTeamName}\nTeams:\n${teamsBlock()}`,
+                "info",
+            );
+
+            // Prompt for the request if it wasn't typed inline, so we never
+            // dispatch a workflow on an empty string.
+            let finalRequest = request;
+            if (!finalRequest) {
+                const typed = await ctx.ui.input(
+                    "What should the workflow build, fix, or produce?",
+                    "",
+                );
+                if (!typed || !typed.trim()) {
+                    // Cancelled: drop the just-activated team so the idle
+                    // dashboard returns to its clean no-team state (mirrors
+                    // the post-run deactivation below).
+                    st.activeTeamName = "";
+                    updateWidget();
                     return;
                 }
+                finalRequest = typed.trim();
+            }
 
-                st.agents = loadAgents(ctx.cwd);
-                st.teams = loadTeams(ctx.cwd);
-                if (Object.keys(st.teams).length === 0)
-                    st.teams = { all: Array.from(st.agents.keys()) };
-                // Per-team membership is checked inside runWorkflowCore (every
-                // roster member must resolve to a loaded agent). Here we only need
-                // at least one agent to exist at all.
-                if (st.agents.size === 0) {
-                    ctx.ui.notify("No agents found in .pi/agents/.", "error");
-                    return;
-                }
-
-                let rawArgs = (args || "").trim();
-
-                // Optional `loops=N` token (anywhere) overrides the retry limit.
-                let maxLoops = defaultMaxLoops;
-                const loopsMatch = rawArgs.match(
-                    /(?:^|\s)loops=(\d+)(?=\s|$)/i,
-                );
-                if (loopsMatch) {
-                    const n = parseInt(loopsMatch[1], 10);
-                    if (n > 0) maxLoops = n;
-                    rawArgs = (
-                        rawArgs.slice(0, loopsMatch.index!) +
-                        rawArgs.slice(loopsMatch.index! + loopsMatch[0].length)
-                    ).trim();
-                }
-                // The first token may name a team (e.g. `/agent-workflow spec
-                // <request>`); otherwise show the Select Team picker. The chosen
-                // team's roster IS the pipeline — the team is the only "mode".
-                const firstTok = rawArgs.split(/\s+/)[0] || "";
-                const namedTeam = st.teams[firstTok] ? firstTok : "";
-
-                // A team is selected per job: naming a team selects it, otherwise
-                // the picker does. The team is deactivated once the job finishes
-                // (below), so each run starts from a clean "no team" state.
-                let request: string;
-                const inferredTeam = namedTeam
-                    ? ""
-                    : inferWorkflowTeam(rawArgs, st.teams);
-                if (namedTeam) {
-                    activateTeam(namedTeam);
-                    request = rawArgs.slice(firstTok.length).trim();
-                } else if (inferredTeam) {
-                    // "build/implement the (implementation) plan" → the build team,
-                    // no picker: it resumes from the saved .agent/plan.md.
-                    activateTeam(inferredTeam);
-                    request = rawArgs;
-                } else {
-                    const picked = await chooseTeam(ctx);
-                    if (picked === null) return; // user cancelled the picker
-                    activateTeam(picked);
-                    request = rawArgs;
-                }
-                updateWidget();
-                // Move the active marker to the selected team and surface it.
-                ctx.ui.notify(
-                    `Active team → ${st.activeTeamName}\nTeams:\n${teamsBlock()}`,
-                    "info",
-                );
-
-                // Prompt for the request if it wasn't typed inline, so we never
-                // dispatch a workflow on an empty string.
-                let finalRequest = request;
-                if (!finalRequest) {
-                    const typed = await ctx.ui.input(
-                        "What should the workflow build, fix, or produce?",
-                        "",
-                    );
-                    if (!typed) return;
-                    finalRequest = typed.trim();
-                    if (!finalRequest) return;
-                }
-
-                pi.setSessionName?.(
-                    sessionLabel(
-                        "agent-workflow",
-                        st.activeTeamName,
-                        finalRequest,
-                    ),
-                );
+            pi.setSessionName?.(
+                sessionLabel(
+                    "agent-workflow",
+                    st.activeTeamName,
+                    finalRequest,
+                ),
+            );
+            // Snapshot the workspace before the run so /revert can undo it
+            // (the run_agent_workflow tool path does the same).
+            writeCheckpoint(ctx.cwd, finalRequest);
+            // Command runs get no turn AbortSignal from pi — wire our own so
+            // escape-cancel (via __piKillWorkflowProc) also stops the
+            // pipeline between phases and the run reports "aborted" instead
+            // of a phase error.
+            const controller = new AbortController();
+            runAbort = controller;
+            host.signal = controller.signal;
+            try {
                 await runFullWorkflowCommand(
                     st,
                     host,
@@ -994,152 +1028,159 @@ export default function (pi: ExtensionAPI) {
                     publishReport,
                     maxLoops,
                 );
-                // Deactivate the team after the job so the next run re-selects and
-                // the orchestrator is unscoped again when idle.
-                st.activeTeamName = "";
-                updateWidget();
-            },
-        });
+            } finally {
+                host.signal = undefined;
+                if (runAbort === controller) runAbort = null;
+            }
+            // OS-level ping: agent_end (which pings for tool runs) only
+            // wraps agent turns, so command runs never reach it.
+            emitNotification(
+                `pi: workflow ${st.lastStatus} (${secs(st.runElapsedMs)})`,
+            );
+            // Deactivate the team after the job so the next run re-selects and
+            // the orchestrator is unscoped again when idle.
+            st.activeTeamName = "";
+            updateWidget();
+        },
+    });
 
-    if (active)
-        pi.registerCommand("agent-workflow-clear", {
-            description: "Clear the agent-workflow progress widget",
-            handler: async (_args, ctx) => {
-                widgetCtx = ctx;
-                cancelPendingWidget();
-                ctx.ui.setWidget("agent-workflow", undefined);
-                ctx.ui.notify("Workflow-team widget cleared.", "info");
-            },
-        });
+    pi.registerCommand("agent-workflow-clear", {
+        description: "Clear the agent-workflow progress widget",
+        handler: async (_args, ctx) => {
+            widgetCtx = ctx;
+            cancelPendingWidget();
+            ctx.ui.setWidget("agent-workflow", undefined);
+            ctx.ui.notify("Workflow-team widget cleared.", "info");
+        },
+    });
 
     // ── /agent-model — change a sub-agent's model on the fly (this session) ──
     // Overrides are in memory only: they apply to every subsequent dispatch/run of
     // that agent and reset when pi restarts. The dashboard cards re-render with the
     // new model immediately.
-    if (active)
-        pi.registerCommand("agent-model", {
-            description:
-                "Change a sub-agent's model for this session: '/agent-model' to list, '/agent-model <agent> <model>' to set, '/agent-model <agent> reset' or '/agent-model reset' to clear",
-            getArgumentCompletions: (prefix: string) => {
-                // First token: the agent name (plus the bare "reset" form).
-                if (!/\s/.test(prefix)) {
-                    const p = prefix.toLowerCase();
-                    return ["reset", ...Array.from(st.agents.keys())]
-                        .filter((c) => c.startsWith(p))
-                        .map((c) => ({ value: c, label: c }));
-                }
-                // Second token: the model. Only offered for a known agent, and
-                // never after the bare "reset" form.
-                const m = prefix.match(/^(\S+)\s+(.*)$/);
-                if (!m) return null;
-                const [, first, modelPrefix] = m;
-                if (first.toLowerCase() === "reset") return null;
-                if (!resolveAgent(st.agents, first)) return null;
-                // Available models (auth configured), falling back to all known.
-                if (!modelRegistry) return null;
-                let models: { id: string; provider: string }[] = [];
-                try {
-                    models = modelRegistry.getAvailable();
-                    if (models.length === 0) models = modelRegistry.getAll();
-                } catch {
-                    return null;
-                }
-                const q = modelPrefix.toLowerCase();
-                const ids = Array.from(
-                    new Set(models.map((mm) => `${mm.provider}/${mm.id}`)),
-                )
-                    .filter((id) => id.toLowerCase().includes(q))
-                    .sort();
-                // Let "reset" also complete in the model slot (clears the override).
-                const opts = "reset".startsWith(q) ? ["reset", ...ids] : ids;
-                if (opts.length === 0) return null;
-                return opts.map((id) => ({
-                    value: `${first} ${id}`,
-                    label: id,
-                }));
-            },
-            handler: async (args, ctx) => {
-                widgetCtx = ctx;
-                modelRegistry = (ctx as any).modelRegistry;
-                st.agents = loadAgents(ctx.cwd);
-                const raw = (args || "").trim();
+    pi.registerCommand("agent-model", {
+        description:
+            "Change a sub-agent's model for this session: '/agent-model' to list, '/agent-model <agent> <model>' to set, '/agent-model <agent> reset' or '/agent-model reset' to clear",
+        getArgumentCompletions: (prefix: string) => {
+            // First token: the agent name (plus the bare "reset" form).
+            if (!/\s/.test(prefix)) {
+                const p = prefix.toLowerCase();
+                return ["reset", ...Array.from(st.agents.keys())]
+                    .filter((c) => c.startsWith(p))
+                    .map((c) => ({ value: c, label: c }));
+            }
+            // Second token: the model. Only offered for a known agent, and
+            // never after the bare "reset" form.
+            const m = prefix.match(/^(\S+)\s+(.*)$/);
+            if (!m) return null;
+            const [, first, modelPrefix] = m;
+            if (first.toLowerCase() === "reset") return null;
+            if (!resolveAgent(st.agents, first)) return null;
+            // Available models (auth configured), falling back to all known.
+            if (!modelRegistry) return null;
+            let models: { id: string; provider: string }[] = [];
+            try {
+                models = modelRegistry.getAvailable();
+                if (models.length === 0) models = modelRegistry.getAll();
+            } catch {
+                return null;
+            }
+            const q = modelPrefix.toLowerCase();
+            const ids = Array.from(
+                new Set(models.map((mm) => `${mm.provider}/${mm.id}`)),
+            )
+                .filter((id) => id.toLowerCase().includes(q))
+                .sort();
+            // Let "reset" also complete in the model slot (clears the override).
+            const opts = "reset".startsWith(q) ? ["reset", ...ids] : ids;
+            if (opts.length === 0) return null;
+            return opts.map((id) => ({
+                value: `${first} ${id}`,
+                label: id,
+            }));
+        },
+        handler: async (args, ctx) => {
+            widgetCtx = ctx;
+            modelRegistry = (ctx as any).modelRegistry;
+            st.agents = loadAgents(ctx.cwd);
+            const raw = (args || "").trim();
 
-                // No args → list each agent's effective model, marking overrides.
-                if (!raw) {
-                    const overrides = getModelOverrides();
-                    const rows = Array.from(st.agents.values())
-                        .map((d) => {
-                            const key = d.name.toLowerCase();
-                            const mark = overrides.has(key)
-                                ? "  *(override)"
-                                : "";
-                            return `  ${displayName(d.name).padEnd(13)} ${modelFor(d.name)}${mark}`;
-                        })
-                        .join("\n");
-                    ctx.ui.notify(
-                        `Sub-agent models (this session)\n${rows}\n\n` +
-                            `Set:       /agent-model <agent> <model>\n` +
-                            `Reset one: /agent-model <agent> reset\n` +
-                            `Reset all: /agent-model reset`,
-                        "info",
-                    );
-                    return;
-                }
-
-                // "/agent-model reset" → clear all overrides.
-                if (raw.toLowerCase() === "reset") {
-                    const n = clearAllModelOverrides();
-                    updateWidget();
-                    ctx.ui.notify(
-                        `Cleared ${n} model override${n === 1 ? "" : "s"} — agents back to their configured models.`,
-                        "info",
-                    );
-                    return;
-                }
-
-                const parts = raw.split(/\s+/);
-                const def = resolveAgent(st.agents, parts[0]);
-                if (!def) {
-                    ctx.ui.notify(
-                        `Unknown agent "${parts[0]}". Loaded: ${Array.from(st.agents.keys()).join(", ")}`,
-                        "error",
-                    );
-                    return;
-                }
-                const key = def.name.toLowerCase();
-                const rest = parts.slice(1).join(" ").trim();
-
-                // "/agent-model <agent>" → show its current effective model.
-                if (!rest) {
-                    ctx.ui.notify(
-                        `${displayName(def.name)} → ${modelFor(def.name)}`,
-                        "info",
-                    );
-                    return;
-                }
-
-                // "/agent-model <agent> reset|default|clear" → clear its override.
-                if (/^(reset|default|clear)$/i.test(rest)) {
-                    const had = clearModelOverride(key);
-                    updateWidget();
-                    ctx.ui.notify(
-                        had
-                            ? `Reset ${displayName(def.name)} to its configured model (${modelFor(def.name)}).`
-                            : `${displayName(def.name)} has no override.`,
-                        "info",
-                    );
-                    return;
-                }
-
-                // Otherwise set the override to the given model string.
-                setModelOverride(key, rest);
-                updateWidget();
+            // No args → list each agent's effective model, marking overrides.
+            if (!raw) {
+                const overrides = getModelOverrides();
+                const rows = Array.from(st.agents.values())
+                    .map((d) => {
+                        const key = d.name.toLowerCase();
+                        const mark = overrides.has(key)
+                            ? "  *(override)"
+                            : "";
+                        return `  ${displayName(d.name).padEnd(13)} ${modelFor(d.name)}${mark}`;
+                    })
+                    .join("\n");
                 ctx.ui.notify(
-                    `${displayName(def.name)} model → ${rest} (this session).`,
+                    `Sub-agent models (this session)\n${rows}\n\n` +
+                        `Set:       /agent-model <agent> <model>\n` +
+                        `Reset one: /agent-model <agent> reset\n` +
+                        `Reset all: /agent-model reset`,
                     "info",
                 );
-            },
-        });
+                return;
+            }
+
+            // "/agent-model reset" → clear all overrides.
+            if (raw.toLowerCase() === "reset") {
+                const n = clearAllModelOverrides();
+                updateWidget();
+                ctx.ui.notify(
+                    `Cleared ${n} model override${n === 1 ? "" : "s"} — agents back to their configured models.`,
+                    "info",
+                );
+                return;
+            }
+
+            const parts = raw.split(/\s+/);
+            const def = resolveAgent(st.agents, parts[0]);
+            if (!def) {
+                ctx.ui.notify(
+                    `Unknown agent "${parts[0]}". Loaded: ${Array.from(st.agents.keys()).join(", ")}`,
+                    "error",
+                );
+                return;
+            }
+            const key = def.name.toLowerCase();
+            const rest = parts.slice(1).join(" ").trim();
+
+            // "/agent-model <agent>" → show its current effective model.
+            if (!rest) {
+                ctx.ui.notify(
+                    `${displayName(def.name)} → ${modelFor(def.name)}`,
+                    "info",
+                );
+                return;
+            }
+
+            // "/agent-model <agent> reset|default|clear" → clear its override.
+            if (/^(reset|default|clear)$/i.test(rest)) {
+                const had = clearModelOverride(key);
+                updateWidget();
+                ctx.ui.notify(
+                    had
+                        ? `Reset ${displayName(def.name)} to its configured model (${modelFor(def.name)}).`
+                        : `${displayName(def.name)} has no override.`,
+                    "info",
+                );
+                return;
+            }
+
+            // Otherwise set the override to the given model string.
+            setModelOverride(key, rest);
+            updateWidget();
+            ctx.ui.notify(
+                `${displayName(def.name)} model → ${rest} (this session).`,
+                "info",
+            );
+        },
+    });
 
     // /revert lives in its own extension (extensions/revert.ts) — it reads the
     // checkpoint this run persists to .agent/checkpoints/latest.json, so it needs
@@ -1147,178 +1188,169 @@ export default function (pi: ExtensionAPI) {
 
     // ── Tool — let the primary agent invoke the workflow ──
 
-    if (active)
-        pi.registerTool({
-            name: "run_agent_workflow",
-            label: "Run Workflow (Team)",
-            description:
-                "Run the plan -> refine -> implement -> review -> validate -> ship lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself. Pass `team` when the user names one (e.g. 'use the plan-build team'); omit it to auto-select from the request — the full pipeline by default, or the `build` team when the request asks to implement an existing plan. When the user asks to build or implement an existing plan ('build the plan', 'implement the plan/spec', or when .agent/plan.md already exists), pass team='build' — it skips planning, keeps the saved .agent/plan.md, and resumes the implementer from the first unfinished phase.",
-            parameters: Type.Object({
-                request: Type.String({
-                    description: "The bug, feature, or app to deliver",
-                }),
-                team: Type.Optional(
-                    Type.String({
-                        description:
-                            "Optional team name from teams.yaml whose roster defines which pipeline phases run (e.g. when the user says 'use the X team'). Omit to auto-select from the request: the full pipeline by default, or the `build` team when the request asks to implement an existing plan.",
-                    }),
-                ),
-                max_loops: Type.Optional(
-                    Type.Number({
-                        description: `Max implement/validate retries (default ${DEFAULT_MAX_LOOPS})`,
-                    }),
-                ),
+    pi.registerTool({
+        name: "run_agent_workflow",
+        label: "Run Workflow (Team)",
+        description:
+            "Run the plan -> refine -> implement -> review -> validate -> ship lifecycle on a request (bug fix, new feature, or new app). The validator gates the result: it loops back to the implementer on FAIL, pauses if there is no GitHub remote, and opens a PR on PASS. Use this for any non-trivial change; do simple lookups yourself. Pass `team` when the user names one (e.g. 'use the plan-build team'); omit it to auto-select from the request — the full pipeline by default, or the `build` team when the request asks to implement an existing plan. When the user asks to build or implement an existing plan ('build the plan', 'implement the plan/spec', or when .agent/plan.md already exists), pass team='build' — it skips planning, keeps the saved .agent/plan.md, and resumes the implementer from the first unfinished phase.",
+        parameters: Type.Object({
+            request: Type.String({
+                description: "The bug, feature, or app to deliver",
             }),
-            async execute(_id, params, signal, onUpdate, ctx) {
-                const { request, max_loops, team } = params as {
-                    request: string;
-                    max_loops?: number;
-                    team?: string;
+            team: Type.Optional(
+                Type.String({
+                    description:
+                        "Optional team name from teams.yaml whose roster defines which pipeline phases run (e.g. when the user says 'use the X team'). Omit to auto-select from the request: the full pipeline by default, or the `build` team when the request asks to implement an existing plan.",
+                }),
+            ),
+            max_loops: Type.Optional(
+                Type.Number({
+                    description: `Max implement/validate retries (default ${DEFAULT_MAX_LOOPS})`,
+                }),
+            ),
+        }),
+        async execute(_id, params, signal, onUpdate, ctx) {
+            const { request, max_loops, team } = params as {
+                request: string;
+                max_loops?: number;
+                team?: string;
+            };
+            if (st.running) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: "A workflow is already running.",
+                        },
+                    ],
+                    details: undefined,
                 };
-                if (st.running) {
+            }
+            st.agents = loadAgents(ctx.cwd);
+            st.teams = loadTeams(ctx.cwd);
+            // Scope the run to a named team when the caller passed one; its
+            // roster IS the pipeline. An unknown name is an error (don't silently
+            // run the full pipeline — that hides the mistake). Omitted => no team,
+            // and runWorkflowCore falls back to the full roster.
+            if (team) {
+                if (!st.teams[team]) {
                     return {
                         content: [
                             {
                                 type: "text",
-                                text: "A workflow is already running.",
+                                text: `Unknown team "${team}". Available teams: ${Object.keys(st.teams).join(", ") || "(none defined)"}. Omit team to auto-select (full pipeline, or the build team for an "implement the plan" request).`,
                             },
                         ],
                         details: undefined,
                     };
                 }
-                st.agents = loadAgents(ctx.cwd);
-                st.teams = loadTeams(ctx.cwd);
-                // Scope the run to a named team when the caller passed one; its
-                // roster IS the pipeline. An unknown name is an error (don't silently
-                // run the full pipeline — that hides the mistake). Omitted => no team,
-                // and runWorkflowCore falls back to the full roster.
-                if (team) {
-                    if (!st.teams[team]) {
-                        return {
-                            content: [
-                                {
-                                    type: "text",
-                                    text: `Unknown team "${team}". Available teams: ${Object.keys(st.teams).join(", ") || "(none defined)"}. Omit team to auto-select (full pipeline, or the build team for an "implement the plan" request).`,
-                                },
-                            ],
-                            details: undefined,
-                        };
-                    }
-                    st.activeTeamName = team;
-                } else {
-                    // No explicit team: infer "build/implement the plan" intent from
-                    // the request (→ build team); otherwise "" runs the full pipeline.
-                    st.activeTeamName = inferWorkflowTeam(request, st.teams);
-                }
-                widgetCtx = ctx;
-                st.pipelineRanThisTurn = true; // fold the primary's turn time into the total
+                st.activeTeamName = team;
+            } else {
+                // No explicit team: infer "build/implement the plan" intent from
+                // the request (→ build team); otherwise "" runs the full pipeline.
+                st.activeTeamName = inferWorkflowTeam(request, st.teams);
+            }
+            widgetCtx = ctx;
+            st.pipelineRanThisTurn = true; // fold the primary's turn time into the total
 
-                // Snapshot the workspace before the run so /revert can undo it.
-                try {
-                    const cp = createCheckpoint(git(ctx.cwd), request);
-                    if (cp) {
-                        mkdirSync(dirname(checkpointPath(ctx.cwd)), {
-                            recursive: true,
-                        });
-                        writeFileSync(
-                            checkpointPath(ctx.cwd),
-                            JSON.stringify(cp, null, 2),
-                        );
-                    }
-                } catch {
-                    // best-effort; never block a run on checkpointing
-                }
+            // Snapshot the workspace before the run so /revert can undo it.
+            writeCheckpoint(ctx.cwd, request);
 
-                if (onUpdate)
-                    onUpdate({
-                        content: [
-                            {
-                                type: "text",
-                                text: `Running workflow: ${request}`,
-                            },
-                        ],
-                        details: undefined,
-                    });
-                // If the turn is aborted, kill the running agent subprocess so the
-                // workflow doesn't keep running detached in the background.
-                const onAbort = () =>
-                    (globalThis as any).__piKillWorkflowProc?.();
-                signal?.addEventListener?.("abort", onAbort);
-                // Pass the abort signal to the orchestrator so it stops between phases
-                host.signal = signal ?? undefined;
-                pi.setSessionName?.(
-                    sessionLabel("agent-workflow", st.activeTeamName, request),
-                );
-                const result = await runWorkflowCore(
-                    st,
-                    host,
-                    request,
-                    max_loops && max_loops > 0 ? max_loops : defaultMaxLoops,
-                    ctx,
-                ).finally(() => {
-                    signal?.removeEventListener?.("abort", onAbort);
-                    host.signal = undefined;
-                });
-                // Deactivate the team after the job (no-op if none was active).
-                st.activeTeamName = "";
-                updateWidget();
-                const truncated =
-                    result.report.length > WORKFLOW_TOOL_REPORT_MAX
-                        ? result.report.slice(0, WORKFLOW_TOOL_REPORT_MAX) +
-                          "\n\n... [truncated — see workflow-report.md]"
-                        : result.report;
-                return {
+            if (onUpdate)
+                onUpdate({
                     content: [
                         {
                             type: "text",
-                            text: `Status: ${result.status} · completed in ${secs(st.runElapsedMs)}\n\n${truncated}`,
+                            text: `Running workflow: ${request}`,
                         },
                     ],
-                    details: { status: result.status, report: truncated },
-                };
-            },
+                    details: undefined,
+                });
+            // If the turn is aborted, kill the running agent subprocess so the
+            // workflow doesn't keep running detached in the background.
+            const onAbort = () => bridges.__piKillWorkflowProc?.();
+            signal?.addEventListener?.("abort", onAbort);
+            // Pass the abort signal to the orchestrator so it stops between
+            // phases — composed with our own controller so escape-cancel
+            // (which calls __piKillWorkflowProc without aborting the turn)
+            // also stops the pipeline, not just the live subprocess.
+            const controller = new AbortController();
+            runAbort = controller;
+            host.signal = signal
+                ? AbortSignal.any([signal, controller.signal])
+                : controller.signal;
+            pi.setSessionName?.(
+                sessionLabel("agent-workflow", st.activeTeamName, request),
+            );
+            const result = await runWorkflowCore(
+                st,
+                host,
+                request,
+                max_loops && max_loops > 0 ? max_loops : defaultMaxLoops,
+                ctx,
+            ).finally(() => {
+                signal?.removeEventListener?.("abort", onAbort);
+                host.signal = undefined;
+                if (runAbort === controller) runAbort = null;
+            });
+            // Deactivate the team after the job (no-op if none was active).
+            st.activeTeamName = "";
+            updateWidget();
+            const truncated =
+                result.report.length > WORKFLOW_TOOL_REPORT_MAX
+                    ? result.report.slice(0, WORKFLOW_TOOL_REPORT_MAX) +
+                      "\n\n... [truncated — see workflow-report.md]"
+                    : result.report;
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Status: ${result.status} · completed in ${secs(st.runElapsedMs)}\n\n${truncated}`,
+                    },
+                ],
+                details: { status: result.status, report: truncated },
+            };
+        },
 
-            renderCall(args, theme) {
-                return renderRunWorkflowCall(
-                    "run_agent_workflow",
-                    args,
-                    theme,
-                    activeMembers,
-                    Text,
-                );
-            },
+        renderCall(args, theme) {
+            return renderRunWorkflowCall(
+                "run_agent_workflow",
+                args,
+                theme,
+                activeMembers,
+                Text,
+            );
+        },
 
-            renderResult(result, options, theme) {
-                return renderRunWorkflowResult(
-                    "agent-workflow",
-                    result,
-                    options,
-                    theme,
-                    Text,
-                    Markdown,
-                    getMarkdownTheme(),
-                    WORKFLOW_REPORT_MAX,
-                );
-            },
-        });
+        renderResult(result, options, theme) {
+            return renderRunWorkflowResult(
+                "agent-workflow",
+                result,
+                options,
+                theme,
+                Text,
+                Markdown,
+                getMarkdownTheme(),
+                WORKFLOW_REPORT_MAX,
+            );
+        },
+    });
 
     // ── dispatch_agent / select_agents — now owned by the standalone `dispatch`
     // extension (extensions/dispatch.ts), so ANY agent can dispatch, not just this
     // workflow's orchestrator. We no longer register those tools here. Instead,
-    // when this is the active workflow, we mirror the dispatch phase snapshot the
-    // dispatch extension broadcasts on pi.events into our dashboard grid and
-    // re-render. (Dispatch and the automated pipeline are mutually exclusive in
-    // time — dispatchAgentCore refuses while s.running — so replacing st.phases
-    // is safe.)
+    // we mirror the dispatch phase snapshot the dispatch extension broadcasts on
+    // pi.events into our dashboard grid and re-render. (Dispatch and the
+    // automated pipeline are mutually exclusive in time — dispatchAgentCore
+    // refuses while s.running — so replacing st.phases is safe.)
 
-    if (active)
-        pi.events.on(DISPATCH_UPDATE, (data) => {
-            const u = data as DispatchUpdate;
-            st.phases = u.phases;
-            st.dispatchMode = u.dispatchMode;
-            st.dispatchElapsedMs = u.dispatchElapsedMs;
-            updateWidget();
-        });
+    pi.events.on(DISPATCH_UPDATE, (data) => {
+        const u = data as DispatchUpdate;
+        st.phases = u.phases;
+        st.dispatchMode = u.dispatchMode;
+        st.dispatchElapsedMs = u.dispatchElapsedMs;
+        updateWidget();
+    });
 
     // ── Cancellation hook (integrates with escape-cancel if present) ──
 
@@ -1326,57 +1358,54 @@ export default function (pi: ExtensionAPI) {
     // Accumulate the orchestrator's own spend from each assistant message's
     // usage.cost (priced by the provider). Sub-agents run in separate processes,
     // so their messages never fire this on the primary session — no double count.
-    if (active)
-        pi.on("message_end", async (event: any) => {
-            const msg = event?.message;
-            const u = msg?.usage;
-            if (msg?.role !== "assistant" || !u) return;
-            const total = u.cost?.total;
-            if (typeof total === "number" && total > 0) primaryCostUsd += total;
-            // Cache/input token tallies for the footer's hit rate (cached input as
-            // a share of all input). Accumulated on every assistant message.
-            primaryCacheRead += u.cacheRead ?? 0;
-            primaryInputTokens += u.input ?? 0;
-            // Repaint the dashboard; the footer reads these live, so it refreshes
-            // on the same redraw.
-            updateWidget();
-        });
+    pi.on("message_end", async (event: any) => {
+        const msg = event?.message;
+        const u = msg?.usage;
+        if (msg?.role !== "assistant" || !u) return;
+        const total = u.cost?.total;
+        if (typeof total === "number" && total > 0) primaryCostUsd += total;
+        // Cache/input token tallies for the footer's hit rate (cached input as
+        // a share of all input). Accumulated on every assistant message.
+        primaryCacheRead += u.cacheRead ?? 0;
+        primaryInputTokens += u.input ?? 0;
+        // Repaint the dashboard; the footer reads these live, so it refreshes
+        // on the same redraw.
+        updateWidget();
+    });
 
     // ── Primary-turn timing ──
     // The orchestrator's turn wraps both its own reasoning and the sub-agent work
     // it triggers, so timing it gives the total INCLUDING the primary agent's time.
     // At turn end we fold that into the dispatch / pipeline totals.
-    if (active)
-        pi.on("agent_start", async () => {
-            st.primaryTurnStartedAt = Date.now();
-            st.pipelineRanThisTurn = false;
-            st.dispatchedThisTurn = false;
-            st.dispatchesThisTurn = 0;
-        });
-    if (active)
-        pi.on("agent_end", async () => {
-            if (st.primaryTurnStartedAt <= 0) return;
-            const turnMs = Date.now() - st.primaryTurnStartedAt;
-            // Only fold the turn time into a total when work actually ran this turn,
-            // so a plain "done" reply doesn't overwrite the last total.
-            if (st.dispatchedThisTurn) st.dispatchElapsedMs = turnMs;
-            // Only overwrite runElapsedMs if the pipeline is still running (aborted
-            // mid-run). When the pipeline completed, runWorkflowCore already set the
-            // correct value from runStartedAt; overwriting it with the full turn time
-            // (which includes orchestrator reasoning) would inflate the dashboard.
-            if (st.pipelineRanThisTurn && st.running) st.runElapsedMs = turnMs;
-            if (st.dispatchedThisTurn || st.pipelineRanThisTurn) {
-                updateWidget();
-                // Ping the user when real agent work finishes — these runs are long
-                // and often unattended. Trivial reply-only turns are skipped. A
-                // cancelled/failed run also pings (intended): `st.lastStatus` carries
-                // the outcome, so the notification is still informative.
-                const what = st.pipelineRanThisTurn
-                    ? `workflow ${st.lastStatus}`
-                    : "dispatch done";
-                emitNotification(`pi: ${what} (${secs(turnMs)})`);
-            }
-        });
+    pi.on("agent_start", async () => {
+        st.primaryTurnStartedAt = Date.now();
+        st.pipelineRanThisTurn = false;
+        st.dispatchedThisTurn = false;
+        st.dispatchesThisTurn = 0;
+    });
+    pi.on("agent_end", async () => {
+        if (st.primaryTurnStartedAt <= 0) return;
+        const turnMs = Date.now() - st.primaryTurnStartedAt;
+        // Only fold the turn time into a total when work actually ran this turn,
+        // so a plain "done" reply doesn't overwrite the last total.
+        if (st.dispatchedThisTurn) st.dispatchElapsedMs = turnMs;
+        // Only overwrite runElapsedMs if the pipeline is still running (aborted
+        // mid-run). When the pipeline completed, runWorkflowCore already set the
+        // correct value from runStartedAt; overwriting it with the full turn time
+        // (which includes orchestrator reasoning) would inflate the dashboard.
+        if (st.pipelineRanThisTurn && st.running) st.runElapsedMs = turnMs;
+        if (st.dispatchedThisTurn || st.pipelineRanThisTurn) {
+            updateWidget();
+            // Ping the user when real agent work finishes — these runs are long
+            // and often unattended. Trivial reply-only turns are skipped. A
+            // cancelled/failed run also pings (intended): `st.lastStatus` carries
+            // the outcome, so the notification is still informative.
+            const what = st.pipelineRanThisTurn
+                ? `workflow ${st.lastStatus}`
+                : "dispatch done";
+            emitNotification(`pi: ${what} (${secs(turnMs)})`);
+        }
+    });
 
     // ── Orchestrator System Prompt ─────────────────
     //
@@ -1388,86 +1417,85 @@ export default function (pi: ExtensionAPI) {
     // This handler injects a system prompt that guides the orchestrator's
     // decision-making and provides a catalog of available agents.
 
-    if (active)
-        pi.on("before_agent_start", async (event, _ctx) => {
-            // A new user request = a new workflow. Mark it so the first
-            // select_agents / dispatch_agent of this request rebuilds the cards from
-            // scratch instead of carrying over the previous workflow's state.
-            st.freshDispatchSession = true;
+    pi.on("before_agent_start", async (event, _ctx) => {
+        // A new user request = a new workflow. Mark it so the first
+        // select_agents / dispatch_agent of this request rebuilds the cards from
+        // scratch instead of carrying over the previous workflow's state.
+        st.freshDispatchSession = true;
 
-            // The agents the orchestrator may dispatch. Only while a team-scoped
-            // job is actually running do we restrict it to that team's roster;
-            // otherwise (idle, or no team active) the orchestrator may freely pick
-            // the right agent for the work from every loaded agent.
-            const dispatchableDefs =
-                st.activeTeamName && st.running
-                    ? (st.teams[st.activeTeamName] || [])
-                          .filter((m) => st.agents.has(m.toLowerCase()))
-                          .map((m) => st.agents.get(m.toLowerCase())!)
-                    : Array.from(st.agents.values());
+        // The agents the orchestrator may dispatch. Only while a team-scoped
+        // job is actually running do we restrict it to that team's roster;
+        // otherwise (idle, or no team active) the orchestrator may freely pick
+        // the right agent for the work from every loaded agent.
+        const dispatchableDefs =
+            st.activeTeamName && st.running
+                ? (st.teams[st.activeTeamName] || [])
+                      .filter((m) => st.agents.has(m.toLowerCase()))
+                      .map((m) => st.agents.get(m.toLowerCase())!)
+                : Array.from(st.agents.values());
 
-            // Terse summary of a description: the concise lead before the first
-            // em-dash separator (falling back to the whole text), capped — keeps the
-            // routing signal while cutting the per-turn prompt size sharply vs. the
-            // full multi-sentence descriptions.
-            const terse = (d: string, max: number): string => {
-                const t = (d || "").trim();
-                const lead = t.split(" — ")[0]!.trim();
-                const base = lead.length >= 12 ? lead : t;
-                return base.length > max
-                    ? base.slice(0, max - 1).trimEnd() + "…"
-                    : base;
-            };
+        // Terse summary of a description: the concise lead before the first
+        // em-dash separator (falling back to the whole text), capped — keeps the
+        // routing signal while cutting the per-turn prompt size sharply vs. the
+        // full multi-sentence descriptions.
+        const terse = (d: string, max: number): string => {
+            const t = (d || "").trim();
+            const lead = t.split(" — ")[0]!.trim();
+            const base = lead.length >= 12 ? lead : t;
+            return base.length > max
+                ? base.slice(0, max - 1).trimEnd() + "…"
+                : base;
+        };
 
-            // One compact line per agent: `name` — short capability. The orchestrator
-            // routes via the explicit Routing section of the prompt; this is the roster
-            // reference, so it stays terse (no full description, no per-agent tools).
-            const agentCatalog = dispatchableDefs
-                .map(
-                    (def) =>
-                        `- \`${def.name}\` — ${terse(def.description, 110)}`,
-                )
-                .join("\n");
+        // One compact line per agent: `name` — short capability. The orchestrator
+        // routes via the explicit Routing section of the prompt; this is the roster
+        // reference, so it stays terse (no full description, no per-agent tools).
+        const agentCatalog = dispatchableDefs
+            .map(
+                (def) =>
+                    `- \`${def.name}\` — ${terse(def.description, 110)}`,
+            )
+            .join("\n");
 
-            const teamMembers = dispatchableDefs
-                .map((d) => displayName(d.name))
-                .join(", ");
+        const teamMembers = dispatchableDefs
+            .map((d) => displayName(d.name))
+            .join(", ");
 
-            // Skills the orchestrator can use directly (files-only: any SKILL.md).
-            const skills = loadSkills(_ctx.cwd);
-            const skillCatalog = skills.length
-                ? skills
-                      .map(
-                          (s) =>
-                              `- **${s.name}** — ${terse(s.description, 140)}`,
-                      )
-                      .join("\n")
-                : "(none)";
+        // Skills the orchestrator can use directly (files-only: any SKILL.md).
+        const skills = loadSkills(_ctx.cwd);
+        const skillCatalog = skills.length
+            ? skills
+                  .map(
+                      (s) =>
+                          `- **${s.name}** — ${terse(s.description, 140)}`,
+                  )
+                  .join("\n")
+            : "(none)";
 
-            // APPEND the orchestration layer to Pi's base system prompt instead of
-            // replacing it. The base prompt carries the tool-calling scaffolding the
-            // model needs to actually emit tool calls; replacing it wholesale made
-            // weaker models narrate a plan as text instead of dispatching. A short,
-            // imperative directive goes first so the very next action is a tool call.
-            // Load the orchestrator prompt from an external template file
-            const template = loadPromptTemplate("orchestrator", "", _ctx.cwd);
-            const orchestratorAddendum = renderTemplate(template, {
-                run_tool_name: "run_agent_workflow",
-                team_name: st.activeTeamName || "none",
-                team_members: teamMembers,
-                agent_catalog: agentCatalog,
-                skill_catalog: skillCatalog,
-            });
-
-            // Append our orchestration layer onto Pi's assembled base prompt so the
-            // model keeps its tool-calling instructions and gains the role override.
-            const base = event.systemPrompt || "";
-            return {
-                systemPrompt: base
-                    ? `${base}\n\n${"=".repeat(60)}\n\n${orchestratorAddendum}`
-                    : orchestratorAddendum,
-            };
+        // APPEND the orchestration layer to Pi's base system prompt instead of
+        // replacing it. The base prompt carries the tool-calling scaffolding the
+        // model needs to actually emit tool calls; replacing it wholesale made
+        // weaker models narrate a plan as text instead of dispatching. A short,
+        // imperative directive goes first so the very next action is a tool call.
+        // Load the orchestrator prompt from an external template file
+        const template = loadPromptTemplate("orchestrator", "", _ctx.cwd);
+        const orchestratorAddendum = renderTemplate(template, {
+            run_tool_name: "run_agent_workflow",
+            team_name: st.activeTeamName || "none",
+            team_members: teamMembers,
+            agent_catalog: agentCatalog,
+            skill_catalog: skillCatalog,
         });
+
+        // Append our orchestration layer onto Pi's assembled base prompt so the
+        // model keeps its tool-calling instructions and gains the role override.
+        const base = event.systemPrompt || "";
+        return {
+            systemPrompt: base
+                ? `${base}\n\n${"=".repeat(60)}\n\n${orchestratorAddendum}`
+                : orchestratorAddendum,
+        };
+    });
 
     // Track the primary session's model so sub-agents that fall back to it (and
     // the footer) follow /model changes live, not just the session-start model.
@@ -1510,25 +1538,21 @@ export default function (pi: ExtensionAPI) {
         st.dispatchMode = false;
         st.phases = [];
 
-        // Only the active workflow extension owns the chrome. When both are
-        // auto-discovered, the inactive one clears its widget and bows out so it
-        // never stacks a second dashboard or cancellation hook.
-        if (!isActiveWorkflow()) {
-            ctx.ui.setWidget("agent-workflow", undefined);
-            return;
-        }
-
         // Show the idle team dashboard (grid of agents + their models).
         updateWidget();
         // Cross-extension bridges via globalThis (also WORKFLOW_FOOTER_GLOBAL below).
         // These are single global slots, so they assume ONE pi session per process
         // (pi's model) — two sessions sharing a process would collide on them.
-        (globalThis as any).__piKillWorkflowProc = (): boolean => {
+        installedKillHook = (): boolean => {
             // Kill the running agent subprocess so a cancelled workflow doesn't keep
             // running detached. The pipeline runs phases SEQUENTIALLY, so at most one
             // sub-agent proc is live at a time — a single `currentProc` ref suffices.
             // (Parallel dispatch is owned by extensions/dispatch.ts, which tracks every
             // proc in a Set and kills them all; this hook only covers the pipeline.)
+            // Also stop the pipeline at its next between-phase abort check —
+            // the kill below only takes down the currently-running subprocess.
+            runAbort?.abort();
+            runAbort = null;
             const proc = currentProc;
             currentProc = null;
             if (proc) {
@@ -1551,7 +1575,9 @@ export default function (pi: ExtensionAPI) {
             st.running = false;
             return true;
         };
-        (globalThis as any).__piHasRunningWorkflow = (): boolean => st.running;
+        bridges.__piKillWorkflowProc = installedKillHook;
+        installedHasRunning = () => st.running;
+        bridges.__piHasRunningWorkflow = installedHasRunning;
         const present = REQUIRED_AGENTS.filter((a) => st.agents.has(a));
         const missing = REQUIRED_AGENTS.filter((a) => !st.agents.has(a));
         ctx.ui.setStatus(
@@ -1590,7 +1616,7 @@ export default function (pi: ExtensionAPI) {
         // closes over `st` (mutated in place), `primaryCostUsd` (a live let), and
         // primaryModelStr()/ctx, so it always returns fresh values per frame. Bridged
         // via globalThis so the footer can be its own `pi -e` extension.
-        (globalThis as any)[WORKFLOW_FOOTER_GLOBAL] =
+        installedFooterState =
             (): WorkflowFooterState => ({
                 model: primaryModelStr(),
                 running: st.running,
@@ -1610,6 +1636,7 @@ export default function (pi: ExtensionAPI) {
                         : undefined,
                 contextUsage: () => ctx.getContextUsage?.(),
             });
+        bridges[WORKFLOW_FOOTER_GLOBAL] = installedFooterState;
     });
 
     // ── Teardown ───────────────────────────────────
@@ -1622,6 +1649,9 @@ export default function (pi: ExtensionAPI) {
     pi.on("session_shutdown", async () => {
         // Cancel any pending coalesced widget render.
         cancelPendingWidget();
+        // Stop a command-path pipeline at its next between-phase check.
+        runAbort?.abort();
+        runAbort = null;
         // Kill the pipeline's live sub-agent subprocess so it doesn't outlive the
         // session. SIGTERM, then SIGKILL if it ignores it (unref'd so the timer
         // can't keep the process alive). Parallel-dispatch procs are owned and torn
@@ -1640,11 +1670,15 @@ export default function (pi: ExtensionAPI) {
             } catch {}
         }
         st.running = false;
-        // Release the cross-extension globalThis bridges we own, but only if they
-        // are still ours — a newly-bound instance may have already replaced them.
-        const g = globalThis as any;
-        if (g.__piKillWorkflowProc) delete g.__piKillWorkflowProc;
-        if (g.__piHasRunningWorkflow) delete g.__piHasRunningWorkflow;
-        if (g[WORKFLOW_FOOTER_GLOBAL]) delete g[WORKFLOW_FOOTER_GLOBAL];
+        // Release the cross-extension globalThis bridges we own, but only if
+        // they are still ours — identity-checked so a stale shutdown can't
+        // delete a newer instance's bridges if teardown ever interleaves with
+        // the rebind.
+        if (bridges.__piKillWorkflowProc === installedKillHook)
+            delete bridges.__piKillWorkflowProc;
+        if (bridges.__piHasRunningWorkflow === installedHasRunning)
+            delete bridges.__piHasRunningWorkflow;
+        if (bridges[WORKFLOW_FOOTER_GLOBAL] === installedFooterState)
+            delete bridges[WORKFLOW_FOOTER_GLOBAL];
     });
 }
