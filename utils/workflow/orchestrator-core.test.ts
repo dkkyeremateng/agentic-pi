@@ -26,6 +26,7 @@ import {
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
 import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
 import { setObsEmit } from "../../obs/obs-events";
+import { stageLearning, readStaged } from "./memory";
 
 // Run with: npx tsx --test orchestrator-core.test.ts
 
@@ -1069,6 +1070,70 @@ describe("dispatchParallelCore", () => {
             else process.env.PI_DISPATCH_DEPTH = savedDepth;
             if (savedMax === undefined) delete process.env.PI_DISPATCH_MAX_DEPTH;
             else process.env.PI_DISPATCH_MAX_DEPTH = savedMax;
+        }
+    });
+});
+
+// ── dispatch commits staged learnings ────────────
+// A bare dispatch has no workflow finalize, so the dispatch cores commit each
+// agent's `remember` lessons themselves (else they stage and are orphaned). These
+// assert the wiring via the observable side effect: after a dispatch the run's
+// staging file is CLEARED (commitStagedLearnings always clears before its verdict
+// gate). Failed dispatches are used so the fail gate keeps nothing — no write to
+// the agents' repo memory dir. The commit's pass/fail persistence is covered in
+// memory.test.ts.
+describe("dispatch commits staged learnings", () => {
+    let saved: string | undefined;
+    beforeEach(() => {
+        saved = process.env.PI_AGENT_MEMORY;
+        delete process.env.PI_AGENT_MEMORY; // default = memory enabled
+    });
+    const restore = () => {
+        if (saved === undefined) delete process.env.PI_AGENT_MEMORY;
+        else process.env.PI_AGENT_MEMORY = saved;
+    };
+
+    it("dispatchAgentCore clears this run's staging after a dispatch", async () => {
+        const cwd = mkdtempSync(join(tmpdir(), "dispatch-learn-"));
+        try {
+            stageLearning(cwd, "seeker", "avoid captcha-walled sites for finance");
+            assert.equal(readStaged(cwd).length, 1);
+            const agents = new Map<string, AgentDef>();
+            agents.set("seeker", mkAgent("seeker"));
+            const host = mkHost({
+                setup: { loadAgents: () => agents, setupSessions: () => {}, prepareRun: () => {} },
+                // Empty output ⇒ failed dispatch ⇒ commit runs with passed:false
+                // (clears staging, writes nothing).
+                execution: { runAgent: async () => ({ output: "", exitCode: 0 }) },
+            });
+            await dispatchAgentCore(mkStateWithAgents(agents), host, "seeker", "research", undefined, { cwd });
+            assert.equal(readStaged(cwd).length, 0, "staging should be cleared by the dispatch commit");
+        } finally {
+            restore();
+        }
+    });
+
+    it("dispatchParallelCore clears this run's staging once for the batch", async () => {
+        const cwd = mkdtempSync(join(tmpdir(), "dispatch-learn-par-"));
+        try {
+            stageLearning(cwd, "seeker", "prefer structured-filing sources");
+            assert.equal(readStaged(cwd).length, 1);
+            const agents = new Map<string, AgentDef>();
+            agents.set("seeker", mkAgent("seeker"));
+            const host = mkHost({
+                setup: { loadAgents: () => agents, setupSessions: () => {}, prepareRun: () => {} },
+                execution: { runAgent: async () => ({ output: "", exitCode: 0 }) },
+            });
+            await dispatchParallelCore(
+                mkStateWithAgents(agents),
+                host,
+                [{ agent: "seeker", task: "a" }, { agent: "seeker", task: "b" }],
+                undefined,
+                { cwd },
+            );
+            assert.equal(readStaged(cwd).length, 0, "staging should be cleared once after the batch");
+        } finally {
+            restore();
         }
     });
 });
