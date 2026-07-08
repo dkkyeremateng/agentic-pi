@@ -48,6 +48,11 @@ export function renderRichCard(opts: {
     // When false, show the `model` string verbatim instead of the live
     // activeModel. Default true.
     useActiveModel?: boolean;
+    // Bind the card to ONE specific phase instead of aggregating every phase with
+    // this agent name. Required for parallel dispatch of the same agent (e.g. two
+    // `seeker`s at once): without it both cards resolve to the same running phase,
+    // so a finished instance keeps showing "running" until the whole batch ends.
+    phase?: PhaseState;
 }): string[] {
     const { agentKey, def, phases, colWidth, theme, model } = opts;
     const showContext = opts.showContext ?? true;
@@ -60,11 +65,17 @@ export function renderRichCard(opts: {
     const truncate = (s: string, max: number) =>
         s.length > max ? s.slice(0, Math.max(0, max - 1)) + "…" : s;
 
-    const { status, elapsed, toolCount } = agentPhaseStatus(phases, agentKey);
+    // Per-instance when a specific phase is given (parallel same-agent dispatch —
+    // each running instance owns a card that flips to done independently); else
+    // aggregate by agent name (idle grid, sequential single-phase).
+    const inst = opts.phase;
+    const { status, elapsed, toolCount } = inst
+        ? { status: inst.status, elapsed: inst.elapsed, toolCount: inst.toolCount }
+        : agentPhaseStatus(phases, agentKey);
 
     // "Selected" = this agent has a phase (declared/dispatched). Selected cards get
     // a status-colored border and a ▸ marker; a selected-but-pending one is "queued".
-    const selected = phases.some((p) => p.agent === key);
+    const selected = inst ? true : phases.some((p) => p.agent === key);
     const queued = selected && status === "pending";
 
     let { icon, color } = statusMeta(status);
@@ -99,7 +110,7 @@ export function renderRichCard(opts: {
     // drives the context bar, token count, and active model.
     const own = phases.filter((p) => p.agent === key);
     const livePhase =
-        own.find((p) => p.status === "running") ?? own[own.length - 1];
+        inst ?? (own.find((p) => p.status === "running") ?? own[own.length - 1]);
 
     const ctxWindow =
         livePhase?.tokens?.contextWindow || def?.contextWindow || 0;

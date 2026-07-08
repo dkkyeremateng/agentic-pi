@@ -381,6 +381,7 @@ export default function (pi: ExtensionAPI) {
         colWidth: number,
         theme: any,
         showContext = true,
+        phase?: PhaseState,
     ): string[] {
         const def = st.agents.get(agentKey.toLowerCase());
         const model = modelFor(agentKey);
@@ -398,6 +399,9 @@ export default function (pi: ExtensionAPI) {
             theme,
             model,
             showContext,
+            // Bind to this specific phase so parallel instances of one agent each
+            // render their own live state (and settle independently).
+            phase,
         });
     }
 
@@ -432,9 +436,15 @@ export default function (pi: ExtensionAPI) {
             : [];
         const offTeam = offActive.length > 0;
 
-        // At bootup show the full roster from all teams; once dispatching,
-        // show only the dispatched agents (team members or not).
-        const members = selecting ? selectedKeys : allRoster;
+        // At bootup show the full roster from all teams; once dispatching, show one
+        // card PER PHASE (so parallel instances of the same agent — e.g. two seekers
+        // — each get their own card bound to their own phase, instead of collapsing
+        // to a single by-name card). Idle cards carry no phase (by-name is fine).
+        const members: { key: string; phase?: PhaseState }[] = selecting
+            ? st.phases
+                  .filter((p) => st.agents.has(p.agent.toLowerCase()))
+                  .map((p) => ({ key: p.agent, phase: p }))
+            : allRoster.map((k) => ({ key: k }));
 
         const anyRunning = st.phases.some((p) => p.status === "running");
         const doneCount = st.phases.filter((p) => p.status === "done").length;
@@ -531,7 +541,7 @@ export default function (pi: ExtensionAPI) {
                 // agent-workflow agents each have their own per-agent model/session, so
                 // show the context bar in both idle and working states (idle shows
                 // 0%/<the agent's window> until it runs).
-                renderAgentCard(m, colWidth, theme, true),
+                renderAgentCard(m.key, colWidth, theme, true, m.phase),
             );
             lines.push(...renderCardGrid(cards, cols, gap, colWidth));
         }
@@ -698,7 +708,7 @@ export default function (pi: ExtensionAPI) {
             Math.max(14, Math.floor((width - arrowWidth * (cols - 1)) / cols)),
         );
         const cards = st.phases.map((p) =>
-            renderAgentCard(p.agent, colWidth, theme),
+            renderAgentCard(p.agent, colWidth, theme, true, p),
         );
         const lines: string[] = [];
         const passInfo =
