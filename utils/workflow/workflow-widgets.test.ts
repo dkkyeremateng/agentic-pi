@@ -106,3 +106,64 @@ describe("renderRichCard per-agent cache hit rate", () => {
         assert.doesNotMatch(out, /CH /);
     });
 });
+
+describe("renderRichCard parallel same-agent instances", () => {
+    // Two `seeker` phases running concurrently, one already finished. Each card
+    // must reflect ITS OWN phase — the finished one shows "done", the other
+    // "running" — instead of both collapsing to the still-running phase.
+    const doneSeeker = {
+        agent: "seeker",
+        label: "Seeker",
+        status: "done",
+        elapsed: 30_000,
+        toolCount: 4,
+        contextPct: 1,
+        tokens: { input: 1000, cacheRead: 0, output: 50, cacheWrite: 0, costUsd: 0.5, contextWindow: 1_000_000 },
+    } as any;
+    const runningSeeker = {
+        agent: "seeker",
+        label: "Seeker",
+        status: "running",
+        elapsed: 44_000,
+        toolCount: 2,
+        contextPct: 2,
+        tokens: { input: 2000, cacheRead: 0, output: 80, cacheWrite: 0, costUsd: 1.61, contextWindow: 1_000_000 },
+    } as any;
+    const phases = [doneSeeker, runningSeeker];
+    const render = (phase: any) =>
+        renderRichCard({
+            agentKey: "seeker",
+            def: { description: "web research", contextWindow: 1_000_000 },
+            phases,
+            colWidth: 70,
+            theme,
+            model: "m",
+            phase,
+        }).join("\n");
+
+    it("marks the finished instance done while the other still runs", () => {
+        const doneCard = render(doneSeeker);
+        assert.match(doneCard, /✓ done/);
+        assert.doesNotMatch(doneCard, /running/);
+    });
+
+    it("keeps the still-running instance on running with its own cost", () => {
+        const runningCard = render(runningSeeker);
+        assert.match(runningCard, /● running/);
+        // Each card reads its OWN phase's cost, not a shared one.
+        assert.match(runningCard, /\$1\.61/);
+        assert.doesNotMatch(render(doneSeeker), /\$1\.61/);
+    });
+
+    it("without a bound phase, collapses to the running phase (legacy by-name)", () => {
+        const byName = renderRichCard({
+            agentKey: "seeker",
+            def: { description: "web research", contextWindow: 1_000_000 },
+            phases,
+            colWidth: 70,
+            theme,
+            model: "m",
+        }).join("\n");
+        assert.match(byName, /● running/);
+    });
+});
