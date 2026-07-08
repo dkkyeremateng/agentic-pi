@@ -40,6 +40,8 @@ The skill supports **multiple independent browser instances at once**, each its 
 
 Work with intent: enough browsing to answer or verify confidently, then stop. Note anything you could not reach (paywalls, logins, blocked pages, dynamic content that failed to load) and where someone should look next.
 
+**Learn across runs — `remember`.** When you discover a durable, reusable fact about a *source* (not about this specific task), save it with the `remember` tool as one general imperative sentence. Record: a domain that is reliably captcha-walled, paywalled, or login-gated for a kind of research — so you do not waste a future run attempting it — and, conversely, a source that reliably delivers clean, structured data worth going to first. Attribute the lesson to the research type, e.g. "For financial data, skip <site> (captcha-walled); prefer <site> which serves structured filings." Save the source-quality lesson, never the task-specific finding. This memory is injected into your next run, so you route straight to what works and skip what does not.
+
 ## Validating user stories (QA mode)
 
 When the task is to **verify a user story, acceptance criteria, or a checklist** against a UI, run it as a QA pass with screenshot evidence at every step.

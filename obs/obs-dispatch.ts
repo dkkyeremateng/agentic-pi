@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { parseChatLine, promptArg, type ChatEvent } from "./obs-chat";
 import { isOutsideCwd } from "../utils/guards/path-guard";
 import { llmConfig, type LlmConfig, runPlayground } from "./obs-llm";
+import { memoryInjection } from "../utils/workflow/memory";
 import {
     type AgentDef,
     loadAgents,
@@ -341,7 +342,11 @@ export function dispatchStream(
             "--tools",
             def.tools,
             "--append-system-prompt",
-            def.systemPrompt + TRIVIAL_PING_RULE,
+            // Inject the agent's committed memory so a dispatched agent benefits from
+            // its own past lessons (e.g. a research source found to be captcha-walled)
+            // — the same injection the workflow spawn path applies. No-op when memory
+            // is off or the agent has none.
+            def.systemPrompt + TRIVIAL_PING_RULE + memoryInjection(def.name),
             "--name",
             spawnSessionName(cwd, def.name),
         ];
