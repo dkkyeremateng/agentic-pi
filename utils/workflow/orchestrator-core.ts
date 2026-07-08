@@ -317,6 +317,16 @@ function finalizeError(
         }),
     );
     h.ui.updateWidget();
+    // Agent-learning loop on the ERROR exit too. The normal finalize runs this on
+    // completion, but a run whose phase/subagent crashed returns HERE and would
+    // otherwise never learn — yet a crashed agent is the failure most worth a
+    // durable lesson. Clear this run's staged learnings (verdict gate: a failed run
+    // keeps none, and skipping this leaks them into the next run) and distil
+    // per-agent lessons from the run's obs digest. Both are gated + best-effort and
+    // self-gate to no-ops for pre-run config errors where no agent ran (empty
+    // digest). Fire-and-forget: it must never delay the report written above.
+    commitStagedLearnings(cwd, { passed: false, runId: process.env.PI_OBS_RUN });
+    void reflectFailedRun(process.env.PI_OBS_RUN);
     return { status: "error", report };
 }
 
@@ -1513,6 +1523,15 @@ export async function dispatchAgentCore(
             : res.output;
 
     const status = ok ? "done" : "error";
+
+    // Persist this agent's staged learnings (the `remember` tool) now the dispatch
+    // is done — a bare dispatch has no workflow finalize to commit them, so without
+    // this a dispatched agent's lessons stage and are orphaned. Verdict gate mirrors
+    // the workflow: keep them only if the agent produced a real result; a
+    // failed/empty dispatch drops them. The child staged into ctx.cwd (where it
+    // ran); no-op when memory is off or nothing was staged.
+    commitStagedLearnings(ctx.cwd, { passed: ok, runId: process.env.PI_OBS_RUN });
+
     const summary = `[${def.name}] ${status} in ${secs(phase.elapsed)}`;
 
     const remaining = s.phases
@@ -1714,6 +1733,17 @@ export async function dispatchParallelCore(
         );
 
     const okCount = results.filter((r) => r.ok).length;
+
+    // Commit the batch's staged learnings once. Staging is a single cwd-scoped file
+    // shared by every agent in the batch, so committing per-agent inside the
+    // Promise.all would race (read+clear); do it here after all have resolved. Keep
+    // the lessons if any agent produced a result; drop them only when the whole
+    // batch failed. See the mirror in dispatchAgentCore.
+    commitStagedLearnings(ctx.cwd, {
+        passed: okCount > 0,
+        runId: process.env.PI_OBS_RUN,
+    });
+
     const skipNote = skipped.length ? ` Skipped: ${skipped.join(", ")}.` : "";
     const blocks = results
         .map(
