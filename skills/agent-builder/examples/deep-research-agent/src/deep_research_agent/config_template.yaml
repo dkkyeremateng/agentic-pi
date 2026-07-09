@@ -1,0 +1,51 @@
+# Agent Configuration
+# Auto-generated on first run at ~/.deep-research-agent/config.yaml
+
+api:
+  # Provider: "anthropic", "openai", or "openai-compatible"
+  provider: "${LLM_PROVIDER:-openai}"
+  # Model name (provider-specific)
+  model: "${OPENAI_MODEL:-gpt-4o}"
+  # Base URL for OpenAI-compatible providers
+  base_url: "${OPENAI_BASE_URL:-}"
+
+settings:
+  # Enable thinking/reasoning traces in the TUI
+  enable_thinking: false
+
+  # Concurrency limits for sub-agent execution
+  concurrency:
+    max_concurrent_tasks: 3
+
+  # Safety and context limits.
+  limits:
+    # Max agent<->tools node steps per invoke before LangGraph raises.
+    recursion_limit: 50
+    # Approx token size of the message history that triggers auto-compaction
+    # (older turns are summarized). Also runnable on demand with /compact.
+    compact_at_tokens: 24000
+
+  # Tool call quotas (hard per-session limits, enforced in the engine tool node).
+  # A tool with no entry here is unlimited. Once a tool hits its limit,
+  # further calls are refused with a "synthesize and stop" message.
+  quotas:
+    web_search: 8
+    fetch_url_to_workspace: 6
+    read_workspace_file: 20
+    write_workspace_file: 10
+    list_workspace_files: 10
+    grep_workspace_file: 15
+    write_todos: 15
+    read_todos: 15
+    think_tool: 20
+    delegate_tasks: 10
+
+  # Session persistence
+  enable_conversational_memory: true
+  enable_session_persistence: true
+
+  # Workspace
+  workspace:
+    type: disk       # "memory" or "disk"
+    dir: "~/.deep-research-agent/workspace"
+    session_isolation: true  # Timestamped run folders

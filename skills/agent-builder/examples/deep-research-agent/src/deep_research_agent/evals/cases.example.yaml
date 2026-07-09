@@ -1,0 +1,34 @@
+# Example eval suite for the deep research agent.
+# Run: deep-research-agent-eval src/deep_research_agent/evals/cases.example.yaml
+#
+# Each case runs the prompt through the compiled engine (the Orchestrator), then
+# scores the run with deterministic checks (fast, free) and an optional
+# LLM-as-judge. These cases exercise the delegation chain
+# (Orchestrator -> Searcher -> Analyzer). They require a provider key at runtime
+# (the harness runs the agent for real). Add --no-judge for deterministic-only.
+
+- name: simple-lookup-delegates-to-searcher
+  prompt: "What is the release date of Python 3.13? Keep it brief."
+  checks:
+    - {type: no_error}
+    # The Orchestrator has NO web_search; it must delegate the actual search.
+    - {type: tool_called, value: delegate_tasks}
+    - {type: tool_not_called, value: web_search}
+  judge:
+    rubric: "The answer states a release date and does not fabricate; a simple
+      lookup should stay short rather than produce a multi-section report."
+    min_score: 3
+
+- name: comparative-produces-report
+  prompt: "Compare the battery life of two popular laptops and write the
+    findings to final_report.md."
+  checks:
+    - {type: no_error}
+    # A synthesis task still routes through delegation to the Searcher.
+    - {type: tool_called, value: delegate_tasks}
+    # The Orchestrator writes the final report itself.
+    - {type: tool_called, value: write_workspace_file}
+  judge:
+    rubric: "The response reflects a comparison assembled from delegated research
+      and mentions writing a final report."
+    min_score: 3
