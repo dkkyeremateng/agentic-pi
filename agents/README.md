@@ -21,7 +21,16 @@ available there.
 
 Also present are **specialist** agents that are not linear pipeline phases —
 `seeker` (browser/web), `linear` (issue tracking), and `atlassian` (Jira tickets).
-These are **not** run as teams; the orchestrator dispatches them directly. There is
+These are **not** run as teams; the orchestrator dispatches them directly.
+
+`phase-implementer` is a different kind of specialist: it is dispatched **by the
+`implementer`, not by the orchestrator**. The implementer acts as a coordinator and
+delegates each plan phase to a fresh `phase-implementer` sub-agent (one per phase,
+sequentially — each in its own context), then verifies, checkpoints, and gates the
+result itself. Because the implementer already runs one dispatch level deep, per-phase
+delegation needs `PI_DISPATCH_MAX_DEPTH=2` (see `../extensions/README.md`); without it
+the implementer falls back to implementing each phase in its own context, so the
+workflow still works — it just loses the fresh-context-per-phase benefit. There is
 no dedicated research agent: for an investigate-and-write-up the orchestrator
 assembles it itself — pick the relevant specialists/skills for the request, gather
 (in parallel when independent), then write the findings doc to

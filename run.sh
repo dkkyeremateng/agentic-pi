@@ -277,6 +277,12 @@ command -v pi >/dev/null 2>&1 || {
     exit 1
 }
 
+# Allow one extra dispatch level so the implementer can delegate each plan phase
+# to a fresh phase-implementer sub-agent (the implementer already runs one level
+# deep). Without this it falls back to implementing each phase in its own context.
+# An explicit value in the environment always wins.
+export PI_DISPATCH_MAX_DEPTH="${PI_DISPATCH_MAX_DEPTH:-2}"
+
 # dispatch.ts first (the workflow depends on it for dispatch_agent/select_agents).
 # interactive.ts adds the ask_user tool for the primary session.
 # footer.ts renders the status bar from the state agent-workflow.ts publishes, so
