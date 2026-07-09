@@ -92,8 +92,11 @@ automatically on each spawn):
 - **Breadth** — `PI_MAX_DISPATCHES_PER_TURN` still caps dispatches per agent-turn.
 
 The default keeps behaviour single-level; opt into deeper trees with
-`PI_DISPATCH_MAX_DEPTH=2+`. The bundled agents are all single-level — only add an
-agent with `dispatch_agent`/`dispatch_parallel` in its frontmatter to need this.
+`PI_DISPATCH_MAX_DEPTH=2+`. The one bundled agent that dispatches further is
+`implementer` — it delegates each plan phase to a `phase-implementer` sub-agent, so
+set `PI_DISPATCH_MAX_DEPTH=2` to enable that (without it the implementer falls back
+to doing each phase in its own context). Any other agent needs this only if you add
+`dispatch_agent`/`dispatch_parallel` to its frontmatter.
 
 ### Companion extensions — footer, revert, lsp-panel
 
