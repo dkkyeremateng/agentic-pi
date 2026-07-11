@@ -22,6 +22,8 @@ import {
     planArchiveName,
     archivePlan,
     runWorkflowCore,
+    streamDispatchEnabled,
+    renderDispatchActivity,
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
 import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
@@ -3406,5 +3408,51 @@ describe("selectPlan", () => {
 
     it("readPlanFile returns '' for a missing file", () => {
         assert.equal(readPlanFile(mkdtempSync(join(tmpdir(), "noplan-"))), "");
+    });
+});
+
+describe("dispatch activity streaming", () => {
+    it("streamDispatchEnabled is off by default and honors truthy values", () => {
+        assert.equal(streamDispatchEnabled({}), false);
+        assert.equal(streamDispatchEnabled({ PI_DISPATCH_STREAM: "0" }), false);
+        assert.equal(streamDispatchEnabled({ PI_DISPATCH_STREAM: "" }), false);
+        for (const v of ["1", "true", "on", "ON", " True "])
+            assert.equal(streamDispatchEnabled({ PI_DISPATCH_STREAM: v }), true, v);
+    });
+
+    it("renders a single agent as a labeled tail of its recent log lines", () => {
+        const log = "→ bash ls\n✓ bash\n→ edit app.py\n✓ edit";
+        const out = renderDispatchActivity([{ label: "phase-implementer", log }]);
+        const lines = out.split("\n");
+        assert.equal(lines[0], "phase-implementer — running…");
+        assert.deepEqual(lines.slice(1), ["→ bash ls", "✓ bash", "→ edit app.py", "✓ edit"]);
+    });
+
+    it("caps a single agent's tail at the last 8 non-empty lines", () => {
+        const log = Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n");
+        const out = renderDispatchActivity([{ label: "a", log }]);
+        // header + 8 tail lines, and it is the LAST 8
+        assert.equal(out.split("\n").length, 9);
+        assert.ok(out.endsWith("line 19"));
+        assert.ok(!out.includes("line 11"));
+    });
+
+    it("renders a parallel wave as one latest line per agent", () => {
+        const out = renderDispatchActivity([
+            { label: "phase-implementer#1", log: "→ write a.py\n✓ write" },
+            { label: "phase-implementer#2", log: "→ bash pytest\n" },
+        ]);
+        assert.deepEqual(out.split("\n"), [
+            "phase-implementer#1: ✓ write",
+            "phase-implementer#2: → bash pytest",
+        ]);
+    });
+
+    it("shows a placeholder for an agent that has not logged yet", () => {
+        const out = renderDispatchActivity([
+            { label: "a", log: "→ go" },
+            { label: "b", log: "" },
+        ]);
+        assert.deepEqual(out.split("\n"), ["a: → go", "b: …"]);
     });
 });

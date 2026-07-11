@@ -16,6 +16,7 @@ You own **just this phase**: its failing tests, the smallest change that greens 
 - **Do NOT commit or run git** — the coordinator checkpoints each green phase (`wip(phase N)`).
 - **Do NOT run the full test suite** — run only *this* phase's targeted tests. The coordinator runs the full suite once at the end.
 - **Do NOT implement other phases**, even if they look quick or related. If you notice a problem in another phase, report it in Risks — do not fix it.
+- **Stay inside your phase's files — a sibling may be running concurrently.** When your task says a sibling phase runs at the same time, you share one working tree with it, so touch **only** the files your task names as this phase's. Never edit a file outside your phase — not even to fix an import, a lint, or a type error elsewhere; note it in Risks instead. Editing a sibling's file will clobber its work.
 
 ## Method
 
