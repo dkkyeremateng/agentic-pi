@@ -34,7 +34,27 @@ files, no ordering/data dependency) share a wave and run **in parallel** via
 disjoint-files rule is a hard safety gate, not a nicety. Because the implementer already runs one dispatch level deep, per-phase
 delegation needs `PI_DISPATCH_MAX_DEPTH=2` (see `../extensions/README.md`); without it
 the implementer falls back to implementing each phase in its own context, so the
-workflow still works — it just loses the fresh-context-per-phase benefit. There is
+workflow still works — it just loses the fresh-context-per-phase benefit.
+
+**Watching the phase-implementers run.** Each `phase-implementer` is its own `pi`
+process, so its activity is visible in a few ways:
+
+- **Terminal panes (`--panes`)** — `./run.sh --panes` (sets `PI_WORKFLOW_PANES=1` +
+  obs) opens a live pane per dispatched sub-agent when you're inside a multiplexer
+  (tmux/zellij/WezTerm/kitty/iTerm2). Panes open for the sub-agents the **interactive
+  root** dispatches directly — so run the `implementer` as your top-level agent and
+  each `phase-implementer` it spawns (including a parallel wave, side by side) gets its
+  own pane. In the full `/agent-workflow` pipeline the implementer is itself a headless
+  child, so its grandchildren don't get panes there — use the dashboard instead.
+- **obs dashboard (`./run.sh --obs`)** — every sub-agent emits ObsEvents to the shared
+  sink, so the **Live wall** shows a lane per `phase-implementer`, the **tail** streams
+  their tool calls, and the **Trace/waterfall** view shows the implementer fanning out
+  to them (a parallel wave = overlapping spans). This works regardless of pipeline depth.
+- **Session transcripts** — full turn-by-turn logs land at
+  `~/.pi/agent/sessions/<projectHash>/phase-implementer-*.jsonl` (one file per dispatch),
+  readable after the run.
+
+There is
 no dedicated research agent: for an investigate-and-write-up the orchestrator
 assembles it itself — pick the relevant specialists/skills for the request, gather
 (in parallel when independent), then write the findings doc to

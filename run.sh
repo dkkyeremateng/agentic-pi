@@ -161,6 +161,7 @@ MODE="pi"
 
 # Sink scope: global (shared ~/.pi sink) | project (this cwd's sink). --project.
 SINK_SCOPE="global"
+PANES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -171,6 +172,10 @@ while [[ $# -gt 0 ]]; do
         --restart) MODE="restart"; shift ;;
         --stop) MODE="stop"; shift ;;
         --project | --cwd) SINK_SCOPE="project"; shift ;;
+        # Open a live terminal pane per dispatched sub-agent (e.g. each
+        # phase-implementer). Needs a multiplexer (tmux/zellij/WezTerm/kitty/iTerm2)
+        # and obs telemetry, so imply emission when no other obs mode is chosen.
+        --panes) PANES=1; [[ "$MODE" == "pi" ]] && MODE="emit"; shift ;;
         --) shift; break ;;
         *) break ;;
     esac
@@ -304,6 +309,12 @@ if [[ "$MODE" == "both" || "$MODE" == "emit" ]]; then
     export PI_OBS=1
     EXT+=(-e "$DIR/extensions/obs-live.ts")
 fi
+# --panes: a live viewer pane per dispatched sub-agent. Best-effort — pane-mux
+# no-ops cleanly when not in a supported multiplexer, when not an interactive pi
+# session, or below the root orchestrator. Panes open for the sub-agents the
+# INTERACTIVE root dispatches directly: run the implementer as your top-level
+# agent and every phase-implementer it spawns gets its own pane.
+[[ -n "$PANES" ]] && export PI_WORKFLOW_PANES=1
 if [[ "$MODE" == "both" ]]; then
     # Start the dashboard server in the background, tailing the shared sink.
     if [[ -x "$TSX" ]]; then
