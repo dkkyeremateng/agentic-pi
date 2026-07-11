@@ -39,6 +39,12 @@ workflow still works — it just loses the fresh-context-per-phase benefit.
 **Watching the phase-implementers run.** Each `phase-implementer` is its own `pi`
 process, so its activity is visible in a few ways:
 
+- **Inline in the transcript (`PI_DISPATCH_STREAM=1`, on by default in `run.sh`)** —
+  the `dispatch_agent`/`dispatch_parallel` tool call live-updates with the sub-agent's
+  tool trail as it runs (its `→ tool` / `✓ tool` lines), instead of showing only a
+  spinner until the final result. For a parallel wave the block shows each worker's
+  latest line. Works in any pi session, at any pipeline depth — no multiplexer needed.
+  Opt out with `PI_DISPATCH_STREAM=0`.
 - **Terminal panes (`--panes`)** — `./run.sh --panes` (sets `PI_WORKFLOW_PANES=1` +
   obs) opens a live pane per dispatched sub-agent when you're inside a multiplexer
   (tmux/zellij/WezTerm/kitty/iTerm2). Panes open for the sub-agents the **interactive

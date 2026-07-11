@@ -288,6 +288,11 @@ command -v pi >/dev/null 2>&1 || {
 # An explicit value in the environment always wins.
 export PI_DISPATCH_MAX_DEPTH="${PI_DISPATCH_MAX_DEPTH:-2}"
 
+# Stream each dispatched sub-agent's live tool trail inline into the parent
+# transcript (so a dispatch shows the phase-implementer's activity as it runs, not
+# just its final result). Opt out with PI_DISPATCH_STREAM=0.
+export PI_DISPATCH_STREAM="${PI_DISPATCH_STREAM:-1}"
+
 # dispatch.ts first (the workflow depends on it for dispatch_agent/select_agents).
 # interactive.ts adds the ask_user tool for the primary session.
 # footer.ts renders the status bar from the state agent-workflow.ts publishes, so

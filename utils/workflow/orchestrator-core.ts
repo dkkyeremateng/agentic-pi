@@ -1025,6 +1025,60 @@ const textResult = (text: string): ToolResult => ({
     details: undefined,
 });
 
+// Live-stream a running sub-agent's activity into the parent transcript. By default a
+// dispatch shows only a spinner until the sub-agent's final result; when
+// PI_DISPATCH_STREAM is truthy, poll each phase's rolling log (updated live by
+// handleSpawnEvent as the child streams tool calls + text) and forward a compact tail
+// through the tool's onUpdate, so the caller SEES the sub-agent's tool trail as it
+// happens. Returns a stop() that clears the poller — call it in a finally. Best-effort
+// and a clean no-op when disabled or when there is no onUpdate to render into.
+export const streamDispatchEnabled = (
+    env: NodeJS.ProcessEnv = process.env,
+): boolean => /^(1|true|on)$/i.test((env.PI_DISPATCH_STREAM || "").trim());
+
+// Pure render of the in-progress dispatch block from each agent's rolling log. One
+// agent → a taller tail; several (a parallel wave) → the latest line each, so
+// interleaved progress stays legible in a single updating block. Exported for tests.
+export function renderDispatchActivity(
+    items: { label: string; log: string }[],
+): string {
+    const recentLog = (log: string, count: number): string[] =>
+        (log || "")
+            .split("\n")
+            .map((l) => l.replace(/\s+$/, ""))
+            .filter((l) => l.length)
+            .slice(-count);
+    if (items.length === 1) {
+        const { label, log } = items[0];
+        return [`${label} — running…`, ...recentLog(log, 8)].join("\n");
+    }
+    return items
+        .map(({ label, log }) => `${label}: ${recentLog(log, 1)[0] || "…"}`)
+        .join("\n");
+}
+
+function streamDispatchActivity(
+    items: { label: string; phase: PhaseState }[],
+    onUpdate: ((u: ToolResult) => void) | undefined,
+): () => void {
+    if (!onUpdate || !streamDispatchEnabled() || items.length === 0)
+        return () => {};
+    let last = "";
+    const tick = (): void => {
+        const snap = renderDispatchActivity(
+            items.map(({ label, phase }) => ({ label, log: phase.log })),
+        );
+        if (snap && snap !== last) {
+            last = snap;
+            onUpdate(textResult(snap));
+        }
+    };
+    const iv = setInterval(tick, 300);
+    // Don't let the poller keep the event loop alive on its own.
+    (iv as any).unref?.();
+    return () => clearInterval(iv);
+}
+
 // Capture the (possibly revised) plan: record it as the run artifact AND persist
 // it to `.agent/plan.md` so every downstream agent can read it from disk. The planner
 // agent also writes this file; doing it here too guarantees it regardless of
@@ -1457,7 +1511,18 @@ export async function dispatchAgentCore(
     phase.status = "running";
     h.ui.updateWidget();
 
-    const res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
+    // Stream the sub-agent's live tool trail into the parent transcript while it runs
+    // (opt-in via PI_DISPATCH_STREAM); always stop the poller once it returns.
+    const stopStream = streamDispatchActivity(
+        [{ label: displayName(def.name), phase }],
+        onUpdate,
+    );
+    let res: Awaited<ReturnType<typeof runAgentWithEmptyRetry>>;
+    try {
+        res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
+    } finally {
+        stopStream();
+    }
 
     // A clean exit with (near-)empty output usually means the agent did no real
     // work — fail it so the orchestrator re-dispatches instead of building on
@@ -1689,40 +1754,52 @@ export async function dispatchParallelCore(
         Math.floor(DISPATCH_PARALLEL_OUTPUT_MAX / Math.max(1, entries.length)),
     );
 
-    const results = await Promise.all(
-        entries.map(async ({ def, task, phase }) => {
-            const t0 = Date.now();
-            const res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
-            // A trivial ping legitimately returns a short "pong" with no tools —
-            // don't count that as an empty/failed dispatch.
-            const emptyOutput =
-                !isTrivialPing(task) &&
-                res.output.trim().length < h.config.minDispatchOutputChars &&
-                phase.toolCount === 0;
-            const ok = res.exitCode === 0 && !emptyOutput;
-            const modelFail = !ok && isModelFailure(res.output);
-            phase.status = ok ? "done" : "error";
-            phase.elapsed = Date.now() - t0;
-            obsEmit("dispatch_end", {
-                agent: def.name.toLowerCase(),
-                dispatchId: phase.dispatchId,
-                status: ok ? "done" : "error",
-                durationMs: phase.elapsed,
-                attempts: phase.attempt || 1,
-                reason:
-                    emptyOutput && phase.lastStopReason === "length"
-                        ? "truncated"
-                        : emptyOutput
-                          ? "empty"
-                          : modelFail
-                            ? "model-failure"
-                            : undefined,
-            });
-            h.ui.updateWidget();
-            const truncated = clampOutput(res.output, perItemBudget);
-            return { name: def.name, ok, elapsed: phase.elapsed, truncated };
-        }),
+    // Stream the whole wave's live activity into the parent transcript while it runs
+    // (opt-in via PI_DISPATCH_STREAM) — one updating block with each agent's latest
+    // line. Stopped once every item resolves.
+    const stopStream = streamDispatchActivity(
+        entries.map(({ def, phase }) => ({ label: displayName(def.name), phase })),
+        onUpdate,
     );
+    let results: { name: string; ok: boolean; elapsed: number; truncated: string }[];
+    try {
+        results = await Promise.all(
+            entries.map(async ({ def, task, phase }) => {
+                const t0 = Date.now();
+                const res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
+                // A trivial ping legitimately returns a short "pong" with no tools —
+                // don't count that as an empty/failed dispatch.
+                const emptyOutput =
+                    !isTrivialPing(task) &&
+                    res.output.trim().length < h.config.minDispatchOutputChars &&
+                    phase.toolCount === 0;
+                const ok = res.exitCode === 0 && !emptyOutput;
+                const modelFail = !ok && isModelFailure(res.output);
+                phase.status = ok ? "done" : "error";
+                phase.elapsed = Date.now() - t0;
+                obsEmit("dispatch_end", {
+                    agent: def.name.toLowerCase(),
+                    dispatchId: phase.dispatchId,
+                    status: ok ? "done" : "error",
+                    durationMs: phase.elapsed,
+                    attempts: phase.attempt || 1,
+                    reason:
+                        emptyOutput && phase.lastStopReason === "length"
+                            ? "truncated"
+                            : emptyOutput
+                              ? "empty"
+                              : modelFail
+                                ? "model-failure"
+                                : undefined,
+                });
+                h.ui.updateWidget();
+                const truncated = clampOutput(res.output, perItemBudget);
+                return { name: def.name, ok, elapsed: phase.elapsed, truncated };
+            }),
+        );
+    } finally {
+        stopStream();
+    }
 
     s.dispatchElapsedMs = Date.now() - s.dispatchStartedAt;
     h.ui.updateWidget();
