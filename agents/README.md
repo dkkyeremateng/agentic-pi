@@ -25,9 +25,13 @@ These are **not** run as teams; the orchestrator dispatches them directly.
 
 `phase-implementer` is a different kind of specialist: it is dispatched **by the
 `implementer`, not by the orchestrator**. The implementer acts as a coordinator and
-delegates each plan phase to a fresh `phase-implementer` sub-agent (one per phase,
-sequentially — each in its own context), then verifies, checkpoints, and gates the
-result itself. Because the implementer already runs one dispatch level deep, per-phase
+delegates each plan phase to a fresh `phase-implementer` sub-agent (each in its own
+context), then verifies, checkpoints, and gates the result itself. It groups the
+phases into ordered **waves** and runs the waves in order: dependent phases fall into
+their own wave (fully sequential), while phases it can prove independent (disjoint
+files, no ordering/data dependency) share a wave and run **in parallel** via
+`dispatch_parallel`. Parallel workers share one working tree with no isolation, so the
+disjoint-files rule is a hard safety gate, not a nicety. Because the implementer already runs one dispatch level deep, per-phase
 delegation needs `PI_DISPATCH_MAX_DEPTH=2` (see `../extensions/README.md`); without it
 the implementer falls back to implementing each phase in its own context, so the
 workflow still works — it just loses the fresh-context-per-phase benefit. There is
