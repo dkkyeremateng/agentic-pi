@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+    BOT_COMMANDS,
     bridgeConfig,
     chatSessionId,
     chunk,
+    helpText,
     dispatchSessionId,
     formatAgents,
     formatAttachable,
@@ -18,6 +20,7 @@ import {
     renderStream,
     resolveAttachTarget,
     shortId,
+    telegramCommands,
     TG_LIMIT,
 } from "./obs-bridge-core";
 
@@ -167,6 +170,46 @@ test("/reset and /new map to reset; unknown slash → usage", () => {
     assert.deepEqual(parseCommand("/reset"), { kind: "reset" });
     assert.deepEqual(parseCommand("/new"), { kind: "reset" });
     assert.deepEqual(parseCommand("/wat"), { kind: "usage", cmd: "wat" });
+});
+
+// ── command menu (setMyCommands / autocomplete) ──────────────────────────────
+
+test("telegramCommands satisfy Telegram's setMyCommands constraints", () => {
+    const cmds = telegramCommands();
+    assert.ok(cmds.length > 0);
+    for (const c of cmds) {
+        assert.match(c.command, /^[a-z0-9_]{1,32}$/, `bad command name: ${c.command}`);
+        assert.ok(c.description.length >= 1 && c.description.length <= 256, `bad description for /${c.command}`);
+    }
+    const names = cmds.map((c) => c.command);
+    assert.equal(new Set(names).size, names.length, "duplicate command names");
+});
+
+test("telegramCommands fold the arg hint into the description", () => {
+    const runs = telegramCommands().find((c) => c.command === "runs");
+    assert.ok(runs && runs.description.startsWith("[n] — "), "arg hint should lead the description");
+    const help = telegramCommands().find((c) => c.command === "help");
+    assert.equal(help?.description, "show the command list"); // no args → plain description
+});
+
+test("helpText lists every registered bot command with its arg hint", () => {
+    const h = helpText();
+    for (const c of BOT_COMMANDS) {
+        assert.ok(h.includes(`/${c.command}`), `help missing /${c.command}`);
+        if (c.args) assert.ok(h.includes(`/${c.command} ${c.args}`), `help missing args for /${c.command}`);
+    }
+});
+
+test("every menu command is recognised by parseCommand (none fall through to unknown)", () => {
+    for (const c of BOT_COMMANDS) {
+        const parsed = parseCommand(`/${c.command}`);
+        // Arg-required commands resolve to a usage prompt for THAT command; the
+        // rest resolve to their own kind. Either way it's never plain chat, and
+        // a usage result must name this same command (proving the switch matched
+        // its case, not the generic unknown fallthrough for a different name).
+        assert.notEqual(parsed.kind, "chat", `/${c.command} routed to chat`);
+        if (parsed.kind === "usage") assert.equal(parsed.cmd, c.command);
+    }
 });
 
 // ── streaming reduce / render ────────────────────────────────────────────────

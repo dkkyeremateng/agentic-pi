@@ -420,6 +420,46 @@ export function formatAgents(agents: AgentInfo[]): string {
     return "agents (all dispatchable, confined to the project dir):\n" + agents.map(line).join("\n") + "\n\nuse: /dispatch <agent>, <prompt>";
 }
 
+/** One bridge command. Single source of truth for BOTH the `/help` listing and
+ *  the Telegram command menu (setMyCommands → the `/` autocomplete popup).
+ *  `args` is the human arg hint shown after the command; Telegram's menu shows
+ *  `command` + `description` (we fold `args` into the description so the popup is
+ *  self-documenting). Only user-facing commands belong here — hidden aliases
+ *  (/start, /new, /run) stay recognised by parseCommand but out of the menu. */
+export interface BotCommand {
+    command: string; // no leading slash; Telegram requires 1–32 chars of [a-z0-9_]
+    args?: string; // e.g. "[n]", "<id>", "<agent>, <prompt>"
+    description: string; // Telegram allows 1–256 chars
+}
+
+export const BOT_COMMANDS: BotCommand[] = [
+    { command: "runs", args: "[n]", description: "recent runs (default 5)" },
+    { command: "last", description: "the most recent run's digest" },
+    { command: "digest", args: "<id>", description: "what happened in a run" },
+    { command: "search", args: "<text>", description: "search across all runs" },
+    { command: "live", description: "agents running right now" },
+    { command: "pass", args: "<id> [note]", description: "score a run pass" },
+    { command: "fail", args: "<id> [note]", description: "score a run fail" },
+    { command: "open", args: "<id> [note]", description: "mark a run needs-review" },
+    { command: "agents", description: "list dispatchable agents" },
+    { command: "do", args: "<task>", description: "auto-pick the best agent for a task (or just answer)" },
+    { command: "dispatch", args: "<agent>, <prompt>", description: "run a specific agent in the project dir" },
+    { command: "attach", args: "<run-id>", description: "route your messages into a live run (drive it)" },
+    { command: "detach", description: "stop routing; back to the assistant" },
+    { command: "reset", description: "fresh conversation (also detaches)" },
+    { command: "help", description: "show the command list" },
+];
+
+/** The setMyCommands payload — validated/clamped to Telegram's constraints
+ *  (command ∈ [1..32] of [a-z0-9_], description ∈ [1..256]). The arg hint is
+ *  folded into the description so the `/` menu documents each command's shape. */
+export function telegramCommands(): { command: string; description: string }[] {
+    return BOT_COMMANDS.map((c) => ({
+        command: c.command,
+        description: (c.args ? `${c.args} — ${c.description}` : c.description).slice(0, 256),
+    }));
+}
+
 export function helpText(): string {
     return [
         "pi obs bridge — talk to your agent observability.",
@@ -427,21 +467,7 @@ export function helpText(): string {
         "Send any message to chat with the obs assistant (it knows your runs).",
         "",
         "Commands:",
-        "/runs [n] — recent runs (default 5)",
-        "/last — the most recent run's digest",
-        "/digest <id> — what happened in a run",
-        "/search <text> — search across all runs",
-        "/live — agents running right now",
-        "/pass <id> [note] — score a run pass",
-        "/fail <id> [note] — score a run fail",
-        "/open <id> [note] — mark a run needs-review",
-        "/agents — list dispatchable agents",
-        "/do <task> — auto-pick the best agent for a task (or just answer)",
-        "/dispatch <agent>, <prompt> — run a specific agent in the project dir",
-        "/attach <run-id> — route your messages into a live run (drive it)",
-        "/detach — stop routing; back to the assistant",
-        "/reset — fresh conversation (also detaches)",
-        "/help — this message",
+        ...BOT_COMMANDS.map((c) => `/${c.command}${c.args ? ` ${c.args}` : ""} — ${c.description}`),
     ].join("\n");
 }
 

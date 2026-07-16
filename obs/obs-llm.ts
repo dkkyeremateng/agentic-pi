@@ -14,9 +14,9 @@
 //   - Results are cached by runId + endTs so re-opening a finished run is free.
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename } from "node:path";
+import { basename, delimiter, dirname } from "node:path";
 import type { RunDigest } from "./obs-explain";
 import type { ObsEvent } from "./obs-events";
 
@@ -160,6 +160,35 @@ export function compactRun(digest: RunDigest, events: ObsEvent[]): string {
     return L.join("\n");
 }
 
+/** pi ships as a Node CLI with a `#!/usr/bin/env node` shebang, so spawning it
+ *  needs `node` on the child's PATH — an absolute path to `pi` (PI_OBS_PI_BIN)
+ *  is not enough. A detached server (telegram/telegraph bridge, launchd, nohup)
+ *  often inherits a PATH that lacks the version-manager (nvm) bin dir where BOTH
+ *  node and pi live; the shebang then fails to resolve and the spawn ENOENTs
+ *  against `pi` itself. Prepend the dir of the node running THIS server — always
+ *  a valid interpreter — so pi's shebang resolves however the server was started. */
+export function piSpawnEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+    const nodeDir = dirname(process.execPath);
+    const cur = base.PATH ?? "";
+    const parts = cur ? cur.split(delimiter) : [];
+    const PATH = parts.includes(nodeDir) ? cur : [nodeDir, ...parts].join(delimiter);
+    return { ...base, PATH };
+}
+
+/** A spawn whose `cwd` doesn't exist makes Node throw a confusing ENOENT that
+ *  blames the COMMAND ("spawn /…/pi ENOENT"), not the missing directory — which
+ *  sends you hunting for a PATH problem that isn't there. Preflight the dir and
+ *  return a plain-English cause (or null when it's fine) so callers surface the
+ *  real problem instead of the misleading built-in message. */
+export function badCwd(cwd: string | undefined): string | null {
+    if (!cwd) return null; // no cwd set ⇒ inherit the server's, which is valid
+    try {
+        return statSync(cwd).isDirectory() ? null : `working directory is not a directory: ${cwd}`;
+    } catch {
+        return `working directory does not exist: ${cwd} (check the request's cwd / PI_OBS_TG_CWD)`;
+    }
+}
+
 /** One-shot pi text completion: `pi --mode text -p` with tools/skills/extensions
  *  off and an ephemeral session. Resolves the assistant's stdout text. */
 export type RunPi = (model: string, system: string, prompt: string, timeoutMs: number) => Promise<string>;
@@ -173,7 +202,7 @@ const runPiText: RunPi = (model, system, prompt, timeoutMs) =>
         // PI_OBS_PI_BIN lets run.sh hand the detached server an absolute path to
         // `pi` — its PATH may lack the version-manager (nvm) bin dir that holds it.
         const bin = process.env.PI_OBS_PI_BIN || "pi";
-        const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+        const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env: piSpawnEnv() });
         let out = "";
         let err = "";
         const timer = setTimeout(() => {
@@ -186,7 +215,7 @@ const runPiText: RunPi = (model, system, prompt, timeoutMs) =>
             clearTimeout(timer);
             const hint =
                 (e as NodeJS.ErrnoException).code === "ENOENT"
-                    ? ` — '${bin}' not on the server's PATH; set PI_OBS_PI_BIN to pi's absolute path (run.sh does this automatically)`
+                    ? ` — '${bin}' (or the 'node' its shebang needs) not on the server's PATH; set PI_OBS_PI_BIN to pi's absolute path and ensure node's bin dir is on PATH (run.sh does this automatically)`
                     : "";
             reject(new Error(`spawn ${bin}: ${e.message}${hint}`));
         });

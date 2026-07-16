@@ -33,6 +33,7 @@ import {
     resolveAttachTarget,
     type RunView,
     shortId,
+    telegramCommands,
     usageText,
 } from "./obs-bridge-core";
 
@@ -442,9 +443,23 @@ async function handleMessage(cfg: BridgeConfig, state: BridgeState, chatId: numb
 
 // ── poll loop ────────────────────────────────────────────────────────────────
 
+/** Publish the bridge's commands to Telegram so clients render the `/` menu.
+ *  Idempotent (Telegram just overwrites) and best-effort — logged, never thrown,
+ *  so a transient failure never keeps the bridge from starting its poll loop. */
+async function registerCommands(cfg: BridgeConfig): Promise<void> {
+    try {
+        await tg(cfg, "setMyCommands", { commands: telegramCommands() });
+    } catch (e) {
+        console.error("obs-bridge: setMyCommands failed (the /-autocomplete menu may be stale):", String((e as Error)?.message || e));
+    }
+}
+
 /** Long-poll Telegram and dispatch messages. Runs until the process exits. */
 export async function runBridge(cfg: BridgeConfig): Promise<void> {
     const state = newState();
+    // Register the command menu so Telegram shows the `/` autocomplete popup.
+    // Best-effort: a failure here (bad token, offline) must not stop the bridge.
+    await registerCommands(cfg);
     let offset = 0;
     for (;;) {
         let updates: any[];
