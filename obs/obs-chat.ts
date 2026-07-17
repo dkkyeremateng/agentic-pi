@@ -7,10 +7,11 @@
 // Mirrors obs-llm's constraints: STDLIB ONLY, opt-in (gated by the caller), and
 // the spawn resolves `pi` via PI_OBS_PI_BIN (the detached server's PATH may lack
 // the version-manager bin dir).
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { Readable } from "node:stream";
 import { badCwd, llmConfig, piSpawnEnv, type LlmConfig } from "./obs-llm";
 
 /** Base directory pi stores project sessions under (one file per session,
@@ -233,13 +234,16 @@ export function streamChat(
             return;
         }
 
-        let proc: ChildProcessWithoutNullStreams;
+        // stdin is "ignore" (we never write to pi), so stdout/stderr are the only
+        // streams — ChildProcessByStdio<null, Readable, Readable>, not the
+        // WithoutNullStreams variant (which would require a writable stdin).
+        let proc: ChildProcessByStdio<null, Readable, Readable>;
         try {
             proc = spawnImpl(bin, args, {
                 stdio: ["ignore", "pipe", "pipe"],
                 env: piSpawnEnv(),
                 cwd,
-            }) as ChildProcessWithoutNullStreams;
+            }) as ChildProcessByStdio<null, Readable, Readable>;
         } catch (e) {
             onEvent({ type: "error", error: String((e as Error)?.message || e) });
             reject(e);
