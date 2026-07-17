@@ -1,7 +1,8 @@
 // ABOUTME: Registers the `remember` tool — lets a spawned agent save a durable,
 // ABOUTME: general lesson to its OWN memory for future runs. The lesson is STAGED
-// ABOUTME: now (in the run's .agent/) and only COMMITTED to agents/memory/<agent>.md
-// ABOUTME: at finalize if the run succeeds (see utils/workflow/memory.ts). On the
+// ABOUTME: now (in the run's .agent/) and only COMMITTED to the agent's memory file
+// ABOUTME: (agents/memory/<agent>.md, or PI_AGENT_MEMORY_DIR) at finalize if the run
+// ABOUTME: succeeds (see utils/workflow/memory.ts). On the
 // ABOUTME: next run the agent's memory is injected into its prompt. Off when
 // ABOUTME: PI_AGENT_MEMORY=0. Loaded into sub-agents via subagentExtArgs.
 
@@ -22,7 +23,7 @@ export default function (pi: ExtensionAPI) {
             }),
         }),
         async execute(_id: unknown, params: unknown, _signal: unknown, _onUpdate: unknown, ctx: { cwd?: string }) {
-            const text = (item: string) => ({ content: [{ type: "text", text: item }], details: undefined });
+            const text = (item: string) => ({ content: [{ type: "text" as const, text: item }], details: undefined });
             const learning = String((params as { learning?: unknown })?.learning || "").trim();
             if (!learning) return text("nothing to remember (empty learning).");
             try {

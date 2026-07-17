@@ -12,5 +12,5 @@
         "allowImportingTsExtensions": true,
         "verbatimModuleSyntax": false,
     },
-    "include": ["utils/**/*.ts", "extensions/**/*.ts"],
+    "include": ["utils/**/*.ts", "extensions/**/*.ts", "obs/**/*.ts"],
 }

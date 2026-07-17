@@ -40,7 +40,7 @@ export default function (pi: ExtensionAPI) {
                 allow_other?: boolean;
             };
             const text = (t: string) => ({
-                content: [{ type: "text", text: t }],
+                content: [{ type: "text" as const, text: t }],
                 details: undefined,
             });
 

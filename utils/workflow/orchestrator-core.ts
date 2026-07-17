@@ -195,7 +195,7 @@ export async function runFullWorkflowCommand(
     s: OrchestratorState,
     h: OrchestratorHost,
     request: string,
-    ctx: { cwd: string; ui: { notify(msg: string, level: string): void } },
+    ctx: { cwd: string; ui: { notify(msg: string, level?: "info" | "warning" | "error"): void } },
     publishReport: (report: string) => void,
     maxLoops: number = DEFAULT_MAX_LOOPS,
 ): Promise<void> {
@@ -205,9 +205,11 @@ export async function runFullWorkflowCommand(
     );
     const result = await runWorkflowCore(s, h, request, maxLoops, ctx);
 
-    const level =
+    // The SDK's notify only styles info/warning/error — there's no "success", so a
+    // shipped run maps to the neutral-positive "info".
+    const level: "info" | "warning" | "error" =
         result.status === "shipped"
-            ? "success"
+            ? "info"
             : result.status.startsWith("error") ||
                 result.status === "failed-after-retries"
               ? "error"

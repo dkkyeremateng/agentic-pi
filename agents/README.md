@@ -174,6 +174,24 @@ pipeline phase* — a new step woven into `scout → … → ship` with its own
 retry/gating logic — which lives in `PIPELINE_ORDER`, the per-phase task builders,
 and `runWorkflowCore` (`../utils/`). Standalone specialist agents are files-only.
 
+## Memory
+
+Each agent keeps durable, per-agent lessons in a `<agent>.md` file. During a run an
+agent stages candidates via the `remember` tool; at finalize they're committed
+**only if the run objectively passed**, then injected into that agent's prompt on
+future runs. A failed run's candidates are dropped — but a reflector can distil
+lessons from the failure's obs digest and write them directly. Bounded (dedupe +
+cap). Managed by [`../utils/workflow/memory.ts`](../utils/workflow/memory.ts) (tool:
+[`../extensions/agent-memory.ts`](../extensions/agent-memory.ts)); disable the whole
+loop with `PI_AGENT_MEMORY=0`.
+
+**Location.** By default memory lives in `agents/memory/` inside this repo, created
+on first write (each write is a normal git diff you can review/revert). Set
+**`PI_AGENT_MEMORY_DIR`** (in `.env` or the environment) to keep it OUTSIDE the repo
+— e.g. a private, un-synced directory. A leading `~` expands to `$HOME`; a relative
+path resolves against the repo root. Move any existing `<agent>.md` files to the new
+location first.
+
 ## Note
 
 These files override the global package versions only while pi runs from this

@@ -52,6 +52,12 @@ test("formatWatchEvent flags a truncated turn and skips empty/uninteresting even
     assert.equal(formatWatchEvent(f.next("boot", {}, 0)), null);
 });
 
+test("formatWatchEvent renders dispatch retries and failed dispatches, skips clean ones", () => {
+    assert.match(strip(formatWatchEvent(f.next("dispatch_retry", { reason: "empty" }, 0)))!, /↻ dispatch retry \(empty\)/);
+    assert.match(strip(formatWatchEvent(f.next("dispatch_end", { status: "error", reason: "truncated" }, 0)))!, /✖ dispatch error \(truncated\)/);
+    assert.equal(formatWatchEvent(f.next("dispatch_end", { status: "done" }, 0)), null); // a clean finish is not lane-worthy
+});
+
 test("parseArgs reads --run/--agent/--sink/--dispatch and lowercases the agent", () => {
     assert.deepEqual(parseArgs(["--run", "r1", "--agent", "Scout", "--sink", "/s"]), { run: "r1", agent: "scout", sink: "/s" });
     assert.deepEqual(parseArgs(["--run", "r1", "--agent", "scout", "--dispatch", "scout-9"]), { run: "r1", agent: "scout", dispatch: "scout-9" });
