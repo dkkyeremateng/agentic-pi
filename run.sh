@@ -17,6 +17,8 @@
 #                                  #   (reloads edited obs/*.ts — tsx has no
 #                                  #    hot-reload)
 #   ./run.sh --stop                # stop the dashboard server on $PORT
+#   ./run.sh --bridge-stop         # stop the Telegram bridge (clears its lock)
+#   ./run.sh --bridge-restart      # stop the bridge, then start it fresh (foreground)
 #   ./run.sh --bg [name]           # start a PERSISTENT interactive pi session in
 #                                  #   the background (hosted in tmux). Emission is
 #                                  #   on by default AND the dashboard server is
@@ -169,6 +171,8 @@ while [[ $# -gt 0 ]]; do
         --emit) MODE="emit"; shift ;;
         --server | --obs-only) MODE="server"; shift ;;
         --bridge) MODE="bridge"; shift ;;
+        --bridge-stop) MODE="bridge-stop"; shift ;;
+        --bridge-restart) MODE="bridge-restart"; shift ;;
         --restart) MODE="restart"; shift ;;
         --stop) MODE="stop"; shift ;;
         --project | --cwd) SINK_SCOPE="project"; shift ;;
@@ -228,6 +232,33 @@ if [[ "$MODE" == "restart" ]]; then
         echo "run.sh: no server on port $PORT — starting it…"
     fi
     MODE="server" # fall through to a fresh start
+fi
+
+# ── stop / restart the Telegram bridge ───────────────────────────────────────
+# The bridge is a separate process from the server (it talks to it over HTTP).
+# It holds a single-instance pidfile lock; stopping it kills the process and
+# clears the lock so a fresh one can start.
+BRIDGE_STOPPED=0
+stop_bridge() {
+    if pkill -f "obs/obs-bridge.ts" 2>/dev/null; then
+        BRIDGE_STOPPED=1
+    fi
+    rm -f "$DIR/.obs-bridge.pid" 2>/dev/null || true
+}
+if [[ "$MODE" == "bridge-stop" ]]; then
+    stop_bridge
+    echo "run.sh: $([[ "$BRIDGE_STOPPED" == 1 ]] && echo "stopped the Telegram bridge." || echo "no Telegram bridge was running.")"
+    exit 0
+fi
+if [[ "$MODE" == "bridge-restart" ]]; then
+    stop_bridge
+    if [[ "$BRIDGE_STOPPED" == 1 ]]; then
+        echo "run.sh: stopped the running bridge — restarting…"
+        sleep 1 # let the process exit and release the lock before we reclaim it
+    else
+        echo "run.sh: no bridge was running — starting one…"
+    fi
+    MODE="bridge" # fall through to a fresh start
 fi
 
 # ── telegram bridge ──────────────────────────────────────────────────────────

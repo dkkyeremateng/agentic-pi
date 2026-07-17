@@ -10,9 +10,10 @@
 // http://<PI_OBS_HOST>:<PI_OBS_PORT>); the chat assistant needs PI_OBS_LLM=1 on
 // that server. See example.env for the full list.
 
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bridgeConfig } from "./obs-bridge-core";
+import { bridgeConfig, evalBridgeLock } from "./obs-bridge-core";
 import { runBridge } from "./obs-bridge-telegram";
 import { loadRepoEnv } from "./obs-llm";
 
@@ -34,6 +35,41 @@ if (!cfg.cwd) {
 if (!cfg.allow.length) {
     console.warn("obs-bridge: PI_OBS_TG_ALLOW is empty — every message will be refused. Message the bot once; it replies with your chat id to add.");
 }
+
+// Single-instance guard. Two bridges on the same bot token double-reply to every
+// message, so refuse to start when a live one already holds the pidfile lock.
+// A stale pidfile (holder no longer running, e.g. after a SIGKILL) is reclaimed.
+const pidfile = join(HERE, "..", ".obs-bridge.pid");
+const alive = (pid: number): boolean => {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        return (e as NodeJS.ErrnoException).code === "EPERM"; // exists but not ours
+    }
+};
+let pidfileRaw: string | null = null;
+try {
+    pidfileRaw = readFileSync(pidfile, "utf8");
+} catch {
+    // no pidfile → the lock is free
+}
+const lock = evalBridgeLock(pidfileRaw, process.pid, alive);
+if (!lock.claim) {
+    console.error(`obs-bridge: another bridge is already running (pid ${lock.heldByPid}). Stop it first with: ./run.sh --bridge-stop`);
+    process.exit(1);
+}
+try {
+    writeFileSync(pidfile, String(process.pid));
+} catch {
+    // non-fatal: the guard just degrades to best-effort if the file is unwritable
+}
+process.on("exit", () => {
+    try {
+        unlinkSync(pidfile);
+    } catch {}
+});
+for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => process.exit(0));
 
 console.log(`obs-bridge: Telegram bridge up → ${cfg.apiBase} (${cfg.allow.length} allowed chat${cfg.allow.length === 1 ? "" : "s"}${cfg.apiToken ? ", API token set" : ""}).`);
 

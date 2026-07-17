@@ -5,6 +5,7 @@ import {
     bridgeConfig,
     chatSessionId,
     chunk,
+    evalBridgeLock,
     helpText,
     dispatchSessionId,
     formatAgents,
@@ -212,6 +213,30 @@ test("every menu command is recognised by parseCommand (none fall through to unk
         assert.notEqual(parsed.kind, "chat", `/${c.command} routed to chat`);
         if (parsed.kind === "usage") assert.equal(parsed.cmd, c.command);
     }
+});
+
+// ── single-instance lock ─────────────────────────────────────────────────────
+
+test("evalBridgeLock claims a free lock (no pidfile)", () => {
+    assert.deepEqual(evalBridgeLock(null, 100, () => true), { claim: true });
+});
+
+test("evalBridgeLock blocks when a live foreign bridge holds the lock", () => {
+    const r = evalBridgeLock("222", 100, (pid) => pid === 222); // 222 alive
+    assert.equal(r.claim, false);
+    assert.equal(r.heldByPid, 222);
+});
+
+test("evalBridgeLock reclaims a stale pidfile (dead holder)", () => {
+    assert.deepEqual(evalBridgeLock("222", 100, () => false), { claim: true });
+});
+
+test("evalBridgeLock reclaims our own pid and ignores garbage/empty files", () => {
+    assert.deepEqual(evalBridgeLock("100", 100, () => true), { claim: true }); // ours
+    assert.deepEqual(evalBridgeLock("  100\n", 100, () => true), { claim: true }); // trimmed
+    assert.deepEqual(evalBridgeLock("not-a-pid", 100, () => true), { claim: true });
+    assert.deepEqual(evalBridgeLock("", 100, () => true), { claim: true });
+    assert.deepEqual(evalBridgeLock("0", 100, () => true), { claim: true }); // non-positive
 });
 
 // ── streaming reduce / render ────────────────────────────────────────────────

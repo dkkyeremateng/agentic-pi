@@ -462,6 +462,24 @@ export function telegramCommands(): { command: string; description: string }[] {
     }));
 }
 
+/** Decide whether this process may claim the bridge's single-instance lock,
+ *  given the raw pidfile contents (or null when absent) and an aliveness check.
+ *  Pure — the caller does the file read/write and supplies `alive`. Two bridges
+ *  polling the same bot double-reply to every message (Telegram hands each update
+ *  to both long-polls), so a second one must refuse to start. A pidfile naming a
+ *  DEAD holder — or our own pid — is reclaimable; a live foreign holder blocks. */
+export function evalBridgeLock(
+    pidfileRaw: string | null,
+    selfPid: number,
+    alive: (pid: number) => boolean,
+): { claim: boolean; heldByPid?: number } {
+    const held = Number((pidfileRaw ?? "").trim());
+    if (Number.isInteger(held) && held > 0 && held !== selfPid && alive(held)) {
+        return { claim: false, heldByPid: held };
+    }
+    return { claim: true };
+}
+
 export function helpText(): string {
     return [
         "pi obs bridge — talk to your agent observability.",
