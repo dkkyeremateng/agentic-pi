@@ -451,12 +451,14 @@ export const BOT_COMMANDS: BotCommand[] = [
 ];
 
 /** The setMyCommands payload — validated/clamped to Telegram's constraints
- *  (command ∈ [1..32] of [a-z0-9_], description ∈ [1..256]). The arg hint is
- *  folded into the description so the `/` menu documents each command's shape. */
+ *  (command ∈ [1..32] of [a-z0-9_], description ∈ [1..256]). Just the plain
+ *  description: Telegram already renders the `/command` and its own separator,
+ *  so folding the arg hint in here would double up ("/runs — [n] — recent…").
+ *  Arg syntax stays in /help, where there's room for it. */
 export function telegramCommands(): { command: string; description: string }[] {
     return BOT_COMMANDS.map((c) => ({
         command: c.command,
-        description: (c.args ? `${c.args} — ${c.description}` : c.description).slice(0, 256),
+        description: c.description.slice(0, 256),
     }));
 }
 

@@ -185,11 +185,13 @@ test("telegramCommands satisfy Telegram's setMyCommands constraints", () => {
     assert.equal(new Set(names).size, names.length, "duplicate command names");
 });
 
-test("telegramCommands fold the arg hint into the description", () => {
+test("telegramCommands use the plain description (no arg hint — Telegram adds its own separator)", () => {
     const runs = telegramCommands().find((c) => c.command === "runs");
-    assert.ok(runs && runs.description.startsWith("[n] — "), "arg hint should lead the description");
+    assert.equal(runs?.description, "recent runs (default 5)"); // no "[n] —" prefix
     const help = telegramCommands().find((c) => c.command === "help");
-    assert.equal(help?.description, "show the command list"); // no args → plain description
+    assert.equal(help?.description, "show the command list");
+    // arg syntax still lives in /help, where there's room for it
+    assert.ok(helpText().includes("/runs [n]"));
 });
 
 test("helpText lists every registered bot command with its arg hint", () => {
