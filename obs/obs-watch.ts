@@ -91,8 +91,13 @@ export function formatWatchEvent(ev: ObsEvent): string | null {
             return `${t} ${red("✖ provider error")}${p.status ? dim(` (status ${p.status})`) : ""}`;
         case "compaction":
             return `${t} ${yellow("↻ compaction")}${p.reason ? dim(` (${p.reason})`) : ""}`;
-        case "dispatch_error":
-            return `${t} ${red("✖ dispatch error")}${p.reason ? dim(` (${p.reason})`) : ""}`;
+        case "dispatch_retry":
+            return `${t} ${yellow("↻ dispatch retry")}${p.reason ? dim(` (${p.reason})`) : ""}`;
+        case "dispatch_end":
+            // Only a FAILED dispatch is lane-worthy; a clean finish is just noise.
+            return p.status === "error"
+                ? `${t} ${red("✖ dispatch error")}${p.reason ? dim(` (${p.reason})`) : ""}`
+                : null;
         case "session_end":
             return `${t} ${bold("■ done")}`;
         default:
