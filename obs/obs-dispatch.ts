@@ -34,7 +34,7 @@ import { delimiter as pathDelimiter, dirname, join, resolve as resolvePath } fro
 import { fileURLToPath } from "node:url";
 import { parseChatLine, promptArg, type ChatEvent } from "./obs-chat";
 import { isOutsideCwd } from "../utils/guards/path-guard";
-import { llmConfig, type LlmConfig, runPlayground } from "./obs-llm";
+import { badCwd, llmConfig, piSpawnEnv, type LlmConfig, runPlayground } from "./obs-llm";
 import { memoryInjection } from "../utils/workflow/memory";
 import {
     type AgentDef,
@@ -365,7 +365,7 @@ export function dispatchStream(
         // inherited dispatch/trace linkage so it never looks like a child of a
         // phantom orchestrator.
         const env: NodeJS.ProcessEnv = {
-            ...process.env,
+            ...piSpawnEnv(),
             PI_OBS: "1",
             PI_OBS_AGENT: def.name.toLowerCase(),
             PI_SUBAGENT: "1",
@@ -378,6 +378,15 @@ export function dispatchStream(
         // bridge secrets), often into an OS sandbox — it must not inherit the bot
         // token or the obs API secret. Provider/skill creds are kept.
         stripInheritedSecrets(env);
+
+        // Preflight the cwd: a missing dir would otherwise surface as a cryptic
+        // "spawn <pi> ENOENT" that looks like a PATH problem (see badCwd).
+        const cwdErr = badCwd(cwd);
+        if (cwdErr) {
+            onEvent({ type: "error", error: `dispatch: ${cwdErr}` });
+            resolve();
+            return;
+        }
 
         // Optional OS-level sandbox (real bash confinement). Fail-closed: a
         // requested-but-unusable sandbox errors instead of running unconfined.
@@ -443,7 +452,7 @@ export function dispatchStream(
         proc.on("error", (e) => {
             clearTimeout(timer);
             if (killEscalation) clearTimeout(killEscalation);
-            const hint = (e as NodeJS.ErrnoException).code === "ENOENT" ? ` — '${bin}' not on PATH; set PI_OBS_PI_BIN` : "";
+            const hint = (e as NodeJS.ErrnoException).code === "ENOENT" ? ` — '${bin}' (or the 'node' its shebang needs) not on PATH; set PI_OBS_PI_BIN and ensure node's bin dir is on PATH` : "";
             onEvent({ type: "error", error: `spawn ${bin}: ${e.message}${hint}` });
             reject(e);
         });

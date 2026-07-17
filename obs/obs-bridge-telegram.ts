@@ -33,6 +33,7 @@ import {
     resolveAttachTarget,
     type RunView,
     shortId,
+    telegramCommands,
     usageText,
 } from "./obs-bridge-core";
 
@@ -213,8 +214,10 @@ async function streamReply(cfg: BridgeConfig, state: BridgeState, chatId: number
         return;
     }
     state.busy.add(chatId);
+    // Keep the "typing…" status visible for the whole turn — a single
+    // sendChatAction expires after ~5s, so refresh it on a heartbeat until done.
+    const stopTyping = startTyping(cfg, chatId);
     try {
-        await tg(cfg, "sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
         const placeholder = await tg(cfg, "sendMessage", { chat_id: chatId, text: "..." });
         const messageId = placeholder.message_id as number;
 
@@ -254,8 +257,21 @@ async function streamReply(cfg: BridgeConfig, state: BridgeState, chatId: number
         const parts = chunk(renderStream(s));
         for (let i = 1; i < parts.length; i++) await send(cfg, chatId, parts[i]);
     } finally {
+        stopTyping();
         state.busy.delete(chatId);
     }
+}
+
+/** Keep Telegram's "typing…" status alive for the duration of a turn. A single
+ *  sendChatAction lasts only ~5s, so re-send it on cfg.typingIntervalMs until the
+ *  returned stop() is called. Fire-and-forget: send failures are swallowed, and
+ *  the timer is unref'd so the heartbeat never keeps the process alive on its own. */
+function startTyping(cfg: BridgeConfig, chatId: number): () => void {
+    const ping = () => void tg(cfg, "sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+    ping(); // show it immediately, without waiting a full interval
+    const timer = setInterval(ping, cfg.typingIntervalMs);
+    timer.unref?.();
+    return () => clearInterval(timer);
 }
 
 /** Free text -> the standalone obs assistant (per-chat session for continuity). */
@@ -442,9 +458,23 @@ async function handleMessage(cfg: BridgeConfig, state: BridgeState, chatId: numb
 
 // ── poll loop ────────────────────────────────────────────────────────────────
 
+/** Publish the bridge's commands to Telegram so clients render the `/` menu.
+ *  Idempotent (Telegram just overwrites) and best-effort — logged, never thrown,
+ *  so a transient failure never keeps the bridge from starting its poll loop. */
+async function registerCommands(cfg: BridgeConfig): Promise<void> {
+    try {
+        await tg(cfg, "setMyCommands", { commands: telegramCommands() });
+    } catch (e) {
+        console.error("obs-bridge: setMyCommands failed (the /-autocomplete menu may be stale):", String((e as Error)?.message || e));
+    }
+}
+
 /** Long-poll Telegram and dispatch messages. Runs until the process exits. */
 export async function runBridge(cfg: BridgeConfig): Promise<void> {
     const state = newState();
+    // Register the command menu so Telegram shows the `/` autocomplete popup.
+    // Best-effort: a failure here (bad token, offline) must not stop the bridge.
+    await registerCommands(cfg);
     let offset = 0;
     for (;;) {
         let updates: any[];

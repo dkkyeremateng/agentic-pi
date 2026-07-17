@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+    BOT_COMMANDS,
     bridgeConfig,
     chatSessionId,
     chunk,
+    evalBridgeLock,
+    helpText,
     dispatchSessionId,
     formatAgents,
     formatAttachable,
@@ -18,6 +21,7 @@ import {
     renderStream,
     resolveAttachTarget,
     shortId,
+    telegramCommands,
     TG_LIMIT,
 } from "./obs-bridge-core";
 
@@ -59,6 +63,13 @@ test("bridgeConfig reads cwd and the opt-in bare-dispatch flag", () => {
     const cfg = bridgeConfig({ PI_OBS_TG_TOKEN: "t", PI_OBS_TG_CWD: "/proj", PI_OBS_TG_BARE_DISPATCH: "1" });
     assert.equal(cfg.cwd, "/proj");
     assert.equal(cfg.dispatchBare, true);
+});
+
+test("bridgeConfig typing interval defaults under Telegram's ~5s expiry and floors bad overrides", () => {
+    assert.equal(bridgeConfig({ PI_OBS_TG_TOKEN: "t" }).typingIntervalMs, 4000); // default
+    assert.equal(bridgeConfig({ PI_OBS_TG_TOKEN: "t", PI_OBS_TG_TYPING_MS: "2500" }).typingIntervalMs, 2500);
+    assert.equal(bridgeConfig({ PI_OBS_TG_TOKEN: "t", PI_OBS_TG_TYPING_MS: "50" }).typingIntervalMs, 1000); // floored
+    assert.equal(bridgeConfig({ PI_OBS_TG_TOKEN: "t", PI_OBS_TG_TYPING_MS: "junk" }).typingIntervalMs, 4000); // NaN → default
 });
 
 test("isAllowed fails closed on an empty allowlist", () => {
@@ -167,6 +178,72 @@ test("/reset and /new map to reset; unknown slash → usage", () => {
     assert.deepEqual(parseCommand("/reset"), { kind: "reset" });
     assert.deepEqual(parseCommand("/new"), { kind: "reset" });
     assert.deepEqual(parseCommand("/wat"), { kind: "usage", cmd: "wat" });
+});
+
+// ── command menu (setMyCommands / autocomplete) ──────────────────────────────
+
+test("telegramCommands satisfy Telegram's setMyCommands constraints", () => {
+    const cmds = telegramCommands();
+    assert.ok(cmds.length > 0);
+    for (const c of cmds) {
+        assert.match(c.command, /^[a-z0-9_]{1,32}$/, `bad command name: ${c.command}`);
+        assert.ok(c.description.length >= 1 && c.description.length <= 256, `bad description for /${c.command}`);
+    }
+    const names = cmds.map((c) => c.command);
+    assert.equal(new Set(names).size, names.length, "duplicate command names");
+});
+
+test("telegramCommands use the plain description (no arg hint — Telegram adds its own separator)", () => {
+    const runs = telegramCommands().find((c) => c.command === "runs");
+    assert.equal(runs?.description, "recent runs (default 5)"); // no "[n] —" prefix
+    const help = telegramCommands().find((c) => c.command === "help");
+    assert.equal(help?.description, "show the command list");
+    // arg syntax still lives in /help, where there's room for it
+    assert.ok(helpText().includes("/runs [n]"));
+});
+
+test("helpText lists every registered bot command with its arg hint", () => {
+    const h = helpText();
+    for (const c of BOT_COMMANDS) {
+        assert.ok(h.includes(`/${c.command}`), `help missing /${c.command}`);
+        if (c.args) assert.ok(h.includes(`/${c.command} ${c.args}`), `help missing args for /${c.command}`);
+    }
+});
+
+test("every menu command is recognised by parseCommand (none fall through to unknown)", () => {
+    for (const c of BOT_COMMANDS) {
+        const parsed = parseCommand(`/${c.command}`);
+        // Arg-required commands resolve to a usage prompt for THAT command; the
+        // rest resolve to their own kind. Either way it's never plain chat, and
+        // a usage result must name this same command (proving the switch matched
+        // its case, not the generic unknown fallthrough for a different name).
+        assert.notEqual(parsed.kind, "chat", `/${c.command} routed to chat`);
+        if (parsed.kind === "usage") assert.equal(parsed.cmd, c.command);
+    }
+});
+
+// ── single-instance lock ─────────────────────────────────────────────────────
+
+test("evalBridgeLock claims a free lock (no pidfile)", () => {
+    assert.deepEqual(evalBridgeLock(null, 100, () => true), { claim: true });
+});
+
+test("evalBridgeLock blocks when a live foreign bridge holds the lock", () => {
+    const r = evalBridgeLock("222", 100, (pid) => pid === 222); // 222 alive
+    assert.equal(r.claim, false);
+    assert.equal(r.heldByPid, 222);
+});
+
+test("evalBridgeLock reclaims a stale pidfile (dead holder)", () => {
+    assert.deepEqual(evalBridgeLock("222", 100, () => false), { claim: true });
+});
+
+test("evalBridgeLock reclaims our own pid and ignores garbage/empty files", () => {
+    assert.deepEqual(evalBridgeLock("100", 100, () => true), { claim: true }); // ours
+    assert.deepEqual(evalBridgeLock("  100\n", 100, () => true), { claim: true }); // trimmed
+    assert.deepEqual(evalBridgeLock("not-a-pid", 100, () => true), { claim: true });
+    assert.deepEqual(evalBridgeLock("", 100, () => true), { claim: true });
+    assert.deepEqual(evalBridgeLock("0", 100, () => true), { claim: true }); // non-positive
 });
 
 // ── streaming reduce / render ────────────────────────────────────────────────

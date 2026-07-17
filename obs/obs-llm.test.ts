@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { llmConfig, compactRun, parseResult, parseJudgement, explainRun, judgeRun, summarizeText, runPlayground, loadRepoEnv, type RunPi } from "./obs-llm";
+import { llmConfig, compactRun, parseResult, parseJudgement, explainRun, judgeRun, summarizeText, runPlayground, loadRepoEnv, piSpawnEnv, badCwd, type RunPi } from "./obs-llm";
+import { dirname, delimiter } from "node:path";
 import { buildRunDigest } from "./obs-explain";
 import { makeFactory, type ObsEvent } from "./obs-events";
 
@@ -162,4 +163,36 @@ test("explainRun calls pi with the configured model and caches by runId+endTs", 
     const r2 = await explainRun("run-x", digest, fixtures(), cfg, fakePi);
     assert.equal(r2.cached, true);
     assert.equal(calls, 1);
+});
+
+test("piSpawnEnv prepends node's bin dir so pi's shebang resolves", () => {
+    const nodeDir = dirname(process.execPath);
+    // A PATH missing node's dir (the detached-server case) gets it prepended.
+    const withoutNode = piSpawnEnv({ PATH: "/usr/bin:/bin", FOO: "bar" });
+    assert.equal(withoutNode.PATH!.split(delimiter)[0], nodeDir);
+    assert.ok(withoutNode.PATH!.split(delimiter).includes("/usr/bin"));
+    assert.equal(withoutNode.FOO, "bar"); // other env preserved
+});
+
+test("piSpawnEnv is idempotent when node's dir is already on PATH", () => {
+    const nodeDir = dirname(process.execPath);
+    const already = `${nodeDir}${delimiter}/usr/bin`;
+    assert.equal(piSpawnEnv({ PATH: already }).PATH, already); // no duplicate entry
+});
+
+test("piSpawnEnv handles an empty/undefined PATH", () => {
+    const nodeDir = dirname(process.execPath);
+    assert.equal(piSpawnEnv({ PATH: "" }).PATH, nodeDir);
+    assert.equal(piSpawnEnv({}).PATH, nodeDir);
+});
+
+test("badCwd flags a missing/invalid working directory, passes a real one", () => {
+    assert.equal(badCwd(undefined), null); // unset ⇒ inherit server cwd
+    assert.equal(badCwd(process.cwd()), null); // a real directory is fine
+    const missing = badCwd("/no/such/dir/anywhere");
+    assert.match(missing!, /does not exist/);
+    assert.match(missing!, /PI_OBS_TG_CWD/); // points at the usual culprit
+    // a path that exists but is a FILE, not a directory
+    const notDir = badCwd(join(process.cwd(), "package.json"));
+    assert.match(notDir!, /not a directory/);
 });

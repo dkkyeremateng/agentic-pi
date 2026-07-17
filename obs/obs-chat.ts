@@ -11,7 +11,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { llmConfig, type LlmConfig } from "./obs-llm";
+import { badCwd, llmConfig, piSpawnEnv, type LlmConfig } from "./obs-llm";
 
 /** Base directory pi stores project sessions under (one file per session,
  *  named `<timestamp>_<sessionId>.jsonl`, bucketed by project-path folder). */
@@ -223,12 +223,22 @@ export function streamChat(
         for (const p of req.imagePaths ?? []) args.push(`@${p}`);
         args.push(promptArg(req.text)); // never let a flag-shaped prompt inject pi flags
 
+        // Preflight the cwd: a missing dir would otherwise surface as a cryptic
+        // "spawn <pi> ENOENT" that looks like a PATH problem (see badCwd).
+        const cwd = req.cwd || process.cwd();
+        const cwdErr = badCwd(cwd);
+        if (cwdErr) {
+            onEvent({ type: "error", error: cwdErr });
+            resolve();
+            return;
+        }
+
         let proc: ChildProcessWithoutNullStreams;
         try {
             proc = spawnImpl(bin, args, {
                 stdio: ["ignore", "pipe", "pipe"],
-                env: process.env,
-                cwd: req.cwd || process.cwd(),
+                env: piSpawnEnv(),
+                cwd,
             }) as ChildProcessWithoutNullStreams;
         } catch (e) {
             onEvent({ type: "error", error: String((e as Error)?.message || e) });
@@ -269,7 +279,7 @@ export function streamChat(
             clearTimeout(timer);
             const hint =
                 (e as NodeJS.ErrnoException).code === "ENOENT"
-                    ? ` — '${bin}' not on PATH; set PI_OBS_PI_BIN`
+                    ? ` — '${bin}' (or the 'node' its shebang needs) not on PATH; set PI_OBS_PI_BIN and ensure node's bin dir is on PATH`
                     : "";
             onEvent({ type: "error", error: `spawn ${bin}: ${e.message}${hint}` });
             reject(e);

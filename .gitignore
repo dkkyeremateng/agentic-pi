@@ -11,6 +11,8 @@ __pycache__/
 .playwright-cli/
 .playwright/
 .obs-server.log
+.obs-bridge.log
+.obs-bridge.pid
 obs/obs-ui/mockups/
 extensions/qa-review.ts
 mockups/

@@ -40,6 +40,9 @@ export interface BridgeConfig {
     pollTimeoutS: number;
     /** Minimum gap between live message edits while a reply streams (ms). */
     editThrottleMs: number;
+    /** How often to refresh Telegram's "typing…" status while the agent works
+     *  (ms). The indicator expires after ~5s, so we re-send it on this cadence. */
+    typingIntervalMs: number;
 }
 
 /** Telegram's hard limit on a single message's text length. */
@@ -77,6 +80,9 @@ export function bridgeConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig
         dispatchBare: env.PI_OBS_TG_BARE_DISPATCH === "1" || env.PI_OBS_TG_BARE_DISPATCH === "true",
         pollTimeoutS: Number(env.PI_OBS_TG_POLL_S) || 50,
         editThrottleMs: Number(env.PI_OBS_TG_EDIT_MS) || 1200,
+        // Telegram's typing status lasts ~5s; refresh a touch under that. Floored
+        // at 1s so a bad override can't hammer the API.
+        typingIntervalMs: Math.max(1000, Number(env.PI_OBS_TG_TYPING_MS) || 4000),
     };
 }
 
@@ -420,6 +426,66 @@ export function formatAgents(agents: AgentInfo[]): string {
     return "agents (all dispatchable, confined to the project dir):\n" + agents.map(line).join("\n") + "\n\nuse: /dispatch <agent>, <prompt>";
 }
 
+/** One bridge command. Single source of truth for BOTH the `/help` listing and
+ *  the Telegram command menu (setMyCommands → the `/` autocomplete popup).
+ *  `args` is the human arg hint shown after the command; Telegram's menu shows
+ *  `command` + `description` (we fold `args` into the description so the popup is
+ *  self-documenting). Only user-facing commands belong here — hidden aliases
+ *  (/start, /new, /run) stay recognised by parseCommand but out of the menu. */
+export interface BotCommand {
+    command: string; // no leading slash; Telegram requires 1–32 chars of [a-z0-9_]
+    args?: string; // e.g. "[n]", "<id>", "<agent>, <prompt>"
+    description: string; // Telegram allows 1–256 chars
+}
+
+export const BOT_COMMANDS: BotCommand[] = [
+    { command: "runs", args: "[n]", description: "recent runs (default 5)" },
+    { command: "last", description: "the most recent run's digest" },
+    { command: "digest", args: "<id>", description: "what happened in a run" },
+    { command: "search", args: "<text>", description: "search across all runs" },
+    { command: "live", description: "agents running right now" },
+    { command: "pass", args: "<id> [note]", description: "score a run pass" },
+    { command: "fail", args: "<id> [note]", description: "score a run fail" },
+    { command: "open", args: "<id> [note]", description: "mark a run needs-review" },
+    { command: "agents", description: "list dispatchable agents" },
+    { command: "do", args: "<task>", description: "auto-pick the best agent for a task (or just answer)" },
+    { command: "dispatch", args: "<agent>, <prompt>", description: "run a specific agent in the project dir" },
+    { command: "attach", args: "<run-id>", description: "route your messages into a live run (drive it)" },
+    { command: "detach", description: "stop routing; back to the assistant" },
+    { command: "reset", description: "fresh conversation (also detaches)" },
+    { command: "help", description: "show the command list" },
+];
+
+/** The setMyCommands payload — validated/clamped to Telegram's constraints
+ *  (command ∈ [1..32] of [a-z0-9_], description ∈ [1..256]). Just the plain
+ *  description: Telegram already renders the `/command` and its own separator,
+ *  so folding the arg hint in here would double up ("/runs — [n] — recent…").
+ *  Arg syntax stays in /help, where there's room for it. */
+export function telegramCommands(): { command: string; description: string }[] {
+    return BOT_COMMANDS.map((c) => ({
+        command: c.command,
+        description: c.description.slice(0, 256),
+    }));
+}
+
+/** Decide whether this process may claim the bridge's single-instance lock,
+ *  given the raw pidfile contents (or null when absent) and an aliveness check.
+ *  Pure — the caller does the file read/write and supplies `alive`. Two bridges
+ *  polling the same bot double-reply to every message (Telegram hands each update
+ *  to both long-polls), so a second one must refuse to start. A pidfile naming a
+ *  DEAD holder — or our own pid — is reclaimable; a live foreign holder blocks. */
+export function evalBridgeLock(
+    pidfileRaw: string | null,
+    selfPid: number,
+    alive: (pid: number) => boolean,
+): { claim: boolean; heldByPid?: number } {
+    const held = Number((pidfileRaw ?? "").trim());
+    if (Number.isInteger(held) && held > 0 && held !== selfPid && alive(held)) {
+        return { claim: false, heldByPid: held };
+    }
+    return { claim: true };
+}
+
 export function helpText(): string {
     return [
         "pi obs bridge — talk to your agent observability.",
@@ -427,21 +493,7 @@ export function helpText(): string {
         "Send any message to chat with the obs assistant (it knows your runs).",
         "",
         "Commands:",
-        "/runs [n] — recent runs (default 5)",
-        "/last — the most recent run's digest",
-        "/digest <id> — what happened in a run",
-        "/search <text> — search across all runs",
-        "/live — agents running right now",
-        "/pass <id> [note] — score a run pass",
-        "/fail <id> [note] — score a run fail",
-        "/open <id> [note] — mark a run needs-review",
-        "/agents — list dispatchable agents",
-        "/do <task> — auto-pick the best agent for a task (or just answer)",
-        "/dispatch <agent>, <prompt> — run a specific agent in the project dir",
-        "/attach <run-id> — route your messages into a live run (drive it)",
-        "/detach — stop routing; back to the assistant",
-        "/reset — fresh conversation (also detaches)",
-        "/help — this message",
+        ...BOT_COMMANDS.map((c) => `/${c.command}${c.args ? ` ${c.args}` : ""} — ${c.description}`),
     ].join("\n");
 }
 
