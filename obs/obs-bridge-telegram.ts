@@ -214,8 +214,10 @@ async function streamReply(cfg: BridgeConfig, state: BridgeState, chatId: number
         return;
     }
     state.busy.add(chatId);
+    // Keep the "typing…" status visible for the whole turn — a single
+    // sendChatAction expires after ~5s, so refresh it on a heartbeat until done.
+    const stopTyping = startTyping(cfg, chatId);
     try {
-        await tg(cfg, "sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
         const placeholder = await tg(cfg, "sendMessage", { chat_id: chatId, text: "..." });
         const messageId = placeholder.message_id as number;
 
@@ -255,8 +257,21 @@ async function streamReply(cfg: BridgeConfig, state: BridgeState, chatId: number
         const parts = chunk(renderStream(s));
         for (let i = 1; i < parts.length; i++) await send(cfg, chatId, parts[i]);
     } finally {
+        stopTyping();
         state.busy.delete(chatId);
     }
+}
+
+/** Keep Telegram's "typing…" status alive for the duration of a turn. A single
+ *  sendChatAction lasts only ~5s, so re-send it on cfg.typingIntervalMs until the
+ *  returned stop() is called. Fire-and-forget: send failures are swallowed, and
+ *  the timer is unref'd so the heartbeat never keeps the process alive on its own. */
+function startTyping(cfg: BridgeConfig, chatId: number): () => void {
+    const ping = () => void tg(cfg, "sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+    ping(); // show it immediately, without waiting a full interval
+    const timer = setInterval(ping, cfg.typingIntervalMs);
+    timer.unref?.();
+    return () => clearInterval(timer);
 }
 
 /** Free text -> the standalone obs assistant (per-chat session for continuity). */

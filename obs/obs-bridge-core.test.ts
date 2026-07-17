@@ -65,6 +65,13 @@ test("bridgeConfig reads cwd and the opt-in bare-dispatch flag", () => {
     assert.equal(cfg.dispatchBare, true);
 });
 
+test("bridgeConfig typing interval defaults under Telegram's ~5s expiry and floors bad overrides", () => {
+    assert.equal(bridgeConfig({ PI_OBS_TG_TOKEN: "t" }).typingIntervalMs, 4000); // default
+    assert.equal(bridgeConfig({ PI_OBS_TG_TOKEN: "t", PI_OBS_TG_TYPING_MS: "2500" }).typingIntervalMs, 2500);
+    assert.equal(bridgeConfig({ PI_OBS_TG_TOKEN: "t", PI_OBS_TG_TYPING_MS: "50" }).typingIntervalMs, 1000); // floored
+    assert.equal(bridgeConfig({ PI_OBS_TG_TOKEN: "t", PI_OBS_TG_TYPING_MS: "junk" }).typingIntervalMs, 4000); // NaN → default
+});
+
 test("isAllowed fails closed on an empty allowlist", () => {
     const cfg = bridgeConfig({ PI_OBS_TG_TOKEN: "t" });
     assert.equal(isAllowed(cfg, 111), false);

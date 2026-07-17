@@ -40,6 +40,9 @@ export interface BridgeConfig {
     pollTimeoutS: number;
     /** Minimum gap between live message edits while a reply streams (ms). */
     editThrottleMs: number;
+    /** How often to refresh Telegram's "typing…" status while the agent works
+     *  (ms). The indicator expires after ~5s, so we re-send it on this cadence. */
+    typingIntervalMs: number;
 }
 
 /** Telegram's hard limit on a single message's text length. */
@@ -77,6 +80,9 @@ export function bridgeConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig
         dispatchBare: env.PI_OBS_TG_BARE_DISPATCH === "1" || env.PI_OBS_TG_BARE_DISPATCH === "true",
         pollTimeoutS: Number(env.PI_OBS_TG_POLL_S) || 50,
         editThrottleMs: Number(env.PI_OBS_TG_EDIT_MS) || 1200,
+        // Telegram's typing status lasts ~5s; refresh a touch under that. Floored
+        // at 1s so a bad override can't hammer the API.
+        typingIntervalMs: Math.max(1000, Number(env.PI_OBS_TG_TYPING_MS) || 4000),
     };
 }
 
