@@ -23,7 +23,7 @@ export default function (pi: ExtensionAPI) {
             }),
         }),
         async execute(_id: unknown, params: unknown, _signal: unknown, _onUpdate: unknown, ctx: { cwd?: string }) {
-            const text = (item: string) => ({ content: [{ type: "text", text: item }], details: undefined });
+            const text = (item: string) => ({ content: [{ type: "text" as const, text: item }], details: undefined });
             const learning = String((params as { learning?: unknown })?.learning || "").trim();
             if (!learning) return text("nothing to remember (empty learning).");
             try {

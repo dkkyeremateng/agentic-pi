@@ -893,22 +893,18 @@ export function renderDispatchAgentResult(
 
 // Render the dispatch_parallel tool result: one ✓/✗ line per agent when
 // collapsed, the full combined output (Markdown) when expanded.
+// Params/return are `any` to decouple from the SDK's TUI component types — same
+// pattern as renderDispatchAgentResult above. The real SDK Text/Markdown ctors are
+// stricter than any structural shape we could write here (their theme args aren't
+// `unknown`), so typing them precisely would reject the real classes at the call site.
 export function renderDispatchParallelResult(
-    result: {
-        content?: { type?: string; text?: string }[];
-        details?: unknown;
-    },
-    options: { isPartial?: boolean; expanded?: boolean },
-    theme: { fg(color: string, s: string): string },
-    TextCtor: new (text: string, a: number, b: number) => unknown,
-    MarkdownCtor: new (
-        text: string,
-        a: number,
-        b: number,
-        mdTheme: unknown,
-    ) => unknown,
-    mdTheme: unknown,
-): unknown {
+    result: any,
+    options: any,
+    theme: any,
+    TextCtor: any,
+    MarkdownCtor: any,
+    mdTheme: any,
+): any {
     const d = result.details as
         | {
               parallel?: boolean;
