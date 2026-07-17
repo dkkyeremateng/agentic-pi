@@ -9,3 +9,8 @@ Managed by `utils/workflow/memory.ts` (tool: `extensions/agent-memory.ts`). File
 are created automatically on the first successful run that saved a lesson. Every
 write is a normal git diff — review/revert like any other change. Disable the whole
 loop with `PI_AGENT_MEMORY=0`.
+
+**Relocating memory:** set `PI_AGENT_MEMORY_DIR` (in `.env` or the environment) to
+keep these files outside the repo — e.g. a private, un-synced directory. A leading
+`~` expands to `$HOME`; a relative path resolves against the repo root. Move any
+existing `<agent>.md` files to the new location first.

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+    memoryDir,
     memoryEnabled,
     parseMemory,
     renderMemory,
@@ -24,6 +25,25 @@ import {
 } from "./memory";
 
 const L = (text: string, o: Partial<Lesson> = {}): Lesson => ({ text, ...o });
+
+test("memoryDir: defaults into the repo, honours PI_AGENT_MEMORY_DIR override", () => {
+    const { isAbsolute } = require("node:path") as typeof import("node:path");
+    const { homedir } = require("node:os") as typeof import("node:os");
+    // default → the bundled agents/memory/ (absolute, cwd-independent)
+    const def = memoryDir({});
+    assert.ok(def.endsWith(join("agents", "memory")));
+    assert.ok(isAbsolute(def));
+    // absolute override → used verbatim (this is how you move it out of the repo)
+    assert.equal(memoryDir({ PI_AGENT_MEMORY_DIR: "/data/pi-memory" }), "/data/pi-memory");
+    // ~ expands to the home dir
+    assert.equal(memoryDir({ PI_AGENT_MEMORY_DIR: "~/pi-memory" }), join(homedir(), "pi-memory"));
+    assert.equal(memoryDir({ PI_AGENT_MEMORY_DIR: "~" }), homedir());
+    // a relative override resolves against the repo root, not the cwd
+    const rel = memoryDir({ PI_AGENT_MEMORY_DIR: "../shared-memory" });
+    assert.ok(isAbsolute(rel) && rel.endsWith("shared-memory"));
+    // blank/whitespace override falls back to the default
+    assert.equal(memoryDir({ PI_AGENT_MEMORY_DIR: "   " }), def);
+});
 
 test("memoryEnabled: default ON; disabled by 0/false/off", () => {
     assert.equal(memoryEnabled({}), true);

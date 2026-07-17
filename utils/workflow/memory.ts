@@ -11,7 +11,8 @@
 // kill switch PI_AGENT_MEMORY=0. See docs/research/agent-self-improvement.md.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface Lesson {
@@ -151,10 +152,20 @@ export function renderInjection(agent: string, lessons: Lesson[], topN: number =
 
 // ── paths ────────────────────────────────────────────────────────────────────
 
-/** agents/memory/ in the AGENTS' HOME repo (this repo), resolved like the bundled
- *  agent defs so it's found regardless of the working cwd. */
-export function memoryDir(): string {
-    return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "agents", "memory");
+/** Where each agent's committed lessons live. Defaults to agents/memory/ in the
+ *  AGENTS' HOME repo (this repo), resolved relative to this source file so it's
+ *  found regardless of the working cwd.
+ *
+ *  Override with PI_AGENT_MEMORY_DIR (in the repo's .env, or the environment) to
+ *  keep memory OUTSIDE the repo — e.g. a private, un-synced location. A leading
+ *  `~` expands to the home dir; a relative path resolves against the repo root
+ *  (not the variable cwd), preserving the "found regardless of cwd" guarantee. */
+export function memoryDir(env: NodeJS.ProcessEnv = process.env): string {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+    const override = (env.PI_AGENT_MEMORY_DIR || "").trim();
+    if (!override) return join(repoRoot, "agents", "memory");
+    const expanded = override === "~" ? homedir() : override.startsWith("~/") ? join(homedir(), override.slice(2)) : override;
+    return isAbsolute(expanded) ? expanded : resolve(repoRoot, expanded);
 }
 function memoryPath(agent: string): string {
     return join(memoryDir(), `${agent.toLowerCase()}.md`);
