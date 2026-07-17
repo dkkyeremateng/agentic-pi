@@ -2,13 +2,15 @@
 // `remember` tool (extensions/agent-memory.ts). The design is the "B" hybrid:
 //   - DURING a run the agent STAGES candidate lessons (remember -> a per-run staging
 //     file under the working cwd's .agent/).
-//   - AT FINALIZE the orchestrator COMMITS them to agents/memory/<agent>.md ONLY IF
+//   - AT FINALIZE the orchestrator COMMITS them to <memoryDir>/<agent>.md ONLY IF
 //     the run objectively PASSED — the verdict gate against unverified lessons.
 //   - On the NEXT run each agent's memory is injected into its prompt.
-// Scoped to the AGENTS' HOME repo (agents/memory/<agent>.md, next to agents/*.md),
-// resolved like the bundled agent defs so a lesson applies wherever the agent runs.
-// Git-tracked (every commit is a visible, revertable diff); bounded (dedup + cap);
-// kill switch PI_AGENT_MEMORY=0. See docs/research/agent-self-improvement.md.
+// Location: agents/memory/<agent>.md in the AGENTS' HOME repo by default (next to
+// agents/*.md), resolved like the bundled agent defs so a lesson applies wherever
+// the agent runs; override with PI_AGENT_MEMORY_DIR to keep it outside the repo
+// (see memoryDir). Git-tracked by default (every commit is a visible, revertable
+// diff); bounded (dedup + cap); kill switch PI_AGENT_MEMORY=0. See
+// docs/research/agent-self-improvement.md.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
