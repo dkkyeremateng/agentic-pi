@@ -19,6 +19,7 @@ import {
     clearStaged,
     stagingPath,
     commitStagedLearnings,
+    tallySources,
     MEMORY_CAP,
     type Lesson,
     type MemoryIO,
@@ -52,12 +53,19 @@ test("memoryEnabled: default ON; disabled by 0/false/off", () => {
     assert.equal(memoryEnabled({ PI_AGENT_MEMORY: "OFF" }), false);
 });
 
-test("parse/render round-trips lessons with metadata", () => {
-    const lessons = [L("re-run the failing test before approving", { runId: "r1", added: "2026-07-01" }), L("no metadata bullet")];
-    const back = parseMemory(renderMemory("reviewer", lessons));
+test("parse/render round-trips lessons with metadata (incl. source)", () => {
+    const lessons = [
+        L("re-run the failing test before approving", { runId: "r1", added: "2026-07-01", source: "remember" }),
+        L("no metadata bullet"),
+    ];
+    const rendered = renderMemory("reviewer", lessons);
+    assert.match(rendered, /source=remember/);
+    const back = parseMemory(rendered);
     assert.equal(back.length, 2);
     assert.deepEqual(back[0], lessons[0]);
     assert.equal(back[1].text, "no metadata bullet");
+    // an unrecognised source value is dropped (tolerant of hand edits)
+    assert.equal(parseMemory("- x <!-- source=bogus -->")[0].source, undefined);
 });
 
 test("parseMemory ignores prose/headers, keeps bullets", () => {
@@ -99,8 +107,9 @@ test("injection: nudges even when EMPTY (cold start); lessons most-recent first"
 test("addLessons writes directly (dedupe+cap), independent of the pass gate", () => {
     const store = new Map<string, Lesson[]>();
     const io: MemoryIO = { read: (a) => store.get(a) ?? [], write: (a, l) => void store.set(a, l) };
-    assert.equal(addLessons("validator", ["verify the project is a git repo before git checks"], { runId: "rF" }, io), 1);
+    assert.equal(addLessons("validator", ["verify the project is a git repo before git checks"], { runId: "rF", source: "reflect" }, io), 1);
     assert.equal(store.get("validator")![0].text, "verify the project is a git repo before git checks");
+    assert.equal(store.get("validator")![0].source, "reflect", "reflector lessons are tagged reflect");
     // dedupe: adding the same lesson again is a no-op
     assert.equal(addLessons("validator", ["Verify the project is a git repo before git checks."], {}, io), 0);
     // disabled kill switch: no write
@@ -144,11 +153,12 @@ test("commitStagedLearnings: commits per-agent ONLY on pass, drops on fail, clea
         assert.equal(readStaged(droppedRun).length, 0, "staging cleared even on fail");
         rmSync(droppedRun, { recursive: true, force: true });
 
-        // PASS: each agent's lesson lands in its own file
+        // PASS: each agent's lesson lands in its own file, tagged source=remember
         const n = commitStagedLearnings(cwd, { passed: true, runId: "rX" }, io);
         assert.equal(n, 2);
         assert.deepEqual(store.get("reviewer")!.map((l) => l.text), ["run the build before approving"]);
         assert.deepEqual(store.get("implementer")!.map((l) => l.text), ["add a regression test"]);
+        assert.equal(store.get("reviewer")![0].source, "remember", "committed lessons are tagged remember");
         assert.equal(readStaged(cwd).length, 0, "staging cleared after commit");
 
         // idempotent-ish: a second commit with no staged learnings does nothing
@@ -172,4 +182,22 @@ test("commitStagedLearnings: disabled kill switch is a no-op", () => {
         delete process.env.PI_AGENT_MEMORY;
         rmSync(cwd, { recursive: true, force: true });
     }
+});
+
+test("tallySources: counts remember/reflect/unknown per agent and overall, sorted by total", () => {
+    const stats = tallySources([
+        {
+            agent: "validator",
+            lessons: [L("a", { source: "reflect" }), L("b", { source: "reflect" }), L("c", { source: "remember" }), L("legacy")],
+        },
+        { agent: "scout", lessons: [L("d", { source: "reflect" })] },
+        { agent: "planner", lessons: [] },
+    ]);
+    // sorted by total desc: validator (4), scout (1), planner (0)
+    assert.deepEqual(stats.byAgent.map((a) => a.agent), ["validator", "scout", "planner"]);
+    assert.deepEqual(stats.byAgent[0], { agent: "validator", remember: 1, reflect: 2, unknown: 1, total: 4 });
+    assert.deepEqual(stats.byAgent[1], { agent: "scout", remember: 0, reflect: 1, unknown: 0, total: 1 });
+    assert.deepEqual(stats.totals, { remember: 1, reflect: 3, unknown: 1, total: 5 });
+    // empty input → zeroed totals
+    assert.deepEqual(tallySources([]).totals, { remember: 0, reflect: 0, unknown: 0, total: 0 });
 });

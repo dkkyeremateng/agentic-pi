@@ -12,15 +12,22 @@
 // diff); bounded (dedup + cap); kill switch PI_AGENT_MEMORY=0. See
 // docs/research/agent-self-improvement.md.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+/** Which path wrote a lesson: `remember` = the agent saved it via the tool and
+ *  the run PASSED (verdict-gated); `reflect` = the failure reflector distilled it
+ *  from a FAILED run's obs digest. Absent = written before source tracking (or a
+ *  hand edit) → counted as "unknown". */
+export type LessonSource = "remember" | "reflect";
 
 export interface Lesson {
     text: string;
     runId?: string;
     added?: string; // ISO day (YYYY-MM-DD)
+    source?: LessonSource;
 }
 
 /** Hard cap on lessons per agent — keeps the injected block small. */
@@ -52,6 +59,7 @@ export function parseMemory(md: string): Lesson[] {
         let text = line.replace(/^\s*-\s+/, "");
         let runId: string | undefined;
         let added: string | undefined;
+        let source: LessonSource | undefined;
         const m = text.match(META_RE);
         if (m) {
             text = text.slice(0, m.index).trim();
@@ -59,10 +67,11 @@ export function parseMemory(md: string): Lesson[] {
                 const [k, val] = kv.split("=");
                 if (k === "run") runId = val;
                 else if (k === "added") added = val;
+                else if (k === "source" && (val === "remember" || val === "reflect")) source = val;
             }
         }
         text = text.trim();
-        if (text) out.push({ text, runId, added });
+        if (text) out.push({ text, runId, added, source });
     }
     return out;
 }
@@ -78,7 +87,9 @@ export function renderMemory(agent: string, lessons: Lesson[]): string {
         "",
     ];
     const body = lessons.map((l) => {
-        const meta = [l.runId ? `run=${l.runId}` : "", l.added ? `added=${l.added}` : ""].filter(Boolean).join(" ");
+        const meta = [l.runId ? `run=${l.runId}` : "", l.added ? `added=${l.added}` : "", l.source ? `source=${l.source}` : ""]
+            .filter(Boolean)
+            .join(" ");
         return meta ? `- ${l.text} <!-- ${meta} -->` : `- ${l.text}`;
     });
     return head.concat(body).join("\n") + "\n";
@@ -97,13 +108,17 @@ function similar(a: string, b: string): boolean {
 }
 
 /** Append new lesson texts that aren't already present. Pure. */
-export function dedupeAppend(lessons: Lesson[], newTexts: string[], opts: { runId?: string; day?: string } = {}): Lesson[] {
+export function dedupeAppend(
+    lessons: Lesson[],
+    newTexts: string[],
+    opts: { runId?: string; day?: string; source?: LessonSource } = {},
+): Lesson[] {
     const out = lessons.slice();
     for (const raw of newTexts) {
         const text = (raw || "").replace(/\s+/g, " ").trim();
         if (!text || text.length > MAX_LESSON_CHARS) continue;
         if (out.some((l) => similar(l.text, text))) continue;
-        out.push({ text, runId: opts.runId, added: opts.day });
+        out.push({ text, runId: opts.runId, added: opts.day, source: opts.source });
     }
     return out;
 }
@@ -115,7 +130,11 @@ export function capLessons(lessons: Lesson[], cap: number = MEMORY_CAP): Lesson[
 
 /** Fold staged lesson texts into an agent's current memory: dedupe-append, then
  *  cap. Pure — the IO lives in commitStagedLearnings. */
-export function foldStaged(current: Lesson[], texts: string[], opts: { runId?: string; day?: string } = {}): Lesson[] {
+export function foldStaged(
+    current: Lesson[],
+    texts: string[],
+    opts: { runId?: string; day?: string; source?: LessonSource } = {},
+): Lesson[] {
     return capLessons(dedupeAppend(current, texts, opts));
 }
 
@@ -254,11 +273,16 @@ const realIO: MemoryIO = { read: readMemory, write: writeMemory };
  *  per-run staging/pass-gate flow. Used by the failure reflector, which distils
  *  lessons from a FAILED run (the agent-authored path only keeps successes).
  *  Returns the number newly added. Gated + best-effort. */
-export function addLessons(agent: string, texts: string[], opts: { runId?: string; day?: string } = {}, io: MemoryIO = realIO): number {
+export function addLessons(
+    agent: string,
+    texts: string[],
+    opts: { runId?: string; day?: string; source?: LessonSource } = {},
+    io: MemoryIO = realIO,
+): number {
     if (!memoryEnabled() || !texts.length) return 0;
     try {
         const before = io.read(agent);
-        const after = foldStaged(before, texts, { runId: opts.runId, day: opts.day ?? today() });
+        const after = foldStaged(before, texts, { runId: opts.runId, day: opts.day ?? today(), source: opts.source });
         const added = after.length - before.length;
         if (added > 0) io.write(agent, after);
         return Math.max(0, added);
@@ -269,6 +293,62 @@ export function addLessons(agent: string, texts: string[], opts: { runId?: strin
 
 function today(): string {
     return new Date().toISOString().slice(0, 10);
+}
+
+// ── source stats (observability) ─────────────────────────────────────────────
+
+export interface SourceTally {
+    remember: number; // saved via the tool, kept on a passing run
+    reflect: number; // distilled from a failed run by the reflector
+    unknown: number; // written before source tracking, or a hand edit
+    total: number;
+}
+export interface LessonSourceStats {
+    byAgent: Array<{ agent: string } & SourceTally>;
+    totals: SourceTally;
+}
+
+function bucketOf(source: LessonSource | undefined): keyof Omit<SourceTally, "total"> {
+    return source === "remember" ? "remember" : source === "reflect" ? "reflect" : "unknown";
+}
+
+/** Tally lessons by their source, per agent and overall. Pure. */
+export function tallySources(lessonsByAgent: Array<{ agent: string; lessons: Lesson[] }>): LessonSourceStats {
+    const totals: SourceTally = { remember: 0, reflect: 0, unknown: 0, total: 0 };
+    const byAgent = lessonsByAgent.map(({ agent, lessons }) => {
+        const t: SourceTally = { remember: 0, reflect: 0, unknown: 0, total: 0 };
+        for (const l of lessons) {
+            t[bucketOf(l.source)]++;
+            t.total++;
+        }
+        totals.remember += t.remember;
+        totals.reflect += t.reflect;
+        totals.unknown += t.unknown;
+        totals.total += t.total;
+        return { agent, ...t };
+    });
+    byAgent.sort((a, b) => b.total - a.total || a.agent.localeCompare(b.agent));
+    return { byAgent, totals };
+}
+
+/** Read every agent memory file (`<agent>.md`) under memoryDir(). Best-effort. */
+export function readAllMemories(): Array<{ agent: string; lessons: Lesson[] }> {
+    try {
+        const dir = memoryDir();
+        if (!existsSync(dir)) return [];
+        return readdirSync(dir)
+            .filter((f) => f.toLowerCase().endsWith(".md") && f.toLowerCase() !== "readme.md")
+            .map((f) => ({ agent: f.replace(/\.md$/i, ""), lessons: parseMemory(readFileSync(join(dir, f), "utf-8")) }));
+    } catch {
+        return [];
+    }
+}
+
+/** Lessons-by-source stats across every agent memory file. Lets you watch the
+ *  balance of self-authored (`remember`) vs failure-distilled (`reflect`)
+ *  learning instead of inferring it. */
+export function lessonSourceStats(): LessonSourceStats {
+    return tallySources(readAllMemories());
 }
 
 /** Called once at run finalize. Reads (and clears) this run's staged learnings and,
@@ -291,7 +371,7 @@ export function commitStagedLearnings(cwd: string, opts: { passed: boolean; runI
         const day = today();
         for (const [agent, texts] of byAgent) {
             const before = io.read(agent);
-            const after = foldStaged(before, texts, { runId: opts.runId, day });
+            const after = foldStaged(before, texts, { runId: opts.runId, day, source: "remember" });
             if (after.length !== before.length) {
                 io.write(agent, after);
                 committed += after.length - before.length;

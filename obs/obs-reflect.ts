@@ -146,7 +146,7 @@ export async function reflectFailedRun(
             byAgent.set(l.agent, arr);
         }
         let added = 0;
-        for (const [agent, texts] of byAgent) added += addLessons(agent, texts, { runId });
+        for (const [agent, texts] of byAgent) added += addLessons(agent, texts, { runId, source: "reflect" });
         return added;
     } catch {
         return 0;

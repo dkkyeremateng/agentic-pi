@@ -29,5 +29,5 @@ drop one with these sections in any project root and the pipeline will respect i
 
 Run the unit suite (`npx tsx --test utils/*/*.test.ts obs/*.test.ts`), typecheck
 (`npx tsc --noEmit` — covers utils/, extensions/, obs/), and syntax-check every
-changed `.ts` file. A change is done only when the suite passes (currently 676
+changed `.ts` file. A change is done only when the suite passes (currently 677
 tests), `tsc` is clean, and the files check clean.

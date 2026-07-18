@@ -82,6 +82,22 @@ else open); this records or OVERRIDES the human judgement — the last verdict
 wins. Verdicts power the dashboard's Run history (pass rate, medians) and the
 ✓/✗ marks in its run pickers.
 
+## Agent self-learning ledger
+
+```
+bash <this-skill-dir>/run.sh lessons [--json]
+```
+
+Tallies the durable lessons in each agent's memory file (`agents/memory/<agent>.md`,
+or `PI_AGENT_MEMORY_DIR`) by **source**, so you can watch the balance of the two
+learning paths instead of inferring it: `remember` = the agent saved the lesson via
+its `remember` tool and the run PASSED (verdict-gated); `reflect` = the failure
+reflector distilled it from a FAILED run's obs digest; `unknown` = written before
+source tracking, or a hand edit. Prints a per-agent table plus totals; `--json` for
+the raw counts. Use it to spot an imbalance — e.g. all `reflect` and no `remember`
+means agents aren't saving wins, so the in-run nudge or tool description may need
+tuning.
+
 ## Metrics reported
 
 **Trifecta (authoritative, from the report)**
