@@ -12,6 +12,7 @@
 //                                  [--sink <file>]
 //   tsx obs/obs-cli.ts explain <runId|--last> [--json] [--sink <file>]
 //   tsx obs/obs-cli.ts reap [--stale <minutes>] [--apply] [--json] [--sink <file>]
+//   tsx obs/obs-cli.ts lessons [--json]
 //
 //   projectPath  defaults to the current directory. Its session dir is resolved
 //                the same way the workflow spawns sub-agents (projectSessionHash).
@@ -21,6 +22,9 @@
 //   --since/--until  scope a continued session file to one run (single-project),
 //                or filter runs by start date (--all).
 //   --json       emit JSON instead of the text report.
+//   lessons      show agent self-learning lessons broken down by source
+//                (remember = saved on a passing run; reflect = distilled from a
+//                failed run) so you can watch the balance of the two paths.
 
 import {
     readFileSync,
@@ -46,6 +50,7 @@ import {
     type ObsEvent,
 } from "./obs-events";
 import { RunIndexer, LineScanner, type RunSummary } from "./obs-run-index";
+import { lessonSourceStats } from "../utils/workflow/memory";
 import { buildRunDigest, formatRunDigest } from "./obs-explain";
 import { planReap, reapEvent } from "./obs-reap";
 import { listLiveSessions } from "./obs-chat-control";
@@ -598,10 +603,40 @@ function explainCommand(argv: string[]): void {
     console.log(formatRunDigest(digest).join("\n"));
 }
 
+// `lessons` — agent self-learning ledger by source. Counts each committed lesson
+// as `remember` (agent-authored, kept on a passing run), `reflect` (distilled
+// from a failed run), or `unknown` (written before source tracking / hand edit),
+// so the balance of the two learning paths is visible instead of inferred.
+function lessonsCommand(argv: string[]): void {
+    const { byAgent, totals } = lessonSourceStats();
+    if (argv.includes("--json")) {
+        console.log(JSON.stringify({ byAgent, totals }, null, 2));
+        return;
+    }
+    if (!totals.total) {
+        console.log("No agent lessons saved yet.");
+        return;
+    }
+    const pad = (s: string | number, n: number) => String(s).padEnd(n);
+    console.log("Agent lessons by source");
+    console.log("  remember = saved via the tool on a PASSING run; reflect = distilled from a FAILED run; unknown = pre-tracking/hand edit\n");
+    console.log(`  ${pad("agent", 20)}${pad("remember", 10)}${pad("reflect", 10)}${pad("unknown", 10)}total`);
+    console.log(`  ${"-".repeat(58)}`);
+    for (const a of byAgent) {
+        console.log(`  ${pad(a.agent, 20)}${pad(a.remember, 10)}${pad(a.reflect, 10)}${pad(a.unknown, 10)}${a.total}`);
+    }
+    console.log(`  ${"-".repeat(58)}`);
+    console.log(`  ${pad("TOTAL", 20)}${pad(totals.remember, 10)}${pad(totals.reflect, 10)}${pad(totals.unknown, 10)}${totals.total}`);
+}
+
 function main() {
     const argv = process.argv.slice(2);
     if (argv[0] === "score") {
         scoreCommand(argv.slice(1));
+        return;
+    }
+    if (argv[0] === "lessons") {
+        lessonsCommand(argv.slice(1));
         return;
     }
     if (argv[0] === "explain") {
