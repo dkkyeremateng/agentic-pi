@@ -284,6 +284,20 @@ export function buildSandboxLaunch(sb: SandboxConfig, cwd: string, bin: string, 
     return { cmd: "/usr/bin/sandbox-exec", argv: ["-p", profile, bin, ...args] };
 }
 
+/** When a custom OS-sandbox wrapper (bwrap/firejail/…) RAN but never exec'd pi —
+ *  because pi (or the node its shebang needs) isn't visible INSIDE the sandbox
+ *  namespace — its stderr is a cryptic `bwrap: execvp <bin>: No such file or
+ *  directory`. Turn that into an actionable hint: the wrapper must bind the dir
+ *  holding pi + node. Only fires in custom-sandbox mode. Pure. */
+export function sandboxBinHint(sb: SandboxConfig, bin: string, stderr: string): string {
+    if (sb.mode !== "custom") return "";
+    const s = stderr || "";
+    const execFail = /\bexecvp\b|exec failed/i.test(s) || (/no such file or directory/i.test(s) && bin.length > 1 && s.includes(bin));
+    if (!execFail) return "";
+    const dir = bin.includes("/") ? bin.slice(0, bin.lastIndexOf("/")) : "the dir holding pi + node";
+    return ` — the OS sandbox (PI_OBS_DISPATCH_SANDBOX_CMD) can't see '${bin}' inside its namespace; bind pi + node into it, e.g. add '--ro-bind ${dir} ${dir}', or bind the whole filesystem read-only with '--ro-bind / /' (see obs/API.md).`;
+}
+
 export type SpawnFn = typeof spawn;
 
 /** Spawn the named agent for one task and stream parsed ChatEvents to onEvent.
@@ -464,7 +478,8 @@ export function dispatchStream(
                 if (ev.type === "done") sawDone = true;
                 onEvent(ev);
             }
-            if (code !== 0 && !sawDone) onEvent({ type: "error", error: `agent exited ${code}${err ? `: ${err.slice(-300)}` : ""}` });
+            if (code !== 0 && !sawDone)
+                onEvent({ type: "error", error: `agent exited ${code}${err ? `: ${err.slice(-300)}` : ""}${sandboxBinHint(sb, bin, err)}` });
             resolve();
         });
     });
