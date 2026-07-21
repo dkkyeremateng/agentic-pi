@@ -332,6 +332,24 @@ always confined to `cwd` (cwd-guard is forced on). cwd-guard does **not** confin
 | `PI_OBS_DISPATCH_SANDBOX=auto` | macOS → `sandbox-exec`; other platforms require the CMD form below. |
 | `PI_OBS_DISPATCH_SANDBOX_CMD=<argv>` | Any platform: a custom wrapper (`{cwd}` substituted), e.g. `bwrap`/`firejail`/`docker`. The cleanest full isolation on Linux/containers. |
 
+**Linux (bwrap) recipe.** The wrapper must expose **pi and its `node` runtime inside
+the sandbox namespace** — otherwise the wrapper runs but can't exec pi and you get
+`bwrap: execvp /home/linuxbrew/.linuxbrew/bin/pi: No such file or directory`. bwrap
+starts from an empty namespace, so a recipe that only binds `/usr` breaks any pi/node
+installed elsewhere (Homebrew `/home/linuxbrew`, nvm `~/.nvm`, …). The robust default
+binds the whole filesystem **read-only** and makes only `{cwd}` (+ `/tmp`) writable —
+which is the actual goal (confine *writes*, incl. bash, to `cwd`; reads/exec stay open
+like the macOS profile):
+
+```
+PI_OBS_DISPATCH_SANDBOX_CMD=bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind {cwd} {cwd} --chdir {cwd}
+```
+
+To also *hide reads* of the rest of `$HOME` (as the macOS profile does), overlay a
+tmpfs on it and re-bind only what tools need, e.g. add `--tmpfs $HOME --ro-bind
+$HOME/.pi $HOME/.pi` after the `--ro-bind / /` — but keep the bind for pi/node's
+install prefix (if it lives under `$HOME`, e.g. nvm).
+
 The route fails closed: **write-capable agents require an OS sandbox** (dispatch
 errors without one); a requested-but-unavailable sandbox errors rather than runs
 unconfined; and when `PI_OBS_DISPATCH_CWD` is set, a request `cwd` outside that

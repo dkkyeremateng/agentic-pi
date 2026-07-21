@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSandboxLaunch, isReadOnlyAgent, listAgents, macSandboxProfile, needsSandbox, parseSelection, resolveAgent, sandboxConfig } from "./obs-dispatch";
+import { buildSandboxLaunch, isReadOnlyAgent, listAgents, macSandboxProfile, needsSandbox, parseSelection, resolveAgent, sandboxBinHint, sandboxConfig } from "./obs-dispatch";
 import type { AgentDef } from "../utils/workflow/workflow-core";
 
 const def = (over: Partial<AgentDef>): AgentDef => ({
@@ -126,6 +126,26 @@ test("macSandboxProfile confines reads+writes to cwd + tool infra, hides the res
     // credentials are NOT exposed by default: no blanket ~/.config, no ~/.npmrc
     assert.ok(!/"\/Users\/me\/\.config"/.test(p), "blanket ~/.config must not be readable");
     assert.ok(!p.includes(".npmrc"), "~/.npmrc (npm _authToken) must not be readable by default");
+});
+
+test("sandboxBinHint: turns a bwrap exec-fail into an actionable bind hint", () => {
+    const sb = { mode: "custom" as const, customCmd: "bwrap --ro-bind /usr /usr --bind {cwd} {cwd}" };
+    const bin = "/home/linuxbrew/.linuxbrew/bin/pi";
+    const hint = sandboxBinHint(sb, bin, `bwrap: execvp ${bin}: No such file or directory`);
+    assert.match(hint, /can't see '\/home\/linuxbrew\/\.linuxbrew\/bin\/pi'/);
+    assert.match(hint, /--ro-bind \/home\/linuxbrew\/\.linuxbrew\/bin \/home\/linuxbrew\/\.linuxbrew\/bin/);
+    assert.match(hint, /--ro-bind \/ \//);
+    // bare "No such file or directory" that names the bin also triggers (firejail-style)
+    assert.notEqual(sandboxBinHint(sb, bin, `Error: ${bin}: No such file or directory`), "");
+});
+
+test("sandboxBinHint: silent for non-custom mode and unrelated failures", () => {
+    const sb = { mode: "custom" as const, customCmd: "bwrap {cwd}" };
+    // a normal agent nonzero exit (task error) must NOT get the sandbox hint
+    assert.equal(sandboxBinHint(sb, "/x/pi", "Error: the task failed because the test suite is red"), "");
+    // off / built-in modes never emit it
+    assert.equal(sandboxBinHint({ mode: "off", customCmd: "" }, "/x/pi", "bwrap: execvp /x/pi: No such file or directory"), "");
+    assert.equal(sandboxBinHint({ mode: "sandbox-exec", customCmd: "" }, "/x/pi", "execvp failed"), "");
 });
 
 test("macSandboxProfile honors PI_OBS_DISPATCH_{READ,WRITE}_EXTRA", () => {
