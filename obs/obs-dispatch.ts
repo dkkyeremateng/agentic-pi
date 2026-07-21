@@ -269,7 +269,11 @@ export type SandboxLaunch = { cmd: string; argv: string[] } | { error: string };
 export function buildSandboxLaunch(sb: SandboxConfig, cwd: string, bin: string, args: string[], env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): SandboxLaunch {
     if (sb.mode === "off") return { cmd: bin, argv: args };
     if (sb.mode === "custom") {
-        const toks = sb.customCmd.replace(/\{cwd\}/g, cwd).split(/\s+/).filter(Boolean);
+        // {cwd} and {home} are substituted so a recipe can bind the writable paths
+        // pi needs (the project cwd, plus ~/.pi for its session logs + settings lock)
+        // portably — we spawn the wrapper directly, so no shell expands ~ or $HOME.
+        const home = env.HOME || homedir();
+        const toks = sb.customCmd.replace(/\{cwd\}/g, cwd).replace(/\{home\}/g, home).split(/\s+/).filter(Boolean);
         if (!toks.length) return { error: "PI_OBS_DISPATCH_SANDBOX_CMD is empty" };
         return { cmd: toks[0], argv: [...toks.slice(1), bin, ...args] };
     }
