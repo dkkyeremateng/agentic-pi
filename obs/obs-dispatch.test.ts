@@ -94,6 +94,20 @@ test("buildSandboxLaunch: custom substitutes {cwd} and wraps the bin", () => {
     assert.deepEqual(r, { cmd: "bwrap", argv: ["--bind", "/proj", "/proj", "pi", "x"] });
 });
 
+test("buildSandboxLaunch: custom substitutes {home} (so ~/.pi can be bound writable)", () => {
+    const r = buildSandboxLaunch(
+        { mode: "custom", customCmd: "bwrap --ro-bind / / --bind {cwd} {cwd} --bind {home}/.pi {home}/.pi" },
+        "/home/me/proj",
+        "/opt/pi",
+        ["-p"],
+        { HOME: "/home/me" },
+    );
+    assert.deepEqual(r, {
+        cmd: "bwrap",
+        argv: ["--ro-bind", "/", "/", "--bind", "/home/me/proj", "/home/me/proj", "--bind", "/home/me/.pi", "/home/me/.pi", "/opt/pi", "-p"],
+    });
+});
+
 test("buildSandboxLaunch: fail-closed when the platform has no built-in", () => {
     assert.ok("error" in buildSandboxLaunch({ mode: "auto", customCmd: "" }, "/proj", "pi", [], {}, "linux"));
     assert.ok("error" in buildSandboxLaunch({ mode: "sandbox-exec", customCmd: "" }, "/proj", "pi", [], {}, "linux"));

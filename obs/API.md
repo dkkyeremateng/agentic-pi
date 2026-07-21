@@ -337,18 +337,21 @@ the sandbox namespace** — otherwise the wrapper runs but can't exec pi and you
 `bwrap: execvp /home/linuxbrew/.linuxbrew/bin/pi: No such file or directory`. bwrap
 starts from an empty namespace, so a recipe that only binds `/usr` breaks any pi/node
 installed elsewhere (Homebrew `/home/linuxbrew`, nvm `~/.nvm`, …). The robust default
-binds the whole filesystem **read-only** and makes only `{cwd}` (+ `/tmp`) writable —
-which is the actual goal (confine *writes*, incl. bash, to `cwd`; reads/exec stay open
-like the macOS profile):
+binds the whole filesystem **read-only** and makes writable only `{cwd}`, `/tmp`, and
+`{home}/.pi` — pi writes its session logs + `settings.json.lock` under `~/.pi/agent/`,
+so without that bind pi dies with `EROFS: read-only file system, … /home/…/.pi/agent/…`.
+`{cwd}` and `{home}` are substituted by pi (bwrap is spawned directly, so `~`/`$HOME`
+are **not** shell-expanded). `--bind-try` binds a cache dir only if it exists:
 
 ```
-PI_OBS_DISPATCH_SANDBOX_CMD=bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind {cwd} {cwd} --chdir {cwd}
+PI_OBS_DISPATCH_SANDBOX_CMD=bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind {cwd} {cwd} --bind {home}/.pi {home}/.pi --bind-try {home}/.cache {home}/.cache --bind-try {home}/.npm {home}/.npm --chdir {cwd}
 ```
 
+Add more `--bind`/`--bind-try SRC DEST` lines for any other path a tool must write.
 To also *hide reads* of the rest of `$HOME` (as the macOS profile does), overlay a
-tmpfs on it and re-bind only what tools need, e.g. add `--tmpfs $HOME --ro-bind
-$HOME/.pi $HOME/.pi` after the `--ro-bind / /` — but keep the bind for pi/node's
-install prefix (if it lives under `$HOME`, e.g. nvm).
+tmpfs on it and re-bind only what's needed, e.g. add `--tmpfs {home}` after the
+`--ro-bind / /` and then re-add the `--bind {home}/.pi …` and pi/node's install prefix
+(if it lives under `$HOME`, e.g. nvm) so they survive the tmpfs.
 
 The route fails closed: **write-capable agents require an OS sandbox** (dispatch
 errors without one); a requested-but-unavailable sandbox errors rather than runs
