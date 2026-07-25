@@ -250,6 +250,42 @@ test("the last verdict lands on the root span; verdict-only sessions emit no spa
     assert.equal(findSpan(otlp, (s) => s.name === "invoke_agent user"), undefined);
 });
 
+test("a malformed event with a non-finite ts never throws (nanos coerces to 0)", () => {
+    // A sink line with a missing/bad `ts` must not crash the OTLP transform — one
+    // such line would otherwise take the whole obs-server down (no try/catch in
+    // the route + no uncaughtException handler until this cluster's fix).
+    const events: ObsEvent[] = [
+        {
+            v: 2,
+            seq: 0,
+            ts: 1000,
+            sessionId: "s",
+            agent: "a",
+            runId: "run-x",
+            type: "session_start",
+            payload: {},
+        },
+        {
+            v: 2,
+            seq: 1,
+            ts: Number.NaN, // ← the poison line
+            sessionId: "s",
+            agent: "a",
+            runId: "run-x",
+            type: "compaction",
+            payload: {},
+        },
+    ];
+    let otlp: ReturnType<typeof eventsToOtlp>;
+    assert.doesNotThrow(() => {
+        otlp = eventsToOtlp(events);
+    });
+    const span = otlp!.resourceSpans[0].scopeSpans[0].spans[0];
+    // the compaction became a span event, timestamped 0 rather than crashing
+    assert.equal(span.events?.[0]?.name, "compaction");
+    assert.equal(span.events?.[0]?.timeUnixNano, "0");
+});
+
 test("legacy events without runId still group into a trace by sessionId", () => {
     const ev: ObsEvent = {
         v: 1,

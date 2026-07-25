@@ -197,7 +197,12 @@ const runPiText: RunPi = (model, system, prompt, timeoutMs) =>
     new Promise((resolve, reject) => {
         const args = ["--mode", "text", "-p", "--no-tools", "--no-session", "--no-skills", "--no-extensions"];
         if (model) args.push("--model", model);
-        args.push("--append-system-prompt", system, prompt);
+        // Never let a flag-shaped prompt inject pi flags: pi matches known flags at
+        // ANY argv position and has no `--` separator, so a prompt like "--model x"
+        // would be parsed as a flag. A leading space forces pi to treat it as the
+        // message (mirrors obs-chat's promptArg).
+        const promptArg = prompt.startsWith("-") ? " " + prompt : prompt;
+        args.push("--append-system-prompt", system, promptArg);
 
         // PI_OBS_PI_BIN lets run.sh hand the detached server an absolute path to
         // `pi` — its PATH may lack the version-manager (nvm) bin dir that holds it.

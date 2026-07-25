@@ -10,9 +10,11 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import type { Readable } from "node:stream";
 import { badCwd, llmConfig, piSpawnEnv, type LlmConfig } from "./obs-llm";
+import { isOutsideCwd } from "../utils/guards/path-guard";
+import { stripInheritedSecrets } from "../utils/workflow/workflow-core";
 
 /** Base directory pi stores project sessions under (one file per session,
  *  named `<timestamp>_<sessionId>.jsonl`, bucketed by project-path folder). */
@@ -227,6 +229,16 @@ export function streamChat(
         // Preflight the cwd: a missing dir would otherwise surface as a cryptic
         // "spawn <pi> ENOENT" that looks like a PATH problem (see badCwd).
         const cwd = req.cwd || process.cwd();
+        // Optional cwd allowlist (mirrors dispatch's PI_OBS_DISPATCH_CWD): when
+        // PI_OBS_CHAT_CWD is set, the request cwd must resolve inside it, so a raw
+        // API caller can't aim a tool-enabled chat at an arbitrary directory
+        // (e.g. ~/.ssh). Off by default — no behaviour change unless configured.
+        const cwdRoot = (process.env.PI_OBS_CHAT_CWD || "").trim();
+        if (cwdRoot && isOutsideCwd(resolvePath(cwdRoot), resolvePath(cwd))) {
+            onEvent({ type: "error", error: `cwd "${cwd}" is outside the allowed chat root (PI_OBS_CHAT_CWD).` });
+            resolve();
+            return;
+        }
         const cwdErr = badCwd(cwd);
         if (cwdErr) {
             onEvent({ type: "error", error: cwdErr });
@@ -234,15 +246,28 @@ export function streamChat(
             return;
         }
 
+        // Least privilege: this pi is spawned BY the obs server (which holds the
+        // bridge secrets) — it must not inherit the obs API token or the bot token
+        // (a tool-enabled chat could otherwise read+exfiltrate them). Mirrors the
+        // dispatch path. When tools are enabled, force cwd confinement so the file
+        // tools can't escape the cwd (bash still needs an OS sandbox for full
+        // confinement — chat with tools is a trusted, opt-in surface).
+        const env: NodeJS.ProcessEnv = { ...piSpawnEnv() };
+        if (req.tools) env.PI_CONFINE_CWD = "1";
+        stripInheritedSecrets(env);
+
         // stdin is "ignore" (we never write to pi), so stdout/stderr are the only
         // streams — ChildProcessByStdio<null, Readable, Readable>, not the
         // WithoutNullStreams variant (which would require a writable stdin).
+        // detached ⇒ the child leads its own process group, so aborting/timing out
+        // signals the WHOLE tree (pi + any tool children), not just pi itself.
         let proc: ChildProcessByStdio<null, Readable, Readable>;
         try {
             proc = spawnImpl(bin, args, {
                 stdio: ["ignore", "pipe", "pipe"],
-                env: piSpawnEnv(),
+                env,
                 cwd,
+                detached: true,
             }) as ChildProcessByStdio<null, Readable, Readable>;
         } catch (e) {
             onEvent({ type: "error", error: String((e as Error)?.message || e) });
@@ -253,16 +278,26 @@ export function streamChat(
         let buf = "";
         let err = "";
         let sawDone = false;
-        const timer = setTimeout(() => proc.kill("SIGTERM"), cfg.timeoutMs);
-
-        // stop: caller aborted (browser disconnected) → kill the spawned pi
-        if (req.signal) {
-            if (req.signal.aborted) proc.kill("SIGTERM");
-            else req.signal.addEventListener("abort", () => {
+        // Kill the whole process group; escalate to SIGKILL if it lingers. pid > 0
+        // guard: process.kill(-0) would signal the SERVER's own group.
+        let killEscalation: ReturnType<typeof setTimeout> | undefined;
+        const killTree = (sig: NodeJS.Signals) => {
+            try {
+                if (typeof proc.pid === "number" && proc.pid > 0) process.kill(-proc.pid, sig);
+                else proc.kill(sig);
+            } catch {
                 try {
-                    proc.kill("SIGTERM");
+                    proc.kill(sig);
                 } catch {}
-            });
+            }
+            if (sig !== "SIGKILL" && !killEscalation) killEscalation = setTimeout(() => killTree("SIGKILL"), 5_000).unref();
+        };
+        const timer = setTimeout(() => killTree("SIGTERM"), cfg.timeoutMs);
+
+        // stop: caller aborted (browser disconnected) → kill the spawned pi (+tree)
+        if (req.signal) {
+            if (req.signal.aborted) killTree("SIGTERM");
+            else req.signal.addEventListener("abort", () => killTree("SIGTERM"));
         }
 
         proc.stdout.on("data", (d: Buffer) => {
@@ -281,6 +316,7 @@ export function streamChat(
         proc.stderr.on("data", (d: Buffer) => (err = (err + d.toString()).slice(-2000)));
         proc.on("error", (e) => {
             clearTimeout(timer);
+            if (killEscalation) clearTimeout(killEscalation);
             const hint =
                 (e as NodeJS.ErrnoException).code === "ENOENT"
                     ? ` — '${bin}' (or the 'node' its shebang needs) not on PATH; set PI_OBS_PI_BIN and ensure node's bin dir is on PATH`
@@ -290,6 +326,7 @@ export function streamChat(
         });
         proc.on("close", (code) => {
             clearTimeout(timer);
+            if (killEscalation) clearTimeout(killEscalation);
             // flush any trailing partial line
             const ev = parseChatLine(buf);
             if (ev) {

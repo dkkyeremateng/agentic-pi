@@ -84,3 +84,44 @@ export function isAuthorized(
 ): boolean {
     return tokensMatch(expected, presentedToken(headers, query));
 }
+
+// Operator allowlist of extra browser origins (PI_OBS_ALLOWED_ORIGINS, a comma
+// list of full origins like "https://dash.example") permitted to drive the API
+// cross-origin in the open (no-token) mode.
+export function allowedOriginSet(env: NodeJS.ProcessEnv = process.env): Set<string> {
+    return new Set(
+        (env.PI_OBS_ALLOWED_ORIGINS || "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+    );
+}
+
+// Cross-origin drive-by guard. A CORS `*` policy governs only whether a page may
+// READ a response — it never stops the request from REACHING the server, so a
+// malicious page a user visits could still drive side-effecting routes on
+// 127.0.0.1. The browser stamps a truthful `Origin` on cross-site requests, so we
+// only allow ones that are same-origin (Origin host == the request's Host),
+// loopback (a remote attacker can never present a loopback Origin), or in the
+// operator allowlist. No Origin at all ⇒ a non-browser client (curl, the CLI, a
+// server-side proxy) ⇒ allowed. Used only in open mode; a configured token
+// already blocks a blind drive-by (it can't read the secret).
+export function originAllowed(
+    headers: IncomingHttpHeaders,
+    allowed: Set<string>,
+): boolean {
+    const raw = headers.origin;
+    const origin = Array.isArray(raw) ? raw[0] : raw;
+    if (!origin) return true; // no Origin ⇒ not a cross-site browser request
+    if (origin === "null") return false; // opaque origin (file://, sandboxed iframe)
+    let u: URL;
+    try {
+        u = new URL(origin);
+    } catch {
+        return false;
+    }
+    if (isLoopbackHost(u.hostname)) return true;
+    const host = Array.isArray(headers.host) ? headers.host[0] : headers.host;
+    if (host && u.host === host) return true; // same-origin as the request target
+    return allowed.has(origin);
+}

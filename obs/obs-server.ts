@@ -62,7 +62,7 @@ import { dispatchStream, listAgents, selectAgent } from "./obs-dispatch";
 import { listLiveSessions } from "./obs-chat-control";
 import { connect as netConnect } from "node:net";
 import { buildPromptRegistry } from "./obs-prompts";
-import { configuredToken, insecureBindReason, isAuthorized } from "./obs-auth";
+import { allowedOriginSet, configuredToken, insecureBindReason, isAuthorized, originAllowed } from "./obs-auth";
 import { hostAllowed, isPrivateIp, notifyAllowlist } from "./obs-ssrf";
 import { lookup as dnsLookup } from "dns/promises";
 
@@ -141,6 +141,12 @@ const STARTED_AT = Date.now();
 // an unbounded fan-out would exhaust processes/fds. Tunable via env.
 const MAX_DISPATCH = Math.max(1, Number(process.env.PI_OBS_DISPATCH_MAX_CONCURRENT) || 6);
 let inFlightDispatch = 0;
+// Concurrency cap for the OTHER pi-spawning routes (chat + the one-shot LLM
+// endpoints: playground/summarize/select/explain/judge). Each spawns a pi child,
+// so without a cap a burst — e.g. a flood of /api/chat SSE opens — is a
+// fork-bomb / resource-exhaustion vector. Tunable via env.
+const MAX_LLM_SPAWN = Math.max(1, Number(process.env.PI_OBS_LLM_MAX_CONCURRENT) || 8);
+let inFlightLlm = 0;
 const SCAN_CHUNK = 1 << 20;
 const PRIME_TAIL_BYTES = 2 * 1024 * 1024;
 
@@ -557,11 +563,39 @@ function broadcast(ev: ObsEvent): void {
 const API_CORS: Record<string, string> = {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-headers": "content-type",
+    // `authorization` so a cross-origin token dashboard's preflight passes (it
+    // sends Authorization: Bearer); `content-type` for the JSON POST bodies.
+    "access-control-allow-headers": "content-type, authorization",
 };
 
 type Res = import("http").ServerResponse;
 type Req = import("http").IncomingMessage;
+
+// Cross-origin drive-by guard for the OPEN (no-token) default. CORS `*` governs
+// only whether a page may READ a response — it never blocks the request from
+// REACHING the server, so a malicious page a user visits could still drive the
+// side-effecting routes (spawn pi, steer live agents) on 127.0.0.1. The browser
+// stamps a truthful `Origin` on such cross-site requests, so we reject any that
+// isn't same-origin / loopback / operator-allowlisted. Non-browser clients
+// (curl, the CLI, the vite dev proxy's server-side fetch) send no Origin and are
+// unaffected. When a token IS configured the token gate already blocks a blind
+// drive-by (it can't read the secret), so this only bites the open default.
+const ALLOWED_ORIGINS = allowedOriginSet();
+// In open mode, block a disallowed cross-origin request before any side effect.
+// A configured token already blocks a blind drive-by (it can't read the secret),
+// so the guard only bites the open default. (originAllowed lives in obs-auth.)
+function crossOriginDenied(req: Req): boolean {
+    return !OBS_TOKEN && !originAllowed(req.headers, ALLOWED_ORIGINS);
+}
+function sendForbiddenOrigin(res: Res): void {
+    res.writeHead(403, { "content-type": "application/json", ...API_CORS });
+    res.end(
+        JSON.stringify({
+            error: "forbidden",
+            detail: "cross-origin request rejected — set PI_OBS_TOKEN (recommended) or add this origin to PI_OBS_ALLOWED_ORIGINS",
+        }),
+    );
+}
 
 function apiJson(res: Res, status: number, data: unknown): void {
     res.writeHead(status, { "content-type": "application/json", ...API_CORS });
@@ -569,6 +603,17 @@ function apiJson(res: Res, status: number, data: unknown): void {
 }
 function apiError(res: Res, status: number, message: string): void {
     apiJson(res, status, { error: message });
+}
+// Gate a pi-spawning JSON route on the shared LLM concurrency cap. Returns true
+// (and sends a 503) when the cap is reached; otherwise reserves a slot the caller
+// MUST release with `inFlightLlm--` once the spawn settles.
+function llmSpawnBusy(res: Res): boolean {
+    if (inFlightLlm >= MAX_LLM_SPAWN) {
+        apiError(res, 503, `too many concurrent LLM requests (max ${MAX_LLM_SPAWN}); retry shortly`);
+        return true;
+    }
+    inFlightLlm++;
+    return false;
 }
 
 // ── Image attachment uploads (chat) ──────────────────
@@ -631,6 +676,12 @@ function handleApi(
         // CORS preflight carries no credentials by design — never gate it.
         res.writeHead(204, API_CORS);
         res.end();
+        return;
+    }
+    // Open-mode drive-by guard: reject a disallowed cross-origin browser request
+    // before it can reach a side-effecting route (spawn pi, steer a live agent).
+    if (crossOriginDenied(req)) {
+        sendForbiddenOrigin(res);
         return;
     }
     // Every /api route (data + control) requires the token when one is set.
@@ -859,6 +910,7 @@ function handleApi(
             const model =
                 typeof parsed.model === "string" ? parsed.model.trim() : "";
             const cfg = model ? { ...baseCfg, model } : baseCfg;
+            if (llmSpawnBusy(res)) return;
             runPlayground(system, input, cfg)
                 .then((r) => apiJson(res, 200, { enabled: true, ...r }))
                 .catch((e) =>
@@ -866,7 +918,8 @@ function handleApi(
                         enabled: true,
                         error: String((e as Error)?.message || e).slice(0, 400),
                     }),
-                );
+                )
+                .finally(() => inFlightLlm--);
         });
         return;
     }
@@ -917,6 +970,14 @@ function handleApi(
                 /^[\w.-]{1,64}$/.test(p.forkFrom)
                     ? p.forkFrom
                     : undefined;
+            // Bound concurrent pi spawns — an unbounded flood of chat SSE opens is
+            // a fork-bomb. Reject cleanly over the SSE channel when at capacity.
+            if (inFlightLlm >= MAX_LLM_SPAWN) {
+                emit({ type: "error", error: `server busy — too many concurrent LLM/chat requests (max ${MAX_LLM_SPAWN}); retry shortly` });
+                res.end();
+                return;
+            }
+            inFlightLlm++;
             // stop: if the browser disconnects, abort kills the spawned pi (no orphan)
             const ac = new AbortController();
             req.on("close", () => ac.abort());
@@ -938,7 +999,10 @@ function handleApi(
                 .catch(() => {
                     /* error already emitted as an event */
                 })
-                .finally(() => res.end());
+                .finally(() => {
+                    inFlightLlm--;
+                    res.end();
+                });
         };
         if (req.method === "GET") {
             stream(Object.fromEntries(query));
@@ -996,11 +1060,14 @@ function handleApi(
                 apiJson(res, 200, { enabled: false, hint: "set PI_OBS_LLM=1 on the server to enable /do (agent selection)" });
                 return;
             }
+            if (llmSpawnBusy(res)) return;
             try {
                 const sel = await selectAgent(cwd, task);
                 apiJson(res, 200, { enabled: true, ...sel });
             } catch (e) {
                 apiJson(res, 200, { enabled: true, error: String((e as Error)?.message || e) });
+            } finally {
+                inFlightLlm--;
             }
         });
         return;
@@ -1431,6 +1498,7 @@ function handleApi(
                 apiError(res, 400, "missing text");
                 return;
             }
+            if (llmSpawnBusy(res)) return;
             summarizeText(text, kind, cfg)
                 .then((r) => apiJson(res, 200, { enabled: true, ...r }))
                 .catch((e) =>
@@ -1438,7 +1506,8 @@ function handleApi(
                         enabled: true,
                         error: String((e as Error)?.message || e).slice(0, 400),
                     }),
-                );
+                )
+                .finally(() => inFlightLlm--);
         });
         return;
     }
@@ -1554,6 +1623,7 @@ function handleApi(
                 });
                 return;
             }
+            if (llmSpawnBusy(res)) return;
             const evs = readRunEvents(run.runId);
             explainRun(run.runId, buildRunDigest(evs), evs, cfg)
                 .then((r) => apiJson(res, 200, { enabled: true, ...r }))
@@ -1565,7 +1635,8 @@ function handleApi(
                         enabled: true,
                         error: String((e as Error)?.message || e).slice(0, 400),
                     }),
-                );
+                )
+                .finally(() => inFlightLlm--);
             return;
         }
         // LLM-as-judge: score the run on a rubric (goal/efficiency/errors).
@@ -1579,6 +1650,7 @@ function handleApi(
                 });
                 return;
             }
+            if (llmSpawnBusy(res)) return;
             const evs = readRunEvents(run.runId);
             judgeRun(run.runId, buildRunDigest(evs), evs, cfg)
                 .then((r) => apiJson(res, 200, { enabled: true, ...r }))
@@ -1587,7 +1659,8 @@ function handleApi(
                         enabled: true,
                         error: String((e as Error)?.message || e).slice(0, 400),
                     }),
-                );
+                )
+                .finally(() => inFlightLlm--);
             return;
         }
         // Score a run. Appends a verdict line to the sink — the tailer picks
@@ -1680,7 +1753,7 @@ function serveStatic(res: import("http").ServerResponse, file: string): void {
     res.end(readFileSync(file));
 }
 
-const server = createServer((req, res) => {
+function handleRequest(req: Req, res: Res): void {
     const raw = req.url ?? "/";
     const qIdx = raw.indexOf("?");
     const url = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
@@ -1726,6 +1799,10 @@ const server = createServer((req, res) => {
     // The static shell above (index.html, /scripts, /styles, favicon) stays open
     // so the browser can load and present a token; everything below serves run
     // data, so it requires the token when one is configured.
+    if (crossOriginDenied(req)) {
+        sendForbiddenOrigin(res);
+        return;
+    }
     if (!authorized(req, query)) {
         sendUnauthorized(res);
         return;
@@ -1809,6 +1886,34 @@ const server = createServer((req, res) => {
         return;
     }
     res.writeHead(404).end("not found");
+}
+
+// A synchronous throw in any route (e.g. a malformed sink line reaching the OTLP
+// transform) must not take the whole server down — one bad request would
+// otherwise DoS every dashboard. Catch it, answer 500 if we still can, and keep
+// serving. (process-level backstops below cover throws from async callbacks.)
+const server = createServer((req, res) => {
+    try {
+        handleRequest(req, res);
+    } catch (e) {
+        console.error("obs-server: request handler threw:", String((e as Error)?.message || e));
+        try {
+            if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "internal error" }));
+        } catch {
+            /* socket already gone */
+        }
+    }
+});
+
+// Last-resort backstops: a throw inside an async callback (a req.on("end")
+// handler, a timer) escapes the per-request try/catch above. Log and keep the
+// process alive rather than letting one bad line/timer crash the server.
+process.on("uncaughtException", (e) => {
+    console.error("obs-server: uncaughtException:", String((e as Error)?.stack || e));
+});
+process.on("unhandledRejection", (e) => {
+    console.error("obs-server: unhandledRejection:", String((e as any)?.stack || e));
 });
 
 // Heartbeat keeps SSE connections alive through proxies/idle timeouts.

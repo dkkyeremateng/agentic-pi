@@ -5,9 +5,18 @@ exposes a JSON API under **`/api`** for external UIs and integrations. The
 bundled vanilla dashboard uses equivalent unprefixed legacy routes; treat
 `/api/*` as the stable surface for anything new.
 
-- **CORS**: `/api/*` responds with `Access-Control-Allow-Origin: *` (plus
-  `OPTIONS` preflight). The server binds to `127.0.0.1`, so this only exposes
-  it to pages and apps on the same machine.
+- **CORS**: `/api/*` responds with `Access-Control-Allow-Origin: *`
+  (`Allow-Headers: content-type, authorization`) plus an `OPTIONS` preflight.
+  CORS only governs whether a page may *read* a response — it never stops a
+  request from *reaching* the loopback server, so in the **open** (no-token)
+  default the server additionally **rejects cross-origin browser requests**
+  (`403`) whose `Origin` isn't same-origin, loopback, or in
+  `PI_OBS_ALLOWED_ORIGINS` — closing the drive-by where a random site the user
+  visits drives the side-effecting routes (spawn pi, steer a live agent) on
+  `127.0.0.1`. Non-browser clients (curl, the CLI, a server-side proxy) send no
+  `Origin` and are unaffected. Setting `PI_OBS_TOKEN` supersedes this (a blind
+  drive-by can't read the secret), so a token-gated cross-origin dashboard needs
+  no `Origin` allowlist.
 - **Auth**: none by default (localhost-only by design). Set `PI_OBS_TOKEN` to
   require a shared secret on every route — see [Authentication](#authentication).
 - **Content type**: `application/json` unless noted.
@@ -171,6 +180,7 @@ dependency. Server-side config (env, all opt-in):
 | `PI_OBS_LLM` | _(off)_ | `1`/`true` to enable |
 | `PI_OBS_LLM_MODEL` | `PI_WORKFLOW_MODEL`, else the primary session's model | any pi model id; unset → the spawn omits `--model` so it inherits the running agent's own model (no forced third-party default) |
 | `PI_OBS_LLM_TIMEOUT_MS` | `60000` | kill the pi spawn after this |
+| `PI_OBS_LLM_MAX_CONCURRENT` | `8` | cap on concurrent pi spawns across the LLM/chat routes (`/chat`, `/playground`, `/summarize`, `/select`, `/explain`, `/judge`); over the cap → `503` (or an SSE `error` for `/chat`). Bounds a fork-bomb from a burst of requests |
 
 Requires `pi` on the server's PATH.
 
@@ -360,6 +370,25 @@ root is rejected (so a caller can't aim confinement at an arbitrary directory).
 Concurrent dispatches are capped (`PI_OBS_DISPATCH_MAX_CONCURRENT`, default 6).
 The route is gated on `PI_OBS_DISPATCH=1`, and (via the bridge) behind the chat-id
 allowlist.
+
+### `GET`/`POST /api/chat` (SSE) — chat spawn safety
+
+`/api/chat` spawns `pi` per message (opt-in `PI_OBS_LLM=1`). Server-side guards on
+that spawn:
+
+- **Secrets are stripped** — the chat `pi` never inherits `PI_OBS_TOKEN` /
+  `PI_OBS_TG_TOKEN`, so a tool-enabled chat can't read and exfiltrate them (same
+  `stripInheritedSecrets` the dispatch path uses).
+- **Tools are off by default** (a text assistant). With `tools=1`, file tools are
+  **confined to `cwd`** (`PI_CONFINE_CWD` forced on); `bash` is not confined
+  in-process — treat tool-enabled chat as a trusted, opt-in surface.
+- **Optional `cwd` allowlist** — set `PI_OBS_CHAT_CWD` to a root and a request
+  `cwd` outside it is rejected (mirrors `PI_OBS_DISPATCH_CWD`; off by default).
+- **Process-group kill** — the spawn is detached and aborted/timed-out turns
+  signal the whole tree (pi + any tool children), so a cancelled chat leaves no
+  orphans.
+- **Concurrency-capped** with the other LLM routes via `PI_OBS_LLM_MAX_CONCURRENT`
+  (see the LLM enrichment table above).
 
 ## Telegram bridge
 
