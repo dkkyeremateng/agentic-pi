@@ -165,4 +165,33 @@ describe("blockedCommands", () => {
             ["git push"],
         );
     });
+
+    it("sees through exec-wrapper prefixes (env/command/nohup/timeout/nice)", () => {
+        // `env` (with and without inline assignments) must not hide the mutation.
+        assert.deepEqual(blockedCommands("env gh pr merge 5"), ["gh pr merge 5"]);
+        assert.deepEqual(blockedCommands("env FOO=bar gh pr merge 5"), ["gh pr merge 5"]);
+        assert.deepEqual(blockedCommands("env -i -u PATH gh pr merge 5"), ["gh pr merge 5"]);
+        assert.deepEqual(blockedCommands("command git push"), ["git push"]);
+        assert.deepEqual(blockedCommands("nohup gh pr merge 5"), ["gh pr merge 5"]);
+        assert.deepEqual(blockedCommands("nice -n 10 git push"), ["git push"]);
+        assert.deepEqual(blockedCommands("timeout 30 gh pr merge 5"), ["gh pr merge 5"]);
+        assert.deepEqual(blockedCommands("timeout -k 5 30 git push"), ["git push"]);
+        // a wrapped READ is still allowed (peeling never over-blocks)
+        assert.deepEqual(blockedCommands("env FOO=b gh pr view 5"), []);
+        assert.deepEqual(blockedCommands("nice git log"), []);
+    });
+
+    it("flags a glued `gh api -XPOST` write (not just the spaced form)", () => {
+        assert.deepEqual(blockedCommands("gh api -XPOST /repos/o/r/merges"), [
+            "gh api -XPOST /repos/o/r/merges",
+        ]);
+        assert.deepEqual(blockedCommands("gh api -X POST /repos/o/r/merges"), [
+            "gh api -X POST /repos/o/r/merges",
+        ]);
+        assert.deepEqual(blockedCommands("gh api --method=DELETE /repos/o/r/x"), [
+            "gh api --method=DELETE /repos/o/r/x",
+        ]);
+        // a plain GET stays allowed
+        assert.deepEqual(blockedCommands("gh api /repos/o/r/pulls/5"), []);
+    });
 });

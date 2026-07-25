@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -116,6 +116,60 @@ test("addLessons writes directly (dedupe+cap), independent of the pass gate", ()
     process.env.PI_AGENT_MEMORY = "0";
     assert.equal(addLessons("validator", ["something new"], {}, io), 0);
     delete process.env.PI_AGENT_MEMORY;
+});
+
+test("addLessons keeps learning AT THE CAP (a new lesson evicts the oldest)", () => {
+    const store = new Map<string, Lesson[]>();
+    const io: MemoryIO = { read: (a) => store.get(a) ?? [], write: (a, l) => void store.set(a, l) };
+    // fill exactly to the cap. Fixed-width labels so `similar()` (substring dedup)
+    // doesn't collapse "lesson 1" into "lesson 10".
+    const label = (i: number) => `lesson ${String(i).padStart(3, "0")}`;
+    const initial = Array.from({ length: MEMORY_CAP }, (_, i) => label(i));
+    assert.equal(addLessons("scout", initial, {}, io), MEMORY_CAP);
+    assert.equal(store.get("scout")!.length, MEMORY_CAP);
+    // a genuinely new lesson at the cap MUST persist (evicting the oldest). The old
+    // length-only gate saw 40 → 40 and skipped the write, freezing learning.
+    assert.equal(addLessons("scout", ["a brand new lesson at the cap"], {}, io), 1);
+    const after = store.get("scout")!;
+    assert.equal(after.length, MEMORY_CAP);
+    assert.equal(after[after.length - 1].text, "a brand new lesson at the cap");
+    assert.equal(after[0].text, label(1)); // oldest (label(0)) evicted
+    // a duplicate at the cap is still a no-op (no spurious write)
+    assert.equal(addLessons("scout", ["a brand new lesson at the cap"], {}, io), 0);
+});
+
+test("commitStagedLearnings persists a new lesson AT THE CAP (no freeze)", () => {
+    const store = new Map<string, Lesson[]>();
+    const io: MemoryIO = { read: (a) => store.get(a) ?? [], write: (a, l) => void store.set(a, l) };
+    store.set("reviewer", Array.from({ length: MEMORY_CAP }, (_, i) => L(`r ${i}`)));
+    const cwd = mkdtempSync(join(tmpdir(), "mem-commit-"));
+    try {
+        stageLearning(cwd, "reviewer", "a fresh reviewer lesson at the cap");
+        assert.equal(commitStagedLearnings(cwd, { passed: true }, io), 1);
+        const after = store.get("reviewer")!;
+        assert.equal(after.length, MEMORY_CAP);
+        assert.equal(after[after.length - 1].text, "a fresh reviewer lesson at the cap");
+    } finally {
+        rmSync(cwd, { recursive: true, force: true });
+    }
+});
+
+test("memory writes can't escape memoryDir via a crafted agent name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mem-esc-"));
+    const prev = process.env.PI_AGENT_MEMORY_DIR;
+    process.env.PI_AGENT_MEMORY_DIR = dir;
+    try {
+        // a path-traversal agent name must land INSIDE dir, sanitized — not escape it
+        assert.equal(addLessons("../../pwned", ["do not escape the memory dir"], {}), 1);
+        assert.equal(existsSync(join(dir, "..", "..", "pwned.md")), false);
+        const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+        assert.equal(files.length, 1);
+        assert.match(files[0], /^[a-z0-9_-]+\.md$/); // no separators / dots survived
+    } finally {
+        if (prev === undefined) delete process.env.PI_AGENT_MEMORY_DIR;
+        else process.env.PI_AGENT_MEMORY_DIR = prev;
+        rmSync(dir, { recursive: true, force: true });
+    }
 });
 
 test("staging round-trips per-agent candidates under .agent/", () => {

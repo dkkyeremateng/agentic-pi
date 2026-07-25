@@ -138,6 +138,24 @@ export function foldStaged(
     return capLessons(dedupeAppend(current, texts, opts));
 }
 
+/** Ordered identity signature of a lesson list (normalized text + source). Two
+ *  lists with the same signature render to the same file. Detects the change a
+ *  bare length check misses: AT THE CAP a new lesson evicts an old one, so the
+ *  count is unchanged (40 → 40) but the content differs — the length gate then
+ *  skipped the write and the agent's learning silently froze at the cap. */
+function lessonsSignature(lessons: Lesson[]): string {
+    return lessons.map((l) => `${l.source ?? ""} ${norm(l.text)}`).join("\n");
+}
+export function lessonsChanged(before: Lesson[], after: Lesson[]): boolean {
+    return lessonsSignature(before) !== lessonsSignature(after);
+}
+/** Count of lessons in `after` whose normalized text isn't already in `before`
+ *  (accurate even at the cap, where the list length doesn't grow). */
+function newlyAdded(before: Lesson[], after: Lesson[]): number {
+    const seen = new Set(before.map((l) => norm(l.text)));
+    return after.reduce((n, l) => n + (seen.has(norm(l.text)) ? 0 : 1), 0);
+}
+
 // ── injection (pure) ─────────────────────────────────────────────────────────
 
 /** The lessons to inject this run — most recent first, capped. */
@@ -189,7 +207,12 @@ export function memoryDir(env: NodeJS.ProcessEnv = process.env): string {
     return isAbsolute(expanded) ? expanded : resolve(repoRoot, expanded);
 }
 function memoryPath(agent: string): string {
-    return join(memoryDir(), `${agent.toLowerCase()}.md`);
+    // Sanitize to a bare filename: agent names normally come from configs/defs,
+    // but a stray path separator or `..` (a crafted agent name, a lesson authored
+    // for one) must never let a write escape memoryDir. Collapse anything but
+    // [a-z0-9_-] so no separators or dots survive.
+    const safe = agent.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
+    return join(memoryDir(), `${safe || "agent"}.md`);
 }
 /** Per-run staging file under the working cwd's .agent/ (cleared each run). */
 export function stagingPath(cwd: string): string {
@@ -283,9 +306,10 @@ export function addLessons(
     try {
         const before = io.read(agent);
         const after = foldStaged(before, texts, { runId: opts.runId, day: opts.day ?? today(), source: opts.source });
-        const added = after.length - before.length;
-        if (added > 0) io.write(agent, after);
-        return Math.max(0, added);
+        // Write on any content change — NOT just a length increase, which stalls at
+        // the cap (a new lesson evicting an old one keeps the count at MEMORY_CAP).
+        if (lessonsChanged(before, after)) io.write(agent, after);
+        return newlyAdded(before, after);
     } catch {
         return 0;
     }
@@ -372,9 +396,12 @@ export function commitStagedLearnings(cwd: string, opts: { passed: boolean; runI
         for (const [agent, texts] of byAgent) {
             const before = io.read(agent);
             const after = foldStaged(before, texts, { runId: opts.runId, day, source: "remember" });
-            if (after.length !== before.length) {
+            // Persist on any content change, not just a length change — at the cap a
+            // new lesson evicts an old one (count unchanged), which the old length
+            // gate dropped, silently freezing the agent's learning at MEMORY_CAP.
+            if (lessonsChanged(before, after)) {
                 io.write(agent, after);
-                committed += after.length - before.length;
+                committed += newlyAdded(before, after);
             }
         }
     } catch {

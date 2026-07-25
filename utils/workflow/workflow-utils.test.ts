@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     detectVerdict,
+    detectCritique,
     detectShip,
     digest,
     testSignal,
@@ -88,6 +89,15 @@ describe("detectVerdict", () => {
         assert.equal(detectVerdict(output), "pass");
     });
 
+    it("takes the LAST marker — a deliberation verdict doesn't override the final one", () => {
+        const output = [
+            "If the tests didn't pass I would emit VERDICT: FAIL here.",
+            "But they all pass, so the final call is:",
+            "VERDICT: PASS",
+        ].join("\n");
+        assert.equal(detectVerdict(output), "pass");
+    });
+
     it("detects paused from fallback", () => {
         assert.equal(
             detectVerdict("The workflow is paused due to missing config"),
@@ -153,6 +163,36 @@ describe("detectShip", () => {
         const lines = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`);
         lines[21] = "no GitHub remote";
         assert.equal(detectShip(lines.join("\n")), "shipped");
+    });
+
+    it("takes the LAST marker (the final outcome wins over an earlier mention)", () => {
+        const output = ["SHIP: PAUSED would mean no remote.", "SHIP: SHIPPED"].join("\n");
+        assert.equal(detectShip(output), "shipped");
+    });
+});
+
+describe("detectCritique", () => {
+    it("detects each explicit marker", () => {
+        assert.equal(detectCritique("REVISE BEFORE MERGE"), "revise");
+        assert.equal(detectCritique("REVISE BEFORE IMPLEMENTING"), "revise");
+        assert.equal(detectCritique("APPROVED WITH RESERVATIONS"), "approved-with-reservations");
+        assert.equal(detectCritique("APPROVED"), "approved");
+    });
+
+    it("does not mistake 'APPROVED WITH RESERVATIONS' for a bare approval", () => {
+        assert.equal(detectCritique("Verdict: APPROVED WITH RESERVATIONS — see notes"), "approved-with-reservations");
+    });
+
+    it("takes the LAST marker — a deliberation verdict doesn't override the final one", () => {
+        const output = [
+            "My first instinct was APPROVED, but on a closer look at the migration:",
+            "REVISE BEFORE MERGE",
+        ].join("\n");
+        assert.equal(detectCritique(output), "revise");
+    });
+
+    it("returns unknown when neither a marker nor a standalone verdict line is present", () => {
+        assert.equal(detectCritique("the code looks fine to me overall"), "unknown");
     });
 });
 
