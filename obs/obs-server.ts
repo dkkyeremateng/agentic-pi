@@ -542,14 +542,29 @@ if (OTLP_ENDPOINT) {
 
 // ── SSE broadcast ────────────────────────────────────────────────────────────
 
+// A client that can't keep up buffers unflushed frames in the process heap. Once
+// its backlog crosses this cap, drop it rather than let one stuck reader grow
+// memory without bound (override via env for very chatty local setups).
+const SSE_BACKPRESSURE_MAX = Math.max(1, Number(process.env.PI_OBS_SSE_BACKPRESSURE_MAX_MB) || 8) * 1024 * 1024;
+
 function broadcast(ev: ObsEvent): void {
     const frame = sseFrame(ev);
     for (const [res, f] of clients) {
         if (f.run && ev.runId !== f.run) continue;
+        // Deleting the current key mid-iteration is safe for a Map for-of.
+        if (res.writableLength > SSE_BACKPRESSURE_MAX) {
+            clients.delete(res);
+            try {
+                res.destroy();
+            } catch {
+                /* already gone */
+            }
+            continue;
+        }
         try {
             res.write(frame);
         } catch {
-            /* dropped on next close */
+            clients.delete(res); // socket error → stop tracking it
         }
     }
 }
@@ -1460,6 +1475,11 @@ function handleApi(
         res.writeHead(200, {
             "content-type": uploadMime(id),
             "cache-control": "max-age=3600",
+            // These are user-uploaded bytes: stop the browser from content-sniffing
+            // them into an executable type (e.g. treating a disguised upload as
+            // HTML/JS), and never let one render as a top-level document.
+            "x-content-type-options": "nosniff",
+            "content-disposition": "inline",
             ...API_CORS,
         });
         res.end(readFileSync(p));

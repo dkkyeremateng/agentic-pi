@@ -32,7 +32,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter as pathDelimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseChatLine, promptArg, type ChatEvent } from "./obs-chat";
+import { MAX_STDOUT_BUF, parseChatLine, promptArg, type ChatEvent } from "./obs-chat";
 import { isOutsideCwd } from "../utils/guards/path-guard";
 import { badCwd, llmConfig, piSpawnEnv, type LlmConfig, runPlayground } from "./obs-llm";
 import { memoryInjection } from "../utils/workflow/memory";
@@ -465,6 +465,8 @@ export function dispatchStream(
                     onEvent(ev);
                 }
             }
+            // Bound a pathological unterminated line (see MAX_STDOUT_BUF).
+            if (buf.length > MAX_STDOUT_BUF) buf = buf.slice(-MAX_STDOUT_BUF);
         });
         proc.stderr?.on("data", (d: Buffer) => (err = (err + d.toString()).slice(-2000)));
         proc.on("error", (e) => {
