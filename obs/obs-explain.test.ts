@@ -285,3 +285,26 @@ test("slow-tool is relative to the tool's own median: a routinely-slow tool is q
     assert.equal(flagged.length, 1);
     assert.match(flagged[0].detail, /bash took 120s in worker/);
 });
+
+test("buildRunDigest coerces numeric-string token/duration payloads (no string concat)", () => {
+    const f = makeFactory({ sessionId: "s", agent: "orchestrator", runId: "run-s" });
+    // A payload whose token fields arrive as STRINGS must still sum numerically —
+    // `number += "1200"` would otherwise concatenate and corrupt every total.
+    const d = buildRunDigest([
+        f.next("session_start", { model: "m" }, 0),
+        f.next(
+            "turn_end",
+            {
+                turnIndex: 0,
+                tokens: { input: "1000", output: "200", cacheRead: "0", cacheWrite: "0", total: "1200" },
+                costUsd: "0.5",
+                durationMs: "1500",
+            } as any,
+            2_000,
+        ),
+        f.next("session_end", {}, 3_000),
+    ]);
+    assert.equal(d.totals.tokens.input, 1000);
+    assert.equal(d.totals.tokens.total, 1200);
+    assert.equal(d.totals.costUsd, 0.5);
+});
