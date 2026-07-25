@@ -139,7 +139,10 @@ function gitSubcommandIndex(rest: string[]): number {
 // use `-f query=...`, so for `gh api graphql` only an actual `mutation` is a write.
 function apiIsReadOnly(rest: string[]): boolean {
     const joined = rest.join(" ");
-    if (/(?:^|\s)(?:-X|--method)[\s=]+(?:post|put|patch|delete)\b/i.test(joined))
+    // `-X` takes its value glued (`-XPOST`) or separated (`-X POST` / `-X=POST`);
+    // `--method` separates with a space or `=`. The old `[\s=]+` missed the glued
+    // `-XPOST` form, so `gh api -XPOST …` slipped through as read-only.
+    if (/(?:^|\s)(?:-X[\s=]*|--method[\s=]+)(?:post|put|patch|delete)\b/i.test(joined))
         return false;
     if (rest.includes("graphql")) return !/\bmutation\b/i.test(joined);
     return !/(?:^|\s)(?:-f|-F|--field|--raw-field|--input)\b/i.test(joined);
@@ -172,10 +175,45 @@ function gitRefCmdReadOnly(args: string[], mutatingFlags: Set<string>): boolean 
     return args.length === 0; // no flags + a positional ref name = create → block
 }
 
-// Drop leading `VAR=value` env assignments, returning the command's tokens.
+// Command prefixes that merely exec another command. Peeling them exposes a gh/git
+// call hidden behind `env FOO=b gh …`, `command gh …`, `nohup gh …`,
+// `timeout 5 gh …`, `nice git push`, so it's still classified instead of slipping
+// through as an unpoliced head.
+const EXEC_WRAPPERS = new Set(["env", "command", "builtin", "exec", "nohup", "setsid", "nice", "timeout"]);
+// Wrapper option flags that consume the FOLLOWING token as their value (so the
+// scanner skips the value too, not just the flag).
+const WRAPPER_VALUE_FLAGS = new Set([
+    "-u", "--unset", "-C", "--chdir", "-n", "--adjustment", "-s", "--signal", "-k", "--kill-after",
+]);
+
+// Return the real command tokens for a segment: drop leading `VAR=value` env
+// assignments, then peel any exec-wrapper prefixes (env/command/nohup/timeout/…)
+// so the underlying gh/git invocation is what gets classified. Best-effort — bash
+// isn't fully parseable — and it only ever REVEALS a command, never turns a read
+// into a block.
 function commandTokens(seg: string): string[] {
-    const toks = seg.split(/\s+/).filter(Boolean);
-    let i = 0;
-    while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++;
-    return toks.slice(i);
+    let toks = seg.split(/\s+/).filter(Boolean);
+    for (let guard = 0; guard < 8 && toks.length; guard++) {
+        let i = 0;
+        while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++; // VAR=value
+        toks = toks.slice(i);
+        const head = toks[0] || "";
+        const base = head.includes("/") ? head.slice(head.lastIndexOf("/") + 1) : head;
+        if (!EXEC_WRAPPERS.has(base)) break;
+        let j = 1;
+        let sawDuration = false;
+        while (j < toks.length) {
+            const t = toks[j];
+            if (t === "--") { j++; break; }
+            if (t.startsWith("-")) {
+                j += WRAPPER_VALUE_FLAGS.has(t) ? 2 : 1;
+                continue;
+            }
+            if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { j++; continue; } // env VAR=value
+            if (base === "timeout" && !sawDuration) { sawDuration = true; j++; continue; } // DURATION positional
+            break; // the wrapped command starts here
+        }
+        toks = toks.slice(j);
+    }
+    return toks;
 }

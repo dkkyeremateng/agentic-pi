@@ -32,9 +32,11 @@ export function isTrivialPing(request: string): boolean {
  */
 export function detectVerdict(output: string): Verdict {
     // Prefer the explicit machine-readable marker the validator is asked to emit.
-    // Search the full output — the marker may appear anywhere.
-    const marker = output.match(/VERDICT:\s*(PASS|FAIL|PAUSED)/i);
-    if (marker) return marker[1].toLowerCase() as Verdict;
+    // Take the LAST occurrence: the authoritative verdict is emitted at the end, so
+    // an earlier one in the reasoning (e.g. "this would be VERDICT: FAIL if …") must
+    // not override the final line.
+    const markers = [...output.matchAll(/VERDICT:\s*(PASS|FAIL|PAUSED)/gi)];
+    if (markers.length) return markers[markers.length - 1][1].toLowerCase() as Verdict;
 
     // Fallback heuristic: only scan the first 20 lines to avoid matching
     // "pass" or "fail" inside the agent's reasoning text.
@@ -52,11 +54,15 @@ export function detectVerdict(output: string): Verdict {
  * marker; falls back to scanning only the first 20 lines.
  */
 export function detectCritique(output: string): CritiqueVerdict {
-    const marker = output.match(
-        /REVISE\s+BEFORE\s+(?:MERGE|MERGING|IMPLEMENTING|DOCUMENTING|PUBLISHING)|APPROVED\s+WITH\s+RESERVATIONS|APPROVED/i,
-    );
-    if (marker) {
-        const v = marker[0].toUpperCase();
+    // Take the LAST marker: the authoritative verdict is emitted at the end, so an
+    // earlier mention in the reasoning must not override the final call.
+    const markers = [
+        ...output.matchAll(
+            /REVISE\s+BEFORE\s+(?:MERGE|MERGING|IMPLEMENTING|DOCUMENTING|PUBLISHING)|APPROVED\s+WITH\s+RESERVATIONS|APPROVED/gi,
+        ),
+    ];
+    if (markers.length) {
+        const v = markers[markers.length - 1][0].toUpperCase();
         if (v.startsWith("REVISE")) return "revise";
         if (v.startsWith("APPROVED WITH")) return "approved-with-reservations";
         return "approved";
@@ -85,9 +91,10 @@ export function detectCritique(output: string): CritiqueVerdict {
  * Prefers the explicit SHIP: marker; falls back to the first 20 lines only.
  */
 export function detectShip(output: string): "shipped" | "paused" {
-    const marker = output.match(/SHIP:\s*(SHIPPED|PAUSED)/i);
-    if (marker)
-        return marker[1].toLowerCase() === "paused" ? "paused" : "shipped";
+    // Take the LAST marker: the authoritative outcome is emitted at the end.
+    const markers = [...output.matchAll(/SHIP:\s*(SHIPPED|PAUSED)/gi)];
+    if (markers.length)
+        return markers[markers.length - 1][1].toLowerCase() === "paused" ? "paused" : "shipped";
     // Fallback: only check the first 20 lines to avoid false positives.
     const head = output.split("\n").slice(0, 20).join("\n");
     if (/\bpaused\b/i.test(head) || /\bno\b[^.\n]{0,16}\bremote\b/i.test(head))
