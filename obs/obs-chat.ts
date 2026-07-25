@@ -16,6 +16,12 @@ import { badCwd, llmConfig, piSpawnEnv, type LlmConfig } from "./obs-llm";
 import { isOutsideCwd } from "../utils/guards/path-guard";
 import { stripInheritedSecrets } from "../utils/workflow/workflow-core";
 
+// Cap the stdout line-assembly buffer: a child that emits a huge line with no
+// newline would otherwise grow the heap without bound. Generous enough for a
+// legitimately large agent_end frame; pathological output is truncated. Shared
+// with the dispatch path.
+export const MAX_STDOUT_BUF = 32 * 1024 * 1024;
+
 /** Base directory pi stores project sessions under (one file per session,
  *  named `<timestamp>_<sessionId>.jsonl`, bucketed by project-path folder). */
 export function sessionsBaseDir(): string {
@@ -312,6 +318,9 @@ export function streamChat(
                     onEvent(ev);
                 }
             }
+            // Guard against a pathological unterminated line growing the heap
+            // without bound — keep only the tail so later complete lines still parse.
+            if (buf.length > MAX_STDOUT_BUF) buf = buf.slice(-MAX_STDOUT_BUF);
         });
         proc.stderr.on("data", (d: Buffer) => (err = (err + d.toString()).slice(-2000)));
         proc.on("error", (e) => {
