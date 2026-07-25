@@ -8,13 +8,21 @@ info:
     Local-first observability for pi agent workflows. The obs-server tails a
     JSONL event sink that every agent process appends to, indexes it by run,
     and exposes this read-mostly API for external UIs and integrations. CORS
-    is open (`*`) because the server binds to 127.0.0.1 only. Optional
-    shared-secret auth: set `PI_OBS_TOKEN` and every route requires it via an
+    is open (`*`, `Allow-Headers: content-type, authorization`) because the
+    server binds to 127.0.0.1 only; but since CORS never stops a request from
+    reaching the server, in the OPEN (no-token) mode cross-origin browser
+    requests whose `Origin` isn't same-origin, loopback, or in
+    `PI_OBS_ALLOWED_ORIGINS` are rejected with `403` (closing the drive-by from
+    a site the user visits). Non-browser clients send no `Origin` and are
+    unaffected; a configured token supersedes the guard. Optional shared-secret
+    auth: set `PI_OBS_TOKEN` and every route requires it via an
     `Authorization: Bearer <token>` header (or a `?token=` query param for SSE
     endpoints, which use EventSource and cannot send headers); unset means the
-    API is open. Run `:id` path parameters accept the full runId or any unique
+    API is open. The pi-spawning routes (`/chat` and the LLM endpoints) are
+    concurrency-capped (`PI_OBS_LLM_MAX_CONCURRENT`, default 8) and return `503`
+    when saturated. Run `:id` path parameters accept the full runId or any unique
     prefix.
-  version: "2.1.0"
+  version: "2.2.0"
 servers:
   - url: http://127.0.0.1:7616
     description: default local obs-server (PI_OBS_PORT/--port to change)
@@ -276,6 +284,8 @@ paths:
                   - $ref: "#/components/schemas/RunExplanation"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceBusy"
 
   /api/runs/{id}/judge:
     get:
@@ -299,6 +309,8 @@ paths:
                   - $ref: "#/components/schemas/RunJudgement"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceBusy"
 
   /api/verdicts/backfill:
     post:
@@ -369,6 +381,8 @@ paths:
                   - $ref: "#/components/schemas/TextSummary"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceBusy"
 
   /api/playground:
     post:
@@ -400,6 +414,8 @@ paths:
                   - $ref: "#/components/schemas/PlaygroundResult"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceBusy"
 
   /api/agents:
     get:
@@ -476,6 +492,8 @@ paths:
                   error: { type: string }
         "400":
           $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceBusy"
 
   /api/dispatch:
     post:
@@ -638,6 +656,23 @@ components:
         WWW-Authenticate:
           schema: { type: string }
           description: 'Bearer realm="obs"'
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ForbiddenOrigin:
+      description: >
+        Cross-origin browser request rejected in open (no-token) mode — the
+        `Origin` isn't same-origin, loopback, or in `PI_OBS_ALLOWED_ORIGINS`.
+        Can apply to any route; non-browser clients (no `Origin`) never hit it,
+        and setting `PI_OBS_TOKEN` supersedes the guard.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServiceBusy:
+      description: >
+        Too many concurrent pi spawns across the LLM/chat routes (the
+        `PI_OBS_LLM_MAX_CONCURRENT` cap, default 8). Retry shortly. (`/chat`
+        delivers this as an SSE `error` frame instead of an HTTP 503.)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

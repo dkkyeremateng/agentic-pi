@@ -8,6 +8,8 @@ import {
     isAuthorized,
     isLoopbackHost,
     insecureBindReason,
+    allowedOriginSet,
+    originAllowed,
 } from "./obs-auth";
 
 const q = (s = "") => new URLSearchParams(s);
@@ -78,4 +80,35 @@ test("isAuthorized wires header/query extraction to the match", () => {
     assert.equal(isAuthorized(expected, {}, q()), false);
     // open server: any request authorizes
     assert.equal(isAuthorized("", {}, q()), true);
+});
+
+test("allowedOriginSet parses the comma list, ignoring blanks", () => {
+    assert.deepEqual(
+        [...allowedOriginSet({ PI_OBS_ALLOWED_ORIGINS: "https://a.example, https://b.example ,, " } as NodeJS.ProcessEnv)],
+        ["https://a.example", "https://b.example"],
+    );
+    assert.equal(allowedOriginSet({} as NodeJS.ProcessEnv).size, 0);
+});
+
+test("originAllowed blocks cross-site drive-by, allows same-origin/loopback/allowlist", () => {
+    const none = new Set<string>();
+    const host = "127.0.0.1:7616";
+    // no Origin ⇒ non-browser client (curl/CLI/proxy) ⇒ allowed
+    assert.equal(originAllowed({ host }, none), true);
+    // a malicious site the user visits ⇒ blocked (this is the drive-by vector)
+    assert.equal(originAllowed({ host, origin: "https://evil.example" }, none), false);
+    // same-origin as the request target ⇒ allowed (the bundled dashboard)
+    assert.equal(originAllowed({ host, origin: "http://127.0.0.1:7616" }, none), true);
+    // any loopback origin ⇒ allowed (local dev tooling on another port; a remote
+    // attacker can never present a loopback Origin — the browser sets it)
+    assert.equal(originAllowed({ host, origin: "http://localhost:5174" }, none), true);
+    assert.equal(originAllowed({ host, origin: "http://127.0.0.1:5173" }, none), true);
+    // an opaque origin (file://, sandboxed iframe) ⇒ blocked
+    assert.equal(originAllowed({ host, origin: "null" }, none), false);
+    // a garbage Origin header ⇒ blocked
+    assert.equal(originAllowed({ host, origin: "!!!not-a-url" }, none), false);
+    // operator allowlist ⇒ that exact origin is allowed, others still blocked
+    const allow = new Set(["https://dash.example"]);
+    assert.equal(originAllowed({ host, origin: "https://dash.example" }, allow), true);
+    assert.equal(originAllowed({ host, origin: "https://other.example" }, allow), false);
 });

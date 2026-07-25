@@ -45,8 +45,11 @@ function arrAttr(key: string, values: string[]) {
 }
 
 // ms (epoch) → nanoseconds as a decimal string, the OTLP fixed64 wire form.
+// A non-finite ms (a sink line missing/with a bad `ts`) would make BigInt() throw
+// a RangeError — and since this runs inside the server's route handlers, one such
+// line would otherwise take the whole process down. Coerce to 0 instead.
 function nanos(ms: number): string {
-    return (BigInt(Math.round(ms)) * 1_000_000n).toString();
+    return (BigInt(Number.isFinite(ms) ? Math.round(ms) : 0) * 1_000_000n).toString();
 }
 
 function capStr(s: string, max = 2000): string {
