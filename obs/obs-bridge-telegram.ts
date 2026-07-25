@@ -55,6 +55,10 @@ function doRequest(urlStr: string, opts: { method?: string; headers?: Record<str
             let text = "";
             res.on("data", (d) => (text += d));
             res.on("end", () => resolve({ status: res.statusCode || 0, text }));
+            // A mid-body connection reset emits 'error' on the RESPONSE stream; with
+            // no listener Node would throw it as an uncaught exception and crash the
+            // bridge. Surface it as a normal rejection instead.
+            res.on("error", reject);
         });
         req.on("error", reject);
         const tmo = opts.timeoutMs || 20_000;
@@ -152,6 +156,11 @@ function streamSSE(cfg: BridgeConfig, path: string, params: Record<string, strin
                 }
             });
             res.on("end", () => resolve());
+            // A reset mid-stream (server restart, network blip) emits 'error' on the
+            // response; without a listener Node crashes the whole bridge. Reject so
+            // streamReply surfaces it as a failed turn instead. Partial tokens
+            // already delivered stand; the final edit reconciles what arrived.
+            res.on("error", reject);
         });
         req.on("error", reject);
         // Generous ceiling: the server kills its pi spawn on its own timeout well
@@ -500,17 +509,20 @@ export async function runBridge(cfg: BridgeConfig): Promise<void> {
             if (!isPrivate || senderId === undefined || !isAllowed(cfg, senderId)) {
                 // Reveal only the user's own id — it's what they need to get
                 // themselves added, and it leaks nothing about anyone else.
-                await send(cfg, chatId, `not authorized. your chat id is ${senderId ?? chatId} — add it to PI_OBS_TG_ALLOW (private chat only) to enable the bridge.`).catch(() => {});
+                void send(cfg, chatId, `not authorized. your chat id is ${senderId ?? chatId} — add it to PI_OBS_TG_ALLOW (private chat only) to enable the bridge.`).catch(() => {});
                 continue;
             }
-            try {
-                await handleMessage(cfg, state, chatId, msg.text);
-            } catch (e) {
+            // Dispatch WITHOUT awaiting: a long reply (a streaming dispatch) must not
+            // block the poll loop or other chats — otherwise one busy chat freezes
+            // everyone and stalls receipt of new messages. The per-chat `busy` guard
+            // (streamReply) still serializes a single chat's own turns, and `offset`
+            // was already advanced above so nothing is re-delivered.
+            void handleMessage(cfg, state, chatId, msg.text).catch((e) => {
                 // Log the detail server-side; tell the user only that it failed —
                 // server error bodies can carry filesystem paths / internals.
                 console.error("obs-bridge: handler error:", String((e as Error)?.message || e));
-                await send(cfg, chatId, `sorry — something went wrong handling that. check the server logs.`).catch(() => {});
-            }
+                void send(cfg, chatId, `sorry — something went wrong handling that. check the server logs.`).catch(() => {});
+            });
         }
     }
 }

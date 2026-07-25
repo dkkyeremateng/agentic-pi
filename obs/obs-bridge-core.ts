@@ -486,6 +486,46 @@ export function evalBridgeLock(
     return { claim: true };
 }
 
+/** Injectable pidfile I/O for acquireBridgeLock — keeps this module free of a
+ *  direct `fs` import while making the acquisition race unit-testable. The caller
+ *  (obs-bridge.ts) supplies the real fs-backed implementation. */
+export interface LockIO {
+    /** Atomically create the pidfile with `content` (O_EXCL / `wx`). "created" on
+     *  success, "exists" when it already exists, "error" for any other failure. */
+    writeNew(content: string): "created" | "exists" | "error";
+    /** Current pidfile content, or null when absent/unreadable. */
+    read(): string | null;
+    /** Delete the pidfile ONLY if its current content still equals `expect` — so
+     *  we never remove a fresh lock a racer wrote between our read and this call. */
+    removeIfMatches(expect: string): void;
+}
+
+/** Atomically claim the single-instance lock. The previous read-then-write was
+ *  racy: two bridges starting together both saw "no file" and both wrote, so both
+ *  ran and double-replied to every message. Here the O_EXCL create is the arbiter
+ *  — only one simultaneous starter can create the file; the loser inspects the
+ *  holder and refuses (live) or reclaims a stale one (dead holder / our own pid)
+ *  and retries. `removeIfMatches` guards the reclaim so we never delete a lock a
+ *  racer just took. Best-effort on I/O failure (start rather than wedge). */
+export function acquireBridgeLock(
+    io: LockIO,
+    selfPid: number,
+    alive: (pid: number) => boolean,
+    maxAttempts = 3,
+): { claim: boolean; heldByPid?: number } {
+    for (let i = 0; i < maxAttempts; i++) {
+        const w = io.writeNew(String(selfPid));
+        if (w === "created") return { claim: true };
+        if (w === "error") return { claim: true }; // unwritable dir → degrade to best-effort
+        const raw = io.read();
+        if (raw === null) continue; // vanished between create and read → retry create
+        const lock = evalBridgeLock(raw, selfPid, alive);
+        if (!lock.claim) return { claim: false, heldByPid: lock.heldByPid };
+        io.removeIfMatches(raw); // stale (dead holder / our pid) → reclaim, then retry
+    }
+    return { claim: true }; // couldn't settle within the retry budget → best-effort start
+}
+
 export function helpText(): string {
     return [
         "pi obs bridge — talk to your agent observability.",

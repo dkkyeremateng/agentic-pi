@@ -13,7 +13,7 @@
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bridgeConfig, evalBridgeLock } from "./obs-bridge-core";
+import { acquireBridgeLock, bridgeConfig, type LockIO } from "./obs-bridge-core";
 import { runBridge } from "./obs-bridge-telegram";
 import { loadRepoEnv } from "./obs-llm";
 
@@ -48,21 +48,36 @@ const alive = (pid: number): boolean => {
         return (e as NodeJS.ErrnoException).code === "EPERM"; // exists but not ours
     }
 };
-let pidfileRaw: string | null = null;
-try {
-    pidfileRaw = readFileSync(pidfile, "utf8");
-} catch {
-    // no pidfile → the lock is free
-}
-const lock = evalBridgeLock(pidfileRaw, process.pid, alive);
+// fs-backed pidfile I/O. The O_EXCL (`wx`) create in writeNew is the atomic
+// arbiter that makes the acquisition race-free (see acquireBridgeLock).
+const lockIO: LockIO = {
+    writeNew(content) {
+        try {
+            writeFileSync(pidfile, content, { flag: "wx" });
+            return "created";
+        } catch (e) {
+            return (e as NodeJS.ErrnoException).code === "EEXIST" ? "exists" : "error";
+        }
+    },
+    read() {
+        try {
+            return readFileSync(pidfile, "utf8");
+        } catch {
+            return null;
+        }
+    },
+    removeIfMatches(expect) {
+        try {
+            if (readFileSync(pidfile, "utf8").trim() === expect.trim()) unlinkSync(pidfile);
+        } catch {
+            /* already gone / unreadable → nothing to reclaim */
+        }
+    },
+};
+const lock = acquireBridgeLock(lockIO, process.pid, alive);
 if (!lock.claim) {
     console.error(`obs-bridge: another bridge is already running (pid ${lock.heldByPid}). Stop it first with: ./run.sh --bridge-stop`);
     process.exit(1);
-}
-try {
-    writeFileSync(pidfile, String(process.pid));
-} catch {
-    // non-fatal: the guard just degrades to best-effort if the file is unwritable
 }
 process.on("exit", () => {
     try {
