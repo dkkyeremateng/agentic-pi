@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+    acquireBridgeLock,
     BOT_COMMANDS,
     bridgeConfig,
     chatSessionId,
     chunk,
     evalBridgeLock,
+    type LockIO,
     helpText,
     dispatchSessionId,
     formatAgents,
@@ -244,6 +246,62 @@ test("evalBridgeLock reclaims our own pid and ignores garbage/empty files", () =
     assert.deepEqual(evalBridgeLock("not-a-pid", 100, () => true), { claim: true });
     assert.deepEqual(evalBridgeLock("", 100, () => true), { claim: true });
     assert.deepEqual(evalBridgeLock("0", 100, () => true), { claim: true }); // non-positive
+});
+
+// A fake pidfile backing store that models the O_EXCL create semantics (a mutable
+// content cell + a set of "alive" pids), so the acquisition race is deterministic.
+function fakeLockIO(store: { content: string | null }): LockIO {
+    return {
+        writeNew(content) {
+            if (store.content !== null) return "exists"; // O_EXCL fails when present
+            store.content = content;
+            return "created";
+        },
+        read: () => store.content,
+        removeIfMatches(expect) {
+            if (store.content !== null && store.content.trim() === expect.trim()) store.content = null;
+        },
+    };
+}
+
+test("acquireBridgeLock claims a free lock and writes our pid (fresh start)", () => {
+    const store = { content: null as string | null };
+    assert.deepEqual(acquireBridgeLock(fakeLockIO(store), 100, () => true), { claim: true });
+    assert.equal(store.content, "100"); // created atomically
+});
+
+test("acquireBridgeLock refuses when a LIVE foreign bridge holds the lock", () => {
+    const store = { content: "222" as string | null };
+    const r = acquireBridgeLock(fakeLockIO(store), 100, (pid) => pid === 222);
+    assert.deepEqual(r, { claim: false, heldByPid: 222 });
+    assert.equal(store.content, "222"); // untouched — we did NOT steal a live lock
+});
+
+test("acquireBridgeLock reclaims a STALE pidfile (dead holder) and takes it over", () => {
+    const store = { content: "222" as string | null };
+    assert.deepEqual(acquireBridgeLock(fakeLockIO(store), 100, () => false), { claim: true });
+    assert.equal(store.content, "100"); // reclaimed then re-created atomically
+});
+
+test("acquireBridgeLock: simultaneous cold start — the O_EXCL create arbitrates, no double-claim", () => {
+    // Two bridges, one shared file. Whoever's writeNew lands first owns it; the
+    // other must see the live holder and refuse — the race the old read-then-write
+    // code lost (both saw "no file" and both wrote).
+    const store = { content: null as string | null };
+    const io = fakeLockIO(store);
+    const aliveSet = new Set<number>();
+    const alive = (pid: number) => aliveSet.has(pid);
+    const first = acquireBridgeLock(io, 100, alive);
+    aliveSet.add(100); // the winner is now running
+    const second = acquireBridgeLock(io, 200, alive);
+    assert.deepEqual(first, { claim: true });
+    assert.deepEqual(second, { claim: false, heldByPid: 100 });
+    assert.equal(store.content, "100");
+});
+
+test("acquireBridgeLock degrades to best-effort when the pidfile dir is unwritable", () => {
+    const io: LockIO = { writeNew: () => "error", read: () => null, removeIfMatches: () => {} };
+    assert.deepEqual(acquireBridgeLock(io, 100, () => true), { claim: true });
 });
 
 // ── streaming reduce / render ────────────────────────────────────────────────
