@@ -225,11 +225,18 @@ export function parseSession(
                     }
                     const u = msg.usage;
                     if (u && typeof u === "object") {
-                        m.tokens.input += u.input ?? 0;
-                        m.tokens.output += u.output ?? 0;
-                        m.tokens.cacheRead += u.cacheRead ?? 0;
-                        m.tokens.cacheWrite += u.cacheWrite ?? 0;
-                        m.tokens.total += u.totalTokens ?? 0;
+                        const inTok = u.input ?? 0;
+                        const outTok = u.output ?? 0;
+                        const cacheR = u.cacheRead ?? 0;
+                        const cacheW = u.cacheWrite ?? 0;
+                        m.tokens.input += inTok;
+                        m.tokens.output += outTok;
+                        m.tokens.cacheRead += cacheR;
+                        m.tokens.cacheWrite += cacheW;
+                        // Fall back to the component sum when totalTokens is absent —
+                        // otherwise the total silently undercounts (stays 0) for
+                        // payloads that carry only the split fields.
+                        m.tokens.total += u.totalTokens ?? inTok + outTok + cacheR + cacheW;
                         const c = u.cost;
                         if (c && typeof c === "object") {
                             m.cost.input += c.input ?? 0;
@@ -372,11 +379,15 @@ export interface WorkflowReportSummary {
     phases: ReportPhase[];
 }
 
-// "10m 38s" / "6m18s" / "51s" / "1m" -> ms
+// "10m 38s" / "6m18s" / "51s" / "1m" / "500ms" -> ms
 export function parseDuration(s: string): number {
     let ms = 0;
-    const m = s.match(/(\d+)\s*m/);
-    const sec = s.match(/(\d+)\s*s/);
+    // Match a bare "ms" first, and require the minute "m" NOT be the "m" in "ms"
+    // (else "500ms" was read as 500 MINUTES). Seconds "s" must follow a digit.
+    const milli = s.match(/(\d+)\s*ms\b/);
+    const m = s.match(/(\d+)\s*m(?!s)/);
+    const sec = s.match(/(\d+)\s*s\b/);
+    if (milli) ms += parseInt(milli[1], 10);
     if (m) ms += parseInt(m[1], 10) * 60_000;
     if (sec) ms += parseInt(sec[1], 10) * 1000;
     return ms;

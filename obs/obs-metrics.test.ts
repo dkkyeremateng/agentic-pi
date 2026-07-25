@@ -96,6 +96,25 @@ test("parseSession totals tokens, cost, turns, tools and duration", () => {
     assert.ok(m.tps > 0);
 });
 
+test("parseSession's token total falls back to the component sum when totalTokens is absent", () => {
+    // A usage payload with only the split fields (no totalTokens) — the total must
+    // NOT stay 0 (the old undercount) but sum the components.
+    const noTotal = {
+        type: "message",
+        timestamp: T0,
+        message: {
+            role: "assistant",
+            model: "qwen-max",
+            stopReason: "end_turn",
+            usage: { input: 1000, output: 200, cacheRead: 50, cacheWrite: 10 }, // no totalTokens
+        },
+    };
+    const m = parseSession(jsonl({ type: "session", id: "s1", timestamp: T0 }, noTotal));
+    assert.equal(m.tokens.input, 1000);
+    assert.equal(m.tokens.output, 200);
+    assert.equal(m.tokens.total, 1260); // 1000 + 200 + 50 + 10, not 0
+});
+
 test("parseSession counts tool errors, model changes and compactions", () => {
     const lines = jsonl(
         { type: "model_change", modelId: "claude-haiku", timestamp: T0 },
@@ -174,6 +193,13 @@ test("parseDuration handles m/s combos", () => {
     assert.equal(parseDuration("6m18s"), 378_000);
     assert.equal(parseDuration("51s"), 51_000);
     assert.equal(parseDuration("2m"), 120_000);
+});
+
+test("parseDuration reads milliseconds — 500ms is 500ms, not 500 minutes", () => {
+    assert.equal(parseDuration("500ms"), 500);
+    assert.equal(parseDuration("1500 ms"), 1_500);
+    // a mixed string still resolves each unit correctly
+    assert.equal(parseDuration("1m 200ms"), 60_200);
 });
 
 test("parseTokenCount handles k/m suffixes and commas", () => {

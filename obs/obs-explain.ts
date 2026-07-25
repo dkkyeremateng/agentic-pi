@@ -263,18 +263,22 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
                 a.turns++;
                 const t = p.tokens;
                 if (t) {
-                    d.totals.tokens.input += t.input || 0;
-                    d.totals.tokens.output += t.output || 0;
-                    d.totals.tokens.cacheRead += t.cacheRead || 0;
-                    d.totals.tokens.cacheWrite += t.cacheWrite || 0;
-                    d.totals.tokens.total += t.total || 0;
-                    a.tokens += t.total || 0;
+                    // Coerce with Number(): a payload that carries a numeric STRING
+                    // (e.g. "1200") would otherwise turn `number += "1200"` into
+                    // string concatenation and corrupt every downstream total.
+                    d.totals.tokens.input += Number(t.input) || 0;
+                    d.totals.tokens.output += Number(t.output) || 0;
+                    d.totals.tokens.cacheRead += Number(t.cacheRead) || 0;
+                    d.totals.tokens.cacheWrite += Number(t.cacheWrite) || 0;
+                    d.totals.tokens.total += Number(t.total) || 0;
+                    a.tokens += Number(t.total) || 0;
                 }
-                d.totals.costUsd += p.costUsd || 0;
-                a.costUsd += p.costUsd || 0;
-                a.turnMs += p.durationMs || 0;
-                if ((p.durationMs || 0) > 0)
-                    turnSpans.push({ agent: ev.agent, s: ev.ts - p.durationMs, e: ev.ts });
+                const durationMs = Number(p.durationMs) || 0;
+                d.totals.costUsd += Number(p.costUsd) || 0;
+                a.costUsd += Number(p.costUsd) || 0;
+                a.turnMs += durationMs;
+                if (durationMs > 0)
+                    turnSpans.push({ agent: ev.agent, s: ev.ts - durationMs, e: ev.ts });
                 if (p.prefillMs) {
                     a.prefillSum += p.prefillMs;
                     a.prefillN++;
