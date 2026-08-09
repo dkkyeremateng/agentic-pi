@@ -23,8 +23,7 @@ import { join } from "path";
 import {
     setupSessions as setupSessionsCore,
     runAgentWithFallback,
-    makeSpawnWrapper,
-    contextWindowForModel,
+    makeExtensionSpawnWrapper,
     loadAgents as loadAgentsCore,
     resolveAgentModel,
     loadDotEnv,
@@ -161,44 +160,15 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Thin wrapper around the shared spawnAgentWithModel (per-agent sessions).
-    const spawnAgentWithModel = makeSpawnWrapper({
+    // Shared with agent-workflow.ts so the two cannot drift apart again.
+    const spawnAgentWithModel = makeExtensionSpawnWrapper({
         state: st,
         sessionDir: () => sessionDir,
         agentTimeoutMs: AGENT_TIMEOUT_MS,
         updateWidget: () => emitUpdate(),
-        setCurrentProc: (p: any) => {
-            // Track every spawned proc; it removes itself when it exits, so the
-            // spawn's own setCurrentProc(null) calls are harmless no-ops here.
-            if (p) {
-                liveProcs.add(p);
-                p.once?.("close", () => liveProcs.delete(p));
-                p.once?.("exit", () => liveProcs.delete(p));
-            }
-        },
-        // pi's authoritative project-trust answer (pi >= 0.79.1) for the --approve
-        // decision, instead of re-reading ~/.pi/agent/trust.json by hand. Guarded so
-        // older pi (no API) yields undefined and the disk fallback applies.
-        isProjectTrusted: () => widgetCtx?.isProjectTrusted?.(),
-        // When a sub-agent's provider doesn't report a context window in usage
-        // (e.g. gateframe's supportsUsageInStreaming:false) and the agent has none
-        // configured, derive it: first pi's model registry (models.json carries
-        // contextWindow per model), then the primary session's window. Same hook
-        // agent-workflow.ts wires, so an ad-hoc dispatch renders the context bar
-        // exactly like the same agent inside a workflow.
-        getFallbackContextWindow: (model: string) => {
-            try {
-                const fromRegistry = contextWindowForModel(
-                    modelRegistry?.getAll?.(),
-                    model,
-                );
-                if (fromRegistry > 0) return fromRegistry;
-            } catch {}
-            try {
-                const u = widgetCtx?.getContextUsage?.();
-                return (u?.contextWindow || u?.context_window || 0) as number;
-            } catch {}
-            return 0;
-        },
+        liveProcs,
+        ctx: () => widgetCtx,
+        modelRegistry: () => modelRegistry,
     });
 
     function runAgent(

@@ -30,6 +30,7 @@ import {
     dispatchEnv,
     subagentEnv,
     buildWorkflowReport,
+    publishLogs,
     stripInheritedSecrets,
     renderWorkflowFooter,
     formatContextUsage,
@@ -2450,5 +2451,32 @@ describe("buildWorkflowReport phase truncation", () => {
         const report = mk("VERDICT: PASS\nshort and complete");
         assert.ok(report.includes("VERDICT: PASS"));
         assert.ok(!/phase output exceeded/.test(report));
+    });
+});
+
+describe("activity log truncation keeps the tail", () => {
+    it("clamps head+tail so the last phase's log survives", () => {
+        // The last phase's log is what you reach for when a run ends badly, and a
+        // flat head slice guarantees it is the part dropped.
+        const sent: any[] = [];
+        const pi = { sendMessage: (m: any) => sent.push(m) };
+        const phaseLogs = [
+            { label: "planner", log: "PLANNER-LOG-START " + "x".repeat(60000) },
+            { label: "reviewer", log: "REVIEWER-LOG-TAIL-MARKER" },
+        ];
+        publishLogs(pi, phaseLogs);
+        const content = sent[0].content as string;
+        assert.ok(content.includes("PLANNER-LOG-START"), "head kept");
+        assert.ok(content.includes("REVIEWER-LOG-TAIL-MARKER"), "tail kept");
+        assert.match(content, /truncated/);
+    });
+
+    it("leaves short logs alone and sends nothing when there are none", () => {
+        const sent: any[] = [];
+        const pi = { sendMessage: (m: any) => sent.push(m) };
+        publishLogs(pi, [{ label: "planner", log: "short" }]);
+        assert.ok(!/truncated/.test(sent[0].content));
+        publishLogs(pi, []);
+        assert.equal(sent.length, 1, "no message for an empty log set");
     });
 });
