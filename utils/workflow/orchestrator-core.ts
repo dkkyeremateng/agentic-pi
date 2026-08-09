@@ -773,6 +773,12 @@ async function runWorkflowCoreImpl(
                     "warning",
                 );
         }
+        // Phases already done BEFORE this run touched anything. Read after the
+        // reconcile above, so a ledger inherited from another branch has already had
+        // its false `[x]`s reopened and this count reflects work actually present in
+        // the tree. The difference against the post-run count is how many phases this
+        // run completed, which is what the delegation audit is measured against.
+        const doneBefore = countDonePhases(cwd);
         const implStartedAt = Date.now();
         impl = await h.execution.runPhase(
             implP,
@@ -794,17 +800,19 @@ async function runWorkflowCoreImpl(
         const unchecked = readPhaseStatus(cwd).filter((l) =>
             /^\s*-\s*\[\s\]/.test(l),
         ).length;
-        if (freshContextViolated(plan.output, implStartedAt)) {
+        const completed = Math.max(0, countDonePhases(cwd) - doneBefore);
+        if (freshContextViolated(plan.output, implStartedAt, undefined, completed)) {
             const phaseCount = parsePlanPhases(plan.output).length;
             // Distinct worker sessions vs raw dispatch events: equal means every
             // dispatch got its own context; fewer sessions than events means some
-            // phases shared one.
+            // phases shared one. Fewer sessions than phases COMPLETED means some
+            // phases never got a worker at all.
             const sessions = countDispatchesSince(implStartedAt);
             const events = countDispatchEventsSince(implStartedAt);
             obsEmit("verdict", {
                 status: "warn",
                 outcome: "fresh-context-violation",
-                note: `phases=${phaseCount} unchecked=${unchecked} sessions=${sessions} dispatches=${events}`,
+                note: `phases=${phaseCount} completed=${completed} unchecked=${unchecked} sessions=${sessions} dispatches=${events}`,
                 source: "workflow",
             });
             let stillViolating = true;
@@ -829,7 +837,12 @@ async function runWorkflowCoreImpl(
                 );
                 if (!impl.ok)
                     return fail(s, h, cwd, request, "Implementing", impl.output);
-                stillViolating = freshContextViolated(plan.output, retryAt);
+                stillViolating = freshContextViolated(
+                    plan.output,
+                    retryAt,
+                    undefined,
+                    Math.max(0, countDonePhases(cwd) - doneBefore - completed),
+                );
             } else {
                 h.ui.notify(
                     `Implementer did not give each phase a fresh context (${sessions} distinct worker session(s) across ${events} dispatch(es)); every phase is already checked off, so a retry would do nothing — flagging it for review instead.`,
@@ -1402,15 +1415,27 @@ export function countDispatchEventsSince(
 //
 // Only meaningful for a plan with 2+ phases: a single-phase plan has no later phase
 // to protect, and the agent is told to implement that one inline.
+// `phasesCompleted` is how many phases this run actually finished (the ledger's
+// done-count after minus before). When known, it is the yardstick: N phases
+// completed should have taken N fresh worker sessions, so fewer means some phases
+// were done in a shared context — the PARTIAL case, which a reuse check alone
+// misses (delegate 3 of 5 phases, do 2 inline, and events still equal sessions).
+// Pass 0/undefined when it cannot be determined, and only the other two checks run.
 export function freshContextViolated(
     plan: string,
     sinceMs: number,
     dir?: string,
+    phasesCompleted = 0,
 ): boolean {
     if (parsePlanPhases(plan).length < 2) return false;
     const sessions = countDispatchesSince(sinceMs, "phase-implementer", dir);
     if (sessions === 0) return true;
-    return countDispatchEventsSince(sinceMs, "phase-implementer", dir) > sessions;
+    if (countDispatchEventsSince(sinceMs, "phase-implementer", dir) > sessions)
+        return true;
+    // A phase re-dispatched after a BLOCKED report spends more than one session, so
+    // only a SHORTFALL is suspicious. Needs 2+ completed phases to mean anything: a
+    // single phase legitimately runs inline.
+    return phasesCompleted >= 2 && sessions < phasesCompleted;
 }
 
 // Appended to the implementer's task on the one retry we allow. Names the failure
@@ -1526,6 +1551,11 @@ export function reconcileLedgerBranch(cwd: string, branch: string): number {
         return 0;
     }
     return reopened;
+}
+
+// How many ledger phases are currently marked done.
+export function countDonePhases(cwd: string): number {
+    return readPhaseStatus(cwd).filter((l) => /^\s*-\s*\[[xX]\]/.test(l)).length;
 }
 
 // Read the phase-status lines ("- [ ] …" / "- [x] …") from the progress ledger.
