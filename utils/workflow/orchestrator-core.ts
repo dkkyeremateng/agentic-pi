@@ -35,6 +35,7 @@ import {
     fixTask,
     validateTask,
     shipTask,
+    sessionDirPath,
 } from "./workflow-core";
 import { commitStagedLearnings } from "./memory";
 import { reflectFailedRun } from "../../obs/obs-reflect";
@@ -99,6 +100,9 @@ export interface OrchestratorState {
     // them lands (see finishDispatchLearnings).
     activeDispatches: number;
     dispatchLearningsPassed: boolean;
+    // Set when the implementer ran a multi-phase plan entirely in its own context
+    // even after the retry — the run's per-phase context isolation did not hold.
+    freshContextViolation?: boolean;
 }
 
 export function newOrchestratorState(): OrchestratorState {
@@ -129,6 +133,7 @@ export function newOrchestratorState(): OrchestratorState {
         dispatchesThisTurn: 0,
         activeDispatches: 0,
         dispatchLearningsPassed: false,
+        freshContextViolation: false,
     };
 }
 
@@ -758,12 +763,73 @@ async function runWorkflowCoreImpl(
         if (!(resuming && existsSync(join(cwd, ".agent", "progress.md")))) {
             initProgressLedger(cwd, wb?.base ?? "", plan.output);
         }
+        const implStartedAt = Date.now();
         impl = await h.execution.runPhase(
             implP,
             shared(implementTask(request), "implementer"),
             cwd,
         );
         if (!impl.ok) return fail(s, h, cwd, request, "Implementing", impl.output);
+
+        // Fresh-context audit: a multi-phase plan implemented without dispatching a
+        // single phase-implementer means every phase shared one context. Re-run the
+        // phase ONCE, naming the violation, rather than accepting it silently.
+        // A retry only accomplishes something while phases remain unchecked: the
+        // retry note tells the implementer not to redo `[x]` phases, so if it
+        // already ticked every box the re-run would spawn, find nothing to do, and
+        // cost a round trip for nothing. Redoing finished phases instead would mean
+        // discarding committed work on the strength of this audit — and the audit
+        // reads 0 both when nothing was dispatched AND when dispatch logging simply
+        // failed, so it is not evidence strong enough to destroy work.
+        const unchecked = readPhaseStatus(cwd).filter((l) =>
+            /^\s*-\s*\[\s\]/.test(l),
+        ).length;
+        if (freshContextViolated(plan.output, implStartedAt)) {
+            const phaseCount = parsePlanPhases(plan.output).length;
+            obsEmit("verdict", {
+                status: "warn",
+                outcome: "fresh-context-violation",
+                note: `phases=${phaseCount} unchecked=${unchecked} dispatches=0`,
+                source: "workflow",
+            });
+            let stillViolating = true;
+            if (unchecked > 0) {
+                h.ui.notify(
+                    `Implementer ran ${phaseCount - unchecked}/${phaseCount} phases in one context (no phase-implementer dispatched) — retrying the remaining ${unchecked} with per-phase delegation.`,
+                    "warning",
+                );
+                aborted = checkAbort(s, h);
+                if (aborted) return aborted;
+                implP.status = "pending";
+                implP.sessionEpoch = "freshctx-retry"; // the retry starts clean too
+                h.ui.updateWidget();
+                const retryAt = Date.now();
+                impl = await h.execution.runPhase(
+                    implP,
+                    shared(
+                        implementTask(request) + freshContextRetryNote(phaseCount),
+                        "implementer",
+                    ),
+                    cwd,
+                );
+                if (!impl.ok)
+                    return fail(s, h, cwd, request, "Implementing", impl.output);
+                stillViolating = freshContextViolated(plan.output, retryAt);
+            } else {
+                h.ui.notify(
+                    `Implementer ran all ${phaseCount} phases in one context (no phase-implementer dispatched); every phase is already checked off, so a retry would do nothing — flagging it for review instead.`,
+                    "warning",
+                );
+            }
+            // The code may well be fine — the reviewer and validator still gate it —
+            // so don't discard the work. Make the breach impossible to miss instead,
+            // in the summary that flows to the reviewer, the validator and
+            // workflow-report.md.
+            if (stillViolating) {
+                s.freshContextViolation = true;
+                impl.output = `[PROCESS] The implementer ran all ${phaseCount} plan phases in a single context — no phase-implementer sub-agent was dispatched. Later phases were written with earlier phases' context still loaded, so scrutinize the last phases hardest: they are the likeliest place for drift, missed edge cases, or a thin test.\n\n${impl.output}`;
+            }
+        }
         runArtifacts.implSummary = impl.output;
     }
 
@@ -804,6 +870,11 @@ async function runWorkflowCoreImpl(
             reviewerP.status = "pending";
             reviewerP.note = "";
             h.ui.updateWidget();
+            // Fresh session per round: reviewFixTask already carries the findings
+            // and the previous summary, so resuming would only stack this round's
+            // context on the last one's — the same accumulation per-phase workers
+            // exist to avoid, just along the loop axis.
+            implP.sessionEpoch = `reviewfix${loop}`;
             impl = await h.execution.runPhase(
                 implP,
                 shared(
@@ -858,6 +929,10 @@ async function runWorkflowCoreImpl(
             valP.status = "pending";
             valP.note = "";
             h.ui.updateWidget();
+            // Fresh session per attempt (see the review-fix loop above): fixTask
+            // threads the validator findings and the prior summary, and the work
+            // itself is on disk in the per-phase commits and the ledger.
+            implP.sessionEpoch = `fix${implP.attempt}`;
             impl = await h.execution.runPhase(
                 implP,
                 shared(
@@ -1188,6 +1263,74 @@ export function clearStagedLearnings(cwd: string): void {
 // shipper all read). Written after resetRunScratch and with no `[x]` lines, so the
 // implementer sees a fresh (non-resume) run. Empty base ⇒ non-git: no Base line,
 // the implementer skips commits but still tracks phase status.
+// ── Fresh-context audit ───────────────────────────────────────────────────────
+//
+// The implementer is a COORDINATOR: on a multi-phase plan every phase is supposed
+// to go to a fresh `phase-implementer` sub-agent, so no phase inherits the last
+// one's spent context. That instruction lives in the agent's prompt, which makes it
+// advisory — a model can simply implement everything inline, and the run still
+// looks like a success. This turns it into something checkable.
+//
+// Evidence is dispatch.ts's `dispatch-history.jsonl` (one JSONL record per
+// dispatched agent, written by the implementer's own child process into the shared
+// session dir — which is why the session wipe deliberately preserves that file).
+// Count only records at or after the phase started, so a previous run's dispatches
+// can never satisfy this run's audit.
+export function countDispatchesSince(
+    sinceMs: number,
+    agent = "phase-implementer",
+    dir = sessionDirPath(),
+): number {
+    let raw: string;
+    try {
+        raw = readFileSync(join(dir, "dispatch-history.jsonl"), "utf-8");
+    } catch {
+        return 0; // no history file = nothing was dispatched
+    }
+    let n = 0;
+    for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+            const rec = JSON.parse(line);
+            if (String(rec.agent || "").toLowerCase() !== agent) continue;
+            const ts = Date.parse(rec.ts || "");
+            if (!Number.isNaN(ts) && ts >= sinceMs) n++;
+        } catch {
+            /* tolerate a torn or hand-edited line */
+        }
+    }
+    return n;
+}
+
+// Did the implementer honor per-phase delegation? Only meaningful for a plan with
+// 2+ phases: a single-phase plan has no later phase to protect, and the agent is
+// told to implement that one inline.
+export function freshContextViolated(
+    plan: string,
+    sinceMs: number,
+    dir?: string,
+): boolean {
+    if (parsePlanPhases(plan).length < 2) return false;
+    return countDispatchesSince(sinceMs, "phase-implementer", dir) === 0;
+}
+
+// Appended to the implementer's task on the one retry we allow. Names the failure
+// precisely so the retry is a correction, not a re-roll of the same dice.
+export function freshContextRetryNote(phaseCount: number): string {
+    return [
+        "",
+        "---",
+        `PROCESS VIOLATION — retry required. This plan has ${phaseCount} phases, but you dispatched ZERO \`phase-implementer\` sub-agents: you implemented every phase inside your own single context. That is exactly what this role exists to prevent — by the later phases your window is full of earlier phases' file reads and test output, which is where quality drops and the handoff truncates.`,
+        "",
+        "Redo this run as the coordinator you are:",
+        "- Partition the plan's phases into ordered waves, then dispatch EVERY phase to a `phase-implementer` (`dispatch_parallel` for a 2+-phase wave, `dispatch_agent` for a single-phase wave). No exceptions for phases that look small.",
+        "- Give each worker a self-contained task: the exact phase number and title, the plan path, that earlier waves are green, and — in a parallel wave — the files it owns and a ban on every other file.",
+        "- Keep the bookkeeping yours: verify each phase's targeted tests yourself, flip its `[x]`, commit its checkpoint.",
+        "- Phases already marked `[x]` in `.agent/progress.md` are done and green: do NOT redo them, continue from the first unchecked phase.",
+        "- If a dispatch is genuinely refused, say so explicitly in Risks / Follow-ups with the refusal reason, and only then implement the remaining phases yourself one at a time.",
+    ].join("\n");
+}
+
 export function initProgressLedger(
     cwd: string,
     base: string,

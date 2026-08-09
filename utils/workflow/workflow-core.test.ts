@@ -28,6 +28,7 @@ import {
     mkPhase,
     freshPhases,
     dispatchEnv,
+    subagentEnv,
     stripInheritedSecrets,
     renderWorkflowFooter,
     formatContextUsage,
@@ -1021,6 +1022,83 @@ describe("dispatchEnv", () => {
         });
     });
 });
+
+// A spawned agent that DECLARES dispatch tools must be able to use them: it runs at
+// depth+1, and dispatch is refused once depth >= max, so the default max of 1 makes
+// the implementer's per-phase delegation inert and it silently degrades to one
+// context for the whole plan.
+describe("subagentEnv dispatch ceiling", () => {
+    const DISPATCHER = "read,edit,dispatch_agent,dispatch_parallel";
+    const LEAF = "read,edit,bash";
+    // Local helper: the dispatchEnv block's withEnv doesn't carry
+    // PI_DISPATCH_MAX_DEPTH, which is the whole subject here.
+    function withEnv(
+        vars: Record<string, string | undefined>,
+        fn: () => void,
+    ) {
+        const keys = ["PI_DISPATCH_DEPTH", "PI_DISPATCH_MAX_DEPTH", "PI_DISPATCH_ANCESTRY"];
+        const saved: Record<string, string | undefined> = {};
+        for (const k of keys) saved[k] = process.env[k];
+        try {
+            for (const k of keys) {
+                if (vars[k] === undefined) delete process.env[k];
+                else process.env[k] = vars[k];
+            }
+            fn();
+        } finally {
+            for (const k of keys) {
+                if (saved[k] === undefined) delete process.env[k];
+                else process.env[k] = saved[k];
+            }
+        }
+    }
+
+    it("raises the ceiling so a dispatching agent spawned from the root can delegate", () => {
+        withEnv({ PI_DISPATCH_DEPTH: undefined, PI_DISPATCH_MAX_DEPTH: "1" }, () => {
+            const env = subagentEnv("implementer", undefined, DISPATCHER);
+            // Child sits at depth 1, so it needs max 2 to dispatch at all.
+            assert.equal(env.PI_DISPATCH_DEPTH, "1");
+            assert.equal(env.PI_DISPATCH_MAX_DEPTH, "2");
+        });
+    });
+
+    it("leaves the ceiling alone for a leaf agent", () => {
+        withEnv({ PI_DISPATCH_DEPTH: undefined, PI_DISPATCH_MAX_DEPTH: "1" }, () => {
+            const env = subagentEnv("scout", undefined, LEAF);
+            assert.equal(env.PI_DISPATCH_MAX_DEPTH, "1");
+        });
+    });
+
+    it("honors PI_DISPATCH_MAX_DEPTH=0 — the explicit kill switch wins", () => {
+        withEnv({ PI_DISPATCH_DEPTH: undefined, PI_DISPATCH_MAX_DEPTH: "0" }, () => {
+            const env = subagentEnv("implementer", undefined, DISPATCHER);
+            assert.equal(env.PI_DISPATCH_MAX_DEPTH, "0");
+        });
+    });
+
+    it("never lowers an already-sufficient ceiling", () => {
+        withEnv({ PI_DISPATCH_DEPTH: undefined, PI_DISPATCH_MAX_DEPTH: "5" }, () => {
+            const env = subagentEnv("implementer", undefined, DISPATCHER);
+            assert.equal(env.PI_DISPATCH_MAX_DEPTH, "5");
+        });
+    });
+
+    it("raises only to what THIS child needs, not deeper", () => {
+        // Already one level down: the child lands at depth 2 and needs max 3.
+        withEnv({ PI_DISPATCH_DEPTH: "1", PI_DISPATCH_MAX_DEPTH: "2" }, () => {
+            const env = subagentEnv("implementer", undefined, DISPATCHER);
+            assert.equal(env.PI_DISPATCH_DEPTH, "2");
+            assert.equal(env.PI_DISPATCH_MAX_DEPTH, "3");
+        });
+    });
+
+    it("treats a missing tools list as a leaf", () => {
+        withEnv({ PI_DISPATCH_DEPTH: undefined, PI_DISPATCH_MAX_DEPTH: "1" }, () => {
+            assert.equal(subagentEnv("x").PI_DISPATCH_MAX_DEPTH, "1");
+        });
+    });
+});
+
 
 describe("stripInheritedSecrets", () => {
     it("removes the bridge secrets but keeps provider/skill creds and everything else", () => {

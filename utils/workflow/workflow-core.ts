@@ -157,6 +157,11 @@ export interface PhaseState {
     label: string;
     agent: string;
     dispatchId?: string; // unique ID for parallel dispatches of the same agent
+    // Forces a FRESH session for this spawn instead of resuming the agent's
+    // existing one. Set per re-run so a fix loop doesn't pile every round's
+    // context onto the last (the fix task carries the prior summary and findings
+    // forward explicitly, so nothing is lost by starting clean).
+    sessionEpoch?: string;
     status: "pending" | "running" | "done" | "error";
     elapsed: number;
     note: string; // last non-empty line (for the card)
@@ -1570,14 +1575,18 @@ const SESSION_KEEP_FILES = new Set(["dispatch-history.jsonl"]);
 // The session directory is read from PI_WORKFLOW_SESSION_DIR env var;
 // falls back to `~/.pi/agent/sessions/` if unset. Supports `~` expansion.
 // Returns the directory path (the caller stores it as its sessionDir).
-export function setupSessions(cwd: string, wipe: boolean): string {
-    const defaultDir = join(homedir(), ".pi", "agent", "sessions");
+// Where sessions live, resolved from PI_WORKFLOW_SESSION_DIR (with `~` expansion)
+// or `~/.pi/agent/sessions/`. Pure: creates nothing, wipes nothing — so a reader
+// (e.g. the orchestrator auditing dispatch-history.jsonl) can locate the directory
+// without the side effects of setupSessions.
+export function sessionDirPath(): string {
     const envDir = (process.env.PI_WORKFLOW_SESSION_DIR || "").trim();
-    const sessionDir = envDir
-        ? envDir.startsWith("~")
-            ? join(homedir(), envDir.slice(1))
-            : envDir
-        : defaultDir;
+    if (!envDir) return join(homedir(), ".pi", "agent", "sessions");
+    return envDir.startsWith("~") ? join(homedir(), envDir.slice(1)) : envDir;
+}
+
+export function setupSessions(cwd: string, wipe: boolean): string {
+    const sessionDir = sessionDirPath();
     if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true });
     const now = Date.now();
 
@@ -2946,10 +2955,48 @@ export function stripInheritedSecrets<T extends NodeJS.ProcessEnv>(
     return env;
 }
 
+// Raise PI_DISPATCH_MAX_DEPTH so an agent we are about to spawn can actually USE
+// the dispatch tools it declares. A spawned agent sits at depth+1, and dispatch is
+// refused once depth >= max — so with the default max of 1 a pipeline phase like
+// `implementer` (whose whole design is to dispatch a fresh `phase-implementer` per
+// plan phase) has its delegation refused on every run and silently degrades to
+// doing everything in one context. Spawning an agent with dispatch tools under a
+// limit that makes them inert is never intentional, so lift the ceiling to exactly
+// what this child needs — no deeper.
+//
+// `PI_DISPATCH_MAX_DEPTH=0` is left ALONE: that is the explicit "no dispatch at
+// all" kill switch, and honoring it matters more than any agent's design.
+function dispatchCeilingFor(
+    tools: string | undefined,
+    env: NodeJS.ProcessEnv,
+): string | undefined {
+    if (!/\b(dispatch_agent|dispatch_parallel)\b/.test(tools || "")) return undefined;
+    const rawMax = parseInt(env.PI_DISPATCH_MAX_DEPTH ?? "", 10);
+    if (rawMax === 0) return undefined; // dispatch deliberately disabled
+    // `env` is the MERGED env, so PI_DISPATCH_DEPTH is already this child's depth
+    // (dispatchEnv incremented it) — do not add another level here.
+    const childDepth = parseInt(env.PI_DISPATCH_DEPTH || "0", 10) || 0;
+    const needed = childDepth + 1; // child dispatches only while childDepth < max
+    const current = Number.isNaN(rawMax) || rawMax < 0 ? 1 : rawMax;
+    return current >= needed ? undefined : String(needed);
+}
+
 // The full env for a spawned sub-agent: the parent env plus the dispatch-context
 // overrides (dispatchEnv), with the bridge secrets stripped (stripInheritedSecrets).
-export function subagentEnv(agentName: string, dispatchId?: string): NodeJS.ProcessEnv {
-    return stripInheritedSecrets({ ...process.env, ...dispatchEnv(agentName, dispatchId) });
+// `tools` is the spawned agent's tool list — when it declares dispatch tools, the
+// depth ceiling is raised just enough for them to work (see dispatchCeilingFor).
+export function subagentEnv(
+    agentName: string,
+    dispatchId?: string,
+    tools?: string,
+): NodeJS.ProcessEnv {
+    const env = stripInheritedSecrets({
+        ...process.env,
+        ...dispatchEnv(agentName, dispatchId),
+    });
+    const ceiling = dispatchCeilingFor(tools, env);
+    if (ceiling) env.PI_DISPATCH_MAX_DEPTH = ceiling;
+    return env;
 }
 
 // Whether a spawned (headless) sub-agent should be told to trust the project's
@@ -3330,7 +3377,11 @@ export function spawnAgentWithModel(
 ): Promise<SpawnResult> {
     const key = agentDef.name.toLowerCase().replace(/\s+/g, "-");
     // Use dispatchId for unique session files when running parallel instances
-    const sessionKey = phase.dispatchId ? `${key}-${phase.dispatchId}` : key;
+    const sessionKey = phase.dispatchId
+        ? `${key}-${phase.dispatchId}`
+        : phase.sessionEpoch
+          ? `${key}-${phase.sessionEpoch}`
+          : key;
 
     // Prefer a per-project subdirectory: <sessionDir>/<hash>/<key>.jsonl. If it
     // can't be created (permissions, etc.), fall back to a flat filename in the main
@@ -3491,7 +3542,7 @@ export function spawnAgentWithModel(
         try {
             proc = spawn("pi", args, {
                 stdio: ["ignore", "pipe", "pipe"],
-                env: subagentEnv(agentDef.name, phase.dispatchId),
+                env: subagentEnv(agentDef.name, phase.dispatchId, agentDef.tools),
                 cwd,
                 detached: true,
             });
