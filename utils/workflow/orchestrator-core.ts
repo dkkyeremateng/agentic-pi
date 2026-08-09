@@ -809,16 +809,24 @@ async function runWorkflowCoreImpl(
             // phases never got a worker at all.
             const sessions = countDispatchesSince(implStartedAt);
             const events = countDispatchEventsSince(implStartedAt);
+            // Sessions that actually delivered — the gap against `sessions` is how
+            // many workers died and had their phase finished inline instead.
+            const delivered = countDispatchesSince(
+                implStartedAt,
+                "phase-implementer",
+                undefined,
+                true,
+            );
             obsEmit("verdict", {
                 status: "warn",
                 outcome: "fresh-context-violation",
-                note: `phases=${phaseCount} completed=${completed} unchecked=${unchecked} sessions=${sessions} dispatches=${events}`,
+                note: `phases=${phaseCount} completed=${completed} unchecked=${unchecked} sessions=${sessions} delivered=${delivered} dispatches=${events}`,
                 source: "workflow",
             });
             let stillViolating = true;
             if (unchecked > 0) {
                 h.ui.notify(
-                    `Implementer did not give each phase a fresh context (of ${phaseCount} phases, ${sessions} distinct worker session(s) across ${events} dispatch(es)) — retrying the remaining ${unchecked} with per-phase delegation.`,
+                    `Implementer did not give each phase a fresh context (of ${phaseCount} phases, ${completed} completed on ${delivered} successful worker session(s); ${sessions} session(s) across ${events} dispatch(es)) — retrying the remaining ${unchecked} with per-phase delegation.`,
                     "warning",
                 );
                 aborted = checkAbort(s, h);
@@ -845,7 +853,7 @@ async function runWorkflowCoreImpl(
                 );
             } else {
                 h.ui.notify(
-                    `Implementer did not give each phase a fresh context (${sessions} distinct worker session(s) across ${events} dispatch(es)); every phase is already checked off, so a retry would do nothing — flagging it for review instead.`,
+                    `Implementer did not give each phase a fresh context (${completed} phase(s) completed on ${delivered} successful worker session(s), ${sessions} session(s) across ${events} dispatch(es)); every phase is already checked off, so a retry would do nothing — flagging it for review instead.`,
                     "warning",
                 );
             }
@@ -855,7 +863,7 @@ async function runWorkflowCoreImpl(
             // workflow-report.md.
             if (stillViolating) {
                 s.freshContextViolation = true;
-                impl.output = `[PROCESS] The ${phaseCount} plan phases did not each run in a fresh context: ${sessions} distinct worker session(s) across ${events} dispatch(es). Later phases were written with earlier phases' context still loaded, so scrutinize the last phases hardest: they are the likeliest place for drift, missed edge cases, or a thin test.\n\n${impl.output}`;
+                impl.output = `[PROCESS] The ${phaseCount} plan phases did not each run in a fresh context: ${completed} phase(s) completed on ${delivered} successful worker session(s) (${sessions} session(s) across ${events} dispatch(es)). Whichever phases ran without a worker of their own were written inside the coordinator's accumulated context — check the ledger against the dispatch history to see which — so treat their tests and edge cases with extra scrutiny. A phase finished inline late in the run carries the most inherited context and is the likeliest place for drift or a thin test.\n\n${impl.output}`;
             }
         }
         runArtifacts.implSummary = impl.output;
@@ -1346,10 +1354,16 @@ export function clearStagedLearnings(cwd: string): void {
 // (Observed exactly that: a run whose sequential dispatches all reused one session
 // while the audit reported no violation.) Records without a dispatchId predate that
 // field, so fall back to counting them individually rather than collapsing them.
+// `onlyDone` restricts the count to dispatches that SUCCEEDED. A failed worker still
+// occupied a session but implemented nothing, so counting it against completed phases
+// lets an errored dispatch quietly pay for a phase the coordinator then did inline —
+// observed exactly once: a worker errored, the implementer finished that phase in its
+// own context, and 1 session against 1 completed phase balanced out to "clean".
 export function countDispatchesSince(
     sinceMs: number,
     agent = "phase-implementer",
     dir = sessionDirPath(),
+    onlyDone = false,
 ): number {
     let raw: string;
     try {
@@ -1366,6 +1380,11 @@ export function countDispatchesSince(
             if (String(rec.agent || "").toLowerCase() !== agent) continue;
             const ts = Date.parse(rec.ts || "");
             if (Number.isNaN(ts) || ts < sinceMs) continue;
+            // Only an EXPLICIT non-done status disqualifies a record. dispatch.ts
+            // always writes `status`, so a missing one means hand-edited or torn
+            // data — and guessing "failed" there would invent a shortfall out of
+            // nothing. Unknown data should make this audit quieter, never noisier.
+            if (onlyDone && rec.status && rec.status !== "done") continue;
             const id = String(rec.dispatchId || "");
             if (id) sessions.add(id);
             else legacy++;
@@ -1430,12 +1449,18 @@ export function freshContextViolated(
     if (parsePlanPhases(plan).length < 2) return false;
     const sessions = countDispatchesSince(sinceMs, "phase-implementer", dir);
     if (sessions === 0) return true;
+    // Reuse is judged over ALL dispatches: an errored one still had a session, and
+    // counting only successes here would read a failure as if it were reuse.
     if (countDispatchEventsSince(sinceMs, "phase-implementer", dir) > sessions)
         return true;
-    // A phase re-dispatched after a BLOCKED report spends more than one session, so
-    // only a SHORTFALL is suspicious. Needs 2+ completed phases to mean anything: a
-    // single phase legitimately runs inline.
-    return phasesCompleted >= 2 && sessions < phasesCompleted;
+    // The shortfall, though, is judged over dispatches that actually DELIVERED —
+    // a phase finished after its worker died was finished in the coordinator's
+    // context, whatever the session tally says. A phase re-dispatched after a
+    // BLOCKED report spends more than one session, so only a shortfall is
+    // suspicious. Needs 2+ completed phases to mean anything: a single phase
+    // legitimately runs inline.
+    const delivered = countDispatchesSince(sinceMs, "phase-implementer", dir, true);
+    return phasesCompleted >= 2 && delivered < phasesCompleted;
 }
 
 // Appended to the implementer's task on the one retry we allow. Names the failure
@@ -1553,9 +1578,22 @@ export function reconcileLedgerBranch(cwd: string, branch: string): number {
     return reopened;
 }
 
-// How many ledger phases are currently marked done.
+// How many ledger PHASES are currently marked done.
+//
+// Only `- [x] Phase <N> …` lines count. Agents append their own checkbox rows to the
+// ledger — an observed run added `- [x] Validator fix: …` during a fix round, leaving
+// 7 checked lines against a 6-phase plan. That inflation is the dangerous direction
+// for the delegation audit, which flags when sessions fall SHORT of completed phases:
+// a phantom completion manufactures a shortfall that never happened.
+//
+// Keying on the `Phase <N>` prefix is exact rather than heuristic: parsePlanPhases
+// only matches headings that begin that way, and initProgressLedger seeds the ledger
+// from them verbatim. It also fails safe — a hand-edited ledger undercounts, which
+// makes the audit quieter, never noisier.
 export function countDonePhases(cwd: string): number {
-    return readPhaseStatus(cwd).filter((l) => /^\s*-\s*\[[xX]\]/.test(l)).length;
+    return readPhaseStatus(cwd).filter((l) =>
+        /^\s*-\s*\[[xX]\]\s*Phase\s+\d+/i.test(l),
+    ).length;
 }
 
 // Read the phase-status lines ("- [ ] …" / "- [x] …") from the progress ledger.
