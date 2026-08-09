@@ -2,7 +2,9 @@
 // multiplexer pane the orchestrator opens (utils/workflow/pane-mux.ts). It tails the
 // obs sink FILE (no server, no auth needed), filters to a run + agent, locks onto the
 // first matching session, and prints a compact colored line per event. It exits when
-// that session ends. Purely cosmetic — nothing here is required for a run to work.
+// that session ends, or after a stretch of silence from it (never on a wall-clock
+// deadline — a busy agent must keep its pane). Purely cosmetic — nothing here is
+// required for a run to work.
 //
 //   node --experimental-strip-types obs/obs-watch.ts --run <id> --agent <name> [--sink <file>]
 
@@ -124,6 +126,18 @@ export function sinkPath(env: NodeJS.ProcessEnv = process.env): string {
     return join(homedir(), ".pi", "agent", "obs", "events.jsonl");
 }
 
+/** How long a viewer waits in SILENCE from the whole RUN before giving up, in ms.
+ *  Deliberately not an absolute lifetime: elapsed time cannot tell a hung agent
+ *  from a busy one, and as a deadline it reaped panes mid-phase (a 95-minute
+ *  implementer lost its pane at 60 minutes). The clock is reset by every event in
+ *  the run — not just this agent's — because a coordinator falls silent while a child
+ *  it dispatched works, and reaping it then is exactly backwards.
+ *  `session_end` and the spawn closing the pane remain the normal exits. */
+export function idleTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+    const raw = Number(env.PI_WORKFLOW_PANE_MAX_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 15 * 60_000;
+}
+
 // ── tail loop (IO) ───────────────────────────────────────────────────────────
 
 function run(): void {
@@ -136,6 +150,9 @@ function run(): void {
 
     process.stdout.write(`${bold(cyan(`⧉ ${agent}`))} ${dim(`· run ${runId} · tailing obs lane`)}\n`);
 
+    // Set once the idle backstop is armed below; called on every event for our
+    // session so an actively-working agent keeps its pane.
+    let onIdleReset: (() => void) | undefined;
     let locked: string | null = null; // sessionId we've pinned to
     let pos = existsSync(sink) ? statSync(sink).size : 0; // start at EOF: only new events
     let leftover = ""; // partial trailing line held until its newline arrives
@@ -149,7 +166,16 @@ function run(): void {
         } catch {
             return;
         }
-        if (!ev || ev.runId !== runId || ev.agent !== agent) return;
+        if (!ev || ev.runId !== runId) return;
+        // Reset the silence backstop on ANY event in this RUN, before filtering to
+        // our agent. A coordinator goes quiet while a child it dispatched works —
+        // measured on its own stream, the implementer in an observed run was silent
+        // for 30.9 minutes (exactly the length of the phase it was waiting on) and
+        // would have had its pane reaped as "idle" while it was blocked on purpose.
+        // Run-wide, the longest gap in that same window was 5.2 minutes. If the whole
+        // run stops emitting, the pane really is abandoned.
+        onIdleReset?.();
+        if (ev.agent !== agent) return;
         if (locked === null) {
             if (dispatch) {
                 // Concurrent same-agent instances share run+agent; lock precisely onto
@@ -201,9 +227,24 @@ function run(): void {
     };
 
     const timer = setInterval(poll, 200);
-    // A run should never leave a pane tailing forever; cap the viewer's lifetime.
-    const maxMs = Number(process.env.PI_WORKFLOW_PANE_MAX_MS) || 60 * 60_000;
-    setTimeout(() => process.exit(0), maxMs);
+    // A run should never leave a pane tailing forever — but the cap has to measure
+    // SILENCE, not elapsed time. As an absolute deadline it reaped panes out from
+    // under agents that were still working: an implementer that ran 95 minutes lost
+    // its pane at the 60-minute mark, 63% of the way through the phase, and a
+    // 336-minute phase would have kept its pane for 18% of the run. Elapsed time
+    // cannot tell "hung" from "busy"; a gap in the event stream can.
+    //
+    // The real exit signal is `session_end` above (and the spawn closing the pane
+    // from the other side). This is only the backstop for when neither arrives.
+    const idleMs = idleTimeoutMs();
+    let idle: ReturnType<typeof setTimeout>;
+    const armIdle = () => {
+        clearTimeout(idle);
+        idle = setTimeout(() => process.exit(0), idleMs);
+        idle.unref?.();
+    };
+    onIdleReset = armIdle;
+    armIdle();
     for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const)
         process.on(sig, () => {
             clearInterval(timer);

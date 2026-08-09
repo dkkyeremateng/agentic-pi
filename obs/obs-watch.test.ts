@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatWatchEvent, parseArgs, sinkPath } from "./obs-watch";
+import { formatWatchEvent, parseArgs, sinkPath, idleTimeoutMs} from "./obs-watch";
 import { makeFactory } from "./obs-events";
 
 // Force plain output for stable assertions (obs-watch reads NO_COLOR at import).
@@ -67,4 +67,28 @@ test("parseArgs reads --run/--agent/--sink/--dispatch and lowercases the agent",
 test("sinkPath honors PI_OBS_SINK (with ~) else the default global sink", () => {
     assert.equal(sinkPath({ PI_OBS_SINK: "/tmp/x/events.jsonl" }), "/tmp/x/events.jsonl");
     assert.match(sinkPath({}), /\.pi\/agent\/obs\/events\.jsonl$/);
+});
+
+// The old absolute cap reaped panes out from under working agents: an implementer
+// that ran 95 minutes lost its pane at the 60-minute mark, two thirds through.
+test("idleTimeoutMs defaults to 15 minutes of SILENCE, not wall-clock", () => {
+    assert.equal(idleTimeoutMs({}), 15 * 60_000);
+    // Long enough to outlast a slow suite; the gaps between events are far
+    // smaller than the 5-31 minute phase durations observed in real runs.
+    assert.ok(idleTimeoutMs({}) >= 10 * 60_000);
+});
+
+test("idleTimeoutMs honours an explicit override", () => {
+    assert.equal(idleTimeoutMs({ PI_WORKFLOW_PANE_MAX_MS: "60000" }), 60_000);
+});
+
+test("idleTimeoutMs falls back on junk, zero and negatives", () => {
+    // 0 or NaN would arm setTimeout(0) and kill the pane instantly, or disable the
+    // backstop entirely — both worse than the default.
+    for (const v of ["", "junk", "0", "-1", "NaN"])
+        assert.equal(
+            idleTimeoutMs({ PI_WORKFLOW_PANE_MAX_MS: v }),
+            15 * 60_000,
+            `bad value ${JSON.stringify(v)} should fall back`,
+        );
 });
