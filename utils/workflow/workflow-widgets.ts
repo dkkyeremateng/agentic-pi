@@ -305,6 +305,15 @@ export function renderEmptyAgentMessage(theme: any): string[] {
 //   [x] done   [•] in-progress (the first unfinished phase while a run is active)
 //   [ ] pending
 // Returns [] when there are no items, so the caller can omit the section entirely.
+// The ledger records a finished phase as `Phase N: <title> — tests: <command> (sha …)`.
+// That evidence belongs in the file — the validator and a human reading back the run
+// both want it — but in a fixed-width panel it crowds out the only part that
+// identifies the row, so an 80-column terminal ends up showing a clipped shell
+// command instead of the phase title. Drop it for DISPLAY only.
+export function phaseTitleOnly(label: string): string {
+    return label.replace(/\s+[—-]\s+tests:.*$/i, "").trim() || label.trim();
+}
+
 export function renderTodos(
     items: { label: string; done: boolean }[],
     theme: any,
@@ -312,7 +321,10 @@ export function renderTodos(
 ): string[] {
     if (!items || items.length === 0) return [];
     const max = Math.max(10, (opts.width ?? 80) - 6);
-    const clip = (s: string) => (s.length > max ? s.slice(0, max - 1) + "…" : s);
+    const clip = (s: string) => {
+        const t = phaseTitleOnly(s);
+        return t.length > max ? t.slice(0, max - 1) + "…" : t;
+    };
     const firstPending = items.findIndex((i) => !i.done);
     const lines: string[] = [
         theme.fg("accent", theme.bold(opts.title ?? " # Todos")),

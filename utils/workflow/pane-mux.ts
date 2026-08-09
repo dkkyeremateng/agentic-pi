@@ -75,6 +75,16 @@ export function interactivePi(): boolean {
 
 /** The reason panes are NOT enabled for this env, or null when they ARE. Powers both
  *  panesEnabled and openAgentPane's debug log. `isTty` is injectable for tests. */
+// How deep a dispatch may still open panes. 0 = the root orchestrator only. The
+// default of 1 lets a pipeline phase show ITS workers — which is where the fan-out
+// worth watching actually is: in a workflow run the implementer is itself a phase
+// (depth 1), so at 0 its per-phase `phase-implementer` workers could never be seen.
+// Deeper nesting stays off by default because each level multiplies the splits.
+export function maxPaneDepth(env: NodeJS.ProcessEnv = process.env): number {
+    const raw = parseInt(env.PI_WORKFLOW_PANES_MAX_DEPTH ?? "", 10);
+    return Number.isNaN(raw) || raw < 0 ? 1 : raw;
+}
+
 export function panesReason(
     env: NodeJS.ProcessEnv = process.env,
     isTty: boolean = interactivePi(),
@@ -84,8 +94,19 @@ export function panesReason(
     // Interactive pi ONLY: Telegram / pi-obs-chat dispatches run the agent HEADLESS
     // (hasUI false), so they never get panes even when the bridge/server sits inside a
     // multiplexer (which would leak $TMUX/$ZELLIJ into the child).
-    if (!isTty) return "not an interactive pi session (headless — e.g. Telegram / pi-obs chat)";
-    if ((parseInt(env.PI_DISPATCH_DEPTH || "0", 10) || 0) !== 0) return "not the root orchestrator (nested dispatch)";
+    //
+    // A spawned sub-agent is ALSO headless — its stdio is piped — so it can never
+    // answer this question for itself, and judging by its own tty would deny panes to
+    // every sub-agent forever. So the decision is INHERITED: a process that had panes
+    // enabled marks its children with PI_WORKFLOW_PANES_OK (see subagentEnv). A
+    // Telegram/headless root never had them, never sets the marker, and its
+    // descendants stay correctly excluded.
+    if (!isTty && !truthy(env.PI_WORKFLOW_PANES_OK))
+        return "not an interactive pi session (headless — e.g. Telegram / pi-obs chat)";
+    const depth = parseInt(env.PI_DISPATCH_DEPTH || "0", 10) || 0;
+    const max = maxPaneDepth(env);
+    if (depth > max)
+        return `dispatch depth ${depth} exceeds the pane limit (${max}) — raise PI_WORKFLOW_PANES_MAX_DEPTH to see deeper nesting`;
     if (detectMux(env) === null) return "no supported split surface (tmux/zellij/WezTerm/kitty/iTerm2)";
     return null;
 }

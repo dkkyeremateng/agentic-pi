@@ -34,7 +34,7 @@ import {
 import { fileURLToPath } from "url";
 import { defaultSkillRoots } from "../guards/path-guard";
 import { memoryEnabled, memoryInjection } from "./memory";
-import { openAgentPane } from "./pane-mux";
+import { openAgentPane, panesEnabled } from "./pane-mux";
 import {
     secs,
     isModelFailure,
@@ -3020,6 +3020,12 @@ export function subagentEnv(
     });
     const ceiling = dispatchCeilingFor(tools, env);
     if (ceiling) env.PI_DISPATCH_MAX_DEPTH = ceiling;
+    // Pass the pane decision DOWN. A spawned agent is headless (piped stdio), so it
+    // cannot tell an interactive session from a Telegram one by looking at its own
+    // tty — judging for itself, it would refuse panes forever. This process can tell,
+    // so it answers once and marks the child. A headless root never sets it, which is
+    // what keeps bridge dispatches from splitting the operator's terminal.
+    if (panesEnabled()) env.PI_WORKFLOW_PANES_OK = "1";
     return env;
 }
 

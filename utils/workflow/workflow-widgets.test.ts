@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
     renderLspServers,
     renderTodos,
+    phaseTitleOnly,
     renderRichCard,
     type LspServerInfo,
 } from "./workflow-widgets";
@@ -165,5 +166,40 @@ describe("renderRichCard parallel same-agent instances", () => {
             model: "m",
         }).join("\n");
         assert.match(byName, /● running/);
+    });
+});
+
+describe("renderTodos shows the phase title, not its test evidence", () => {
+    const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+
+    it("drops the ledger's `— tests: …` suffix so the title survives clipping", () => {
+        // A real done line: at 80 columns the old panel showed a clipped shell
+        // command instead of the phase name.
+        const items = [
+            {
+                done: true,
+                label:
+                    "Phase 0 — `test/fakes-model-the-knob` (prerequisite) — tests: .venv/bin/python -m pytest tests/test_journal.py (90 passed); full suite 896 passed (sha e5fe5bf)",
+            },
+            { done: false, label: "Phase 1 — `fix/window-and-math-bugs` (wrong numbers)" },
+        ];
+        const out = renderTodos(items, theme, { running: true, width: 80 });
+        assert.match(out[1], /Phase 0 — `test\/fakes-model-the-knob` \(prerequisite\)/);
+        assert.ok(!/pytest/.test(out[1]), "the command is gone");
+        assert.ok(!/…/.test(out[1]), "and the title no longer needs clipping");
+        assert.match(out[2], /Phase 1 — `fix\/window-and-math-bugs`/);
+    });
+
+    it("handles an ASCII hyphen separator and leaves plain titles alone", () => {
+        assert.equal(phaseTitleOnly("Phase 2: Do it - tests: npm test"), "Phase 2: Do it");
+        assert.equal(phaseTitleOnly("Phase 3: Plain title"), "Phase 3: Plain title");
+        assert.equal(phaseTitleOnly("  spaced  "), "spaced");
+    });
+
+    it("still clips a genuinely long title", () => {
+        const items = [{ done: false, label: "Phase 1 — " + "x".repeat(200) }];
+        const out = renderTodos(items, theme, { width: 40 });
+        assert.ok(out[1].includes("…"));
+        assert.ok(out[1].length < 60);
     });
 });
