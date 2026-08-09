@@ -11,6 +11,7 @@ import {
     defaultBranchName,
     ensureWorkBranch,
     type Checkpoint,
+    staleCheckpointStashes,
 } from "./checkpoint";
 
 // A fake GitRunner driven by a map of "joined args" -> output (or a thrower).
@@ -479,5 +480,51 @@ describe("ensureWorkBranch", () => {
         // Must be null (not the default branch) so no Base is recorded and the
         // implementer skips commits — work never lands on main.
         assert.equal(ensureWorkBranch(run, "blocked"), null);
+    });
+});
+
+describe("staleCheckpointStashes", () => {
+    const LIST = [
+        "stash@{0}|On main: my own wip",
+        "stash@{1}|pre-run checkpoint",
+        "stash@{2}|pre-run checkpoint",
+        "stash@{3}|On feat: another of mine",
+        "stash@{4}|pre-run checkpoint",
+        "stash@{5}|pre-run checkpoint",
+        "stash@{6}|pre-run checkpoint",
+    ].join("\n");
+
+    it("keeps the newest few of ours and drops the rest", () => {
+        // Every dirty-tree run stored one and nothing removed it, so the list grew
+        // without bound. Only the newest is reachable via /revert (one latest.json).
+        assert.deepEqual(staleCheckpointStashes(LIST), ["stash@{6}", "stash@{5}"]);
+    });
+
+    it("returns them highest-index-first, because dropping renumbers below", () => {
+        const refs = staleCheckpointStashes(LIST, 1);
+        const idx = refs.map((r) => Number(r.match(/\{(\d+)\}/)![1]));
+        assert.deepEqual(idx, [...idx].sort((a, b) => b - a), "descending");
+    });
+
+    it("never selects a stash the user made", () => {
+        // `stash store -m` writes the subject verbatim; a user's stash reads
+        // "On <branch>: …", so an exact match cannot collide with theirs.
+        const all = staleCheckpointStashes(LIST, 0);
+        assert.ok(!all.includes("stash@{0}"));
+        assert.ok(!all.includes("stash@{3}"));
+        assert.equal(all.length, 5, "all five of ours, none of theirs");
+    });
+
+    it("tolerates empty, malformed and unfamiliar output", () => {
+        assert.deepEqual(staleCheckpointStashes(""), []);
+        assert.deepEqual(staleCheckpointStashes("no-pipe-here"), []);
+        assert.deepEqual(staleCheckpointStashes("stash@{0}|pre-run checkpoint extra"), []);
+    });
+
+    it("drops nothing when there are no more than `keep` of ours", () => {
+        assert.deepEqual(
+            staleCheckpointStashes("stash@{0}|pre-run checkpoint\nstash@{1}|On x: theirs"),
+            [],
+        );
     });
 });

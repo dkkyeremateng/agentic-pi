@@ -883,6 +883,12 @@ async function runWorkflowCoreImpl(
             aborted = checkAbort(s, h);
             if (aborted) return aborted;
             reviewerP.status = "pending";
+            // Fresh session from the second round on — the same reason the
+            // implementer's fix rounds get one. reviewTask threads the previous
+            // findings in as `priorReview` and the implementer's new summary with
+            // them, so a re-review has everything it needs; resuming would only
+            // stack each round's reading of the diff on the last one's.
+            if (loop > 1) reviewerP.sessionEpoch = `review${loop}`;
             h.ui.updateWidget();
             review = await h.execution.runPhase(
                 reviewerP,

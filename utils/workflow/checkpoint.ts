@@ -46,8 +46,52 @@ export function createCheckpoint(
     // /revert's `stash apply <sha>` throws and the pre-run uncommitted work is
     // gone for good. `stash store` puts it in the stash reflog — making it
     // reachable — without touching the working tree or the index.
-    if (snapshot) safe(["stash", "store", "-m", "pre-run checkpoint", snapshot]);
+    if (snapshot) {
+        safe(["stash", "store", "-m", CHECKPOINT_STASH_MSG, snapshot]);
+        // Storing makes the snapshot gc-proof, but nothing removed the old ones, so
+        // every dirty-tree run left another entry in `git stash list` forever. Only
+        // ONE checkpoint is kept (.agent/checkpoints/latest.json), so every entry but
+        // the newest is already unreachable by /revert — we keep a couple beyond that
+        // purely as a manual escape hatch, and drop the rest.
+        for (const ref of staleCheckpointStashes(
+            safe(["stash", "list", "--format=%gd|%gs"]),
+        )) {
+            safe(["stash", "drop", ref]);
+        }
+    }
     return { head, branch, snapshot, takenAt: now, request };
+}
+
+/** The exact stash subject `stash store -m` writes for a pre-run snapshot. A stash
+ *  the USER made reads `On <branch>: <their message>`, so an exact match on this can
+ *  never select one of theirs. */
+export const CHECKPOINT_STASH_MSG = "pre-run checkpoint";
+
+/** How many of our own snapshots to keep. Only the newest is reachable through
+ *  /revert (a single latest.json); the spares exist so a `git stash apply` by hand
+ *  can still reach back a run or two. */
+export const CHECKPOINT_STASH_KEEP = 3;
+
+/** Which of our stash entries to drop, given `git stash list --format=%gd|%gs`.
+ *  Returned newest-index-last: dropping renumbers everything BELOW an entry, so the
+ *  caller must drop in the order given (highest index first) for the refs to stay
+ *  valid. Only entries whose subject matches CHECKPOINT_STASH_MSG exactly are ever
+ *  returned — anything the user wrote is left alone. */
+export function staleCheckpointStashes(
+    listOutput: string,
+    keep = CHECKPOINT_STASH_KEEP,
+): string[] {
+    const ours: string[] = [];
+    for (const line of (listOutput || "").split(/\r?\n/)) {
+        const idx = line.indexOf("|");
+        if (idx < 0) continue;
+        const ref = line.slice(0, idx).trim();
+        const subject = line.slice(idx + 1).trim();
+        if (!ref || subject !== CHECKPOINT_STASH_MSG) continue;
+        ours.push(ref);
+    }
+    // `git stash list` is newest-first, so the survivors are simply the first `keep`.
+    return ours.slice(Math.max(0, keep)).reverse();
 }
 
 // True when a recorded checkpoint branch is a real branch we can switch back to.

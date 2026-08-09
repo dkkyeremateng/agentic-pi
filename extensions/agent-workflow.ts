@@ -94,7 +94,7 @@ import {
     loadPromptTemplate,
     renderTemplate,
     allTeamAgents,
-    makeSpawnWrapper,
+    makeExtensionSpawnWrapper,
     resolveAgentModel,
     contextWindowForModel,
     setModelOverride,
@@ -802,46 +802,16 @@ export default function (pi: ExtensionAPI) {
     // ── Run a single agent as a subprocess ───────
 
     // Thin wrapper around the shared spawnAgentWithModel from workflow-core.
-    // Uses makeSpawnWrapper to accumulate token/tool/dropped-line totals into
-    // the module counters after each spawn. Every agent runs in its own session.
-    const spawnAgentWithModel = makeSpawnWrapper({
+    // Accumulates token/tool/dropped-line totals into the module counters after
+    // each spawn. Every agent runs in its own session. Shared with dispatch.ts.
+    const spawnAgentWithModel = makeExtensionSpawnWrapper({
         state: st,
         sessionDir: () => sessionDir,
         agentTimeoutMs: AGENT_TIMEOUT_MS,
         updateWidget: () => updateWidget(),
-        setCurrentProc: (p: any) => {
-            // Track every spawned proc; each removes itself on exit, so the
-            // wrapper's setCurrentProc(null) calls are harmless no-ops here.
-            if (p) {
-                liveProcs.add(p);
-                p.once?.("close", () => liveProcs.delete(p));
-                p.once?.("exit", () => liveProcs.delete(p));
-            }
-        },
-        // pi's authoritative project-trust answer (pi >= 0.79.1), used to decide
-        // --approve for each spawn instead of re-reading ~/.pi/agent/trust.json by
-        // hand. Guarded (?.) so older pi without the API yields undefined and the
-        // spawn helper falls back to its disk read.
-        isProjectTrusted: () => widgetCtx?.isProjectTrusted?.(),
-        // When a sub-agent's provider doesn't report a context window in usage
-        // (e.g. gateframe's supportsUsageInStreaming:false) and the agent has none
-        // configured, derive it: first look the model up in pi's registry
-        // (models.json carries contextWindow per model — precise per model), then
-        // fall back to the primary session's window (what the footer shows).
-        getFallbackContextWindow: (model: string) => {
-            try {
-                const fromRegistry = contextWindowForModel(
-                    modelRegistry?.getAll?.(),
-                    model,
-                );
-                if (fromRegistry > 0) return fromRegistry;
-            } catch {}
-            try {
-                const u = widgetCtx?.getContextUsage?.();
-                return (u?.contextWindow || u?.context_window || 0) as number;
-            } catch {}
-            return 0;
-        },
+        liveProcs,
+        ctx: () => widgetCtx,
+        modelRegistry: () => modelRegistry,
     });
 
     function runAgent(

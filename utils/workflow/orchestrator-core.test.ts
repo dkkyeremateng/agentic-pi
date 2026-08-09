@@ -5189,3 +5189,54 @@ describe("countDonePhases ignores non-phase ledger rows", () => {
         assert.equal(countDonePhases(cwd), 2);
     });
 });
+
+describe("reviewer re-review starts from a fresh session", () => {
+    const PLAN = [
+        "## Phase 1: Do the work",
+        "Edit `src/a.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+
+    it("gives each review round after the first its own session epoch", async () => {
+        // The implementer's fix rounds already start clean; the reviewer's re-reads
+        // of the diff were still stacking round on round in one session.
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "review-epoch-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), PLAN, "utf-8");
+
+        const epochs: (string | undefined)[] = [];
+        let reviews = 0;
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "reviewer") {
+                        epochs.push(phase.sessionEpoch);
+                        reviews++;
+                        return reviews < 3
+                            ? { output: "REVISE BEFORE MERGE\nstill wrong", ok: true }
+                            : { output: "APPROVED", ok: true };
+                    }
+                    return { output: "impl", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { t: ["implementer", "reviewer"] },
+            activeTeamName: "t",
+        });
+        await runWorkflowCore(st, host, "Build X", 3, { cwd });
+
+        assert.equal(epochs.length, 3, "three review rounds");
+        assert.equal(epochs[0], undefined, "the first review resumes nothing");
+        assert.ok(epochs[1] && epochs[2], "later rounds ask for a fresh session");
+        assert.notEqual(epochs[1], epochs[2], "and a distinct one each round");
+    });
+});

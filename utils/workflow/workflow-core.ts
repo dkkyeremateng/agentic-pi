@@ -1659,6 +1659,62 @@ export function setupSessions(cwd: string, wipe: boolean): string {
 // extension, keeping each one's state ownership clear. `state` is the extension's
 // OrchestratorState (typed loosely to avoid a circular import with
 // orchestrator-core.ts).
+// The spawn wrapper both extensions need, with the four hooks they were each
+// building by hand. agent-workflow.ts and dispatch.ts had drifted apart once
+// already — dispatch was missing getFallbackContextWindow entirely, so an ad-hoc
+// dispatched agent showed a 0% context bar where the same agent inside a workflow
+// showed the real one. One definition means the next hook cannot land in only one
+// of them. Only the widget callback genuinely differs between the two.
+export function makeExtensionSpawnWrapper(opts: {
+    state: Parameters<typeof makeSpawnWrapper>[0]["state"];
+    sessionDir: () => string;
+    agentTimeoutMs: number;
+    updateWidget: () => void;
+    /** Every spawned proc, so cancellation can kill them all. Each removes itself
+     *  on exit, which makes the spawn's own setCurrentProc(null) a harmless no-op. */
+    liveProcs: Set<any>;
+    /** The live extension context (pi's ctx), read late — it is rebound per session. */
+    ctx: () => any;
+    /** pi's model registry, for deriving a context window the provider didn't report. */
+    modelRegistry: () => any;
+}) {
+    return makeSpawnWrapper({
+        state: opts.state,
+        sessionDir: opts.sessionDir,
+        agentTimeoutMs: opts.agentTimeoutMs,
+        updateWidget: opts.updateWidget,
+        setCurrentProc: (p: any) => {
+            if (p) {
+                opts.liveProcs.add(p);
+                p.once?.("close", () => opts.liveProcs.delete(p));
+                p.once?.("exit", () => opts.liveProcs.delete(p));
+            }
+        },
+        // pi's authoritative project-trust answer (pi >= 0.79.1) for the --approve
+        // decision, instead of re-reading ~/.pi/agent/trust.json by hand. Guarded so
+        // older pi (no API) yields undefined and the disk fallback applies.
+        isProjectTrusted: () => opts.ctx()?.isProjectTrusted?.(),
+        // When a sub-agent's provider doesn't report a context window in usage (e.g.
+        // gateframe's supportsUsageInStreaming:false) and the agent has none
+        // configured, derive it: first pi's registry (models.json carries
+        // contextWindow per model), then the primary session's window.
+        getFallbackContextWindow: (model: string) => {
+            try {
+                const fromRegistry = contextWindowForModel(
+                    opts.modelRegistry()?.getAll?.(),
+                    model,
+                );
+                if (fromRegistry > 0) return fromRegistry;
+            } catch {}
+            try {
+                const u = opts.ctx()?.getContextUsage?.();
+                return (u?.contextWindow || u?.context_window || 0) as number;
+            } catch {}
+            return 0;
+        },
+    });
+}
+
 export function makeSpawnWrapper(opts: {
     state: {
         totalTokens: {
@@ -1761,7 +1817,10 @@ export function publishLogs(
     );
     let content = `# Activity Logs\n\n${sections.join("\n\n")}`;
     if (content.length > WORKFLOW_REPORT_MAX) {
-        content = content.slice(0, WORKFLOW_REPORT_MAX) + "\n\n... [truncated]";
+        // Head+tail: the last phase's log is the one you reach for when a run ends
+        // badly, and a flat head slice drops exactly that — the later the phase, the
+        // more certain it is to be cut.
+        content = clampOutput(content, WORKFLOW_REPORT_MAX) + "\n\n... [truncated]";
     }
     pi.sendMessage(
         {
