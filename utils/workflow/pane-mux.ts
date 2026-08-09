@@ -19,7 +19,7 @@
 // unit-tested; the spawn/kill IO is a thin, guarded wrapper.
 
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -250,6 +250,11 @@ export interface PaneHandle {
     close(): void;
 }
 
+/** Where the opt-in pane trace is written (PI_WORKFLOW_PANES_DEBUG). Exported for tests. */
+export function paneDebugLogPath(): string {
+    return join(homedir(), ".pi", "agent", "obs", "pane-debug.log");
+}
+
 /** Open a viewer pane for a dispatched sub-agent's obs lane. Returns a handle whose
  *  close() best-effort kills the pane, or null when panes are disabled/unsupported or
  *  anything goes wrong. Never throws. */
@@ -261,7 +266,12 @@ export function openAgentPane(agent: string, dispatchId?: string, env: NodeJS.Pr
     const log = (msg: string) => {
         if (!debug) return;
         try {
-            appendFileSync(join(homedir(), ".pi", "agent", "obs", "pane-debug.log"), `${new Date().toISOString()} ${agent}: ${msg}\n`);
+            const logPath = paneDebugLogPath();
+            // The directory may not exist yet (obs never ran on this machine); without
+            // this the append throws ENOENT into the swallowing catch and the log meant
+            // to explain why panes didn't open silently writes nothing at all.
+            mkdirSync(dirname(logPath), { recursive: true });
+            appendFileSync(logPath, `${new Date().toISOString()} ${agent}: ${msg}\n`);
         } catch {
             /* best-effort */
         }

@@ -38,21 +38,44 @@ export function createCheckpoint(
             return "";
         }
     };
-    return {
-        head: safe(["rev-parse", "HEAD"]),
-        branch: safe(["rev-parse", "--abbrev-ref", "HEAD"]),
-        snapshot: safe(["stash", "create"]),
-        takenAt: now,
-        request,
-    };
+    const head = safe(["rev-parse", "HEAD"]);
+    const branch = safe(["rev-parse", "--abbrev-ref", "HEAD"]);
+    const snapshot = safe(["stash", "create"]);
+    // `stash create` builds a DANGLING commit: nothing references it, so `git gc`
+    // (or the two-week unreachable-object expiry) can prune it, after which
+    // /revert's `stash apply <sha>` throws and the pre-run uncommitted work is
+    // gone for good. `stash store` puts it in the stash reflog — making it
+    // reachable — without touching the working tree or the index.
+    if (snapshot) safe(["stash", "store", "-m", "pre-run checkpoint", snapshot]);
+    return { head, branch, snapshot, takenAt: now, request };
+}
+
+// True when a recorded checkpoint branch is a real branch we can switch back to.
+// `rev-parse --abbrev-ref HEAD` yields the literal "HEAD" on a detached HEAD, and
+// older checkpoints may carry an empty string.
+function isRealBranch(branch: string): boolean {
+    return branch !== "" && branch !== "HEAD";
 }
 
 // The ordered git commands that restore `cp` (run after backing up current state):
-// undo commits made since the checkpoint, then re-apply the pre-run uncommitted
-// work. Untracked files are intentionally NOT removed (too destructive to do
-// automatically) — the caller surfaces that caveat.
+// return to the checkpoint's branch, undo commits made since the checkpoint, then
+// re-apply the pre-run uncommitted work. Untracked files are intentionally NOT
+// removed (too destructive to do automatically) — the caller surfaces that caveat.
+//
+// The switch comes FIRST and matters: a run that started on main but moved to
+// agent/<slug> would otherwise `reset --hard <main's old tip>` while still ON the
+// agent branch, force-rewriting that branch (and any PR opened from it) and
+// leaving the user off the branch they checkpointed.
+//
+// `--force` (a.k.a. --discard-changes) is required, not incidental: the caller
+// backs the tree up with `stash create` + `stash store`, which — unlike
+// `stash push` — leaves the working tree DIRTY. A plain `switch` would abort on
+// "local changes would be overwritten" and take the whole revert down with it,
+// and those changes are exactly what the `reset --hard` on the next line
+// discards anyway.
 export function revertCommands(cp: Checkpoint): string[][] {
     const cmds: string[][] = [];
+    if (isRealBranch(cp.branch)) cmds.push(["switch", "--force", cp.branch]);
     if (cp.head) cmds.push(["reset", "--hard", cp.head]);
     if (cp.snapshot) cmds.push(["stash", "apply", cp.snapshot]);
     return cmds;
@@ -120,6 +143,7 @@ export function defaultBranchName(run: GitRunner): string {
 //        branch, then branch fresh — so a new requirement never stacks onto the
 //        finished run's branch (which, with its commits/PR, is left intact)
 //   - the user's own non-default branch        → reuse it (don't disturb it)
+//   - a detached HEAD (not a branch at all)    → create+switch agent/<slug>-<sha>
 // Returns null when branching doesn't apply or fails — not a git repo, a repo
 // with no commits yet, or a default branch we could not switch off — in which
 // case the caller records no Base and the implementer skips per-phase commits
@@ -138,8 +162,12 @@ export function ensureWorkBranch(
     };
     if (!safe(["rev-parse", "HEAD"])) return null; // no commits yet — nothing to branch from
 
+    // A detached HEAD reports the literal "HEAD" here — NOT a branch. Treating it
+    // as the user's own branch let the run commit while detached, orphaning every
+    // commit at the next checkout; fall through instead and cut agent/<slug>-<sha>
+    // from the detached sha (`switch -c` works fine from a detached HEAD).
     const current = safe(["rev-parse", "--abbrev-ref", "HEAD"]);
-    if (current && !isDefaultBranch(run, current)) {
+    if (isRealBranch(current) && !isDefaultBranch(run, current)) {
         // Off the default branch already. If it's the user's own branch, respect
         // it and build there. If it's a PRIOR agent run's branch, don't stack a
         // new requirement onto it — switch back to the default branch and start

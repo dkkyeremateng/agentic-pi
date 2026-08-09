@@ -12,7 +12,7 @@
 // diff); bounded (dedup + cap); kill switch PI_AGENT_MEMORY=0. See
 // docs/research/agent-self-improvement.md.
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +34,10 @@ export interface Lesson {
 export const MEMORY_CAP = 40;
 /** Max lessons injected into a prompt in one run. */
 export const INJECT_TOP_N = 20;
-const MAX_LESSON_CHARS = 280;
+/** Max characters in a single lesson — longer ones are dropped at commit, so the
+ *  `remember` tool enforces the same cap up front rather than confirming a save
+ *  that will be discarded. */
+export const MAX_LESSON_CHARS = 280;
 
 // ── kill switch ──────────────────────────────────────────────────────────────
 
@@ -47,7 +50,11 @@ export function memoryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 
 // ── parse / render (pure) ────────────────────────────────────────────────────
 
-const META_RE = /<!--\s*(.*?)\s*-->\s*$/;
+// Anchored at the START of the slice taken from the line's LAST `<!--` (see
+// parseMemory): matching from the FIRST one instead threw away everything after an
+// HTML comment the lesson's own text happened to contain — silent, compounding
+// text loss on every read-modify-write cycle.
+const META_RE = /^<!--\s*(.*?)\s*-->\s*$/;
 
 /** Parse a memory markdown file into lessons (bullet lines with optional
  *  `<!-- run=… added=… -->` metadata). Tolerant of hand edits. */
@@ -60,9 +67,10 @@ export function parseMemory(md: string): Lesson[] {
         let runId: string | undefined;
         let added: string | undefined;
         let source: LessonSource | undefined;
-        const m = text.match(META_RE);
+        const meta = text.lastIndexOf("<!--");
+        const m = meta >= 0 ? META_RE.exec(text.slice(meta)) : null;
         if (m) {
-            text = text.slice(0, m.index).trim();
+            text = text.slice(0, meta).trim();
             for (const kv of m[1].split(/\s+/)) {
                 const [k, val] = kv.split("=");
                 if (k === "run") runId = val;
@@ -272,11 +280,21 @@ export function readMemory(agent: string): Lesson[] {
     }
 }
 function writeMemory(agent: string, lessons: Lesson[]): void {
+    const p = memoryPath(agent);
+    const tmp = `${p}.tmp`;
     try {
         mkdirSync(memoryDir(), { recursive: true });
-        writeFileSync(memoryPath(agent), renderMemory(agent.toLowerCase(), lessons), "utf-8");
+        // Atomic replace: every write here is a read-modify-write of the WHOLE file,
+        // so a crash mid-write would truncate it and the tolerant parser would then
+        // silently drop the tail lessons forever. Write a sibling temp file and
+        // rename it over the target (rename is atomic within a filesystem).
+        writeFileSync(tmp, renderMemory(agent.toLowerCase(), lessons), "utf-8");
+        renameSync(tmp, p);
     } catch {
         /* best-effort */
+        try {
+            rmSync(tmp, { force: true });
+        } catch {}
     }
 }
 

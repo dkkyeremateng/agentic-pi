@@ -73,6 +73,18 @@ test("parseMemory ignores prose/headers, keeps bullets", () => {
     assert.equal(parseMemory("- a hand-written lesson\n")[0].text, "a hand-written lesson");
 });
 
+test("parseMemory keeps lesson text that itself contains an HTML comment", () => {
+    // The meta comment is the LAST one on the line. Matching from the FIRST `<!--`
+    // truncated the lesson there, and the loss compounded on every rewrite.
+    const lessons = [L("strip <!-- generated --> markers from the html output", { runId: "r1", added: "2026-08-08", source: "remember" })];
+    const back = parseMemory(renderMemory("implementer", lessons));
+    assert.deepEqual(back, lessons);
+    // stable across a read-modify-write cycle (the shape that lost the text)
+    assert.deepEqual(parseMemory(renderMemory("implementer", back)), lessons);
+    // a comment with no meta after it is left entirely alone
+    assert.equal(parseMemory("- keep <!-- this --> and this")[0].text, "keep <!-- this --> and this");
+});
+
 test("dedupeAppend skips near-duplicates and overlong, adds new", () => {
     const cur = [L("check the tsconfig paths alias")];
     const next = dedupeAppend(cur, ["Check the tsconfig paths alias.", "run the linter", "x".repeat(500)], { runId: "r2", day: "2026-07-02" });
@@ -165,6 +177,30 @@ test("memory writes can't escape memoryDir via a crafted agent name", () => {
         const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
         assert.equal(files.length, 1);
         assert.match(files[0], /^[a-z0-9_-]+\.md$/); // no separators / dots survived
+    } finally {
+        if (prev === undefined) delete process.env.PI_AGENT_MEMORY_DIR;
+        else process.env.PI_AGENT_MEMORY_DIR = prev;
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test("memory files are written atomically (temp + rename, no leftovers)", () => {
+    // Every write is a read-modify-write of the whole file: an in-place writeFileSync
+    // that crashes mid-write truncates it, and the tolerant parser then drops the
+    // tail lessons forever.
+    const dir = mkdtempSync(join(tmpdir(), "mem-atomic-"));
+    const prev = process.env.PI_AGENT_MEMORY_DIR;
+    process.env.PI_AGENT_MEMORY_DIR = dir;
+    try {
+        const noTmp = () => assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith(".tmp")), []);
+        assert.equal(addLessons("scribe", ["prefer a rename over an in-place rewrite"], {}), 1);
+        const file = join(dir, "scribe.md");
+        assert.match(readFileSync(file, "utf-8"), /prefer a rename over an in-place rewrite/);
+        noTmp();
+        // a second write replaces the file wholesale and still leaves nothing behind
+        assert.equal(addLessons("scribe", ["and keep the parser tolerant of hand edits"], {}), 1);
+        assert.equal(parseMemory(readFileSync(file, "utf-8")).length, 2);
+        noTmp();
     } finally {
         if (prev === undefined) delete process.env.PI_AGENT_MEMORY_DIR;
         else process.env.PI_AGENT_MEMORY_DIR = prev;

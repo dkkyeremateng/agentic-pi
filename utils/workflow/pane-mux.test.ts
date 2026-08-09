@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
     detectMux,
     panesEnabled,
@@ -13,6 +16,8 @@ import {
     publishHasUi,
     interactivePi,
     paneSplitDir,
+    openAgentPane,
+    paneDebugLogPath,
 } from "./pane-mux";
 
 test("detectMux picks the split surface from env (tmux → zellij → wezterm → kitty → iTerm2)", () => {
@@ -134,6 +139,25 @@ test("externalSteerActive reflects the published getter (Telegram/chat steer →
     assert.equal(externalSteerActive(), true); // servicing an injected Telegram/chat prompt
     publishExternalSteer(() => false); // reset so we don't leak into other tests
     assert.equal(externalSteerActive(), false);
+});
+
+test("the pane debug trace creates its log directory (it silently wrote nothing without it)", () => {
+    const home = mkdtempSync(join(tmpdir(), "pane-home-"));
+    const prevHome = process.env.HOME;
+    process.env.HOME = home; // os.homedir() honours $HOME on POSIX
+    try {
+        // Panes are off, so openAgentPane bails — but the whole point of the trace is
+        // to say WHY, which needs ~/.pi/agent/obs/ to exist first.
+        assert.equal(openAgentPane("scout", undefined, { PI_WORKFLOW_PANES_DEBUG: "1" }), null);
+        const log = paneDebugLogPath();
+        assert.ok(log.startsWith(home), "log path follows $HOME");
+        assert.ok(existsSync(log), "the debug log was created");
+        assert.match(readFileSync(log, "utf-8"), /scout: skip/);
+    } finally {
+        if (prevHome === undefined) delete process.env.HOME;
+        else process.env.HOME = prevHome;
+        rmSync(home, { recursive: true, force: true });
+    }
 });
 
 test("viewerArgv runs this node over obs-watch scoped to run + agent (+ optional sink)", () => {

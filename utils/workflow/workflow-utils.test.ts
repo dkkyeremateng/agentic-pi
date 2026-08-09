@@ -194,6 +194,41 @@ describe("detectCritique", () => {
     it("returns unknown when neither a marker nor a standalone verdict line is present", () => {
         assert.equal(detectCritique("the code looks fine to me overall"), "unknown");
     });
+
+    it("does not read the word 'approved' buried in prose as an approval", () => {
+        // The bare-substring match used to make every one of these an approval,
+        // defeating the review gate.
+        assert.notEqual(detectCritique("this is not approved"), "approved");
+        assert.notEqual(detectCritique("this remains unapproved"), "approved");
+        assert.notEqual(detectCritique("this cannot be approved as written"), "approved");
+        assert.equal(detectCritique("this remains unapproved"), "unknown");
+    });
+
+    it("keeps an explicit REVISE verdict when later prose mentions approval", () => {
+        // "last marker wins" + a substring match let trailing prose reopen the gate.
+        const output = [
+            "## Verdict",
+            "REVISE BEFORE MERGE",
+            "",
+            "The migration drops a column without a backfill.",
+            "Once that is fixed it can be approved later.",
+        ].join("\n");
+        assert.equal(detectCritique(output), "revise");
+    });
+
+    it("still accepts a decorated or labelled verdict line", () => {
+        assert.equal(detectCritique("## Verdict\n**APPROVED**\n\nLooks good."), "approved");
+        assert.equal(detectCritique("Verdict: APPROVED — nice work"), "approved");
+        assert.equal(
+            detectCritique("**APPROVED WITH RESERVATIONS**\n\nMinor notes below."),
+            "approved-with-reservations",
+        );
+    });
+
+    it("finds a verdict past the 20-line fallback window (marker scan is whole-output)", () => {
+        const output = ["## Review", ...Array(30).fill("some finding"), "APPROVED"].join("\n");
+        assert.equal(detectCritique(output), "approved");
+    });
 });
 
 describe("digest", () => {
@@ -381,6 +416,20 @@ describe("isModelFailure", () => {
     it("detects 400 bad request error", () => {
         assert.equal(
             isModelFailure("[agent error] 400 Bad request - invalid model"),
+            true,
+        );
+    });
+
+    it("returns false for domain prose about a data model", () => {
+        // The proximity heuristics must not misroute a LOGICAL failure (bad output)
+        // into a fallback-model retry just because "model" sits near "invalid".
+        assert.equal(isModelFailure("The data model is invalid: orders has no customer id."), false);
+        assert.equal(isModelFailure("The pricing model does not exist in the schema yet."), false);
+    });
+
+    it("still detects a model error stated on an error line", () => {
+        assert.equal(
+            isModelFailure("[agent error] the requested model is unavailable right now"),
             true,
         );
     });

@@ -66,6 +66,7 @@ describe("createCheckpoint", () => {
                 "rev-parse HEAD": "abc123",
                 "rev-parse --abbrev-ref HEAD": "main",
                 "stash create": "stash99",
+                "stash store -m pre-run checkpoint stash99": "",
             }),
             "fix the bug",
             1000,
@@ -77,6 +78,60 @@ describe("createCheckpoint", () => {
             takenAt: 1000,
             request: "fix the bug",
         });
+    });
+
+    it("stores the snapshot so git gc cannot prune the dangling stash commit", () => {
+        // `stash create` alone leaves an unreferenced commit: once it is pruned,
+        // /revert's `stash apply <sha>` throws and the pre-run work is unrecoverable.
+        const calls: string[][] = [];
+        const run = (args: string[]): string => {
+            calls.push(args);
+            const key = args.join(" ");
+            if (key === "rev-parse --is-inside-work-tree") return "true";
+            if (key === "rev-parse HEAD") return "abc123";
+            if (key === "rev-parse --abbrev-ref HEAD") return "main";
+            if (key === "stash create") return "stash99";
+            if (args[0] === "stash" && args[1] === "store") return "";
+            throw new Error(`unexpected git ${key}`);
+        };
+        const cp = createCheckpoint(run, "req", 1);
+        assert.equal(cp?.snapshot, "stash99");
+        assert.deepEqual(
+            calls.filter((c) => c[1] === "store"),
+            [["stash", "store", "-m", "pre-run checkpoint", "stash99"]],
+        );
+    });
+
+    it("does not store anything when the tree was clean", () => {
+        const calls: string[][] = [];
+        const run = (args: string[]): string => {
+            calls.push(args);
+            const key = args.join(" ");
+            if (key === "rev-parse --is-inside-work-tree") return "true";
+            if (key === "rev-parse HEAD") return "abc123";
+            if (key === "rev-parse --abbrev-ref HEAD") return "main";
+            if (key === "stash create") return "";
+            throw new Error(`unexpected git ${key}`);
+        };
+        assert.equal(createCheckpoint(run, "req", 1)?.snapshot, "");
+        assert.equal(calls.some((c) => c[1] === "store"), false);
+    });
+
+    it("survives a git that cannot store the stash (best-effort)", () => {
+        const cp = createCheckpoint(
+            fakeRunner({
+                "rev-parse --is-inside-work-tree": "true",
+                "rev-parse HEAD": "abc123",
+                "rev-parse --abbrev-ref HEAD": "main",
+                "stash create": "stash99",
+                "stash store -m pre-run checkpoint stash99": () => {
+                    throw new Error("store failed");
+                },
+            }),
+            "req",
+            1,
+        );
+        assert.equal(cp?.snapshot, "stash99");
     });
 
     it("tolerates a repo with no commits and a clean tree (empty strings)", () => {
@@ -106,20 +161,45 @@ describe("revertCommands", () => {
         takenAt: 0,
         request: "",
     };
-    it("resets to head then applies the snapshot", () => {
+    it("switches back to the checkpoint branch, resets to head, then applies the snapshot", () => {
+        // The switch MUST come first: the run may have moved to agent/<slug>, and
+        // resetting there would force-rewrite that branch (and any PR from it) to
+        // the checkpoint branch's old tip.
         assert.deepEqual(revertCommands(base), [
+            ["switch", "--force", "main"],
             ["reset", "--hard", "abc"],
             ["stash", "apply", "stash1"],
         ]);
     });
+    it("forces the switch, because the caller's backup leaves the tree dirty", () => {
+        // extensions/revert.ts backs up with `stash create` + `stash store`, which
+        // (unlike `stash push`) does NOT clean the working tree. A plain `switch`
+        // would abort with "local changes would be overwritten" and take the whole
+        // revert with it — and those changes are what the next `reset --hard`
+        // discards anyway.
+        assert.deepEqual(revertCommands(base)[0], ["switch", "--force", "main"]);
+    });
     it("omits reset when there was no head", () => {
         assert.deepEqual(revertCommands({ ...base, head: "" }), [
+            ["switch", "--force", "main"],
             ["stash", "apply", "stash1"],
         ]);
     });
     it("omits stash apply when the tree was clean", () => {
         assert.deepEqual(revertCommands({ ...base, snapshot: "" }), [
+            ["switch", "--force", "main"],
             ["reset", "--hard", "abc"],
+        ]);
+    });
+    it("omits the switch when the checkpoint was detached or has no branch", () => {
+        // `rev-parse --abbrev-ref HEAD` reports the literal "HEAD" when detached.
+        assert.deepEqual(revertCommands({ ...base, branch: "HEAD" }), [
+            ["reset", "--hard", "abc"],
+            ["stash", "apply", "stash1"],
+        ]);
+        assert.deepEqual(revertCommands({ ...base, branch: "" }), [
+            ["reset", "--hard", "abc"],
+            ["stash", "apply", "stash1"],
         ]);
     });
 });
@@ -315,6 +395,31 @@ describe("ensureWorkBranch", () => {
             created: true,
         });
         assert.equal(branch, "agent/new-feature-bbbbbbb"); // ended on the fresh branch
+    });
+
+    it("branches off a DETACHED HEAD instead of committing while detached", () => {
+        // `rev-parse --abbrev-ref HEAD` returns the literal "HEAD" when detached; it
+        // is not a branch, so the run must cut agent/<slug>-<sha> from the detached
+        // sha rather than pile commits onto a HEAD that orphans them at checkout.
+        const switched: string[][] = [];
+        const run = (args: string[]): string => {
+            const key = args.join(" ");
+            if (key === "rev-parse --is-inside-work-tree") return "true";
+            if (key === "rev-parse HEAD") return "cafebabe1234";
+            if (key === "rev-parse --abbrev-ref HEAD") return "HEAD";
+            if (args[0] === "switch") {
+                switched.push(args);
+                return "";
+            }
+            throw new Error(`unexpected git ${key}`);
+        };
+        const wb = ensureWorkBranch(run, "detached work");
+        assert.deepEqual(wb, {
+            branch: "agent/detached-work-cafebab",
+            base: "cafebabe1234",
+            created: true,
+        });
+        assert.deepEqual(switched, [["switch", "-c", "agent/detached-work-cafebab"]]);
     });
 
     it("returns null when not a git repo", () => {
