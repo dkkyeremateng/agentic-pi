@@ -79,6 +79,16 @@ downstream agents, so it is never re-threaded through the context.
   `on-context-tag` mode; in the default `agent-message` mode the agents'
   `context_tag` calls are just harmless bookmarks.
 
+  **Patch the pruner for sub-agents — `npm run patch:prune`.** In `agent-message`
+  mode (the recommended one) pruning flushes only on the *final* assistant message.
+  That never happens mid-run in a spawned sub-agent, which runs `pi -p`: one user
+  turn, many tool-calling messages, one final message at the very end. So sub-agents
+  accumulate every turn's tool output for the whole phase and flush once, uselessly,
+  at the end — measured here as a phase-implementer reaching 98.6% of a 256k window
+  and truncating a turn. The patch also flushes per turn when the session is headless
+  (`ctx.hasUI === false`), leaving interactive sessions and their prefix cache alone.
+  `pi update` wipes it, so re-run `npm run patch:prune` after upgrading.
+
 ## Quick start
 
 ```bash
