@@ -33,6 +33,12 @@ import { stageLearning, readStaged } from "./memory";
 
 // Run with: npx tsx --test orchestrator-core.test.ts
 
+// Isolate agent memory for the WHOLE file. Several tests drive dispatch/workflow
+// paths that end in commitStagedLearnings, which WRITES <agent>.md — and its
+// default target is this repo's own agents/memory/. Without this the suite leaves
+// files behind in the working tree on every run.
+process.env.PI_AGENT_MEMORY_DIR = mkdtempSync(join(tmpdir(), "orch-test-memory-"));
+
 // ── Test helpers ─────────────────────────────────
 
 function mkAgent(name: string): AgentDef {
