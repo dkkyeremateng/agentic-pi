@@ -347,9 +347,10 @@ if [[ "$MODE" == "both" || "$MODE" == "emit" ]]; then
 fi
 # --panes: a live viewer pane per dispatched sub-agent. Best-effort — pane-mux
 # no-ops cleanly when not in a supported multiplexer, when not an interactive pi
-# session, or below the root orchestrator. Panes open for the sub-agents the
-# INTERACTIVE root dispatches directly: run the implementer as your top-level
-# agent and every phase-implementer it spawns gets its own pane.
+# session, or deeper than the pane depth limit. Panes open for what the INTERACTIVE
+# root dispatches AND one level below, so a workflow's implementer shows each
+# phase-implementer it spawns (a parallel wave opens one pane per phase at once).
+# Raise PI_WORKFLOW_PANES_MAX_DEPTH for deeper nesting, or set it to 0 for root only.
 [[ -n "$PANES" ]] && export PI_WORKFLOW_PANES=1
 if [[ "$MODE" == "both" ]]; then
     # Start the dashboard server in the background, tailing the shared sink.

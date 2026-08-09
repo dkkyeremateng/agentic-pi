@@ -13,6 +13,7 @@ import {
     publishExternalSteer,
     externalSteerActive,
     panesReason,
+    maxPaneDepth,
     publishHasUi,
     interactivePi,
     paneSplitDir,
@@ -40,7 +41,7 @@ test("panesEnabled requires the flag, obs, an interactive TTY, a mux, AND root d
     assert.equal(panesEnabled({ ...base, PI_WORKFLOW_PANES: "0" }, tty), false); // flag off
     assert.equal(panesEnabled({ ...base, PI_OBS: "" }, tty), false); // obs off
     assert.equal(panesEnabled({ PI_WORKFLOW_PANES: "1", PI_OBS: "1" }, tty), false); // no mux
-    assert.equal(panesEnabled({ ...base, PI_DISPATCH_DEPTH: "1" }, tty), false); // nested, not root
+    assert.equal(panesEnabled({ ...base, PI_DISPATCH_DEPTH: "2" }, tty), false); // deeper than the pane limit
     assert.equal(panesEnabled({ ...base, PI_WORKFLOW_PANES: "true" }, tty), true); // truthy variants
     // no interactive terminal (Telegram / pi-obs chat drive the agent headless) → no panes,
     // even with the flag, obs, a mux, and $TMUX all present (inherited from the bridge).
@@ -53,7 +54,7 @@ test("panesReason names the failing gate, null when all pass", () => {
     assert.match(panesReason({ ...base, PI_WORKFLOW_PANES: "0" }, true)!, /PI_WORKFLOW_PANES/);
     assert.match(panesReason({ ...base, PI_OBS: "" }, true)!, /PI_OBS/);
     assert.match(panesReason(base, false)!, /interactive/); // headless (Telegram/chat)
-    assert.match(panesReason({ ...base, PI_DISPATCH_DEPTH: "2" }, true)!, /root orchestrator/);
+    assert.match(panesReason({ ...base, PI_DISPATCH_DEPTH: "2" }, true)!, /exceeds the pane limit/);
     assert.match(panesReason({ PI_WORKFLOW_PANES: "1", PI_OBS: "1" }, true)!, /split surface/);
     // iTerm2 alone (no tmux) satisfies the surface gate
     assert.equal(panesReason({ PI_WORKFLOW_PANES: "1", PI_OBS: "1", TERM_PROGRAM: "iTerm.app" }, true), null);
@@ -167,4 +168,42 @@ test("viewerArgv runs this node over obs-watch scoped to run + agent (+ optional
     assert.deepEqual(withSink.slice(-2), ["--sink", "/s.jsonl"]);
     const withDispatch = viewerArgv("run-9", "scout", { execPath: "/n", script: "/w.ts", dispatchId: "scout-42" });
     assert.equal(withDispatch[withDispatch.indexOf("--dispatch") + 1], "scout-42");
+});
+
+// A spawned sub-agent is headless (piped stdio), so it cannot judge "interactive"
+// from its own tty. The decision is inherited from the process that could.
+test("a sub-agent opens panes only when a pane-enabled parent marked it", () => {
+    const mux = { PI_WORKFLOW_PANES: "1", PI_OBS: "1", TMUX: "x" };
+    // The implementer is itself a pipeline phase at depth 1: this is the fan-out
+    // worth watching, and before the marker it could never be shown.
+    assert.equal(
+        panesEnabled({ ...mux, PI_DISPATCH_DEPTH: "1", PI_WORKFLOW_PANES_OK: "1" }, false),
+        true,
+    );
+    // Telegram / pi-obs chat: the root was headless, so it never set the marker and
+    // its descendants stay excluded even though $TMUX leaked in from the bridge.
+    assert.equal(panesEnabled({ ...mux, PI_DISPATCH_DEPTH: "1" }, false), false);
+    assert.match(
+        panesReason({ ...mux, PI_DISPATCH_DEPTH: "1" }, false)!,
+        /interactive/,
+    );
+});
+
+test("pane depth limit defaults to 1 and is configurable", () => {
+    const mux = { PI_WORKFLOW_PANES: "1", PI_OBS: "1", TMUX: "x", PI_WORKFLOW_PANES_OK: "1" };
+    assert.equal(maxPaneDepth({}), 1);
+    assert.equal(maxPaneDepth({ PI_WORKFLOW_PANES_MAX_DEPTH: "2" }), 2);
+    assert.equal(maxPaneDepth({ PI_WORKFLOW_PANES_MAX_DEPTH: "0" }), 0, "0 = root only");
+    assert.equal(maxPaneDepth({ PI_WORKFLOW_PANES_MAX_DEPTH: "junk" }), 1, "garbage falls back");
+
+    assert.equal(panesEnabled({ ...mux, PI_DISPATCH_DEPTH: "2" }, false), false);
+    assert.equal(
+        panesEnabled({ ...mux, PI_DISPATCH_DEPTH: "2", PI_WORKFLOW_PANES_MAX_DEPTH: "2" }, false),
+        true,
+    );
+    // 0 restores the old root-only behaviour.
+    assert.equal(
+        panesEnabled({ ...mux, PI_DISPATCH_DEPTH: "1", PI_WORKFLOW_PANES_MAX_DEPTH: "0" }, false),
+        false,
+    );
 });
