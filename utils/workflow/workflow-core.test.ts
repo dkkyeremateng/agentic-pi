@@ -31,6 +31,9 @@ import {
     subagentEnv,
     buildWorkflowReport,
     publishLogs,
+    phasePeakContext,
+    phaseUnderContextPressure,
+    contextPressureNote,
     stripInheritedSecrets,
     renderWorkflowFooter,
     formatContextUsage,
@@ -2478,5 +2481,68 @@ describe("activity log truncation keeps the tail", () => {
         assert.ok(!/truncated/.test(sent[0].content));
         publishLogs(pi, []);
         assert.equal(sent.length, 1, "no message for an empty log set");
+    });
+});
+
+describe("context pressure reporting", () => {
+    const mk = (over: Partial<any> = {}): any => ({
+        label: "Implementer",
+        agent: "implementer",
+        status: "done",
+        elapsed: 1000,
+        note: "",
+        droppedLines: 0,
+        contextPct: 40,
+        attempt: 1,
+        ...over,
+    });
+
+    it("uses the PEAK, not the last reading", () => {
+        // Pruning pulls the live reading back down, so a phase that ran right up to
+        // the window and recovered would otherwise leave no trace of how close it got.
+        assert.equal(phasePeakContext(mk({ contextPct: 30, peakContextPct: 98 })), 98);
+        assert.equal(phaseUnderContextPressure(mk({ contextPct: 30, peakContextPct: 98 })), true);
+    });
+
+    it("falls back to the last reading for phases with no peak recorded", () => {
+        assert.equal(phasePeakContext(mk({ contextPct: 95, peakContextPct: undefined })), 95);
+        assert.equal(phaseUnderContextPressure(mk({ contextPct: 95 })), true);
+    });
+
+    it("flags a truncated phase at any context level", () => {
+        // stopReason "length" is not a risk, it is a fact: that turn WAS cut off.
+        assert.equal(
+            phaseUnderContextPressure(mk({ contextPct: 12, lastStopReason: "length" })),
+            true,
+        );
+        assert.equal(
+            phaseUnderContextPressure(mk({ contextPct: 12, lastStopReason: "max_tokens" })),
+            true,
+        );
+    });
+
+    it("stays quiet for a comfortable phase", () => {
+        assert.equal(phaseUnderContextPressure(mk({ contextPct: 39, peakContextPct: 41 })), false);
+        assert.deepEqual(contextPressureNote([mk({ peakContextPct: 41 })]), []);
+        assert.deepEqual(contextPressureNote([null, null]), []);
+    });
+
+    it("names every pressured phase and calls out truncation specifically", () => {
+        const note = contextPressureNote([
+            mk({ label: "Implementer", peakContextPct: 99, lastStopReason: "length" }),
+            mk({ label: "Reviewer", peakContextPct: 39 }),
+            mk({ label: "Validator", peakContextPct: 93 }),
+        ]).join("\n");
+        assert.match(note, /Implementer 99% \(TRUNCATED\)/);
+        assert.match(note, /Validator 93%/);
+        assert.ok(!/Reviewer/.test(note), "a comfortable phase is not named");
+        assert.match(note, /cut off mid-turn/);
+        assert.match(note, /PI_AGENT_<NAME>_MODEL/);
+    });
+
+    it("advises differently when nothing truncated", () => {
+        const note = contextPressureNote([mk({ peakContextPct: 93 })]).join("\n");
+        assert.match(note, /Quality degrades before this errors/);
+        assert.ok(!/cut off mid-turn/.test(note));
     });
 });
