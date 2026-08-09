@@ -25,6 +25,8 @@ import {
     runWorkflowCore,
     streamDispatchEnabled,
     renderDispatchActivity,
+    countDispatchesSince,
+    freshContextViolated,
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
 import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
@@ -4358,5 +4360,304 @@ describe("runFullWorkflowCommand completion notice", () => {
         const done = notices[notices.length - 1];
         assert.match(done, /Workflow done/);
         assert.match(done, /workflow-report\.md/);
+    });
+});
+
+// ── Fresh-context guarantee: every phase of a multi-phase plan gets its own worker ──
+
+describe("fresh-context audit", () => {
+    const MULTI = [
+        "## Phase 1: First",
+        "Edit `src/a.ts`.",
+        "",
+        "## Phase 2: Second",
+        "Edit `src/b.ts`.",
+        "",
+        "## Phase 3: Third",
+        "Edit `src/c.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+    const SINGLE = [
+        "## Phase 1: Only",
+        "Edit `src/a.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+
+    const histDir = () => mkdtempSync(join(tmpdir(), "dispatch-hist-"));
+    const writeHist = (dir: string, recs: object[]) =>
+        writeFileSync(
+            join(dir, "dispatch-history.jsonl"),
+            recs.map((r) => JSON.stringify(r)).join("\n") + "\n",
+            "utf-8",
+        );
+
+    it("counts only this run's phase-implementer dispatches", () => {
+        const dir = histDir();
+        const t0 = Date.parse("2026-08-09T10:00:00.000Z");
+        writeHist(dir, [
+            // A PREVIOUS run's dispatch — must not satisfy this run's audit.
+            { ts: "2026-08-09T09:59:00.000Z", agent: "phase-implementer" },
+            { ts: "2026-08-09T10:00:01.000Z", agent: "phase-implementer" },
+            { ts: "2026-08-09T10:00:02.000Z", agent: "phase-implementer" },
+            // A different agent dispatched in-window doesn't count either.
+            { ts: "2026-08-09T10:00:03.000Z", agent: "seeker" },
+        ]);
+        assert.equal(countDispatchesSince(t0, "phase-implementer", dir), 2);
+        assert.equal(countDispatchesSince(t0, "seeker", dir), 1);
+    });
+
+    it("tolerates a missing, empty or torn history file", () => {
+        const dir = histDir();
+        assert.equal(countDispatchesSince(0, "phase-implementer", dir), 0);
+        writeFileSync(
+            join(dir, "dispatch-history.jsonl"),
+            '{"ts":"2026-08-09T10:00:01.000Z","agent":"phase-implementer"}\n{"ts":"2026-0',
+            "utf-8",
+        );
+        // The torn tail is skipped; the intact record still counts.
+        assert.equal(countDispatchesSince(0, "phase-implementer", dir), 1);
+    });
+
+    it("flags a multi-phase plan implemented with zero dispatches", () => {
+        const dir = histDir();
+        assert.equal(freshContextViolated(MULTI, 0, dir), true);
+    });
+
+    it("does not flag a multi-phase plan that dispatched", () => {
+        const dir = histDir();
+        writeHist(dir, [
+            { ts: new Date(Date.now() + 1000).toISOString(), agent: "phase-implementer" },
+        ]);
+        assert.equal(freshContextViolated(MULTI, 0, dir), false);
+    });
+
+    it("never flags a single-phase plan — there is no later phase to protect", () => {
+        const dir = histDir();
+        assert.equal(freshContextViolated(SINGLE, 0, dir), false);
+    });
+
+    it("retries the implementer once, with the violation named in the task", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "fresh-ctx-retry-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), MULTI, "utf-8");
+        // Empty session dir => zero dispatches recorded => audit fires.
+        const prevDir = process.env.PI_WORKFLOW_SESSION_DIR;
+        process.env.PI_WORKFLOW_SESSION_DIR = histDir();
+        try {
+            const implTasks: string[] = [];
+            const host = mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runPhase: async (phase, task) => {
+                        if (phase.agent === "implementer") implTasks.push(task);
+                        if (phase.agent === "reviewer")
+                            return { output: "APPROVED", ok: true };
+                        return { output: "impl output", ok: true };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents, {
+                teams: { t: ["implementer", "reviewer"] },
+                activeTeamName: "t",
+            });
+            await runWorkflowCore(st, host, "Build X", 2, { cwd });
+
+            assert.equal(implTasks.length, 2, "the implementer runs twice");
+            assert.ok(
+                !/PROCESS VIOLATION/.test(implTasks[0]),
+                "the first task is the normal one",
+            );
+            assert.match(implTasks[1], /PROCESS VIOLATION/);
+            assert.match(implTasks[1], /3 phases/);
+            assert.match(implTasks[1], /dispatch_parallel/);
+            // Still zero dispatches on the retry: the run continues (the code may be
+            // fine) but the breach is stamped on the summary the reviewer reads.
+            assert.equal(st.freshContextViolation, true);
+        } finally {
+            if (prevDir === undefined) delete process.env.PI_WORKFLOW_SESSION_DIR;
+            else process.env.PI_WORKFLOW_SESSION_DIR = prevDir;
+        }
+    });
+
+    it("does not retry when the implementer delegated", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "fresh-ctx-ok-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), MULTI, "utf-8");
+        const dir = histDir();
+        const prevDir = process.env.PI_WORKFLOW_SESSION_DIR;
+        process.env.PI_WORKFLOW_SESSION_DIR = dir;
+        try {
+            let implRuns = 0;
+            const host = mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runPhase: async (phase) => {
+                        if (phase.agent === "implementer") {
+                            implRuns++;
+                            // The implementer's child process would write these.
+                            writeHist(dir, [
+                                { ts: new Date().toISOString(), agent: "phase-implementer" },
+                                { ts: new Date().toISOString(), agent: "phase-implementer" },
+                                { ts: new Date().toISOString(), agent: "phase-implementer" },
+                            ]);
+                            return { output: "impl output", ok: true };
+                        }
+                        if (phase.agent === "reviewer")
+                            return { output: "APPROVED", ok: true };
+                        return { output: "", ok: true };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents, {
+                teams: { t: ["implementer", "reviewer"] },
+                activeTeamName: "t",
+            });
+            await runWorkflowCore(st, host, "Build X", 2, { cwd });
+
+            assert.equal(implRuns, 1, "no retry when phases were delegated");
+            assert.ok(!st.freshContextViolation);
+        } finally {
+            if (prevDir === undefined) delete process.env.PI_WORKFLOW_SESSION_DIR;
+            else process.env.PI_WORKFLOW_SESSION_DIR = prevDir;
+        }
+    });
+});
+
+describe("fresh-context audit — retry only when it can achieve something", () => {
+    const MULTI = [
+        "## Phase 1: First",
+        "Edit `src/a.ts`.",
+        "",
+        "## Phase 2: Second",
+        "Edit `src/b.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+
+    it("skips the pointless retry when every phase is already checked off, but still flags it", async () => {
+        // The implementer did everything inline AND ticked every ledger box. The
+        // retry note says not to redo `[x]` phases, so a re-run would find nothing
+        // to do — spend nothing, but make sure the breach still reaches the reviewer.
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "fresh-ctx-done-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), MULTI, "utf-8");
+        const prevDir = process.env.PI_WORKFLOW_SESSION_DIR;
+        process.env.PI_WORKFLOW_SESSION_DIR = mkdtempSync(
+            join(tmpdir(), "dispatch-hist-"),
+        );
+        try {
+            let implRuns = 0;
+            let reviewerSaw = "";
+            const host = mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runPhase: async (phase, task) => {
+                        if (phase.agent === "implementer") {
+                            implRuns++;
+                            // Inline work, every box ticked.
+                            writeFileSync(
+                                join(cwd, ".agent", "progress.md"),
+                                "# Implementation progress\n\n- [x] Phase 1: First\n- [x] Phase 2: Second\n",
+                                "utf-8",
+                            );
+                            return { output: "did it all myself", ok: true };
+                        }
+                        if (phase.agent === "reviewer") {
+                            reviewerSaw = task;
+                            return { output: "APPROVED", ok: true };
+                        }
+                        return { output: "", ok: true };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents, {
+                teams: { t: ["implementer", "reviewer"] },
+                activeTeamName: "t",
+            });
+            await runWorkflowCore(st, host, "Build X", 2, { cwd });
+
+            assert.equal(implRuns, 1, "no wasted retry when nothing is left to do");
+            assert.equal(st.freshContextViolation, true);
+            // The breach rides into the reviewer's task via the impl summary.
+            assert.match(reviewerSaw, /\[PROCESS\]/);
+            assert.match(reviewerSaw, /single context/);
+        } finally {
+            if (prevDir === undefined) delete process.env.PI_WORKFLOW_SESSION_DIR;
+            else process.env.PI_WORKFLOW_SESSION_DIR = prevDir;
+        }
+    });
+});
+
+describe("implementer fix loops start from a fresh session", () => {
+    const PLAN = [
+        "## Phase 1: Do the work",
+        "Edit `src/a.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+
+    it("gives each review-fix round its own session epoch", async () => {
+        // Single-phase plan, so the fresh-context audit stays out of the way and we
+        // are measuring only the loop axis.
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "fix-loop-session-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), PLAN, "utf-8");
+
+        const epochs: (string | undefined)[] = [];
+        let reviews = 0;
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "implementer") {
+                        epochs.push(phase.sessionEpoch);
+                        return { output: "impl", ok: true };
+                    }
+                    if (phase.agent === "reviewer") {
+                        reviews++;
+                        return reviews === 1
+                            ? { output: "REVISE BEFORE MERGE\nfix the error path", ok: true }
+                            : { output: "APPROVED", ok: true };
+                    }
+                    return { output: "", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { t: ["implementer", "reviewer"] },
+            activeTeamName: "t",
+        });
+        await runWorkflowCore(st, host, "Build X", 3, { cwd });
+
+        assert.equal(epochs.length, 2, "first pass plus one review fix");
+        assert.equal(epochs[0], undefined, "the first pass resumes nothing");
+        assert.ok(epochs[1], "the fix round asks for a fresh session");
+        assert.notEqual(epochs[0], epochs[1]);
     });
 });
