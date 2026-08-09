@@ -1962,6 +1962,45 @@ describe("setupSessions", () => {
         utimesSync(path, t, t);
     };
 
+    // PI_WORKFLOW_SESSION_DIR commonly points at ~/.pi/agent/sessions, which is
+    // ALSO where pi keeps its own interactive sessions (what `pi -r` resumes) in
+    // sibling per-project subdirs. Recursing into subdirs to fix the wipe put those
+    // in range of this sweep; they are not ours to delete.
+    it("never deletes pi's own interactive sessions — not on wipe, not on TTL", () => {
+        const piOwn = join(dir, "-Users-someone-a-project--");
+        mkdirSync(piOwn, { recursive: true });
+        const a = join(piOwn, "2026-06-23T13-46-05-248Z_019ef4bb-2240-7100.jsonl");
+        const b = join(piOwn, "2026-06-29T09-42-44-489Z_tg-1564452899.jsonl");
+        writeFileSync(a, '{"a":1}\n');
+        writeFileSync(b, '{"a":1}\n');
+        age(a, 40);
+        age(b, 40);
+        // Same-named file inside OUR project subdir is equally protected.
+        const inOurs = join(sub, "2026-06-23T13-46-05-248Z_deadbeef.jsonl");
+        writeFileSync(inOurs, '{"a":1}\n');
+        age(inOurs, 40);
+
+        setupSessions(CWD, true); // the destructive path
+
+        assert.equal(existsSync(a), true, "pi session in a sibling subdir survives");
+        assert.equal(existsSync(b), true, "pi session survives the TTL sweep");
+        assert.equal(
+            existsSync(inOurs),
+            true,
+            "a pi-named session even inside our own subdir survives the wipe",
+        );
+    });
+
+    it("still deletes our own agent sessions in that same tree", () => {
+        const other = join(dir, projectSessionHash("/tmp/other-proj"));
+        mkdirSync(other, { recursive: true });
+        const ours = join(other, "implementer-fix2.jsonl");
+        writeFileSync(ours, '{"a":1}\n');
+        age(ours, 40);
+        setupSessions(CWD, false);
+        assert.equal(existsSync(ours), false, "aged workflow sessions still expire");
+    });
+
     it("wipes the per-project subdir, not just the top level", () => {
         writeFileSync(join(sub, "planner.jsonl"), '{"a":1}\n');
         writeFileSync(join(dir, "flat.jsonl"), '{"a":1}\n');

@@ -1569,6 +1569,26 @@ const SESSION_TTL_MS =
 // history here and that observability trail is meant to outlive a run.
 const SESSION_KEEP_FILES = new Set(["dispatch-history.jsonl"]);
 
+// Is this file one of OURS — a workflow agent session we may delete?
+//
+// This matters because PI_WORKFLOW_SESSION_DIR commonly points at
+// `~/.pi/agent/sessions`, which is ALSO where pi keeps its own interactive
+// sessions (the ones `pi -r` / `--continue` resume), in sibling per-project
+// subdirectories of the very tree we sweep. Deleting those would destroy the
+// user's own chat history, which is not ours to expire.
+//
+// The two namings are unambiguous, so key on that: pi names a session for when it
+// started (`2026-06-23T13-46-05-248Z_019ef4bb-….jsonl`) — always leading with the
+// year — while we name ours for the agent (`planner.jsonl`, `seeker-<dispatchId>`,
+// `implementer-fix2`), always leading with a letter. Anything that does not look
+// like an agent-named file is left alone; being wrong here costs an unswept file,
+// while being wrong the other way costs someone's session history.
+function isWorkflowSessionFile(name: string): boolean {
+    if (!name.endsWith(".jsonl")) return false;
+    if (SESSION_KEEP_FILES.has(name)) return false;
+    return /^[A-Za-z][A-Za-z0-9._-]*\.jsonl$/.test(name);
+}
+
 // Ensure the per-agent session directory exists; optionally wipe stale sessions.
 // When `wipe` is false, still removes orphaned files older than SESSION_TTL_MS
 // so dispatch-mode sessions don't accumulate indefinitely.
@@ -1601,8 +1621,9 @@ export function setupSessions(cwd: string, wipe: boolean): string {
             return;
         }
         for (const f of entries) {
-            if (!f.endsWith(".jsonl")) continue;
-            if (SESSION_KEEP_FILES.has(f)) continue;
+            // Only ever delete OUR OWN agent sessions — pi's interactive sessions
+            // share this tree and are not ours to expire.
+            if (!isWorkflowSessionFile(f)) continue;
             const path = join(dir, f);
             if (wipeDir) {
                 try {
