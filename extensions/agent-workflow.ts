@@ -354,15 +354,25 @@ export default function (pi: ExtensionAPI) {
             fallbackModel(),
         );
     }
+    // A real team of this name? `st.teams` is a plain object, so a bare
+    // truthiness check would accept Object.prototype keys ("constructor",
+    // "toString", …) and hand the run a non-array "roster".
+    function isTeam(name: string): boolean {
+        return (
+            !!name &&
+            Object.hasOwn(st.teams, name) &&
+            Array.isArray(st.teams[name])
+        );
+    }
     // Members of the active team that actually resolve to a loaded agent .md.
     function activeMembers(): string[] {
-        const raw = st.teams[st.activeTeamName] || [];
+        const raw = isTeam(st.activeTeamName) ? st.teams[st.activeTeamName] : [];
         return raw.filter((m) => st.agents.has(m.toLowerCase()));
     }
     // Pick a team, falling back to the first defined team if the name is unknown.
     function activateTeam(name: string) {
         const names = Object.keys(st.teams);
-        st.activeTeamName = st.teams[name] ? name : (names[0] ?? "");
+        st.activeTeamName = isTeam(name) ? name : (names[0] ?? "");
     }
     const teamsBlock = () =>
         teamsBlockCore(st.teams, st.agents, st.activeTeamName);
@@ -567,8 +577,13 @@ export default function (pi: ExtensionAPI) {
     let widgetTimer: ReturnType<typeof setTimeout> | null = null;
     let lastWidgetRender = 0;
     const WIDGET_MIN_INTERVAL_MS = 80;
+    // Set by /agent-workflow-clear: suppresses every repaint until real work
+    // (a pipeline run or a dispatch) starts, so the widget stays gone instead of
+    // being resurrected by the next message_end / model_select / DISPATCH_UPDATE.
+    let clearedWidget = false;
 
     function updateWidget() {
+        if (clearedWidget) return;
         // No interactive surface (print `-p` / JSON mode → hasUI false) means the
         // widget would never paint anyway — bail before scheduling the coalescing
         // timer so headless runs don't churn setTimeout per stream event. setWidget
@@ -994,7 +1009,7 @@ export default function (pi: ExtensionAPI) {
             // <request>`); otherwise show the Select Team picker. The chosen
             // team's roster IS the pipeline — the team is the only "mode".
             const firstTok = rawArgs.split(/\s+/)[0] || "";
-            const namedTeam = st.teams[firstTok] ? firstTok : "";
+            const namedTeam = isTeam(firstTok) ? firstTok : "";
 
             // A team is selected per job: naming a team selects it, otherwise
             // the picker does. The team is deactivated once the job finishes
@@ -1014,6 +1029,12 @@ export default function (pi: ExtensionAPI) {
             } else {
                 const picked = await chooseTeam(ctx);
                 if (picked === null) return; // user cancelled the picker
+                // A run may have started (tool path) while the picker was
+                // open — bail rather than clobber the live run's team.
+                if (st.running) {
+                    ctx.ui.notify("A workflow is already running.", "warning");
+                    return;
+                }
                 activateTeam(picked);
                 request = rawArgs;
             }
@@ -1035,12 +1056,21 @@ export default function (pi: ExtensionAPI) {
                 if (!typed || !typed.trim()) {
                     // Cancelled: drop the just-activated team so the idle
                     // dashboard returns to its clean no-team state (mirrors
-                    // the post-run deactivation below).
-                    st.activeTeamName = "";
-                    updateWidget();
+                    // the post-run deactivation below). Never while another
+                    // run is live — that team is its, not ours.
+                    if (!st.running) {
+                        st.activeTeamName = "";
+                        updateWidget();
+                    }
                     return;
                 }
                 finalRequest = typed.trim();
+                // Re-check after the prompt: a run started meanwhile owns the
+                // team, the widget and host.signal — don't start a second one.
+                if (st.running) {
+                    ctx.ui.notify("A workflow is already running.", "warning");
+                    return;
+                }
             }
 
             pi.setSessionName?.(
@@ -1059,7 +1089,9 @@ export default function (pi: ExtensionAPI) {
             // of a phase error.
             const controller = new AbortController();
             runAbort = controller;
-            host.signal = controller.signal;
+            const runSignal = controller.signal;
+            host.signal = runSignal;
+            clearedWidget = false; // a run repaints the dashboard
             try {
                 await runFullWorkflowCommand(
                     st,
@@ -1070,9 +1102,15 @@ export default function (pi: ExtensionAPI) {
                     maxLoops,
                 );
             } finally {
-                host.signal = undefined;
+                // Identity-guarded like runAbort: if the core refused this
+                // start (re-entry guard) the LIVE run's signal is installed —
+                // clearing it would disarm its escape-cancel.
+                if (host.signal === runSignal) host.signal = undefined;
                 if (runAbort === controller) runAbort = null;
             }
+            // Another run is still live (ours was refused): its status/team are
+            // not ours to report or reset.
+            if (st.running) return;
             // OS-level ping: agent_end (which pings for tool runs) only
             // wraps agent turns, so command runs never reach it.
             emitNotification(
@@ -1091,6 +1129,10 @@ export default function (pi: ExtensionAPI) {
             widgetCtx = ctx;
             cancelPendingWidget();
             ctx.ui.setWidget("agent-workflow", undefined);
+            // Stay cleared: message_end / model_select / DISPATCH_UPDATE all
+            // call updateWidget(), which would re-install the widget within a
+            // frame. Reset when a run or a dispatch actually starts.
+            clearedWidget = true;
             ctx.ui.notify("Workflow-team widget cleared.", "info");
         },
     });
@@ -1250,6 +1292,12 @@ export default function (pi: ExtensionAPI) {
                 }),
             ),
         }),
+        // pi executes a tool batch in PARALLEL by default; a pipeline run must not
+        // overlap another run or a dispatch in the same batch (they share the
+        // dashboard state and the staged-learnings file). One sequential tool in a
+        // batch serializes the whole batch, which is exactly the guarantee the
+        // st.running / core re-entry guards assume.
+        executionMode: "sequential",
         async execute(_id, params, signal, onUpdate, ctx) {
             const { request, max_loops, team } = params as {
                 request: string;
@@ -1274,7 +1322,7 @@ export default function (pi: ExtensionAPI) {
             // run the full pipeline — that hides the mistake). Omitted => no team,
             // and runWorkflowCore falls back to the full roster.
             if (team) {
-                if (!st.teams[team]) {
+                if (!isTeam(team)) {
                     return {
                         content: [
                             {
@@ -1317,9 +1365,11 @@ export default function (pi: ExtensionAPI) {
             // also stops the pipeline, not just the live subprocess.
             const controller = new AbortController();
             runAbort = controller;
-            host.signal = signal
+            const runSignal = signal
                 ? AbortSignal.any([signal, controller.signal])
                 : controller.signal;
+            host.signal = runSignal;
+            clearedWidget = false; // a run repaints the dashboard
             pi.setSessionName?.(
                 sessionLabel("agent-workflow", st.activeTeamName, request),
             );
@@ -1331,12 +1381,18 @@ export default function (pi: ExtensionAPI) {
                 ctx,
             ).finally(() => {
                 signal?.removeEventListener?.("abort", onAbort);
-                host.signal = undefined;
+                // Identity-guarded like runAbort: if the core refused this start
+                // (re-entry guard), host.signal belongs to the LIVE run and
+                // clearing it would disarm its cancellation.
+                if (host.signal === runSignal) host.signal = undefined;
                 if (runAbort === controller) runAbort = null;
             });
-            // Deactivate the team after the job (no-op if none was active).
-            st.activeTeamName = "";
-            updateWidget();
+            // Deactivate the team after the job (no-op if none was active) —
+            // unless another run is still live and owns it.
+            if (!st.running) {
+                st.activeTeamName = "";
+                updateWidget();
+            }
             const truncated =
                 result.report.length > WORKFLOW_TOOL_REPORT_MAX
                     ? result.report.slice(0, WORKFLOW_TOOL_REPORT_MAX) +
@@ -1381,12 +1437,22 @@ export default function (pi: ExtensionAPI) {
     // extension (extensions/dispatch.ts), so ANY agent can dispatch, not just this
     // workflow's orchestrator. We no longer register those tools here. Instead,
     // we mirror the dispatch phase snapshot the dispatch extension broadcasts on
-    // pi.events into our dashboard grid and re-render. (Dispatch and the
-    // automated pipeline are mutually exclusive in time — dispatchAgentCore
-    // refuses while s.running — so replacing st.phases is safe.)
-
-    pi.events.on(DISPATCH_UPDATE, (data) => {
+    // pi.events into our dashboard grid and re-render.
+    //
+    // Only while NO pipeline is running: pi executes a tool batch in parallel by
+    // default, so a dispatch can overlap a pipeline run — and this mirror
+    // replaces st.phases/st.dispatchMode wholesale, which would wipe the live
+    // pipeline dashboard on every stream event of the dispatched agent. The
+    // dispatch extension owns its own state; dropping the frame only costs the
+    // dashboard mirror, nothing functional.
+    //
+    // The unsubscribe is kept and called in session_shutdown: pi's event bus is
+    // process-lived across /reload, so discarding it leaks one stale listener per
+    // reload, each mutating a dead instance's state and redrawing on a dead ctx.
+    const offDispatchUpdate = pi.events.on(DISPATCH_UPDATE, (data) => {
+        if (st.running) return;
         const u = data as DispatchUpdate;
+        clearedWidget = false; // a dispatch is real work — repaint
         st.phases = u.phases;
         st.dispatchMode = u.dispatchMode;
         st.dispatchElapsedMs = u.dispatchElapsedMs;
@@ -1583,7 +1649,9 @@ export default function (pi: ExtensionAPI) {
         st.dispatchMode = false;
         st.phases = [];
 
-        // Show the idle team dashboard (grid of agents + their models).
+        // Show the idle team dashboard (grid of agents + their models). A fresh
+        // session starts visible even if the previous one ran /agent-workflow-clear.
+        clearedWidget = false;
         updateWidget();
         // Cross-extension bridges via globalThis (also WORKFLOW_FOOTER_GLOBAL below).
         // These are single global slots, so they assume ONE pi session per process
@@ -1675,6 +1743,12 @@ export default function (pi: ExtensionAPI) {
     pi.on("session_shutdown", async () => {
         // Cancel any pending coalesced widget render.
         cancelPendingWidget();
+        // Drop the DISPATCH_UPDATE subscription — the event bus outlives this
+        // instance (/reload rebinds a fresh one), so leaving it attached leaks a
+        // listener per reload that mutates this dead instance's state.
+        try {
+            offDispatchUpdate?.();
+        } catch {}
         // Stop a command-path pipeline at its next between-phase check.
         runAbort?.abort();
         runAbort = null;

@@ -8,7 +8,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { memoryEnabled, stageLearning } from "../utils/workflow/memory";
+// MAX_LESSON_CHARS is the same cap dedupeAppend applies at commit time: longer
+// lessons are silently dropped there, so the tool rejects them up front instead
+// of confirming a save that never happens.
+import { MAX_LESSON_CHARS, memoryEnabled, stageLearning } from "../utils/workflow/memory";
 
 export default function (pi: ExtensionAPI) {
     if (!memoryEnabled()) return;
@@ -19,13 +22,21 @@ export default function (pi: ExtensionAPI) {
             "Save a durable, GENERAL lesson for your FUTURE runs — a reusable insight that makes you better at your job. Record EITHER: (a) a BETTER WAY you found to do a task — a more effective/faster/cleaner technique, tool, command, or approach worth reusing; OR (b) a pitfall to avoid or a step not to skip. NOT task/PR/repo specifics. Staged now and kept only if THIS run succeeds, then injected into your prompt next time. One imperative sentence.",
         parameters: Type.Object({
             learning: Type.String({
-                description: "One durable, general, imperative lesson (< 280 chars).",
+                description: `One durable, general, imperative lesson (< ${MAX_LESSON_CHARS} chars).`,
             }),
         }),
         async execute(_id: unknown, params: unknown, _signal: unknown, _onUpdate: unknown, ctx: { cwd?: string }) {
             const text = (item: string) => ({ content: [{ type: "text" as const, text: item }], details: undefined });
-            const learning = String((params as { learning?: unknown })?.learning || "").trim();
+            // Whitespace is collapsed the same way stageLearning/dedupeAppend do,
+            // so the length checked here is the length that gets committed.
+            const learning = String((params as { learning?: unknown })?.learning || "")
+                .replace(/\s+/g, " ")
+                .trim();
             if (!learning) return text("nothing to remember (empty learning).");
+            if (learning.length > MAX_LESSON_CHARS)
+                return text(
+                    `not saved: the lesson is ${learning.length} chars, over the ${MAX_LESSON_CHARS}-char limit (longer lessons are dropped when memory is written). Condense it to ONE imperative sentence — the reusable rule only, no task/PR/repo specifics — and call remember again.`,
+                );
             try {
                 // Which agent this process IS — always set by dispatchEnv, independent
                 // of PI_OBS. Falls back to PI_OBS_AGENT, then a generic bucket.

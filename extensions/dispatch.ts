@@ -24,6 +24,7 @@ import {
     setupSessions as setupSessionsCore,
     runAgentWithFallback,
     makeSpawnWrapper,
+    contextWindowForModel,
     loadAgents as loadAgentsCore,
     resolveAgentModel,
     loadDotEnv,
@@ -72,6 +73,9 @@ export default function (pi: ExtensionAPI) {
     const st = newOrchestratorState();
     let widgetCtx: any;
     let sessionDir = "";
+    // pi's model registry (models.json) — used to derive a sub-agent's context
+    // window when its provider doesn't report one. Captured at session_start.
+    let modelRegistry: any;
     // All live sub-agent subprocesses. A Set (not a single ref) so cancellation
     // kills EVERY running agent — parallel dispatch can have several at once.
     const liveProcs = new Set<any>();
@@ -171,6 +175,26 @@ export default function (pi: ExtensionAPI) {
         // decision, instead of re-reading ~/.pi/agent/trust.json by hand. Guarded so
         // older pi (no API) yields undefined and the disk fallback applies.
         isProjectTrusted: () => widgetCtx?.isProjectTrusted?.(),
+        // When a sub-agent's provider doesn't report a context window in usage
+        // (e.g. gateframe's supportsUsageInStreaming:false) and the agent has none
+        // configured, derive it: first pi's model registry (models.json carries
+        // contextWindow per model), then the primary session's window. Same hook
+        // agent-workflow.ts wires, so an ad-hoc dispatch renders the context bar
+        // exactly like the same agent inside a workflow.
+        getFallbackContextWindow: (model: string) => {
+            try {
+                const fromRegistry = contextWindowForModel(
+                    modelRegistry?.getAll?.(),
+                    model,
+                );
+                if (fromRegistry > 0) return fromRegistry;
+            } catch {}
+            try {
+                const u = widgetCtx?.getContextUsage?.();
+                return (u?.contextWindow || u?.context_window || 0) as number;
+            } catch {}
+            return 0;
+        },
     });
 
     function runAgent(
@@ -251,12 +275,30 @@ export default function (pi: ExtensionAPI) {
                 description: "Task description for the agent to execute.",
             }),
         }),
+        // Run one at a time with the rest of the batch: pi executes tool calls in
+        // PARALLEL by default, which would let a dispatch overlap a pipeline run
+        // (run_agent_workflow) in the same batch — they share the staged-learnings
+        // file and the dashboard, so they must never interleave.
+        executionMode: "sequential",
         async execute(_id, params, signal, onUpdate, ctx) {
             const { agent, task } = params as { agent: string; task: string };
             widgetCtx = ctx;
+            // Listeners added to an ALREADY-aborted signal never fire, so bail out
+            // before spawning anything.
+            if (signal?.aborted) {
+                killAllProcs();
+                return {
+                    content: [{ type: "text" as const, text: "dispatch cancelled." }],
+                    details: undefined,
+                };
+            }
             // Cancellation: if the turn is aborted, kill every running sub-agent
-            // subprocess so none keep running detached in the background.
-            signal?.addEventListener?.("abort", killAllProcs);
+            // subprocess so none keep running detached in the background. A fresh
+            // closure per call — EventTarget dedupes identical listeners, so a
+            // shared reference would let the first tool to finish remove the only
+            // registration and orphan a concurrent dispatch's children.
+            const onAbort = () => killAllProcs();
+            signal?.addEventListener?.("abort", onAbort);
             try {
                 const result = await dispatchAgentCore(
                     st,
@@ -269,7 +311,7 @@ export default function (pi: ExtensionAPI) {
                 logDispatch("dispatch_agent", (result as any).details);
                 return result;
             } finally {
-                signal?.removeEventListener?.("abort", killAllProcs);
+                signal?.removeEventListener?.("abort", onAbort);
             }
         },
         renderCall(args, theme) {
@@ -310,12 +352,23 @@ export default function (pi: ExtensionAPI) {
                 },
             ),
         }),
+        // See dispatch_agent — never overlap a pipeline run in the same batch.
+        executionMode: "sequential",
         async execute(_id, params, signal, onUpdate, ctx) {
             const items =
                 (params as { agents: { agent: string; task: string }[] })
                     .agents || [];
             widgetCtx = ctx;
-            signal?.addEventListener?.("abort", killAllProcs);
+            if (signal?.aborted) {
+                killAllProcs();
+                return {
+                    content: [{ type: "text" as const, text: "dispatch cancelled." }],
+                    details: undefined,
+                };
+            }
+            // Per-call closure (see dispatch_agent).
+            const onAbort = () => killAllProcs();
+            signal?.addEventListener?.("abort", onAbort);
             try {
                 const result = await dispatchParallelCore(
                     st,
@@ -327,7 +380,7 @@ export default function (pi: ExtensionAPI) {
                 logDispatch("dispatch_parallel", (result as any).details);
                 return result;
             } finally {
-                signal?.removeEventListener?.("abort", killAllProcs);
+                signal?.removeEventListener?.("abort", onAbort);
             }
         },
         renderCall(args, theme) {
@@ -380,6 +433,7 @@ export default function (pi: ExtensionAPI) {
     // ── Lifecycle — load agents and reset per-turn dispatch state ────────────
     pi.on("session_start", async (_event, ctx) => {
         widgetCtx = ctx;
+        modelRegistry = (ctx as any).modelRegistry;
         loadDotEnv(ctx.cwd); // pick up cwd/.env if pi launched elsewhere
         st.agents = loadAgents(ctx.cwd);
         st.dispatchMode = false;

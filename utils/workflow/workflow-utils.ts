@@ -47,6 +47,19 @@ export function detectVerdict(output: string): Verdict {
     return m[1].toLowerCase() === "pass" ? "pass" : "fail";
 }
 
+// The explicit review markers, in priority order at any given position:
+//   1. REVISE BEFORE <verb> — a multi-word phrase that can't occur by accident, so
+//      it stays loose (it may appear mid-sentence).
+//   2. APPROVED WITH RESERVATIONS — word-guarded so "unapproved with …" can't hit.
+//   3. a bare APPROVED that OPENS its line (optionally decorated with a heading,
+//      bold markers, or a "Verdict:" label, per agents/reviewer.md's output format).
+// (3) is deliberately line-anchored: an unguarded substring match made "not
+// approved", "unapproved", and "…once fixed it can be approved" all read as an
+// approval — and, because the LAST marker wins, one of those in the prose after an
+// explicit REVISE BEFORE MERGE silently reopened the review gate.
+const CRITIQUE_MARKER_RE =
+    /REVISE\s+BEFORE\s+(?:MERGE|MERGING|IMPLEMENTING|DOCUMENTING|PUBLISHING)|(?<![A-Za-z])APPROVED\s+WITH\s+RESERVATIONS(?![A-Za-z])|^[ \t]*(?:#{1,6}[ \t]*)?\**(?:VERDICT[ \t]*:[ \t]*)?\**APPROVED(?![A-Za-z])(?![ \t*]*WITH[ \t]+RESERVATIONS)/gim;
+
 /**
  * Detect a review verdict from an agent's output (the reviewer's code review, or a
  * critic-style document review). Prefers the explicit REVISE BEFORE
@@ -56,13 +69,10 @@ export function detectVerdict(output: string): Verdict {
 export function detectCritique(output: string): CritiqueVerdict {
     // Take the LAST marker: the authoritative verdict is emitted at the end, so an
     // earlier mention in the reasoning must not override the final call.
-    const markers = [
-        ...output.matchAll(
-            /REVISE\s+BEFORE\s+(?:MERGE|MERGING|IMPLEMENTING|DOCUMENTING|PUBLISHING)|APPROVED\s+WITH\s+RESERVATIONS|APPROVED/gi,
-        ),
-    ];
+    const markers = [...output.matchAll(CRITIQUE_MARKER_RE)];
     if (markers.length) {
-        const v = markers[markers.length - 1][0].toUpperCase();
+        // Strip any leading decoration ("## ", "**") the marker consumed.
+        const v = markers[markers.length - 1][0].toUpperCase().replace(/^[^A-Z]+/, "");
         if (v.startsWith("REVISE")) return "revise";
         if (v.startsWith("APPROVED WITH")) return "approved-with-reservations";
         return "approved";
@@ -181,10 +191,11 @@ export function isModelFailure(output: string): boolean {
     )
         return true;
 
-    // Structured patterns — model/provider followed by an error keyword,
-    // with optional quoted model name in between.
+    // Structured pattern — a QUOTED model/provider name followed by an error
+    // keyword ('Error: Model "gpt-5" not found', 'provider "openai" is not
+    // supported'). The quotes make this unambiguous even outside an error line.
     if (
-        /(?:model|provider)\s*[""''"']?\s*[^\n]{0,80}?(?:not\s+found|unknown|invalid|unavailable|does\s+not\s+exist|is\s+not\s+supported|no\s+such|not\s+supported|cannot\s+be\s+found)/.test(
+        /(?:model|provider)\s*[""''"'`][^\n""''"'`]{0,80}[""''"'`][^\n]{0,40}?(?:not\s+found|unknown|invalid|unavailable|does\s+not\s+exist|is\s+not\s+supported|no\s+such|not\s+supported|cannot\s+be\s+found)/.test(
             combined,
         )
     )
@@ -220,11 +231,29 @@ export function isModelFailure(output: string): boolean {
     )
         return true;
 
+    // Everything below is proximity-based and would otherwise fire on ordinary
+    // domain prose ("the data model is invalid" routed a LOGICAL failure into a
+    // fallback-model retry), so it only looks at lines that actually read like an
+    // error report.
+    const errorish = combined
+        .split("\n")
+        .filter((l) => /error|fail|exception/.test(l))
+        .join("\n");
+    if (!errorish) return false;
+
+    // Unquoted model/provider followed by an error keyword.
+    if (
+        /(?:model|provider)\s*[^\n]{0,80}?(?:not\s+found|unknown|invalid|unavailable|does\s+not\s+exist|is\s+not\s+supported|no\s+such|not\s+supported|cannot\s+be\s+found)/.test(
+            errorish,
+        )
+    )
+        return true;
+
     // Broad proximity catch-all: "model" and an error keyword within 120 chars.
     // This is the safety net for any format we haven't anticipated.
-    const modelIdx = combined.indexOf("model");
+    const modelIdx = errorish.indexOf("model");
     if (modelIdx >= 0) {
-        const window = combined.slice(
+        const window = errorish.slice(
             Math.max(0, modelIdx - 60),
             modelIdx + 120,
         );

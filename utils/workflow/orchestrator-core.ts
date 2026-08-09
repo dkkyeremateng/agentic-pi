@@ -17,6 +17,7 @@ import {
     displayName,
     mkPhase,
     freshPhases,
+    PIPELINE_ORDER,
     buildPhaseMap,
     failPhase,
     validatePlan,
@@ -92,6 +93,12 @@ export interface OrchestratorState {
     pipelineRanThisTurn: boolean;
     dispatchedThisTurn: boolean;
     dispatchesThisTurn: number;
+    // Dispatches currently in flight, and the OR of their verdicts so far. The
+    // staged-learnings file is a single cwd-scoped file that the commit reads AND
+    // clears, so concurrent dispatches must commit exactly once, when the last of
+    // them lands (see finishDispatchLearnings).
+    activeDispatches: number;
+    dispatchLearningsPassed: boolean;
 }
 
 export function newOrchestratorState(): OrchestratorState {
@@ -120,6 +127,8 @@ export function newOrchestratorState(): OrchestratorState {
         pipelineRanThisTurn: false,
         dispatchedThisTurn: false,
         dispatchesThisTurn: 0,
+        activeDispatches: 0,
+        dispatchLearningsPassed: false,
     };
 }
 
@@ -184,7 +193,11 @@ export interface OrchestratorHost {
     signal?: AbortSignal;
 }
 
-type RunResult = { status: string; report: string };
+// `reportWritten` marks the results that actually persisted workflow-report.md.
+// Results that never ran a pipeline (the re-entry guard) or deliberately skip the
+// write (abort) leave it false, so the caller doesn't link a report this run never
+// wrote — or quote an elapsed time that belongs to a different run.
+type RunResult = { status: string; report: string; reportWritten?: boolean };
 type ToolResult = AgentToolResult<unknown>;
 
 // ── Shared command handler ───────────────────────
@@ -218,6 +231,11 @@ export async function runFullWorkflowCommand(
         // No report file is written for an abort (it would clobber the previous
         // run's report with a stub), so don't link one.
         ctx.ui.notify(`Workflow aborted in ${secs(s.runElapsedMs)}.`, level);
+    } else if (!result.reportWritten) {
+        // This call never ran a pipeline of its own (e.g. it was refused by the
+        // re-entry guard while another run holds the state): there is no report to
+        // link, and s.runElapsedMs belongs to that other run — report neither.
+        ctx.ui.notify(`Workflow ${result.status}: ${result.report}`, level);
     } else {
         // Clickable link to the on-disk report (degrades to plain text where OSC 8
         // isn't supported). Error exits write the file too (finalizeError).
@@ -329,7 +347,7 @@ function finalizeError(
     // digest). Fire-and-forget: it must never delay the report written above.
     commitStagedLearnings(cwd, { passed: false, runId: process.env.PI_OBS_RUN });
     void reflectFailedRun(process.env.PI_OBS_RUN);
-    return { status: "error", report };
+    return { status: "error", report, reportWritten: true };
 }
 
 function fail(
@@ -407,14 +425,31 @@ export async function runWorkflowCore(
     try {
         return await runWorkflowCoreImpl(s, h, request, maxLoops, ctx);
     } catch (e) {
-        // Surfaced as a failed RunResult; also stamp the state so the dashboard
-        // doesn't keep reading "running" after a crash.
-        s.lastStatus = "error";
-        if (s.runStartedAt) s.runElapsedMs = Date.now() - s.runStartedAt;
-        return {
-            status: "error",
-            report: `Workflow failed unexpectedly: ${e instanceof Error ? e.message : String(e)}`,
-        };
+        // A crashed run is still a terminal run: route it through the same
+        // bookkeeping as any other error exit (report, metrics line, obs verdict,
+        // staged-learnings clear, widget repaint) instead of returning a bare
+        // result that leaves the widget "running" and the caller linking the
+        // PREVIOUS run's report.
+        const report = `Workflow failed unexpectedly: ${e instanceof Error ? e.message : String(e)}`;
+        // A throw before the run was set up (bad ctx, prepareRun, session setup)
+        // leaves runStartedAt/phases belonging to the previous run — start the
+        // clock now and report no phases rather than the stale ones.
+        const initialized = s.running && s.runStartedAt > 0;
+        if (!initialized) s.runStartedAt = Date.now();
+        obsEmit("verdict", {
+            status: "fail",
+            outcome: "error",
+            note: "unexpected-throw",
+            source: "workflow",
+        });
+        return finalizeError(
+            s,
+            h,
+            ctx?.cwd ?? "",
+            request,
+            report,
+            initialized ? s.phases : [],
+        );
     } finally {
         s.running = false;
     }
@@ -484,7 +519,7 @@ async function runWorkflowCoreImpl(
         ].join("\n");
         writeReport(h, cwd, report);
         h.ui.publishLogs();
-        return { status: s.lastStatus, report };
+        return { status: s.lastStatus, report, reportWritten: true };
     }
 
     // The active team's roster IS the pipeline: run exactly the agents it lists,
@@ -511,16 +546,39 @@ async function runWorkflowCoreImpl(
         );
     }
 
-    // Resume support: a planner-less roster (e.g. the `build` team) CONTINUES from
-    // a plan a previous run already wrote, instead of regenerating it. Detect the
-    // existing plan BEFORE the scratch wipe below (which would delete it).
+    // freshPhases keeps only the canonical pipeline roles, so a roster of pure
+    // specialists (e.g. ["seeker"]) yields NO phases — the run would otherwise
+    // "complete" vacuously and overwrite the previous run's workflow-report.md with
+    // an empty one. Fail loudly, and (like the check above) before any destructive
+    // setup.
+    const pipelinePhases = freshPhases(members);
+    if (pipelinePhases.length === 0) {
+        s.runStartedAt = Date.now();
+        return finalizeError(
+            s,
+            h,
+            cwd,
+            request,
+            `This team has no pipeline roles — nothing to run. Its members (${members.join(", ") || "none"}) ` +
+                `are not part of the ${PIPELINE_ORDER.join(" → ")} pipeline, so no phase would execute. ` +
+                `Add a pipeline role to the team, or dispatch these specialists directly instead of running them as a workflow.`,
+            [],
+        );
+    }
+
+    // Resume support: a planner-less BUILD roster (e.g. the `build` team) CONTINUES
+    // from a plan a previous run already wrote, instead of regenerating it. It takes
+    // an implementer: without one there is nothing to build from the saved plan, and
+    // treating e.g. a review-only run as a resume would adopt (and validate) a stale
+    // plan and skip this run's scratch reset. Detect the existing plan BEFORE the
+    // scratch wipe below (which would delete it).
     const hasPlanner = members.some((m) => m.toLowerCase() === "planner");
     const hasImplementer = members.some(
         (m) => m.toLowerCase() === "implementer",
     );
     const planPath = join(cwd, ".agent", "plan.md");
     const hasExistingPlan = existsSync(planPath);
-    const resuming = !hasPlanner && hasExistingPlan;
+    const resuming = hasImplementer && !hasPlanner && hasExistingPlan;
     if (hasImplementer && !hasPlanner && !hasExistingPlan) {
         // Nothing to build from: no planner to produce a plan, and none on disk.
         s.runStartedAt = Date.now();
@@ -543,7 +601,7 @@ async function runWorkflowCoreImpl(
     s.includeScout = members.some((m) => m.toLowerCase() === "scout");
     s.dispatchMode = false;
     h.setup.setupSessions(cwd, true);
-    s.phases = freshPhases(members);
+    s.phases = pipelinePhases;
     s.phaseLogs = [];
     s.totalDroppedLines = 0;
     s.totalToolCalls = 0;
@@ -574,8 +632,13 @@ async function runWorkflowCoreImpl(
     const shipP = pm.shipper;
 
     // Wipe per-run scratch EXCEPT when resuming — then keep plan.md and the
-    // progress ledger so the implementer picks up exactly where it stopped.
-    if (!resuming) resetRunScratch(cwd);
+    // progress ledger so the implementer picks up exactly where it stopped. A
+    // roster that neither plans nor builds (e.g. a review-only team) keeps them
+    // too: the plan is not its scratch to destroy. Either way the staged learnings
+    // ARE cleared — they belong to the run that staged them, so a crashed prior
+    // run's leftovers must never ride into this run's verdict-gated commit.
+    if (resuming || (!hasPlanner && !hasImplementer)) clearStagedLearnings(cwd);
+    else resetRunScratch(cwd);
 
     let aborted: RunResult | null;
 
@@ -815,6 +878,10 @@ async function runWorkflowCoreImpl(
     // ship straight after whatever build work happened. The implementer updates any
     // docs/comments as part of the change, so there is no separate document phase.
     const passed = valP ? verdict === "pass" : true;
+    // An unresolved REVISE BEFORE MERGE is a blocking review: the reviewer never
+    // signed off, so the change must not ship even when the validator passed. With
+    // no reviewer on the roster there is nothing to gate on.
+    const reviewOk = !reviewerP || reviewVerdict !== "revise";
 
     // On success, reconcile the ledger so every phase reads done even if the
     // implementer didn't flip them itself — code-guaranteed end-state tracking.
@@ -842,7 +909,7 @@ async function runWorkflowCoreImpl(
         );
     }
 
-    if (passed && shipP) {
+    if (passed && reviewOk && shipP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
         ship = await h.execution.runPhase(
@@ -857,13 +924,15 @@ async function runWorkflowCoreImpl(
     let status: string;
     if (!passed) {
         status = verdict === "fail" ? "failed-after-retries" : "needs-review";
+    } else if (!reviewOk) {
+        // Ahead of the shipper rung on purpose: the ship was skipped above, so a
+        // roster with a shipper must still surface the blocking review.
+        status = "needs-review";
     } else if (shipP) {
         status =
             detectShip(ship.output) === "paused"
                 ? "paused-no-remote"
                 : "shipped";
-    } else if (reviewerP && reviewVerdict === "revise") {
-        status = "needs-review";
     } else {
         status = "done";
     }
@@ -953,7 +1022,7 @@ async function runWorkflowCoreImpl(
             verdict === "pass" ? "pass" : verdict === "fail" ? "fail" : "open",
             `verdict:${verdict}`,
         );
-    if (shipP && passed)
+    if (shipP && passed && reviewOk)
         emitAgentVerdict(shipP, status === "shipped" ? "pass" : "open", status);
 
     // Run-level verdict for the observability stream — the regression signal the
@@ -983,7 +1052,7 @@ async function runWorkflowCoreImpl(
     if (!passed) void reflectFailedRun(process.env.PI_OBS_RUN);
 
     h.ui.publishLogs();
-    return { status, report };
+    return { status, report, reportWritten: true };
 }
 
 function writeReport(h: OrchestratorHost, cwd: string, report: string): void {
@@ -1094,13 +1163,22 @@ function streamDispatchActivity(
 // intentionally left alone — that belongs to the /revert checkpoint system.
 export function resetRunScratch(cwd: string): void {
     const agent = join(cwd, ".agent");
-    // learnings.jsonl = this run's staged agent-memory candidates; clear it so a
-    // crashed prior run can't leak stale lessons into this run's commit.
-    for (const f of ["plan.md", "plan.draft.md", "progress.md", "learnings.jsonl"]) {
+    for (const f of ["plan.md", "plan.draft.md", "progress.md"]) {
         try {
             rmSync(join(agent, f), { force: true });
         } catch {}
     }
+    clearStagedLearnings(cwd);
+}
+
+// learnings.jsonl = the staged agent-memory candidates of the run that wrote them.
+// Cleared at the start of EVERY run — including a resume, which keeps the rest of
+// the scratch — so a crashed prior run's lessons can't leak into this run's
+// verdict-gated commit.
+export function clearStagedLearnings(cwd: string): void {
+    try {
+        rmSync(join(cwd, ".agent", "learnings.jsonl"), { force: true });
+    } catch {}
 }
 
 // Initialize the implementer's progress ledger BEFORE implementation so phase
@@ -1376,6 +1454,44 @@ async function runAgentWithEmptyRetry(
     return res;
 }
 
+// Is a full workflow running anywhere in this process? The dispatch tools live in
+// their OWN extension with its own state object, so `s.running` alone only ever
+// sees a pipeline THIS state started — never one the workflow extension is running.
+// That extension publishes `globalThis.__piHasRunningWorkflow` for exactly this
+// check. Defensive: an absent bridge or a throwing hook means "nothing running",
+// so a broken/absent workflow extension can never block dispatch.
+export function workflowIsRunning(s: OrchestratorState): boolean {
+    if (s.running) return true;
+    try {
+        return (
+            (globalThis as { __piHasRunningWorkflow?: () => boolean })
+                .__piHasRunningWorkflow?.() === true
+        );
+    } catch {
+        return false;
+    }
+}
+
+// Commit the staged learnings of a finished dispatch — but only once every
+// concurrent dispatch has landed. Staging is a single cwd-scoped file that
+// commitStagedLearnings reads AND CLEARS, so a finisher committing while a sibling
+// is still staging would steal that sibling's lessons. Verdicts are OR-ed across
+// the in-flight group: keep the lessons if anything produced a real result, drop
+// them only when everything failed (same rationale as the parallel batch).
+function finishDispatchLearnings(
+    s: OrchestratorState,
+    cwd: string,
+    ok: boolean,
+    count = 1,
+): void {
+    s.dispatchLearningsPassed = s.dispatchLearningsPassed || ok;
+    s.activeDispatches = Math.max(0, s.activeDispatches - count);
+    if (s.activeDispatches > 0) return;
+    const passed = s.dispatchLearningsPassed;
+    s.dispatchLearningsPassed = false;
+    commitStagedLearnings(cwd, { passed, runId: process.env.PI_OBS_RUN });
+}
+
 // Dispatch depth guard values from the env (set on the way down by dispatchEnv).
 // PI_DISPATCH_MAX_DEPTH=0 is honored — it disables dispatch entirely; a missing
 // or garbage value falls back to the default of 1 (only the top level dispatches).
@@ -1394,7 +1510,7 @@ export async function dispatchAgentCore(
     onUpdate: ((u: ToolResult) => void) | undefined,
     ctx: any,
 ): Promise<ToolResult> {
-    if (s.running)
+    if (workflowIsRunning(s))
         return textResult(
             "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
         );
@@ -1410,13 +1526,6 @@ export async function dispatchAgentCore(
     if (dispatchDepth >= maxDispatchDepth)
         return textResult(
             `Dispatch depth limit reached (max ${maxDispatchDepth}). This agent is ${dispatchDepth} dispatch level(s) deep — do the work yourself or report back instead of dispatching further. (Raise PI_DISPATCH_MAX_DEPTH to allow deeper nesting.)`,
-        );
-    const dispatchAncestry = (process.env.PI_DISPATCH_ANCESTRY || "")
-        .split(">")
-        .filter(Boolean);
-    if (dispatchAncestry.includes(agent.toLowerCase()))
-        return textResult(
-            `Cycle detected: "${agent}" is already an ancestor in this dispatch chain (${dispatchAncestry.join(" > ")}). Refusing to avoid an infinite loop — do the work yourself or report back.`,
         );
 
     if (s.dispatchesThisTurn >= h.config.maxDispatchesPerTurn)
@@ -1437,6 +1546,17 @@ export async function dispatchAgentCore(
             `Agent "${agent}" not found. Available agents: ${available}`,
         );
     }
+
+    // Cycle check AFTER resolution: the ancestry chain carries canonical agent
+    // names, so testing the raw argument would let an alias for an ancestor slip
+    // through (the parallel path resolves first for the same reason).
+    const dispatchAncestry = (process.env.PI_DISPATCH_ANCESTRY || "")
+        .split(">")
+        .filter(Boolean);
+    if (dispatchAncestry.includes(def.name.toLowerCase()))
+        return textResult(
+            `Cycle detected: "${def.name}" is already an ancestor in this dispatch chain (${dispatchAncestry.join(" > ")}). Refusing to avoid an infinite loop — do the work yourself or report back.`,
+        );
 
     if (onUpdate) onUpdate(textResult(`Dispatching to ${def.name}...`));
 
@@ -1519,9 +1639,20 @@ export async function dispatchAgentCore(
         [{ label: displayName(def.name), phase }],
         onUpdate,
     );
+    // Claimed BEFORE the first await so a concurrent dispatch started while this
+    // one runs sees a non-zero count and defers the shared learnings commit.
+    s.activeDispatches++;
     let res: Awaited<ReturnType<typeof runAgentWithEmptyRetry>>;
     try {
         res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
+    } catch (e) {
+        // A rejected spawn is this dispatch's failure, not the tool call's: letting
+        // it escape would leave the phase stuck "running", emit no dispatch_end and
+        // skip the learnings commit. Map it to a failed result and finish normally.
+        res = {
+            output: `Dispatch failed: ${e instanceof Error ? e.message : String(e)}`,
+            exitCode: 1,
+        };
     } finally {
         stopStream();
     }
@@ -1581,13 +1712,12 @@ export async function dispatchAgentCore(
         : "";
     h.ui.notify(
         `${def.name} ${ok ? "done" : "failed"} in ${secs(phase.elapsed)}${errMsg}`,
-        ok ? "success" : "error",
+        ok ? "info" : "error",
     );
 
-    const truncated =
-        res.output.length > 8000
-            ? res.output.slice(0, 8000) + "\n\n... [truncated]"
-            : res.output;
+    // Head+tail, not head-only: agents put their conclusion LAST, so a flat
+    // slice(0, max) would drop exactly the part the caller needs.
+    const truncated = clampOutput(res.output, 8000);
 
     const status = ok ? "done" : "error";
 
@@ -1595,9 +1725,10 @@ export async function dispatchAgentCore(
     // is done — a bare dispatch has no workflow finalize to commit them, so without
     // this a dispatched agent's lessons stage and are orphaned. Verdict gate mirrors
     // the workflow: keep them only if the agent produced a real result; a
-    // failed/empty dispatch drops them. The child staged into ctx.cwd (where it
-    // ran); no-op when memory is off or nothing was staged.
-    commitStagedLearnings(ctx.cwd, { passed: ok, runId: process.env.PI_OBS_RUN });
+    // failed/empty dispatch drops them. Deferred while sibling dispatches are still
+    // in flight (they share one staging file). The child staged into ctx.cwd (where
+    // it ran); no-op when memory is off or nothing was staged.
+    finishDispatchLearnings(s, ctx.cwd, ok);
 
     const summary = `[${def.name}] ${status} in ${secs(phase.elapsed)}`;
 
@@ -1646,7 +1777,7 @@ export async function dispatchParallelCore(
     onUpdate: ((u: ToolResult) => void) | undefined,
     ctx: any,
 ): Promise<ToolResult> {
-    if (s.running)
+    if (workflowIsRunning(s))
         return textResult(
             "Cannot dispatch while a workflow is running. Wait for it to finish or cancel it first.",
         );
@@ -1763,12 +1894,28 @@ export async function dispatchParallelCore(
         entries.map(({ def, phase }) => ({ label: displayName(def.name), phase })),
         onUpdate,
     );
+    // Claimed for the whole batch before the first await (see
+    // finishDispatchLearnings): the shared staging file is committed once, when the
+    // last dispatch in flight — in this batch or alongside it — has landed.
+    s.activeDispatches += entries.length;
     let results: { name: string; ok: boolean; elapsed: number; truncated: string }[];
     try {
         results = await Promise.all(
             entries.map(async ({ def, task, phase }) => {
                 const t0 = Date.now();
-                const res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
+                // Per-item isolation: one rejected spawn must not reject the whole
+                // Promise.all, which would leave its siblings detached, their phases
+                // stuck "running", no dispatch_end emitted and the batch's learnings
+                // commit skipped.
+                let res: { output: string; exitCode: number };
+                try {
+                    res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
+                } catch (e) {
+                    res = {
+                        output: `Dispatch failed: ${e instanceof Error ? e.message : String(e)}`,
+                        exitCode: 1,
+                    };
+                }
                 // A trivial ping legitimately returns a short "pong" with no tools —
                 // don't count that as an empty/failed dispatch.
                 const emptyOutput =
@@ -1808,7 +1955,7 @@ export async function dispatchParallelCore(
     for (const r of results)
         h.ui.notify(
             `${r.name} ${r.ok ? "done" : "failed"} in ${secs(r.elapsed)}`,
-            r.ok ? "success" : "error",
+            r.ok ? "info" : "error",
         );
 
     const okCount = results.filter((r) => r.ok).length;
@@ -1818,10 +1965,7 @@ export async function dispatchParallelCore(
     // Promise.all would race (read+clear); do it here after all have resolved. Keep
     // the lessons if any agent produced a result; drop them only when the whole
     // batch failed. See the mirror in dispatchAgentCore.
-    commitStagedLearnings(ctx.cwd, {
-        passed: okCount > 0,
-        runId: process.env.PI_OBS_RUN,
-    });
+    finishDispatchLearnings(s, ctx.cwd, okCount > 0, entries.length);
 
     const skipNote = skipped.length ? ` Skipped: ${skipped.join(", ")}.` : "";
     const blocks = results
@@ -1853,7 +1997,7 @@ export function selectAgentsCore(
     names: string[],
     ctx: any,
 ): ToolResult {
-    if (s.running)
+    if (workflowIsRunning(s))
         return textResult(
             "Cannot change the selection while a full workflow is running.",
         );

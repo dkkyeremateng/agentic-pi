@@ -268,6 +268,12 @@ export function loadDotEnv(cwd: string): void {
         join(homedir(), ".pi"),
     ];
 
+    // Snapshot the keys the REAL environment already carries, before any file
+    // touches process.env. The project-level pass may override what the global
+    // `.env` set, but never one of these — that's the documented contract above
+    // (a value exported in the shell wins over any file).
+    const shellKeys = new Set(Object.keys(process.env));
+
     for (const configDir of possibleConfigDirs) {
         const configPath = join(configDir, ".env");
         if (existsSync(configPath)) {
@@ -280,7 +286,9 @@ export function loadDotEnv(cwd: string): void {
     // Only whitelisted vars can be overridden by project-level config
     const cwdPath = join(cwd, ".env");
     if (existsSync(cwdPath)) {
-        loadEnvFile(cwdPath, true, true); // Allow overrides for whitelisted vars only
+        // Allow overrides for whitelisted vars only, and only over values the
+        // global `.env` itself supplied (shell exports are protected).
+        loadEnvFile(cwdPath, true, true, shellKeys);
     }
 }
 
@@ -288,6 +296,7 @@ function loadEnvFile(
     path: string,
     allowOverride: boolean,
     applyWhitelist: boolean,
+    protectedKeys?: Set<string>,
 ): void {
     try {
         for (const raw of readFileSync(path, "utf-8").split("\n")) {
@@ -309,6 +318,9 @@ function loadEnvFile(
             if (applyWhitelist && !isEnvAllowed(key)) {
                 continue;
             }
+
+            // Never clobber a value that came from the real shell environment.
+            if (protectedKeys?.has(key)) continue;
 
             if (allowOverride || !(key in process.env)) {
                 process.env[key] = val;
@@ -1077,10 +1089,12 @@ export function renderSelectAgentsResult(
 export function parseAgentFile(filePath: string): AgentDef | null {
     try {
         const raw = readFileSync(filePath, "utf-8");
-        const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+        // `\r?\n` throughout: CRLF files (Windows checkouts) would otherwise fail
+        // the frontmatter match entirely and the agent would silently not load.
+        const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
         if (!match) return null;
         const fm: Record<string, string> = {};
-        for (const line of match[1].split("\n")) {
+        for (const line of match[1].split(/\r?\n/)) {
             const idx = line.indexOf(":");
             if (idx <= 0) continue;
             const key = line.slice(0, idx).trim();
@@ -1331,7 +1345,10 @@ function parseTeamsYaml(raw: string): Record<string, string[]> {
     let current: string | null = null;
     const orphanedItems: string[] = [];
 
-    for (const line of raw.split("\n")) {
+    for (const line of raw.split(/\r?\n/)) {
+        // Skip comment lines: `# old-team:` would otherwise register a phantom
+        // team (and steal the following items from the real one).
+        if (line.trim().startsWith("#")) continue;
         const teamMatch = line.match(/^(\S[^:]*):\s*$/);
         if (teamMatch) {
             current = teamMatch[1].trim();
@@ -1340,11 +1357,14 @@ function parseTeamsYaml(raw: string): Record<string, string[]> {
         }
         const itemMatch = line.match(/^\s+-\s+(.+)$/);
         if (itemMatch) {
+            // Strip a trailing `# comment` from the member name.
+            const item = itemMatch[1].replace(/\s+#.*$/, "").trim();
+            if (!item) continue;
             if (current) {
-                teams[current].push(itemMatch[1].trim());
+                teams[current].push(item);
             } else {
                 // Track orphaned items before the first team header
-                orphanedItems.push(itemMatch[1].trim());
+                orphanedItems.push(item);
             }
         }
     }
@@ -1392,10 +1412,12 @@ export interface SkillDef {
 function parseSkillFile(filePath: string, fallbackName: string): SkillDef | null {
     try {
         const raw = readFileSync(filePath, "utf-8");
-        const match = raw.match(/^---\n([\s\S]*?)\n---\n/);
+        // `\r?\n`: tolerate CRLF skill files (they'd otherwise lose their
+        // frontmatter and fall back to the directory name with no description).
+        const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
         const fm: Record<string, string> = {};
         if (match) {
-            for (const line of match[1].split("\n")) {
+            for (const line of match[1].split(/\r?\n/)) {
                 const idx = line.indexOf(":");
                 if (idx <= 0) continue;
                 const key = line.slice(0, idx).trim();
@@ -1538,13 +1560,17 @@ const SESSION_TTL_MS =
     60 *
     1000;
 
+// Session files the cleanup must never touch: dispatch.ts appends its run
+// history here and that observability trail is meant to outlive a run.
+const SESSION_KEEP_FILES = new Set(["dispatch-history.jsonl"]);
+
 // Ensure the per-agent session directory exists; optionally wipe stale sessions.
 // When `wipe` is false, still removes orphaned files older than SESSION_TTL_MS
 // so dispatch-mode sessions don't accumulate indefinitely.
 // The session directory is read from PI_WORKFLOW_SESSION_DIR env var;
 // falls back to `~/.pi/agent/sessions/` if unset. Supports `~` expansion.
 // Returns the directory path (the caller stores it as its sessionDir).
-export function setupSessions(_cwd: string, wipe: boolean): string {
+export function setupSessions(cwd: string, wipe: boolean): string {
     const defaultDir = join(homedir(), ".pi", "agent", "sessions");
     const envDir = (process.env.PI_WORKFLOW_SESSION_DIR || "").trim();
     const sessionDir = envDir
@@ -1554,21 +1580,48 @@ export function setupSessions(_cwd: string, wipe: boolean): string {
         : defaultDir;
     if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true });
     const now = Date.now();
-    for (const f of readdirSync(sessionDir)) {
-        if (!f.endsWith(".jsonl")) continue;
-        if (wipe) {
-            try {
-                unlinkSync(join(sessionDir, f));
-            } catch {}
-        } else {
-            // TTL-based cleanup: remove orphaned session files older than 7 days.
-            try {
-                const stat = statSync(join(sessionDir, f));
-                if (now - stat.mtimeMs > SESSION_TTL_MS) {
-                    unlinkSync(join(sessionDir, f));
-                }
-            } catch {}
+
+    // spawnAgentWithModel writes to <sessionDir>/<projectSessionHash(cwd)>/<agent>.jsonl,
+    // so cleaning only the top level left every real session in place — each run
+    // resumed the previous request's conversation and nothing ever expired.
+    const clean = (dir: string, wipeDir: boolean) => {
+        let entries: string[];
+        try {
+            entries = readdirSync(dir);
+        } catch {
+            return;
         }
+        for (const f of entries) {
+            if (!f.endsWith(".jsonl")) continue;
+            if (SESSION_KEEP_FILES.has(f)) continue;
+            const path = join(dir, f);
+            if (wipeDir) {
+                try {
+                    unlinkSync(path);
+                } catch {}
+            } else {
+                // TTL-based cleanup: remove orphaned session files older than 7 days.
+                try {
+                    const stat = statSync(path);
+                    if (now - stat.mtimeMs > SESSION_TTL_MS) unlinkSync(path);
+                } catch {}
+            }
+        }
+    };
+
+    const projectDir = projectSessionHash(cwd);
+    clean(sessionDir, wipe);
+    let subdirs: string[] = [];
+    try {
+        subdirs = readdirSync(sessionDir, { withFileTypes: true })
+            .filter((e) => e.isDirectory())
+            .map((e) => e.name);
+    } catch {}
+    for (const d of subdirs) {
+        // Only THIS project's sessions get wiped — another project's run may be
+        // live in its own subdir. Every subdir still gets the age-based sweep,
+        // which can't touch anything a running spawn is writing.
+        clean(join(sessionDir, d), wipe && d === projectDir);
     }
     return sessionDir;
 }
@@ -3099,12 +3152,20 @@ export function handleSpawnEvent(
                 .pop() || "";
         paint(true);
     } else if (event.type === "message_end" || event.type === "agent_end") {
-        const msg =
-            event.type === "message_end"
-                ? event.message
-                : (event.messages || []).find(
-                      (m: any) => m.role === "assistant",
-                  );
+        // pi emits a `message_end` per assistant turn AND a final `agent_end`
+        // carrying the whole message array. The two are NOT interchangeable:
+        // agent_end is a recap, so take its LAST assistant message (the first is
+        // the opening turn — using it regressed finalText/lastStopReason) and
+        // skip the usage block entirely (message_end already counted every turn;
+        // re-counting here doubled cost and cache tokens for every spawn).
+        const isAgentEnd = event.type === "agent_end";
+        let msg = event.message;
+        if (isAgentEnd) {
+            const assistants = (event.messages || []).filter(
+                (m: any) => m?.role === "assistant",
+            );
+            msg = assistants[assistants.length - 1];
+        }
         if (msg?.role === "assistant") {
             // Track why the last turn ended — "length" means the model hit its
             // output-token cap and was truncated (often before acting at all).
@@ -3115,8 +3176,14 @@ export function handleSpawnEvent(
                     .map((c: any) => c.text || "")
                     .join("");
                 if (text) state.finalText = text;
-                if (msg.stopReason === "error" && msg.errorMessage)
+                if (msg.stopReason === "error" && msg.errorMessage) {
                     state.finalError = String(msg.errorMessage);
+                } else if (msg.stopReason && msg.stopReason !== "error") {
+                    // pi retries errored turns internally: a later turn that
+                    // ended normally means the spawn recovered, so drop the
+                    // stale error instead of forcing the whole phase to fail.
+                    state.finalError = "";
+                }
             }
         }
         // Update on ANY usage signal, not just a non-zero `input`. Providers that
@@ -3124,7 +3191,7 @@ export function handleSpawnEvent(
         // with `input` at 0 (e.g. gateframe), and some report only `output`/`cost`.
         // Gating on `input` alone left those agents' cards stuck at 0.0% / $0.00
         // for the whole run even as they did real work.
-        const us = msg?.usage;
+        const us = isAgentEnd ? undefined : msg?.usage;
         if (
             us &&
             (us.input ||
@@ -3159,9 +3226,18 @@ export function handleSpawnEvent(
             // turn). Per-turn cost is additive — sum it for the phase total.
             state.costUsd += msg.usage.cost?.total || 0;
 
-            // Context-window fill uses input + output (the live conversation size).
+            // Context-window fill = THIS turn's conversation size: input plus the
+            // part of the prompt served from / written to cache, plus what the
+            // turn produced. Cache tokens must be included — providers that serve
+            // most of the prompt from cache report `input: 0` and read ~0% all
+            // run without them. Deliberately the last turn's snapshot, NOT the
+            // cumulative sums (cacheRead/cacheWrite are additive across turns and
+            // would overcount the live conversation many times over).
             const ctxTokens =
-                state.cumulativeTokens.input + state.cumulativeTokens.output;
+                (msg.usage.input || 0) +
+                (msg.usage.cacheRead || 0) +
+                (msg.usage.cacheWrite || 0) +
+                (msg.usage.output || 0);
 
             // Only compute percentage when the context window is known
             const pct =
@@ -3182,6 +3258,24 @@ export function handleSpawnEvent(
             phase.tokens = state.capturedTokens;
             paint();
         }
+    }
+}
+
+// Parse one streamed stdout line and dispatch it. Malformed lines count against
+// BOTH counters: the phase copy drives the report's `[N dropped]` marker and its
+// malformed-JSON diagnostic (and the run total, which is a phase delta), the
+// state copy is the per-spawn tally.
+export function handleSpawnLine(
+    line: string,
+    state: SpawnEventState,
+    phase: PhaseState,
+    paint: (force?: boolean) => void,
+): void {
+    try {
+        handleSpawnEvent(JSON.parse(line), state, phase, paint);
+    } catch {
+        state.droppedLines++;
+        phase.droppedLines++;
     }
 }
 
@@ -3459,12 +3553,7 @@ export function spawnAgentWithModel(
             buffer = lines.pop() || "";
             for (const line of lines) {
                 if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    handleSpawnEvent(event, state, phase, paint);
-                } catch {
-                    state.droppedLines++;
-                }
+                handleSpawnLine(line, state, phase, paint);
             }
         });
         proc.stderr!.setEncoding("utf-8");
@@ -3476,21 +3565,12 @@ export function spawnAgentWithModel(
 
         proc.on("close", (code) => {
             config.setCurrentProc(null);
-            if (buffer.trim()) {
-                try {
-                    const event = JSON.parse(buffer);
-                    if (
-                        event.type === "message_update" &&
-                        event.assistantMessageEvent?.type === "text_delta"
-                    ) {
-                        state.answer.push(
-                            event.assistantMessageEvent.delta || "",
-                        );
-                    }
-                } catch {
-                    state.droppedLines++;
-                }
-            }
+            // A leftover buffer is a complete event that merely lacked its
+            // trailing newline — often the final `message_end` carrying the
+            // answer and its usage. Route it through the same dispatcher instead
+            // of salvaging text_delta only. No paint: the widget is redrawn below.
+            if (buffer.trim())
+                handleSpawnLine(buffer, state, phase, () => {});
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
             if (killEscalation) clearTimeout(killEscalation);

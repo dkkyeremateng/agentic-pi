@@ -47,11 +47,23 @@ import {
     clearAllModelOverrides,
     getModelOverride,
     getModelOverrides,
+    setupSessions,
+    loadTeams,
+    loadDotEnv,
+    handleSpawnEvent,
+    handleSpawnLine,
     type AgentDef,
     type RunArtifacts,
     type PhaseState,
+    type SpawnEventState,
 } from "./workflow-core";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import {
+    writeFileSync,
+    mkdtempSync,
+    mkdirSync,
+    existsSync,
+    utimesSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -1842,5 +1854,426 @@ describe("appendLiveLog pane collapse", () => {
         const withPane: string[] = [];
         appendLiveLog(withPane, 80, theme, [phase({ paneActive: true })], true, vw);
         assert.equal(withPane.length, noPane.length); // collapse pads to the same rows
+    });
+});
+
+// ── setupSessions ────────────────────────────────
+
+describe("setupSessions", () => {
+    // Sessions actually live in <sessionDir>/<projectSessionHash(cwd)>/<agent>.jsonl,
+    // so cleaning only the top level meant every run resumed the previous one.
+    const CWD = "/tmp/setup-sessions-project";
+    let saved: string | undefined;
+    let dir = "";
+    let sub = "";
+
+    beforeEach(() => {
+        saved = process.env.PI_WORKFLOW_SESSION_DIR;
+        dir = mkdtempSync(join(tmpdir(), "pi-sessions-"));
+        sub = join(dir, projectSessionHash(CWD));
+        mkdirSync(sub, { recursive: true });
+        process.env.PI_WORKFLOW_SESSION_DIR = dir;
+    });
+    afterEach(() => {
+        if (saved === undefined) delete process.env.PI_WORKFLOW_SESSION_DIR;
+        else process.env.PI_WORKFLOW_SESSION_DIR = saved;
+    });
+
+    const age = (path: string, days: number) => {
+        const t = (Date.now() - days * 24 * 60 * 60 * 1000) / 1000;
+        utimesSync(path, t, t);
+    };
+
+    it("wipes the per-project subdir, not just the top level", () => {
+        writeFileSync(join(sub, "planner.jsonl"), '{"a":1}\n');
+        writeFileSync(join(dir, "flat.jsonl"), '{"a":1}\n');
+        setupSessions(CWD, true);
+        assert.equal(existsSync(join(sub, "planner.jsonl")), false);
+        assert.equal(existsSync(join(dir, "flat.jsonl")), false);
+    });
+
+    it("does not wipe another project's subdir, but still ages it out", () => {
+        const other = join(dir, projectSessionHash("/tmp/another-project"));
+        mkdirSync(other, { recursive: true });
+        const live = join(other, "implementer.jsonl");
+        writeFileSync(live, '{"a":1}\n');
+        setupSessions(CWD, true);
+        // That project's run may be live — only its age may remove it.
+        assert.equal(existsSync(live), true);
+        age(live, 30);
+        setupSessions(CWD, true);
+        assert.equal(existsSync(live), false);
+    });
+
+    it("TTL-cleans stale files in the subdir and keeps fresh ones", () => {
+        const stale = join(sub, "old.jsonl");
+        const fresh = join(sub, "new.jsonl");
+        writeFileSync(stale, '{"a":1}\n');
+        writeFileSync(fresh, '{"a":1}\n');
+        age(stale, 30);
+        setupSessions(CWD, false);
+        assert.equal(existsSync(stale), false);
+        assert.equal(existsSync(fresh), true);
+    });
+
+    it("preserves dispatch-history.jsonl through a wipe and a TTL sweep", () => {
+        const history = join(dir, "dispatch-history.jsonl");
+        writeFileSync(history, '{"agent":"seeker"}\n');
+        age(history, 30);
+        setupSessions(CWD, true);
+        assert.equal(existsSync(history), true, "wipe must keep the history");
+        setupSessions(CWD, false);
+        assert.equal(existsSync(history), true, "TTL must keep the history");
+    });
+
+    it("leaves non-.jsonl files alone and creates a missing dir", () => {
+        writeFileSync(join(sub, "notes.md"), "keep me");
+        const missing = join(dir, "nested", "sessions");
+        setupSessions(CWD, true);
+        assert.equal(existsSync(join(sub, "notes.md")), true);
+        process.env.PI_WORKFLOW_SESSION_DIR = missing;
+        assert.equal(setupSessions(CWD, true), missing);
+        assert.equal(existsSync(missing), true);
+    });
+});
+
+// ── handleSpawnEvent: agent_end / finalError / context % ──
+
+describe("handleSpawnEvent agent_end and accounting", () => {
+    function mkSpawnState(): SpawnEventState {
+        return {
+            answer: [],
+            finalText: "",
+            finalError: "",
+            activity: "",
+            stderrTail: "",
+            droppedLines: 0,
+            toolCount: 0,
+            contextPct: 0,
+            cumulativeTokens: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+            },
+            costUsd: 0,
+        };
+    }
+    const noop = () => {};
+    const assistant = (text: string, over: any = {}) => ({
+        role: "assistant",
+        content: [{ type: "text", text }],
+        ...over,
+    });
+
+    it("takes the LAST assistant message from agent_end, not the first", () => {
+        const state = mkSpawnState();
+        const phase = testPhase("implementer");
+        handleSpawnEvent(
+            {
+                type: "agent_end",
+                messages: [
+                    assistant("opening turn"),
+                    { role: "user", content: [{ type: "text", text: "more" }] },
+                    assistant("the conclusion"),
+                ],
+            },
+            state,
+            phase,
+            noop,
+        );
+        assert.equal(state.finalText, "the conclusion");
+    });
+
+    it("does not let agent_end mask a 'length' stopReason with an earlier turn's", () => {
+        const state = mkSpawnState();
+        const phase = testPhase("implementer");
+        handleSpawnEvent(
+            {
+                type: "agent_end",
+                messages: [
+                    assistant("first", { stopReason: "end_turn" }),
+                    assistant("truncated", { stopReason: "length" }),
+                ],
+            },
+            state,
+            phase,
+            noop,
+        );
+        assert.equal(phase.lastStopReason, "length");
+    });
+
+    it("does NOT re-count usage on agent_end (message_end already counted it)", () => {
+        const state = mkSpawnState();
+        const phase = testPhase("implementer");
+        const usage = {
+            input: 1000,
+            output: 200,
+            cacheRead: 500,
+            cacheWrite: 100,
+            contextWindow: 100000,
+            cost: { total: 0.05 },
+        };
+        const msg = assistant("done", { usage });
+        handleSpawnEvent({ type: "message_end", message: msg }, state, phase, noop);
+        handleSpawnEvent({ type: "agent_end", messages: [msg] }, state, phase, noop);
+        assert.equal(state.costUsd, 0.05); // was 0.10 — doubled per spawn
+        assert.equal(state.cumulativeTokens.output, 200);
+        assert.equal(state.cumulativeTokens.cacheRead, 500);
+        assert.equal(state.cumulativeTokens.cacheWrite, 100);
+    });
+
+    it("clears a stale finalError when a later turn ends normally", () => {
+        const state = mkSpawnState();
+        const phase = testPhase("implementer");
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: assistant("", {
+                    stopReason: "error",
+                    errorMessage: "overloaded",
+                }),
+            },
+            state,
+            phase,
+            noop,
+        );
+        assert.equal(state.finalError, "overloaded");
+        // pi retries errored turns internally; the retry succeeded.
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: assistant("recovered", { stopReason: "end_turn" }),
+            },
+            state,
+            phase,
+            noop,
+        );
+        assert.equal(state.finalError, "");
+        assert.equal(state.finalText, "recovered");
+    });
+
+    it("keeps finalError when no later turn arrives", () => {
+        const state = mkSpawnState();
+        const phase = testPhase("implementer");
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: assistant("", {
+                    stopReason: "error",
+                    errorMessage: "quota exceeded",
+                }),
+            },
+            state,
+            phase,
+            noop,
+        );
+        assert.equal(state.finalError, "quota exceeded");
+    });
+
+    it("counts cache tokens toward the context % (input: 0 cache-heavy providers)", () => {
+        const state = mkSpawnState();
+        const phase = testPhase("planner");
+        handleSpawnEvent(
+            {
+                type: "message_end",
+                message: assistant("", {
+                    usage: {
+                        input: 0,
+                        output: 200,
+                        cacheRead: 400000,
+                        cacheWrite: 0,
+                        contextWindow: 1000000,
+                    },
+                }),
+            },
+            state,
+            phase,
+            noop,
+        );
+        assert.equal(phase.contextPct, 40); // was 0 — cache tokens were ignored
+    });
+
+    it("uses the LAST turn's snapshot for the context %, not cumulative cache sums", () => {
+        const state = mkSpawnState();
+        const phase = testPhase("planner");
+        const turn = (cacheRead: number) => ({
+            type: "message_end",
+            message: assistant("", {
+                usage: {
+                    input: 0,
+                    output: 0,
+                    cacheRead,
+                    contextWindow: 1000000,
+                },
+            }),
+        });
+        handleSpawnEvent(turn(400000), state, phase, noop);
+        handleSpawnEvent(turn(410000), state, phase, noop);
+        // Cumulative cacheRead is 810k; the live conversation is only 410k.
+        assert.equal(phase.contextPct, 41);
+        assert.equal(state.cumulativeTokens.cacheRead, 810000); // still summed for cost
+    });
+});
+
+// ── handleSpawnLine (stdout line dispatch) ───────
+
+describe("handleSpawnLine", () => {
+    function mkSpawnState(): SpawnEventState {
+        return {
+            answer: [],
+            finalText: "",
+            finalError: "",
+            activity: "",
+            stderrTail: "",
+            droppedLines: 0,
+            toolCount: 0,
+            contextPct: 0,
+            cumulativeTokens: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+            },
+            costUsd: 0,
+        };
+    }
+    const noop = () => {};
+
+    it("counts a malformed line against BOTH the state and the phase", () => {
+        const state = mkSpawnState();
+        const phase = testPhase("implementer");
+        handleSpawnLine("{not json", state, phase, noop);
+        handleSpawnLine("also not json", state, phase, noop);
+        assert.equal(state.droppedLines, 2);
+        // phase.droppedLines feeds the report's "[N dropped]" marker; it was
+        // never incremented, so that diagnostic could never fire.
+        assert.equal(phase.droppedLines, 2);
+    });
+
+    it("routes a full event (a trailing message_end salvaged at close) through the handler", () => {
+        const state = mkSpawnState();
+        const phase = testPhase("implementer");
+        handleSpawnLine(
+            JSON.stringify({
+                type: "message_end",
+                message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "final answer" }],
+                    usage: {
+                        input: 1000,
+                        output: 200,
+                        contextWindow: 100000,
+                        cost: { total: 0.02 },
+                    },
+                },
+            }),
+            state,
+            phase,
+            noop,
+        );
+        // Previously only text_delta was salvaged: the answer AND its usage were lost.
+        assert.equal(state.finalText, "final answer");
+        assert.equal(state.costUsd, 0.02);
+        assert.equal(phase.droppedLines, 0);
+    });
+});
+
+// ── loadTeams / parseTeamsYaml comment handling ──
+
+describe("loadTeams comment handling", () => {
+    function projectWithTeams(yaml: string): string {
+        const cwd = mkdtempSync(join(tmpdir(), "pi-teams-"));
+        mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+        writeFileSync(join(cwd, ".pi", "agents", "teams.yaml"), yaml);
+        return cwd;
+    }
+
+    it("ignores commented-out team headers instead of creating phantom teams", () => {
+        const cwd = projectWithTeams(
+            "# old-team:\n#   - ghost\nbuild:\n  - implementer\n  - validator\n",
+        );
+        const teams = loadTeams(cwd);
+        assert.deepEqual(Object.keys(teams), ["build"]);
+        assert.deepEqual(teams.build, ["implementer", "validator"]);
+    });
+
+    it("strips a trailing comment from a member line", () => {
+        const cwd = projectWithTeams(
+            "spec:\n  - scout  # gathers context\n  - planner\n",
+        );
+        assert.deepEqual(loadTeams(cwd).spec, ["scout", "planner"]);
+    });
+});
+
+// ── CRLF frontmatter ─────────────────────────────
+
+describe("CRLF frontmatter parsing", () => {
+    it("parses an agent file with CRLF line endings", () => {
+        const f = join(mkdtempSync(join(tmpdir(), "pi-crlf-")), "a.md");
+        writeFileSync(
+            f,
+            "---\r\nname: crlf-agent\r\ndescription: works on windows\r\ntools: read,bash\r\n---\r\nsystem prompt body\r\n",
+        );
+        const def = parseAgentFile(f);
+        assert.equal(def?.name, "crlf-agent");
+        assert.equal(def?.description, "works on windows");
+        assert.equal(def?.tools, "read,bash");
+        assert.match(def?.systemPrompt ?? "", /system prompt body/);
+    });
+
+    it("parses a CRLF SKILL.md through loadSkills", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "pi-crlf-skill-"));
+        mkdirSync(join(cwd, ".pi", "skills", "crlfskill"), { recursive: true });
+        writeFileSync(
+            join(cwd, ".pi", "skills", "crlfskill", "SKILL.md"),
+            "---\r\nname: crlfskill\r\ndescription: a skill with CRLF endings\r\n---\r\nbody\r\n",
+        );
+        const skill = loadSkills(cwd).find((s) => s.name === "crlfskill");
+        assert.ok(skill, "expected the CRLF skill to load");
+        assert.equal(skill?.description, "a skill with CRLF endings");
+    });
+});
+
+// ── loadDotEnv precedence ────────────────────────
+
+describe("loadDotEnv project override precedence", () => {
+    let savedModel: string | undefined;
+    let savedLoops: string | undefined;
+    beforeEach(() => {
+        savedModel = process.env.PI_WORKFLOW_MODEL;
+        savedLoops = process.env.PI_WORKFLOW_MAX_LOOPS;
+    });
+    afterEach(() => {
+        if (savedModel === undefined) delete process.env.PI_WORKFLOW_MODEL;
+        else process.env.PI_WORKFLOW_MODEL = savedModel;
+        if (savedLoops === undefined) delete process.env.PI_WORKFLOW_MAX_LOOPS;
+        else process.env.PI_WORKFLOW_MAX_LOOPS = savedLoops;
+    });
+
+    function projectWithEnv(body: string): string {
+        const cwd = mkdtempSync(join(tmpdir(), "pi-dotenv-"));
+        writeFileSync(join(cwd, ".env"), body);
+        return cwd;
+    }
+
+    it("does NOT override a value exported in the real shell", () => {
+        process.env.PI_WORKFLOW_MODEL = "from-shell";
+        loadDotEnv(projectWithEnv("PI_WORKFLOW_MODEL=from-project\n"));
+        // The loader documents that the shell wins; the project file used to
+        // clobber it anyway.
+        assert.equal(process.env.PI_WORKFLOW_MODEL, "from-shell");
+    });
+
+    it("still applies a whitelisted key the shell did not set", () => {
+        delete process.env.PI_WORKFLOW_MAX_LOOPS;
+        loadDotEnv(projectWithEnv("PI_WORKFLOW_MAX_LOOPS=9\n"));
+        assert.equal(process.env.PI_WORKFLOW_MAX_LOOPS, "9");
+    });
+
+    it("still refuses non-whitelisted keys", () => {
+        delete process.env.PI_WORKFLOW_NOT_ALLOWED;
+        loadDotEnv(projectWithEnv("PI_WORKFLOW_NOT_ALLOWED=1\n"));
+        assert.equal(process.env.PI_WORKFLOW_NOT_ALLOWED, undefined);
     });
 });

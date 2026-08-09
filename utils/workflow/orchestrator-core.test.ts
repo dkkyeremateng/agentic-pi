@@ -7,6 +7,7 @@ import {
     newOrchestratorState,
     type OrchestratorState,
     type OrchestratorHost,
+    runFullWorkflowCommand,
     dispatchAgentCore,
     dispatchParallelCore,
     selectAgentsCore,
@@ -31,6 +32,12 @@ import { setObsEmit } from "../../obs/obs-events";
 import { stageLearning, readStaged } from "./memory";
 
 // Run with: npx tsx --test orchestrator-core.test.ts
+
+// Isolate agent memory for the WHOLE file. Several tests drive dispatch/workflow
+// paths that end in commitStagedLearnings, which WRITES <agent>.md — and its
+// default target is this repo's own agents/memory/. Without this the suite leaves
+// files behind in the working tree on every run.
+process.env.PI_AGENT_MEMORY_DIR = mkdtempSync(join(tmpdir(), "orch-test-memory-"));
 
 // ── Test helpers ─────────────────────────────────
 
@@ -291,9 +298,11 @@ describe("dispatchAgentCore", () => {
         const saved = saveDispatchEnv();
         try {
             process.env.PI_DISPATCH_ANCESTRY = "coordinator>scout";
+            const agents = new Map<string, AgentDef>();
+            agents.set("scout", mkAgent("scout"));
             const result = await dispatchAgentCore(
-                mkState(),
-                mkHost(),
+                mkStateWithAgents(agents),
+                mkHost({ setup: { loadAgents: () => agents } }),
                 "scout",
                 "task",
                 undefined,
@@ -304,6 +313,44 @@ describe("dispatchAgentCore", () => {
                     "Cycle detected",
                 ),
             );
+        } finally {
+            restoreDispatchEnv(saved);
+        }
+    });
+
+    it("refuses a cycle reached through an ALIAS of the ancestor", async () => {
+        // The ancestry chain carries canonical names, so the check must run AFTER
+        // resolveAgent — otherwise "recon" (an alias of scout) slips past it.
+        const saved = saveDispatchEnv();
+        try {
+            process.env.PI_DISPATCH_ANCESTRY = "coordinator>scout";
+            const agents = new Map<string, AgentDef>();
+            agents.set("scout", { ...mkAgent("scout"), aliases: ["recon"] });
+            let ran = 0;
+            const host = mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runAgent: async () => {
+                        ran++;
+                        return { output: "should never run", exitCode: 0 };
+                    },
+                },
+            });
+            const result = await dispatchAgentCore(
+                mkStateWithAgents(agents),
+                host,
+                "recon",
+                "task",
+                undefined,
+                mkCtx(),
+            );
+            assert.ok(
+                (result.content[0] as { text: string }).text.includes(
+                    "Cycle detected",
+                ),
+                "the alias must not evade the ancestry guard",
+            );
+            assert.equal(ran, 0, "the aliased ancestor never ran");
         } finally {
             restoreDispatchEnv(saved);
         }
@@ -668,10 +715,12 @@ describe("dispatchAgentCore", () => {
         assert.equal(st.dispatchesThisTurn, 2);
     });
 
-    it("truncates output longer than 8000 chars", async () => {
+    it("truncates output longer than 8000 chars head+tail, keeping the conclusion", async () => {
         const agents = new Map<string, AgentDef>();
         agents.set("planner", mkAgent("planner"));
-        const longOutput = "x".repeat(10000);
+        // Agents summarize at the END: a head-only slice would drop the conclusion.
+        const longOutput =
+            "HEAD-MARKER\n" + "x".repeat(10000) + "\nCONCLUSION-MARKER";
         const host = mkHost({
             setup: {
                 loadAgents: () => agents,
@@ -691,7 +740,14 @@ describe("dispatchAgentCore", () => {
             undefined,
             mkCtx(),
         );
-        assert.ok((result.content[0] as { text: string }).text.includes("[truncated]"));
+        const text = (result.content[0] as { text: string }).text;
+        assert.ok(text.includes("truncated"), "truncation marker present");
+        assert.ok(text.includes("HEAD-MARKER"), "head kept");
+        assert.ok(
+            text.includes("CONCLUSION-MARKER"),
+            "tail kept — the agent's concluding summary survives truncation",
+        );
+        assert.ok(text.length < longOutput.length, "output actually clamped");
     });
 
     it("enters dispatch mode on first dispatch", async () => {
@@ -3454,5 +3510,853 @@ describe("dispatch activity streaming", () => {
             { label: "b", log: "" },
         ]);
         assert.deepEqual(out.split("\n"), ["a: → go", "b: …"]);
+    });
+});
+
+// ── Review gate: an unresolved REVISE blocks shipping ──
+
+describe("runWorkflowCore review gate", () => {
+    const PLAN = [
+        "## Phase 1: Do the work",
+        "Edit `src/a.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+
+    it("blocks the shipper and ends needs-review when the reviewer never approves", async () => {
+        // The reviewer says REVISE BEFORE MERGE on every round and the loop runs
+        // out: the change was never signed off, so it must NOT ship.
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer", "shipper"])
+            agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "revise-block-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), PLAN, "utf-8");
+
+        const calls: string[] = [];
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    calls.push(phase.agent);
+                    if (phase.agent === "reviewer")
+                        return {
+                            output: "REVISE BEFORE MERGE\nThe error path is still unhandled.",
+                            ok: true,
+                        };
+                    if (phase.agent === "shipper")
+                        return { output: "SHIP: SHIPPED", ok: true };
+                    return { output: "impl output", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { rev: ["implementer", "reviewer", "shipper"] },
+            activeTeamName: "rev",
+        });
+        const result = await runWorkflowCore(st, host, "Build feature X", 2, {
+            cwd,
+        });
+
+        assert.equal(result.status, "needs-review");
+        assert.equal(st.lastStatus, "needs-review");
+        assert.ok(!calls.includes("shipper"), "the shipper must never run");
+    });
+
+    it("still ships once the reviewer approves (the gate is the verdict, not the reviewer's presence)", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer", "shipper"])
+            agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "revise-ok-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), PLAN, "utf-8");
+
+        let reviewerCalls = 0;
+        const calls: string[] = [];
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    calls.push(phase.agent);
+                    if (phase.agent === "reviewer") {
+                        reviewerCalls++;
+                        return reviewerCalls === 1
+                            ? { output: "REVISE BEFORE MERGE\nfix it", ok: true }
+                            : { output: "APPROVED\nlooks good now", ok: true };
+                    }
+                    if (phase.agent === "shipper")
+                        return {
+                            output: "SHIP: SHIPPED\nhttps://github.com/t/pull/9",
+                            ok: true,
+                        };
+                    return { output: "impl output", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { rev: ["implementer", "reviewer", "shipper"] },
+            activeTeamName: "rev",
+        });
+        const result = await runWorkflowCore(st, host, "Build feature X", 3, {
+            cwd,
+        });
+
+        assert.equal(result.status, "shipped");
+        assert.ok(calls.includes("shipper"));
+    });
+
+    it("keeps a passing validator from overriding an unresolved REVISE", async () => {
+        // The validator's PASS is about the tests; the reviewer's REVISE is a
+        // separate, still-open gate.
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer", "validator", "shipper"])
+            agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "revise-val-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), PLAN, "utf-8");
+
+        const events: { type: string; payload: any }[] = [];
+        setObsEmit((type, payload) => events.push({ type, payload }));
+        let result;
+        try {
+            const host = mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runPhase: async (phase) => {
+                        if (phase.agent === "reviewer")
+                            return { output: "REVISE BEFORE MERGE\nno", ok: true };
+                        if (phase.agent === "validator")
+                            return { output: "VERDICT: PASS", ok: true };
+                        if (phase.agent === "shipper")
+                            return { output: "SHIP: SHIPPED", ok: true };
+                        return { output: "impl output", ok: true };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents, {
+                teams: {
+                    rev: ["implementer", "reviewer", "validator", "shipper"],
+                },
+                activeTeamName: "rev",
+            });
+            result = await runWorkflowCore(st, host, "Build feature X", 1, {
+                cwd,
+            });
+        } finally {
+            setObsEmit(undefined);
+        }
+
+        assert.equal(result!.status, "needs-review");
+        // The shipper never ran, so it gets no auto-verdict.
+        const verdicts = events.filter((e) => e.type === "verdict");
+        assert.equal(
+            verdicts.find((v) => v.payload.agent === "shipper"),
+            undefined,
+            "a shipper that never ran must not be auto-scored",
+        );
+        const runLevel = verdicts.filter(
+            (v) => !v.payload.agent && v.payload.source === "workflow",
+        );
+        assert.equal(runLevel[runLevel.length - 1].payload.status, "open");
+    });
+});
+
+// ── Dispatch guards see the workflow extension's run, not just local state ──
+
+describe("dispatch guards consult the global workflow bridge", () => {
+    type Bridge = { __piHasRunningWorkflow?: () => boolean };
+    const bridges = globalThis as Bridge;
+    function withBridge<T>(hook: (() => boolean) | undefined, fn: () => T): T {
+        const prev = bridges.__piHasRunningWorkflow;
+        if (hook) bridges.__piHasRunningWorkflow = hook;
+        else delete bridges.__piHasRunningWorkflow;
+        try {
+            return fn();
+        } finally {
+            if (prev) bridges.__piHasRunningWorkflow = prev;
+            else delete bridges.__piHasRunningWorkflow;
+        }
+    }
+    function seekerSetup() {
+        const agents = new Map<string, AgentDef>();
+        agents.set("seeker", mkAgent("seeker"));
+        return {
+            agents,
+            host: mkHost({ setup: { loadAgents: () => agents } }),
+        };
+    }
+
+    it("dispatch_agent refuses while the workflow extension reports a running pipeline", async () => {
+        const { agents, host } = seekerSetup();
+        // s.running is false — the dispatch extension has its OWN state and never
+        // sees the workflow extension's run; only the bridge does.
+        const result = await withBridge(() => true, () =>
+            dispatchAgentCore(
+                mkStateWithAgents(agents),
+                host,
+                "seeker",
+                "research",
+                undefined,
+                mkCtx(),
+            ),
+        );
+        assert.match(
+            (result.content[0] as { text: string }).text,
+            /Cannot dispatch while a workflow is running/,
+        );
+    });
+
+    it("dispatch_parallel refuses while the workflow extension reports a running pipeline", async () => {
+        const { agents, host } = seekerSetup();
+        const result = await withBridge(() => true, () =>
+            dispatchParallelCore(
+                mkStateWithAgents(agents),
+                host,
+                [{ agent: "seeker", task: "a" }],
+                undefined,
+                mkCtx(),
+            ),
+        );
+        assert.match(
+            (result.content[0] as { text: string }).text,
+            /Cannot dispatch while a workflow is running/,
+        );
+    });
+
+    it("select_agents refuses while the workflow extension reports a running pipeline", () => {
+        const { agents, host } = seekerSetup();
+        const result = withBridge(() => true, () =>
+            selectAgentsCore(mkStateWithAgents(agents), host, ["seeker"], mkCtx()),
+        );
+        assert.match(
+            (result.content[0] as { text: string }).text,
+            /Cannot change the selection while a full workflow is running/,
+        );
+    });
+
+    it("treats a throwing or absent bridge as 'no workflow running'", async () => {
+        const { agents, host } = seekerSetup();
+        for (const hook of [
+            undefined,
+            () => {
+                throw new Error("bridge exploded");
+            },
+            () => false,
+        ]) {
+            const result = await withBridge(hook as any, () =>
+                dispatchAgentCore(
+                    mkStateWithAgents(agents),
+                    host,
+                    "seeker",
+                    "research",
+                    undefined,
+                    mkCtx(),
+                ),
+            );
+            assert.ok(
+                !(result.content[0] as { text: string }).text.includes(
+                    "Cannot dispatch while a workflow is running",
+                ),
+                "a broken bridge must never block dispatch",
+            );
+        }
+    });
+
+    it("still refuses on local state alone (dispatch started by this very state)", async () => {
+        const { agents, host } = seekerSetup();
+        const result = await withBridge(undefined, () =>
+            dispatchAgentCore(
+                mkStateWithAgents(agents, { running: true }),
+                host,
+                "seeker",
+                "research",
+                undefined,
+                mkCtx(),
+            ),
+        );
+        assert.match(
+            (result.content[0] as { text: string }).text,
+            /Cannot dispatch while a workflow is running/,
+        );
+    });
+});
+
+// ── Resume mode is for BUILD rosters only; learnings never survive a run ──
+
+describe("runWorkflowCore resume gating and staged-learnings hygiene", () => {
+    const PLAN = [
+        "## Phase 1: Do the work",
+        "Edit `src/a.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+    const STALE_LEARNING =
+        '{"agent":"implementer","text":"stale lesson from a crashed run"}\n';
+
+    it("a planner-less roster with no implementer does NOT resume: it clears the crashed run's staged learnings", async () => {
+        // Reviewer-only: previously this counted as a "resume", adopting (and
+        // validating) a stale plan and skipping the scratch reset — which leaked the
+        // crashed run's staged learnings into this run's verified commit.
+        const agents = new Map<string, AgentDef>();
+        agents.set("reviewer", mkAgent("reviewer"));
+        const cwd = mkdtempSync(join(tmpdir(), "noresume-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        // A garbage plan left behind: a resume would fail validation on it.
+        writeFileSync(join(cwd, ".agent", "plan.md"), "TODO: figure it out", "utf-8");
+        writeFileSync(
+            join(cwd, ".agent", "learnings.jsonl"),
+            STALE_LEARNING,
+            "utf-8",
+        );
+
+        let learningsAtReview = true;
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "reviewer") {
+                        learningsAtReview = existsSync(
+                            join(cwd, ".agent", "learnings.jsonl"),
+                        );
+                        return { output: "APPROVED\nlooks fine", ok: true };
+                    }
+                    return { output: `${phase.agent} output`, ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { rev: ["reviewer"] },
+            activeTeamName: "rev",
+        });
+        const result = await runWorkflowCore(st, host, "Review the tree", 3, {
+            cwd,
+        });
+
+        assert.equal(
+            result.status,
+            "done",
+            "the stale plan must not be validated as this run's plan",
+        );
+        assert.equal(
+            learningsAtReview,
+            false,
+            "the crashed run's staged learnings were cleared before the phase ran",
+        );
+    });
+
+    it("a resume keeps the plan and ledger but still clears staged learnings", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "validator"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "resume-learn-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), PLAN, "utf-8");
+        writeFileSync(
+            join(cwd, ".agent", "learnings.jsonl"),
+            STALE_LEARNING,
+            "utf-8",
+        );
+
+        let sawPlan = "";
+        let learningsAtImpl = true;
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "implementer") {
+                        sawPlan = readFileSync(
+                            join(cwd, ".agent", "plan.md"),
+                            "utf-8",
+                        );
+                        learningsAtImpl = existsSync(
+                            join(cwd, ".agent", "learnings.jsonl"),
+                        );
+                        return { output: "impl output", ok: true };
+                    }
+                    return { output: "VERDICT: PASS", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { build: ["implementer", "validator"] },
+            activeTeamName: "build",
+        });
+        const result = await runWorkflowCore(st, host, "Continue X", 3, { cwd });
+
+        assert.equal(result.status, "done");
+        assert.ok(sawPlan.includes("Do the work"), "the plan survives the resume");
+        assert.equal(
+            learningsAtImpl,
+            false,
+            "staged learnings are cleared even on a resume",
+        );
+    });
+});
+
+// ── An unexpected throw is still a terminal run ──
+
+describe("runWorkflowCore unexpected-throw bookkeeping", () => {
+    it("writes the report, appends an error metrics line and clears staged learnings", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        const cwd = mkdtempSync(join(tmpdir(), "throw-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(
+            join(cwd, ".agent", "learnings.jsonl"),
+            '{"agent":"planner","text":"lesson"}\n',
+            "utf-8",
+        );
+
+        let widgetUpdates = 0;
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            ui: { updateWidget: () => void widgetUpdates++ },
+            execution: {
+                runPhase: async () => {
+                    throw new Error("boom: provider exploded mid-plan");
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await runWorkflowCore(st, host, "Build feature X", 3, {
+            cwd,
+        });
+
+        assert.equal(result.status, "error");
+        assert.match(result.report, /failed unexpectedly: boom/);
+        assert.equal(st.running, false);
+        assert.equal(st.lastStatus, "error");
+        assert.ok(widgetUpdates > 0, "the widget was repainted off 'running'");
+        // Terminal bookkeeping ran: report + metrics line + staging cleared.
+        assert.match(
+            readFileSync(join(cwd, "workflow-report.md"), "utf-8"),
+            /failed unexpectedly: boom/,
+        );
+        const lines = readFileSync(join(cwd, ".agent", "metrics.jsonl"), "utf-8")
+            .trim()
+            .split("\n");
+        assert.equal(JSON.parse(lines[lines.length - 1]).status, "error");
+        assert.ok(
+            !existsSync(join(cwd, ".agent", "learnings.jsonl")),
+            "a crashed run keeps no staged lessons",
+        );
+    });
+
+    it("survives a throw that happens before the run was initialized", async () => {
+        // prepareRun blows up: runStartedAt/phases still belong to the PREVIOUS run,
+        // so the bookkeeping must not report those as this run's.
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        const cwd = mkdtempSync(join(tmpdir(), "throw-pre-"));
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                prepareRun: () => {
+                    throw new Error("no model available");
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            phases: [
+                {
+                    label: "Plan",
+                    agent: "planner",
+                    status: "done",
+                    elapsed: 5000,
+                    note: "from the previous run",
+                    log: "",
+                    droppedLines: 0,
+                    toolCount: 3,
+                    contextPct: 10,
+                    attempt: 1,
+                    modelFallback: false,
+                },
+            ],
+        });
+        const result = await runWorkflowCore(st, host, "Build feature X", 3, {
+            cwd,
+        });
+
+        assert.equal(result.status, "error");
+        assert.match(result.report, /no model available/);
+        const metrics = JSON.parse(
+            readFileSync(join(cwd, ".agent", "metrics.jsonl"), "utf-8").trim(),
+        );
+        assert.equal(metrics.status, "error");
+        assert.ok(
+            !JSON.stringify(metrics).includes("from the previous run"),
+            "the previous run's phases are not attributed to this crash",
+        );
+        assert.ok(
+            st.runElapsedMs >= 0 && st.runElapsedMs < 60_000,
+            "elapsed time is this call's, not an epoch-length number",
+        );
+    });
+});
+
+// ── A roster with no pipeline roles is an error, not a vacuous "done" ──
+
+describe("runWorkflowCore empty-pipeline roster", () => {
+    it("fails with a clear message instead of an empty done run", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("seeker", mkAgent("seeker"));
+        const cwd = mkdtempSync(join(tmpdir(), "nopipeline-"));
+        let phasesRun = 0;
+        let sessionSetups = 0;
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => void sessionSetups++,
+            },
+            execution: {
+                runPhase: async (phase) => {
+                    phasesRun++;
+                    return { output: `${phase.agent} output`, ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { research: ["seeker"] },
+            activeTeamName: "research",
+        });
+        const result = await runWorkflowCore(st, host, "Research X", 3, { cwd });
+
+        assert.equal(result.status, "error");
+        assert.match(result.report, /no pipeline roles/i);
+        assert.match(result.report, /seeker/);
+        assert.equal(phasesRun, 0, "nothing ran");
+        assert.equal(sessionSetups, 0, "no session wipe for a roster that can't run");
+        // Persisted as a real error exit, not silently swallowed.
+        assert.match(
+            readFileSync(join(cwd, "workflow-report.md"), "utf-8"),
+            /no pipeline roles/i,
+        );
+    });
+
+    it("a roster mixing specialists with a pipeline role still runs", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["seeker", "reviewer"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "mixed-"));
+        const calls: string[] = [];
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    calls.push(phase.agent);
+                    return { output: "APPROVED\nfine", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { mixed: ["seeker", "reviewer"] },
+            activeTeamName: "mixed",
+        });
+        const result = await runWorkflowCore(st, host, "Review it", 3, { cwd });
+
+        assert.equal(result.status, "done");
+        assert.deepEqual(calls, ["reviewer"]);
+    });
+});
+
+// ── Per-item error isolation in dispatch ──
+
+describe("dispatch error isolation", () => {
+    it("dispatchAgentCore reports a rejected spawn instead of throwing", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("seeker", mkAgent("seeker"));
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runAgent: async () => {
+                    throw new Error("spawn ENOENT");
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchAgentCore(
+            st,
+            host,
+            "seeker",
+            "research",
+            undefined,
+            mkCtx(),
+        );
+        assert.match(
+            (result.content[0] as { text: string }).text,
+            /spawn ENOENT/,
+        );
+        assert.equal(
+            st.phases.find((p) => p.agent === "seeker")?.status,
+            "error",
+            "the phase must not be left stuck at 'running'",
+        );
+    });
+
+    it("dispatchParallelCore isolates a failing item so its siblings still complete", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["seeker", "scout"]) agents.set(n, mkAgent(n));
+        const ends: any[] = [];
+        setObsEmit((type, payload) => {
+            if (type === "dispatch_end") ends.push(payload);
+        });
+        let result;
+        let st: OrchestratorState;
+        try {
+            const host = mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runAgent: async (def) => {
+                        if (def.name === "seeker")
+                            throw new Error("spawn ENOENT");
+                        return {
+                            output: "scout produced a real, substantive result well over the threshold",
+                            exitCode: 0,
+                        };
+                    },
+                },
+            });
+            st = mkStateWithAgents(agents);
+            result = await dispatchParallelCore(
+                st,
+                host,
+                [
+                    { agent: "seeker", task: "a" },
+                    { agent: "scout", task: "b" },
+                ],
+                undefined,
+                mkCtx(),
+            );
+        } finally {
+            setObsEmit(undefined);
+        }
+
+        const text = (result!.content[0] as { text: string }).text;
+        assert.match(text, /1\/2 succeeded/);
+        assert.match(text, /spawn ENOENT/);
+        assert.match(text, /scout produced a real/);
+        // Both phases resolved, and both emitted a dispatch_end.
+        assert.deepEqual(
+            st!.phases.map((p) => p.status).sort(),
+            ["done", "error"],
+        );
+        assert.equal(ends.length, 2);
+    });
+});
+
+// ── Concurrent single dispatches share one learnings staging file ──
+
+describe("dispatch learnings commit is deferred until the last dispatch lands", () => {
+    let saved: string | undefined;
+    beforeEach(() => {
+        saved = process.env.PI_AGENT_MEMORY;
+        delete process.env.PI_AGENT_MEMORY; // default = memory enabled
+    });
+
+    it("a finishing dispatch does not steal a still-running sibling's staged lessons", async () => {
+        const cwd = mkdtempSync(join(tmpdir(), "dispatch-learn-race-"));
+        try {
+            const agents = new Map<string, AgentDef>();
+            for (const n of ["fast", "slow"]) agents.set(n, mkAgent(n));
+            let releaseSlow: () => void = () => {};
+            const slowDone = new Promise<void>((r) => (releaseSlow = r));
+            const host = mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runAgent: async (def) => {
+                        if (def.name === "slow") {
+                            await slowDone;
+                            // Staged AFTER the fast dispatch already finished.
+                            stageLearning(cwd, "slow", "the slow agent's lesson");
+                            return { output: "", exitCode: 0 };
+                        }
+                        return { output: "", exitCode: 0 };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents);
+            const slow = dispatchAgentCore(st, host, "slow", "t", undefined, {
+                cwd,
+            });
+            const fast = await dispatchAgentCore(st, host, "fast", "t", undefined, {
+                cwd,
+            });
+            assert.ok(fast, "fast dispatch resolved");
+            // One dispatch is still in flight: the commit must NOT have run yet.
+            assert.equal(
+                st.activeDispatches,
+                1,
+                "the slow dispatch is still counted in flight",
+            );
+            releaseSlow();
+            await slow;
+            assert.equal(st.activeDispatches, 0);
+            assert.equal(
+                readStaged(cwd).length,
+                0,
+                "the last finisher commits (here: clears) the shared staging exactly once",
+            );
+        } finally {
+            if (saved === undefined) delete process.env.PI_AGENT_MEMORY;
+            else process.env.PI_AGENT_MEMORY = saved;
+        }
+    });
+
+    it("ORs the verdicts of the in-flight group (one real result keeps the lessons)", async () => {
+        const cwd = mkdtempSync(join(tmpdir(), "dispatch-learn-or-"));
+        try {
+            const agents = new Map<string, AgentDef>();
+            for (const n of ["good", "bad"]) agents.set(n, mkAgent(n));
+            const host = mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runAgent: async (def) => {
+                        stageLearning(cwd, def.name, `${def.name} learned a thing`);
+                        return def.name === "good"
+                            ? {
+                                  output: "a substantive result comfortably over the minimum threshold",
+                                  exitCode: 0,
+                              }
+                            : { output: "", exitCode: 0 };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents);
+            await Promise.all([
+                dispatchAgentCore(st, host, "bad", "t", undefined, { cwd }),
+                dispatchAgentCore(st, host, "good", "t", undefined, { cwd }),
+            ]);
+            assert.equal(st.activeDispatches, 0);
+            assert.equal(readStaged(cwd).length, 0, "staging cleared once");
+            assert.equal(
+                st.dispatchLearningsPassed,
+                false,
+                "the OR-ed verdict is reset for the next group",
+            );
+        } finally {
+            if (saved === undefined) delete process.env.PI_AGENT_MEMORY;
+            else process.env.PI_AGENT_MEMORY = saved;
+        }
+    });
+});
+
+// ── Notification polish ──
+
+describe("dispatch notifications use SDK levels only", () => {
+    it("a successful dispatch notifies at 'info', not the unsupported 'success'", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("seeker", mkAgent("seeker"));
+        const levels: string[] = [];
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            ui: { notify: (_m: string, level: string) => void levels.push(level) },
+            execution: {
+                runAgent: async () => ({
+                    output: "a substantive result comfortably over the minimum threshold",
+                    exitCode: 0,
+                }),
+            },
+        });
+        await dispatchAgentCore(
+            mkStateWithAgents(agents),
+            host,
+            "seeker",
+            "research",
+            undefined,
+            mkCtx(),
+        );
+        assert.deepEqual(levels, ["info"]);
+    });
+
+    it("a successful parallel dispatch notifies at 'info' per item", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("seeker", mkAgent("seeker"));
+        const levels: string[] = [];
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            ui: { notify: (_m: string, level: string) => void levels.push(level) },
+            execution: {
+                runAgent: async () => ({
+                    output: "a substantive result comfortably over the minimum threshold",
+                    exitCode: 0,
+                }),
+            },
+        });
+        await dispatchParallelCore(
+            mkStateWithAgents(agents),
+            host,
+            [
+                { agent: "seeker", task: "a" },
+                { agent: "seeker", task: "b" },
+            ],
+            undefined,
+            mkCtx(),
+        );
+        assert.deepEqual(levels, ["info", "info"]);
+    });
+});
+
+describe("runFullWorkflowCommand completion notice", () => {
+    function mkNotifyCtx(cwd: string) {
+        const notices: string[] = [];
+        return {
+            notices,
+            ctx: {
+                cwd,
+                ui: { notify: (msg: string) => void notices.push(msg) },
+            },
+        };
+    }
+
+    it("skips the report link and elapsed time for a run that wrote no report", async () => {
+        // The re-entry guard returns without running anything: linking a report and
+        // quoting s.runElapsedMs would describe the OTHER (in-progress) run.
+        const agents = new Map<string, AgentDef>();
+        agents.set("planner", mkAgent("planner"));
+        const host = mkHost({ setup: { loadAgents: () => agents } });
+        const st = mkStateWithAgents(agents, {
+            running: true,
+            runElapsedMs: 987_000,
+        });
+        const { notices, ctx } = mkNotifyCtx(mkdtempSync(join(tmpdir(), "cmd-")));
+
+        await runFullWorkflowCommand(st, host, "Build X", ctx, () => {}, 3);
+
+        const done = notices[notices.length - 1];
+        assert.match(done, /already running/);
+        assert.ok(
+            !done.includes("workflow-report.md"),
+            "no link to a report this call never wrote",
+        );
+        assert.ok(!done.includes("987"), "no elapsed time borrowed from another run");
+    });
+
+    it("still links the report for a real run", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("reviewer", mkAgent("reviewer"));
+        const cwd = mkdtempSync(join(tmpdir(), "cmd-ok-"));
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async () => ({ output: "APPROVED\nfine", ok: true }),
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { rev: ["reviewer"] },
+            activeTeamName: "rev",
+        });
+        const { notices, ctx } = mkNotifyCtx(cwd);
+
+        await runFullWorkflowCommand(st, host, "Review it", ctx, () => {}, 3);
+
+        const done = notices[notices.length - 1];
+        assert.match(done, /Workflow done/);
+        assert.match(done, /workflow-report\.md/);
     });
 });
