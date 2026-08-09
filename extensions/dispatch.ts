@@ -122,6 +122,10 @@ export default function (pi: ExtensionAPI) {
                   {
                       ...base,
                       agent: details.agent,
+                      // Which session this dispatch ran in. The fresh-context audit
+                      // counts DISTINCT ids, not records: two dispatches sharing one
+                      // id means the second resumed the first's context.
+                      dispatchId: details.dispatchId,
                       status: details.status,
                       elapsed: details.elapsed,
                   },

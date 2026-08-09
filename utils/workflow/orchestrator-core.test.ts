@@ -26,7 +26,9 @@ import {
     streamDispatchEnabled,
     renderDispatchActivity,
     countDispatchesSince,
+    countDispatchEventsSince,
     freshContextViolated,
+    reconcileLedgerBranch,
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
 import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
@@ -4600,7 +4602,7 @@ describe("fresh-context audit — retry only when it can achieve something", () 
             assert.equal(st.freshContextViolation, true);
             // The breach rides into the reviewer's task via the impl summary.
             assert.match(reviewerSaw, /\[PROCESS\]/);
-            assert.match(reviewerSaw, /single context/);
+            assert.match(reviewerSaw, /did not each run in a fresh context/);
         } finally {
             if (prevDir === undefined) delete process.env.PI_WORKFLOW_SESSION_DIR;
             else process.env.PI_WORKFLOW_SESSION_DIR = prevDir;
@@ -4659,5 +4661,278 @@ describe("implementer fix loops start from a fresh session", () => {
         assert.equal(epochs[0], undefined, "the first pass resumes nothing");
         assert.ok(epochs[1], "the fix round asks for a fresh session");
         assert.notEqual(epochs[0], epochs[1]);
+    });
+});
+
+// ── Fresh context means DISTINCT sessions, not merely "a dispatch happened" ──
+
+describe("fresh-context audit detects session reuse", () => {
+    const MULTI = [
+        "## Phase 1: First",
+        "Edit `src/a.ts`.",
+        "",
+        "## Phase 2: Second",
+        "Edit `src/b.ts`.",
+        "",
+        "## Phase 3: Third",
+        "Edit `src/c.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+
+    const hist = (recs: object[]) => {
+        const dir = mkdtempSync(join(tmpdir(), "reuse-hist-"));
+        writeFileSync(
+            join(dir, "dispatch-history.jsonl"),
+            recs.map((r) => JSON.stringify(r)).join("\n") + "\n",
+            "utf-8",
+        );
+        return dir;
+    };
+    const at = (s: number) => new Date(Date.parse("2026-08-09T10:00:00Z") + s * 1000).toISOString();
+
+    it("passes when every phase ran in its own session", () => {
+        const dir = hist([
+            { ts: at(1), agent: "phase-implementer", dispatchId: "pi-1" },
+            { ts: at(2), agent: "phase-implementer", dispatchId: "pi-2" },
+            { ts: at(3), agent: "phase-implementer", dispatchId: "pi-3" },
+        ]);
+        assert.equal(countDispatchesSince(0, "phase-implementer", dir), 3);
+        assert.equal(freshContextViolated(MULTI, 0, dir), false);
+    });
+
+    it("flags three dispatches that all resumed ONE session", () => {
+        // The real-world shape: sequential re-dispatch reused the dispatchId, so
+        // phases 0, 1 and 7 shared a single 1.8MB worker transcript while the
+        // event count still read "3 dispatches, all good".
+        const dir = hist([
+            { ts: at(1), agent: "phase-implementer", dispatchId: "pi-same" },
+            { ts: at(2), agent: "phase-implementer", dispatchId: "pi-same" },
+            { ts: at(3), agent: "phase-implementer", dispatchId: "pi-same" },
+        ]);
+        assert.equal(countDispatchesSince(0, "phase-implementer", dir), 1, "one session");
+        assert.equal(countDispatchEventsSince(0, "phase-implementer", dir), 3, "three events");
+        assert.equal(freshContextViolated(MULTI, 0, dir), true);
+    });
+
+    it("flags a partial reuse (a parallel wave plus a resumed sequential pair)", () => {
+        const dir = hist([
+            { ts: at(1), agent: "phase-implementer", dispatchId: "seq" },
+            { ts: at(2), agent: "phase-implementer", dispatchId: "seq" },
+            { ts: at(3), agent: "phase-implementer", dispatchId: "par-0" },
+            { ts: at(4), agent: "phase-implementer", dispatchId: "par-1" },
+        ]);
+        assert.equal(freshContextViolated(MULTI, 0, dir), true);
+    });
+
+    it("counts pre-dispatchId records individually rather than collapsing them", () => {
+        // Old history files have no dispatchId; treating them as one shared session
+        // would flag every historical run.
+        const dir = hist([
+            { ts: at(1), agent: "phase-implementer" },
+            { ts: at(2), agent: "phase-implementer" },
+        ]);
+        assert.equal(countDispatchesSince(0, "phase-implementer", dir), 2);
+        assert.equal(freshContextViolated(MULTI, 0, dir), false);
+    });
+
+    it("still flags a plan with no dispatches at all", () => {
+        assert.equal(freshContextViolated(MULTI, 0, hist([])), true);
+    });
+});
+
+// ── A validator that forgets its VERDICT line gets asked once, not written off ──
+
+describe("validator no-verdict re-ask", () => {
+    const PLAN = [
+        "## Phase 1: Do the work",
+        "Edit `src/a.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+
+    const setup = (cwd: string) => {
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), PLAN, "utf-8");
+    };
+
+    it("re-asks once and honours the verdict the second run gives", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "validator"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "verdict-retry-"));
+        setup(cwd);
+        const valTasks: string[] = [];
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase, task) => {
+                    if (phase.agent === "validator") {
+                        valTasks.push(task);
+                        // First run drifts off without a verdict; second complies.
+                        return valTasks.length === 1
+                            ? { output: "I checked a few things and ran out of road.", ok: true }
+                            : { output: "VERDICT: PASS\nAll 978 tests pass.", ok: true };
+                    }
+                    return { output: "impl output", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { t: ["implementer", "validator"] },
+            activeTeamName: "t",
+        });
+        const result = await runWorkflowCore(st, host, "Build X", 3, { cwd });
+
+        assert.equal(valTasks.length, 2, "the validator is asked exactly twice");
+        assert.ok(!/NO VERDICT/.test(valTasks[0]));
+        assert.match(valTasks[1], /RETURNED NO VERDICT/);
+        assert.match(valTasks[1], /VERDICT: PASS/);
+        assert.match(valTasks[1], /Do NOT redo the validation from scratch/);
+        assert.equal(result.status, "done", "the recovered PASS gates the run");
+    });
+
+    it("re-asks at most once, even if the second run is also silent", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "validator"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "verdict-retry-give-up-"));
+        setup(cwd);
+        let valRuns = 0;
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "validator") {
+                        valRuns++;
+                        return { output: "still no verdict here", ok: true };
+                    }
+                    return { output: "impl output", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { t: ["implementer", "validator"] },
+            activeTeamName: "t",
+        });
+        const result = await runWorkflowCore(st, host, "Build X", 3, { cwd });
+
+        assert.equal(valRuns, 2, "one original run plus one re-ask, then stop");
+        assert.equal(result.status, "needs-review", "unknown still blocks shipping");
+    });
+
+    it("does not re-ask a validator that gave a real verdict", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "validator"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "verdict-ok-"));
+        setup(cwd);
+        let valRuns = 0;
+        const host = mkHost({
+            setup: { loadAgents: () => agents },
+            execution: {
+                runPhase: async (phase) => {
+                    if (phase.agent === "validator") {
+                        valRuns++;
+                        return { output: "VERDICT: PASS\nfine", ok: true };
+                    }
+                    return { output: "impl output", ok: true };
+                },
+            },
+        });
+        const st = mkStateWithAgents(agents, {
+            teams: { t: ["implementer", "validator"] },
+            activeTeamName: "t",
+        });
+        await runWorkflowCore(st, host, "Build X", 3, { cwd });
+        assert.equal(valRuns, 1);
+    });
+});
+
+// ── A ledger's [x] marks are only valid on the branch that made them ──
+
+describe("reconcileLedgerBranch", () => {
+    const write = (cwd: string, body: string) => {
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "progress.md"), body, "utf-8");
+    };
+    const read = (cwd: string) =>
+        readFileSync(join(cwd, ".agent", "progress.md"), "utf-8");
+
+    it("reopens phases recorded on a different branch and drops their evidence", () => {
+        // The live failure: a ledger claimed phases done with shas from a previous
+        // run's agent branch, while this run branched fresh from Base.
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-branch-"));
+        write(
+            cwd,
+            [
+                "# Implementation progress",
+                "",
+                "Base: 89ecfeb",
+                "",
+                "Branch: agent/old-run-89ecfeb",
+                "",
+                "- [x] Phase 0 — prep — tests: pytest (90 passed) (sha e5fe5bf)",
+                "- [x] Phase 1 — maths — tests: pytest (236 passed) (sha 3a741b4)",
+                "- [ ] Phase 2 — perms",
+                "",
+            ].join("\n"),
+        );
+        const n = reconcileLedgerBranch(cwd, "agent/new-run-89ecfeb");
+        const out = read(cwd);
+
+        assert.equal(n, 2);
+        assert.equal((out.match(/^- \[x\]/gm) || []).length, 0, "no phase stays checked");
+        assert.equal((out.match(/^- \[ \]/gm) || []).length, 3);
+        assert.ok(!/sha e5fe5bf/.test(out), "other branch's evidence is dropped");
+        assert.ok(/Phase 0 — prep/.test(out), "phase titles survive");
+        assert.match(out, /Branch: agent\/new-run-89ecfeb/);
+        assert.match(out, /reopened 2 phase\(s\)/);
+    });
+
+    it("leaves the ledger alone when the branch matches", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-same-"));
+        const body = [
+            "# Implementation progress",
+            "",
+            "Branch: agent/run-1",
+            "",
+            "- [x] Phase 0 — prep — tests: ok (sha abc1234)",
+            "- [ ] Phase 1 — next",
+            "",
+        ].join("\n");
+        write(cwd, body);
+        assert.equal(reconcileLedgerBranch(cwd, "agent/run-1"), 0);
+        assert.equal(read(cwd), body, "untouched");
+    });
+
+    it("leaves a legacy ledger (no Branch line) alone", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-legacy-"));
+        const body = "# Implementation progress\n\nBase: abc\n\n- [x] Phase 0 — prep\n";
+        write(cwd, body);
+        assert.equal(reconcileLedgerBranch(cwd, "agent/whatever"), 0);
+        assert.equal(read(cwd), body);
+    });
+
+    it("is a no-op with no branch, no file, or nothing checked", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-noop-"));
+        assert.equal(reconcileLedgerBranch(cwd, "agent/x"), 0, "missing file");
+        write(cwd, "# Implementation progress\n\nBranch: other\n\n- [ ] Phase 0\n");
+        assert.equal(reconcileLedgerBranch(cwd, "agent/x"), 0, "nothing checked");
+        assert.equal(reconcileLedgerBranch(cwd, ""), 0, "no branch known");
+    });
+
+    it("records the branch when seeding a fresh ledger", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-seed-"));
+        initProgressLedger(cwd, "abc1234", "## Phase 1: Do it\n", "agent/my-run");
+        const out = read(cwd);
+        assert.match(out, /Base: abc1234/);
+        assert.match(out, /Branch: agent\/my-run/);
+        assert.match(out, /- \[ \] Phase 1: Do it/);
     });
 });

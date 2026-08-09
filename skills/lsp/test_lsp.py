@@ -85,6 +85,20 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(uri.startswith("file://"))
         self.assertEqual(lsp.uri_to_path(uri), "sample.py")
 
+    def test_uri_has_exactly_three_slashes(self):
+        # Python 3.14's pathname2url returns "///path" (empty authority included),
+        # so the old "file://" + pathname2url() produced "file://///path" and every
+        # server rejected it -- for ALL paths, not only ones needing escaping.
+        for path in ("sample.py", "/tmp/plain/a.py", "/tmp/with space 2/a.py"):
+            uri = lsp.path_to_uri(path)
+            self.assertTrue(uri.startswith("file:///"), uri)
+            self.assertFalse(uri.startswith("file:////"), uri)
+
+    def test_uri_escapes_spaces_and_round_trips(self):
+        uri = lsp.path_to_uri("/tmp/with space 2/a.py")
+        self.assertIn("%20", uri)
+        self.assertTrue(lsp.uri_to_path(uri).endswith("with space 2/a.py"))
+
     def test_resolve_spec_forced(self):
         with mock.patch.dict(os.environ, {"LSP_SERVER_CMD": "fake --stdio"}):
             self.assertEqual(lsp.resolve_spec("x.go")["cmd"], "fake --stdio")

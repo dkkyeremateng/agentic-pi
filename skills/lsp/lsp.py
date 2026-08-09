@@ -35,8 +35,9 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import pathname2url, url2pathname
+from urllib.request import url2pathname
 
 # ── Server registry ─────────────────────────────────────────────────────────────
 # Each spec: cmd, rootMarkers (project-root detection), initOptions, settings (sent
@@ -223,7 +224,13 @@ def detect_servers(root: str, show_all: bool = False) -> list[dict]:
 
 
 def path_to_uri(path: str) -> str:
-    return "file://" + pathname2url(os.path.abspath(path))
+    # Path.as_uri() rather than "file://" + pathname2url(): since Python 3.14
+    # pathname2url returns an absolute POSIX path WITH the empty authority
+    # ("///Users/x/a.py"), so prepending "file://" produced "file://///Users/x/a.py"
+    # and every server rejected the URI — on all paths, not just ones needing
+    # percent-encoding. as_uri() handles the scheme, the authority and the escaping
+    # in one place, and is stable across versions.
+    return Path(path).absolute().as_uri()
 
 
 def uri_to_path(uri: str) -> str:
