@@ -4954,6 +4954,7 @@ describe("fresh-context audit detects partial delegation", () => {
                         ts: new Date(Date.parse("2026-08-09T10:00:00Z") + i * 1000).toISOString(),
                         agent: "phase-implementer",
                         dispatchId: id,
+                        status: "done",
                     }),
                 )
                 .join("\n") + "\n",
@@ -5085,5 +5086,106 @@ describe("partial delegation is caught through a real run", () => {
             if (prev === undefined) delete process.env.PI_WORKFLOW_SESSION_DIR;
             else process.env.PI_WORKFLOW_SESSION_DIR = prev;
         }
+    });
+});
+
+// ── A failed worker must not pay for a phase the coordinator did inline ──
+
+describe("fresh-context audit counts only sessions that delivered", () => {
+    const PLAN = Array.from({ length: 4 }, (_, i) => `## Phase ${i + 1}: p${i + 1}`).join("\n\n");
+    const hist = (recs: object[]) => {
+        const dir = mkdtempSync(join(tmpdir(), "delivered-"));
+        writeFileSync(
+            join(dir, "dispatch-history.jsonl"),
+            recs.map((r) => JSON.stringify(r)).join("\n") + "\n",
+            "utf-8",
+        );
+        return dir;
+    };
+    const rec = (id: string, status: string, i: number) => ({
+        ts: new Date(Date.parse("2026-08-09T10:00:00Z") + i * 1000).toISOString(),
+        agent: "phase-implementer",
+        dispatchId: id,
+        status,
+    });
+
+    it("flags a phase finished inline after its worker errored", () => {
+        // Observed live: the worker for phase 1 errored after 8 minutes, the
+        // implementer finished that phase itself, and 1 session against 1 completed
+        // phase balanced out to "clean". Two phases completed, only one delivered.
+        const dir = hist([rec("a", "error", 0), rec("b", "done", 1)]);
+        assert.equal(countDispatchesSince(0, "phase-implementer", dir), 2, "two sessions");
+        assert.equal(
+            countDispatchesSince(0, "phase-implementer", dir, true),
+            1,
+            "but only one delivered",
+        );
+        assert.equal(freshContextViolated(PLAN, 0, dir, 2), true);
+    });
+
+    it("does not read an errored dispatch as session REUSE", () => {
+        // Reuse is events > sessions. An error must not be mistaken for it, or the
+        // stamp would blame the wrong thing.
+        const dir = hist([rec("a", "error", 0), rec("b", "done", 1), rec("c", "done", 2)]);
+        assert.equal(countDispatchEventsSince(0, "phase-implementer", dir), 3);
+        assert.equal(countDispatchesSince(0, "phase-implementer", dir), 3, "3 events, 3 sessions");
+        assert.equal(freshContextViolated(PLAN, 0, dir, 2), false, "2 delivered >= 2 completed");
+    });
+
+    it("passes when a failed phase is re-dispatched successfully", () => {
+        const dir = hist([rec("a", "error", 0), rec("a2", "done", 1), rec("b", "done", 2)]);
+        assert.equal(freshContextViolated(PLAN, 0, dir, 2), false);
+    });
+
+    it("treats a record with no status as delivered (unknown data stays quiet)", () => {
+        const dir = hist([
+            { ts: "2026-08-09T10:00:01Z", agent: "phase-implementer", dispatchId: "a" },
+            { ts: "2026-08-09T10:00:02Z", agent: "phase-implementer", dispatchId: "b" },
+        ]);
+        assert.equal(countDispatchesSince(0, "phase-implementer", dir, true), 2);
+        assert.equal(freshContextViolated(PLAN, 0, dir, 2), false);
+    });
+});
+
+describe("countDonePhases ignores non-phase ledger rows", () => {
+    const write = (cwd: string, body: string) => {
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "progress.md"), body, "utf-8");
+    };
+
+    it("does not count an agent-appended row as a completed phase", () => {
+        // Observed live: a validator-driven fix round appended its own checkbox row,
+        // leaving 7 checked lines against a 6-phase plan. Inflation is the dangerous
+        // direction — it manufactures a shortfall that never happened.
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-extra-"));
+        write(
+            cwd,
+            [
+                "# Implementation progress",
+                "",
+                "- [x] Phase 1: Scaffold — tests: `npm test` (4/4 pass)",
+                "- [x] Phase 2: State — tests: `npx vitest run` (28/28 pass)",
+                "- [x] Validator fix: added App integration test for EmptyState — tests: (15/15 pass)",
+                "",
+            ].join("\n"),
+        );
+        assert.equal(countDonePhases(cwd), 2, "the appended row is not a phase");
+    });
+
+    it("counts real phase rows regardless of separator or case", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-forms-"));
+        write(
+            cwd,
+            [
+                "# Implementation progress",
+                "",
+                "- [x] Phase 0 — prep",
+                "- [X] Phase 1: maths",
+                "- [ ] Phase 2 — perms",
+                "- [x] Merge notes: unrelated",
+                "",
+            ].join("\n"),
+        );
+        assert.equal(countDonePhases(cwd), 2);
     });
 });
