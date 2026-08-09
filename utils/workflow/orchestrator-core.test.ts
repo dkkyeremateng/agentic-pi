@@ -29,6 +29,7 @@ import {
     countDispatchEventsSince,
     freshContextViolated,
     reconcileLedgerBranch,
+    countDonePhases,
 } from "./orchestrator-core";
 import type { AgentDef, PhaseState, SpawnEventState } from "./workflow-core";
 import { handleSpawnEvent, computeSpawnResult } from "./workflow-core";
@@ -4934,5 +4935,155 @@ describe("reconcileLedgerBranch", () => {
         assert.match(out, /Base: abc1234/);
         assert.match(out, /Branch: agent\/my-run/);
         assert.match(out, /- \[ \] Phase 1: Do it/);
+    });
+});
+
+// ── Partial delegation: some phases got a worker, others were done inline ──
+
+describe("fresh-context audit detects partial delegation", () => {
+    const PLAN = Array.from({ length: 5 }, (_, i) => `## Phase ${i + 1}: p${i + 1}`).join(
+        "\n\n",
+    );
+    const hist = (ids: string[]) => {
+        const dir = mkdtempSync(join(tmpdir(), "partial-hist-"));
+        writeFileSync(
+            join(dir, "dispatch-history.jsonl"),
+            ids
+                .map((id, i) =>
+                    JSON.stringify({
+                        ts: new Date(Date.parse("2026-08-09T10:00:00Z") + i * 1000).toISOString(),
+                        agent: "phase-implementer",
+                        dispatchId: id,
+                    }),
+                )
+                .join("\n") + "\n",
+            "utf-8",
+        );
+        return dir;
+    };
+
+    it("flags 5 phases completed on only 3 worker sessions", () => {
+        // Events == sessions, so the reuse check is silent; only comparing against
+        // the work actually completed reveals that two phases never got a worker.
+        const dir = hist(["a", "b", "c"]);
+        assert.equal(freshContextViolated(PLAN, 0, dir, 5), true);
+    });
+
+    it("passes when every completed phase had its own session", () => {
+        assert.equal(freshContextViolated(PLAN, 0, hist(["a", "b", "c", "d", "e"]), 5), false);
+    });
+
+    it("does not flag MORE sessions than phases (a re-dispatched BLOCKED phase)", () => {
+        assert.equal(freshContextViolated(PLAN, 0, hist(["a", "b", "c", "d", "e", "f"]), 5), false);
+    });
+
+    it("ignores the shortfall check when only one phase completed", () => {
+        // One phase legitimately runs inline; a lone session is not a violation.
+        assert.equal(freshContextViolated(PLAN, 0, hist(["a"]), 1), false);
+    });
+
+    it("ignores the shortfall check when the completed count is unknown", () => {
+        assert.equal(freshContextViolated(PLAN, 0, hist(["a"]), 0), false);
+    });
+
+    it("still flags reuse even when the counts would otherwise balance", () => {
+        // 3 phases completed, 3 dispatch events, but all in ONE session.
+        assert.equal(freshContextViolated(PLAN, 0, hist(["same", "same", "same"]), 3), true);
+    });
+});
+
+describe("countDonePhases", () => {
+    it("counts only checked ledger lines", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "done-count-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(
+            join(cwd, ".agent", "progress.md"),
+            "# Implementation progress\n\nBase: abc\n\n- [x] Phase 1\n- [X] Phase 2\n- [ ] Phase 3\n",
+            "utf-8",
+        );
+        assert.equal(countDonePhases(cwd), 2);
+    });
+
+    it("is 0 with no ledger", () => {
+        assert.equal(countDonePhases(mkdtempSync(join(tmpdir(), "done-none-"))), 0);
+    });
+});
+
+describe("partial delegation is caught through a real run", () => {
+    const PLAN = [
+        "## Phase 1: First",
+        "Edit `src/a.ts`.",
+        "",
+        "## Phase 2: Second",
+        "Edit `src/b.ts`.",
+        "",
+        "## Phase 3: Third",
+        "Edit `src/c.ts`.",
+        "",
+        "## Acceptance Criteria",
+        "- it works",
+        "",
+        "## Critical Files",
+        "- src/a.ts",
+    ].join("\n");
+
+    it("flags an implementer that delegated one phase and did the other two itself", async () => {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer"]) agents.set(n, mkAgent(n));
+        const cwd = mkdtempSync(join(tmpdir(), "partial-run-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), PLAN, "utf-8");
+        const dir = mkdtempSync(join(tmpdir(), "partial-run-hist-"));
+        const prev = process.env.PI_WORKFLOW_SESSION_DIR;
+        process.env.PI_WORKFLOW_SESSION_DIR = dir;
+        try {
+            let implRuns = 0;
+            let reviewerSaw = "";
+            const host = mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runPhase: async (phase, task) => {
+                        if (phase.agent === "implementer") {
+                            implRuns++;
+                            // ONE worker dispatched, but all three phases ticked off.
+                            writeFileSync(
+                                join(dir, "dispatch-history.jsonl"),
+                                JSON.stringify({
+                                    ts: new Date().toISOString(),
+                                    agent: "phase-implementer",
+                                    dispatchId: "only-one",
+                                }) + "\n",
+                                "utf-8",
+                            );
+                            writeFileSync(
+                                join(cwd, ".agent", "progress.md"),
+                                "# Implementation progress\n\n- [x] Phase 1\n- [x] Phase 2\n- [x] Phase 3\n",
+                                "utf-8",
+                            );
+                            return { output: "did most of it myself", ok: true };
+                        }
+                        if (phase.agent === "reviewer") {
+                            reviewerSaw = task;
+                            return { output: "APPROVED", ok: true };
+                        }
+                        return { output: "", ok: true };
+                    },
+                },
+            });
+            const st = mkStateWithAgents(agents, {
+                teams: { t: ["implementer", "reviewer"] },
+                activeTeamName: "t",
+            });
+            await runWorkflowCore(st, host, "Build X", 2, { cwd });
+
+            // Every box is ticked, so a retry would find nothing to do; the breach is
+            // stamped instead, and reaches the reviewer.
+            assert.equal(implRuns, 1);
+            assert.equal(st.freshContextViolation, true);
+            assert.match(reviewerSaw, /\[PROCESS\]/);
+        } finally {
+            if (prev === undefined) delete process.env.PI_WORKFLOW_SESSION_DIR;
+            else process.env.PI_WORKFLOW_SESSION_DIR = prev;
+        }
     });
 });
