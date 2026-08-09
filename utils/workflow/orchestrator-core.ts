@@ -761,7 +761,17 @@ async function runWorkflowCoreImpl(
         // implementer knows what's done and where to squash from. Only seed a fresh
         // (all-unchecked) ledger for a new run, or if resume left no ledger behind.
         if (!(resuming && existsSync(join(cwd, ".agent", "progress.md")))) {
-            initProgressLedger(cwd, wb?.base ?? "", plan.output);
+            initProgressLedger(cwd, wb?.base ?? "", plan.output, wb?.branch ?? "");
+        } else {
+            // Resuming an existing ledger: its `[x]` marks are only meaningful on the
+            // branch that made them. If this run is on a different branch, that work
+            // is not in our tree — reopen those phases rather than skipping them.
+            const reopened = reconcileLedgerBranch(cwd, wb?.branch ?? "");
+            if (reopened)
+                h.ui.notify(
+                    `Reopened ${reopened} phase(s): the ledger recorded them done on a different branch, whose commits are not in this run's tree.`,
+                    "warning",
+                );
         }
         const implStartedAt = Date.now();
         impl = await h.execution.runPhase(
@@ -786,16 +796,21 @@ async function runWorkflowCoreImpl(
         ).length;
         if (freshContextViolated(plan.output, implStartedAt)) {
             const phaseCount = parsePlanPhases(plan.output).length;
+            // Distinct worker sessions vs raw dispatch events: equal means every
+            // dispatch got its own context; fewer sessions than events means some
+            // phases shared one.
+            const sessions = countDispatchesSince(implStartedAt);
+            const events = countDispatchEventsSince(implStartedAt);
             obsEmit("verdict", {
                 status: "warn",
                 outcome: "fresh-context-violation",
-                note: `phases=${phaseCount} unchecked=${unchecked} dispatches=0`,
+                note: `phases=${phaseCount} unchecked=${unchecked} sessions=${sessions} dispatches=${events}`,
                 source: "workflow",
             });
             let stillViolating = true;
             if (unchecked > 0) {
                 h.ui.notify(
-                    `Implementer ran ${phaseCount - unchecked}/${phaseCount} phases in one context (no phase-implementer dispatched) — retrying the remaining ${unchecked} with per-phase delegation.`,
+                    `Implementer did not give each phase a fresh context (of ${phaseCount} phases, ${sessions} distinct worker session(s) across ${events} dispatch(es)) — retrying the remaining ${unchecked} with per-phase delegation.`,
                     "warning",
                 );
                 aborted = checkAbort(s, h);
@@ -817,7 +832,7 @@ async function runWorkflowCoreImpl(
                 stillViolating = freshContextViolated(plan.output, retryAt);
             } else {
                 h.ui.notify(
-                    `Implementer ran all ${phaseCount} phases in one context (no phase-implementer dispatched); every phase is already checked off, so a retry would do nothing — flagging it for review instead.`,
+                    `Implementer did not give each phase a fresh context (${sessions} distinct worker session(s) across ${events} dispatch(es)); every phase is already checked off, so a retry would do nothing — flagging it for review instead.`,
                     "warning",
                 );
             }
@@ -827,7 +842,7 @@ async function runWorkflowCoreImpl(
             // workflow-report.md.
             if (stillViolating) {
                 s.freshContextViolation = true;
-                impl.output = `[PROCESS] The implementer ran all ${phaseCount} plan phases in a single context — no phase-implementer sub-agent was dispatched. Later phases were written with earlier phases' context still loaded, so scrutinize the last phases hardest: they are the likeliest place for drift, missed edge cases, or a thin test.\n\n${impl.output}`;
+                impl.output = `[PROCESS] The ${phaseCount} plan phases did not each run in a fresh context: ${sessions} distinct worker session(s) across ${events} dispatch(es). Later phases were written with earlier phases' context still loaded, so scrutinize the last phases hardest: they are the likeliest place for drift, missed edge cases, or a thin test.\n\n${impl.output}`;
             }
         }
         runArtifacts.implSummary = impl.output;
@@ -895,6 +910,9 @@ async function runWorkflowCoreImpl(
     let val = { output: "", ok: false };
     let ship = { output: "", ok: false };
     let verdict: Verdict = "unknown";
+    // At most ONE corrective re-ask across the whole validate loop, so a validator
+    // that simply never emits a verdict can't double the run's cost.
+    let revalidated = false;
 
     // ── Validate ⇄ implement ──
     // The validator is the independent gate: it RUNS the full suite (including the
@@ -917,6 +935,39 @@ async function runWorkflowCoreImpl(
             if (!val.ok) return fail(s, h, cwd, request, "Validation", val.output);
 
             verdict = detectVerdict(val.output);
+
+            // The validator is required to open with `VERDICT: PASS` or
+            // `VERDICT: FAIL` (agents/validator.md). When it ends without one,
+            // `unknown` blocks shipping — correct, but it throws away the whole run
+            // over a missing line: an observed 6-hour run finished with 978 tests
+            // passing and still landed in needs-review because the validator drifted
+            // into tooling problems and never stated a verdict. Ask once,
+            // specifically, before accepting that outcome. Only here — a `fail` or a
+            // `pass` is an answer, and re-asking either would be second-guessing it.
+            if (verdict === "unknown" && !revalidated) {
+                revalidated = true;
+                h.ui.notify(
+                    "Validator returned no VERDICT line — asking once for an explicit verdict.",
+                    "warning",
+                );
+                aborted = checkAbort(s, h);
+                if (aborted) return aborted;
+                valP.status = "pending";
+                valP.sessionEpoch = "verdict-retry"; // fresh context, same evidence
+                h.ui.updateWidget();
+                val = await h.execution.runPhase(
+                    valP,
+                    shared(
+                        validateTask(request, impl.output) + noVerdictRetryNote(),
+                        "validator",
+                    ),
+                    cwd,
+                );
+                if (!val.ok)
+                    return fail(s, h, cwd, request, "Validation", val.output);
+                verdict = detectVerdict(val.output);
+            }
+
             if (verdict !== "fail") break;
 
             if (loop === maxLoops || !implP) break;
@@ -1276,6 +1327,12 @@ export function clearStagedLearnings(cwd: string): void {
 // session dir — which is why the session wipe deliberately preserves that file).
 // Count only records at or after the phase started, so a previous run's dispatches
 // can never satisfy this run's audit.
+// Counts DISTINCT sessions, not dispatch events. Two dispatches that share a
+// dispatchId ran in the same session — the second resumed the first's context — so
+// counting events would report per-phase delegation that did not actually happen.
+// (Observed exactly that: a run whose sequential dispatches all reused one session
+// while the audit reported no violation.) Records without a dispatchId predate that
+// field, so fall back to counting them individually rather than collapsing them.
 export function countDispatchesSince(
     sinceMs: number,
     agent = "phase-implementer",
@@ -1286,6 +1343,39 @@ export function countDispatchesSince(
         raw = readFileSync(join(dir, "dispatch-history.jsonl"), "utf-8");
     } catch {
         return 0; // no history file = nothing was dispatched
+    }
+    const sessions = new Set<string>();
+    let legacy = 0;
+    for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+            const rec = JSON.parse(line);
+            if (String(rec.agent || "").toLowerCase() !== agent) continue;
+            const ts = Date.parse(rec.ts || "");
+            if (Number.isNaN(ts) || ts < sinceMs) continue;
+            const id = String(rec.dispatchId || "");
+            if (id) sessions.add(id);
+            else legacy++;
+        } catch {
+            /* tolerate a torn or hand-edited line */
+        }
+    }
+    return sessions.size + legacy;
+}
+
+// Raw dispatch EVENTS in the window (as opposed to distinct sessions). The gap
+// between the two is the tell: more events than sessions means some dispatch reused
+// another's session and therefore resumed its context.
+export function countDispatchEventsSince(
+    sinceMs: number,
+    agent = "phase-implementer",
+    dir = sessionDirPath(),
+): number {
+    let raw: string;
+    try {
+        raw = readFileSync(join(dir, "dispatch-history.jsonl"), "utf-8");
+    } catch {
+        return 0;
     }
     let n = 0;
     for (const line of raw.split("\n")) {
@@ -1302,16 +1392,25 @@ export function countDispatchesSince(
     return n;
 }
 
-// Did the implementer honor per-phase delegation? Only meaningful for a plan with
-// 2+ phases: a single-phase plan has no later phase to protect, and the agent is
-// told to implement that one inline.
+// Did the implementer honor per-phase FRESH context? Two distinct failures count:
+//
+//   - it delegated nothing at all, and ran every phase in its own context;
+//   - it delegated, but two or more dispatches shared one session, so the later
+//     phases resumed the earlier ones' transcript. This is the subtler one, and it
+//     is why counting dispatch events alone is not enough — a run can look fully
+//     delegated while three phases share a single 1.8MB context.
+//
+// Only meaningful for a plan with 2+ phases: a single-phase plan has no later phase
+// to protect, and the agent is told to implement that one inline.
 export function freshContextViolated(
     plan: string,
     sinceMs: number,
     dir?: string,
 ): boolean {
     if (parsePlanPhases(plan).length < 2) return false;
-    return countDispatchesSince(sinceMs, "phase-implementer", dir) === 0;
+    const sessions = countDispatchesSince(sinceMs, "phase-implementer", dir);
+    if (sessions === 0) return true;
+    return countDispatchEventsSince(sinceMs, "phase-implementer", dir) > sessions;
 }
 
 // Appended to the implementer's task on the one retry we allow. Names the failure
@@ -1320,7 +1419,7 @@ export function freshContextRetryNote(phaseCount: number): string {
     return [
         "",
         "---",
-        `PROCESS VIOLATION — retry required. This plan has ${phaseCount} phases, but you dispatched ZERO \`phase-implementer\` sub-agents: you implemented every phase inside your own single context. That is exactly what this role exists to prevent — by the later phases your window is full of earlier phases' file reads and test output, which is where quality drops and the handoff truncates.`,
+        `PROCESS VIOLATION — retry required. This plan has ${phaseCount} phases, but they did not each run in a FRESH \`phase-implementer\` context: either nothing was dispatched, or separate phases shared one worker session and so inherited each other's transcript. That is exactly what this role exists to prevent — by the later phases the window is full of earlier phases' file reads and test output, which is where quality drops and the handoff truncates.`,
         "",
         "Redo this run as the coordinator you are:",
         "- Partition the plan's phases into ordered waves, then dispatch EVERY phase to a `phase-implementer` (`dispatch_parallel` for a 2+-phase wave, `dispatch_agent` for a single-phase wave). No exceptions for phases that look small.",
@@ -1331,10 +1430,29 @@ export function freshContextRetryNote(phaseCount: number): string {
     ].join("\n");
 }
 
+// Appended when the validator finished without the `VERDICT:` line its own output
+// contract requires. Deliberately narrow: it must not re-litigate the validation,
+// only state the conclusion it already reached.
+export function noVerdictRetryNote(): string {
+    return [
+        "",
+        "---",
+        "YOUR PREVIOUS RUN RETURNED NO VERDICT. Your output must OPEN with exactly one of:",
+        "",
+        "    VERDICT: PASS",
+        "    VERDICT: FAIL",
+        "",
+        "Without it the workflow cannot gate the run: the change is blocked from shipping even when your checks passed, which wastes the entire run.",
+        "Do NOT redo the validation from scratch — the work is unchanged and already on disk. Re-run only what you need to state a conclusion (at minimum the project's full test suite), then emit the verdict line FIRST, followed by your usual report.",
+        "If tooling you wanted was unavailable or broken, that alone is not a FAIL: judge the change on the evidence you can gather, and record the tooling gap under Risks.",
+    ].join("\n");
+}
+
 export function initProgressLedger(
     cwd: string,
     base: string,
     plan: string,
+    branch = "",
 ): void {
     try {
         const file = join(cwd, ".agent", "progress.md");
@@ -1342,6 +1460,11 @@ export function initProgressLedger(
         const phases = parsePlanPhases(plan);
         const lines = ["# Implementation progress", ""];
         if (base) lines.push(`Base: ${base}`, "");
+        // Which branch these phases are being built on. `.agent/` is gitignored, so
+        // the ledger outlives any branch — but the COMMITS it points at do not. A
+        // later run that branches fresh from Base inherits `[x]` marks whose code is
+        // not in its tree (see reconcileLedgerBranch).
+        if (branch) lines.push(`Branch: ${branch}`, "");
         if (phases.length) {
             for (const p of phases) lines.push(`- [ ] ${p}`);
         } else {
@@ -1350,6 +1473,59 @@ export function initProgressLedger(
         lines.push("");
         writeFileSync(file, lines.join("\n"), "utf-8");
     } catch {}
+}
+
+// A resumed ledger describes work on the branch that produced it. `.agent/` is
+// gitignored, so progress.md survives a branch switch — but the per-phase commits it
+// credits do not travel with it. A run that branches fresh from Base therefore
+// inherits `[x]` marks for code that is NOT in its working tree, and would skip
+// those phases and ship a change missing them.
+//
+// Observed live: a ledger claimed phases 0-2 done with shas from a previous run's
+// agent branch, while this run had branched fresh from Base. The implementer
+// happened to notice and rewrote the ledger itself — diligence, not a guarantee.
+//
+// So: when the ledger names a DIFFERENT branch than the one we are on, its
+// completion marks cannot be trusted. Keep the phase list (the plan has not
+// changed) and clear every `[x]`, leaving a note explaining why. Returns the number
+// of phases reopened. A ledger with no `Branch:` line predates this and is left
+// alone — the implementer is separately told to re-verify `[x]` phases.
+export function reconcileLedgerBranch(cwd: string, branch: string): number {
+    const file = join(cwd, ".agent", "progress.md");
+    if (!branch || !existsSync(file)) return 0;
+    let raw: string;
+    try {
+        raw = readFileSync(file, "utf-8");
+    } catch {
+        return 0;
+    }
+    const recorded = raw.match(/^Branch:\s*(\S+)\s*$/m)?.[1];
+    if (!recorded || recorded === branch) return 0;
+
+    let reopened = 0;
+    const lines = raw.split(/\r?\n/).map((l) => {
+        const m = l.match(/^(\s*-\s*)\[[xX]\](\s*)(.*)$/);
+        if (!m) return l;
+        reopened++;
+        // Drop the trailing "— tests: … (sha …)" evidence: it belongs to the other
+        // branch, and leaving it would invite the same false confidence again.
+        return `${m[1]}[ ]${m[2]}${m[3].split(" — tests:")[0]}`;
+    });
+    if (!reopened) return 0;
+
+    const out = lines
+        .map((l) => (l.startsWith("Branch:") ? `Branch: ${branch}` : l))
+        .join("\n")
+        .replace(
+            /^# Implementation progress$/m,
+            `# Implementation progress\n\nNOTE: reopened ${reopened} phase(s) — the ledger recorded them complete on branch \`${recorded}\`, but this run builds on \`${branch}\`, which does not contain that work.`,
+        );
+    try {
+        writeFileSync(file, out, "utf-8");
+    } catch {
+        return 0;
+    }
+    return reopened;
 }
 
 // Read the phase-status lines ("- [ ] …" / "- [x] …") from the progress ledger.
@@ -1739,30 +1915,34 @@ export async function dispatchAgentCore(
     );
     const existingPhase = s.phases.find((p) => p.agent === agentKey);
 
+    // Every dispatch gets the freshly minted dispatchId — the PHASE (the dashboard
+    // card) is reused so the agent keeps one card, but the dispatchId is not, because
+    // it names the session file: `<agent>-<dispatchId>.jsonl`. Carrying the old id
+    // over made the spawn find an existing session and resume it with `-c`, so a
+    // second dispatch of the same agent inherited the first one's whole context.
+    // For `phase-implementer` that silently defeated the point of the role: an
+    // observed run put plan phases 0, 1 and 7 in ONE 1.8MB session, while the
+    // parallel wave (which always mints unique ids) correctly got a session each.
+    // A dispatch is a focused, self-contained task; anything worth carrying across
+    // dispatches belongs in the task text or on disk, not in a resumed transcript.
     let phase: PhaseState;
     if (existingPending) {
-        // Reuse pending phase (from select_agents or previous dispatch)
-        // Preserve the dispatchId to maintain session continuity
-        const preservedDispatchId = existingPending.dispatchId;
-        const fresh = mkPhase(displayName(def.name), agentKey, dispatchId);
-        Object.assign(existingPending, fresh);
-        // Restore the original dispatchId if it existed
-        if (preservedDispatchId) {
-            existingPending.dispatchId = preservedDispatchId;
-        }
+        // Reuse the pending phase's card (from select_agents or a previous dispatch).
+        Object.assign(
+            existingPending,
+            mkPhase(displayName(def.name), agentKey, dispatchId),
+        );
         phase = existingPending;
     } else if (existingRunning) {
         // All existing phases are running - create new phase for parallel dispatch
         phase = mkPhase(displayName(def.name), agentKey, dispatchId);
         s.phases.push(phase);
     } else if (existingPhase) {
-        // Reuse existing phase (reset it for sequential re-dispatch)
-        const preservedDispatchId = existingPhase.dispatchId;
-        const fresh = mkPhase(displayName(def.name), agentKey, dispatchId);
-        Object.assign(existingPhase, fresh);
-        if (preservedDispatchId) {
-            existingPhase.dispatchId = preservedDispatchId;
-        }
+        // Reuse the existing card, reset for this sequential re-dispatch.
+        Object.assign(
+            existingPhase,
+            mkPhase(displayName(def.name), agentKey, dispatchId),
+        );
         phase = existingPhase;
     } else {
         // No existing phase - create new one
@@ -1897,6 +2077,11 @@ export async function dispatchAgentCore(
         ],
         details: {
             agent: def.name,
+            // Names this dispatch's session file, so the history it is logged into
+            // records not just THAT the agent ran but in which context — which is
+            // what the fresh-context audit needs to distinguish real per-phase
+            // delegation from one worker resumed over and over.
+            dispatchId: phase.dispatchId,
             task,
             status,
             elapsed: phase.elapsed,
@@ -2041,7 +2226,13 @@ export async function dispatchParallelCore(
     // finishDispatchLearnings): the shared staging file is committed once, when the
     // last dispatch in flight — in this batch or alongside it — has landed.
     s.activeDispatches += entries.length;
-    let results: { name: string; ok: boolean; elapsed: number; truncated: string }[];
+    let results: {
+        name: string;
+        dispatchId?: string;
+        ok: boolean;
+        elapsed: number;
+        truncated: string;
+    }[];
     try {
         results = await Promise.all(
             entries.map(async ({ def, task, phase }) => {
@@ -2086,7 +2277,13 @@ export async function dispatchParallelCore(
                 });
                 h.ui.updateWidget();
                 const truncated = clampOutput(res.output, perItemBudget);
-                return { name: def.name, ok, elapsed: phase.elapsed, truncated };
+                return {
+                    name: def.name,
+                    dispatchId: phase.dispatchId,
+                    ok,
+                    elapsed: phase.elapsed,
+                    truncated,
+                };
             }),
         );
     } finally {
@@ -2125,6 +2322,8 @@ export async function dispatchParallelCore(
             parallel: true,
             results: results.map((r) => ({
                 agent: r.name,
+                // See dispatchAgentCore: the session this item ran in.
+                dispatchId: r.dispatchId,
                 status: r.ok ? "done" : "error",
                 elapsed: r.elapsed,
             })),

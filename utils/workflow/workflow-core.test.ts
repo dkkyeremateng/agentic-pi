@@ -29,6 +29,7 @@ import {
     freshPhases,
     dispatchEnv,
     subagentEnv,
+    buildWorkflowReport,
     stripInheritedSecrets,
     renderWorkflowFooter,
     formatContextUsage,
@@ -2392,5 +2393,62 @@ describe("loadDotEnv project override precedence", () => {
         delete process.env.PI_WORKFLOW_NOT_ALLOWED;
         loadDotEnv(projectWithEnv("PI_WORKFLOW_NOT_ALLOWED=1\n"));
         assert.equal(process.env.PI_WORKFLOW_NOT_ALLOWED, undefined);
+    });
+});
+
+// ── Report truncation must keep the conclusion (the verdict lives at the end) ──
+
+describe("buildWorkflowReport phase truncation", () => {
+    const mk = (val: string) =>
+        buildWorkflowReport({
+            request: "r",
+            status: "needs-review",
+            verdict: "unknown",
+            passes: 1,
+            maxLoops: 3,
+            passed: false,
+            prUrl: "",
+            totals: {
+                runElapsedMs: 1,
+                totalToolCalls: 1,
+                totalTokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+                totalDroppedLines: 0,
+                totalCostUsd: 0,
+            },
+            scoutP: null,
+            planP: null,
+            refinerP: null,
+            implP: null,
+            reviewerP: null,
+            valP: { agent: "validator" } as any,
+            shipP: null,
+            scoutFindings: "",
+            plan: "",
+            impl: "",
+            review: "",
+            val,
+            ship: "",
+        });
+
+    it("keeps the tail of an over-long phase, not just the head", () => {
+        // A real run ended `needs-review` with the validation section cut off
+        // mid-investigation, so the reason for the outcome was absent from the
+        // report a human opens to understand it.
+        const long =
+            "START-OF-VALIDATION\n" + "x".repeat(20000) + "\nCONCLUSION: the tail matters";
+        const report = mk(long);
+        assert.ok(report.includes("START-OF-VALIDATION"), "head is kept");
+        assert.ok(
+            report.includes("CONCLUSION: the tail matters"),
+            "tail is kept — the conclusion survives truncation",
+        );
+        assert.ok(/truncated/.test(report), "truncation is disclosed");
+        assert.ok(report.length < long.length, "and it did actually shrink");
+    });
+
+    it("leaves a short phase output untouched", () => {
+        const report = mk("VERDICT: PASS\nshort and complete");
+        assert.ok(report.includes("VERDICT: PASS"));
+        assert.ok(!/phase output exceeded/.test(report));
     });
 });

@@ -886,10 +886,9 @@ export function renderDispatchAgentResult(
         theme.fg(color, `${icon} ${details.agent}`) +
         theme.fg("dim", ` ${elapsed}`);
     if (options.expanded && details.fullOutput) {
-        const output =
-            details.fullOutput.length > 4000
-                ? details.fullOutput.slice(0, 4000) + "\n... [truncated]"
-                : details.fullOutput;
+        // Head+tail (clampOutput): the agent's conclusion is at the end, so a flat
+        // head slice would hide the very thing an expanded card is opened to read.
+        const output = clampOutput(details.fullOutput, 4000);
         return new MarkdownCtor(header + "\n\n" + output, 1, 0, mdTheme);
     }
     if (details.status === "error" && details.fullOutput) {
@@ -944,9 +943,8 @@ export function renderDispatchParallelResult(
         const t = result.content?.[0];
         const body = t?.type === "text" ? t.text || "" : "";
         return new MarkdownCtor(
-            body.length > 8000
-                ? body.slice(0, 8000) + "\n... [truncated]"
-                : body,
+            // Head+tail: keep the tail, where the result's conclusion lives.
+            clampOutput(body, 8000),
             1,
             0,
             mdTheme,
@@ -1919,10 +1917,15 @@ function summaryLine(label: string, phase: PhaseState, body: string): string {
 // growing unbounded when an agent produces very long output. The summary section
 // already uses digest() which is bounded; this bounds the raw details section.
 const REPORT_PHASE_MAX = 12000;
+// Head+tail, never head-only: an agent's conclusion is at the END — the validator's
+// VERDICT line, the reviewer's verdict, the implementer's Risks section. A flat
+// head slice drops exactly the part a human opens the report to read, and it was
+// observed doing so: a run that ended `needs-review` had its validation section cut
+// off mid-investigation, with the reasoning for the outcome nowhere in the report.
 function truncatePhaseOutput(text: string): string {
     if (text.length <= REPORT_PHASE_MAX) return text;
     return (
-        text.slice(0, REPORT_PHASE_MAX) +
+        clampOutput(text, REPORT_PHASE_MAX) +
         `\n\n... [truncated — phase output exceeded ${REPORT_PHASE_MAX} chars]`
     );
 }
