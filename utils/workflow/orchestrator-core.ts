@@ -1833,6 +1833,7 @@ async function runAgentWithEmptyRetry(
         phase.attempt = (phase.attempt || 1) + 1;
         phase.toolCount = 0;
         phase.contextPct = 0;
+        phase.peakContextPct = 0;
         phase.droppedLines = 0;
         phase.lastStopReason = undefined;
         obsEmit("dispatch_retry", {

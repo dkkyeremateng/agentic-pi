@@ -5240,3 +5240,33 @@ describe("reviewer re-review starts from a fresh session", () => {
         assert.notEqual(epochs[1], epochs[2], "and a distinct one each round");
     });
 });
+
+describe("peak context survives a pruner-induced dip", () => {
+    it("records the high-water mark across turns, not the last one", () => {
+        const phase: any = {
+            label: "Implementer", agent: "implementer", status: "running",
+            elapsed: 0, note: "", droppedLines: 0, contextPct: 0, attempt: 1,
+        };
+        const state: any = {
+            answer: [], cumulativeTokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            costUsd: 0, toolCalls: 0, droppedLines: 0, contextPct: 0,
+        };
+        const turn = (cacheRead: number) => ({
+            type: "message_end",
+            message: {
+                role: "assistant", stopReason: "toolUse", content: [{ text: "x" }],
+                usage: { input: 100, output: 10, cacheRead, cacheWrite: 0, contextWindow: 256000 },
+            },
+        });
+        // Climb to the ceiling, then the pruner reclaims and the reading falls back.
+        handleSpawnEvent(turn(120000), state, phase, () => {});
+        handleSpawnEvent(turn(251000), state, phase, () => {});
+        handleSpawnEvent(turn(40000), state, phase, () => {});
+
+        assert.ok(phase.contextPct < 30, `last reading fell back (${phase.contextPct}%)`);
+        assert.ok(
+            phase.peakContextPct >= 95,
+            `peak remembers the squeeze (${phase.peakContextPct}%)`,
+        );
+    });
+});

@@ -169,6 +169,9 @@ export interface PhaseState {
     droppedLines: number; // count of malformed JSON lines dropped during this phase
     toolCount: number; // tool calls observed during this phase (live activity signal)
     contextPct: number; // context window usage percentage (0-100) from the agent's last message
+    // Highest contextPct seen during the phase. The last reading understates the
+    // pressure a phase was actually under once the pruner reclaims space.
+    peakContextPct?: number;
     attempt: number; // how many times this phase has been run (incremented on retry loops)
     modelFallback: boolean; // true if the phase retried with the fallback model after the primary model failed
     activeModel?: string; // the model the agent is actually running on (set at spawn; reflects fallback)
@@ -1965,11 +1968,72 @@ function totalsLine(t: ReportTotals): string {
     return `${secs(t.runElapsedMs)} wall-clock · ${t.totalToolCalls} tool call(s)${tok}${cost}`;
 }
 
+// A phase that ran close to its context window, or was cut off by one.
+//
+// Measured need: a phase-implementer reached 252,289 of a 256,000-token window
+// (98.6%) and produced a turn with stopReason "length" — real truncation, mid-run,
+// and nothing in the report said so. Context pressure degrades quality long before
+// it errors: the model is dropping earlier detail to make room while it still looks
+// like it is working.
+//
+// The threshold is a warning line, not a limit. Pruning routinely takes a phase past
+// 80% and back down again; sustained time near the ceiling is what matters.
+export const CONTEXT_PRESSURE_PCT = 90;
+
+/** The peak context reading for a phase, preferring the high-water mark and falling
+ *  back to the last reading for phases recorded before it was tracked. */
+export function phasePeakContext(phase: PhaseState): number {
+    return Math.max(phase.peakContextPct || 0, phase.contextPct || 0);
+}
+
+/** Did this phase run under context pressure — near the window, or truncated by it? */
+export function phaseUnderContextPressure(phase: PhaseState): boolean {
+    return (
+        phasePeakContext(phase) >= CONTEXT_PRESSURE_PCT ||
+        phase.lastStopReason === "length" ||
+        phase.lastStopReason === "max_tokens"
+    );
+}
+
+/** A report note naming the phases that ran under context pressure, or [] when none
+ *  did. Context pressure is invisible otherwise: the run completes, the summary looks
+ *  ordinary, and the only symptom is that an agent quietly stopped seeing its earlier
+ *  work. Truncation is called out separately because it is not a risk but a fact —
+ *  that turn WAS cut off. */
+export function contextPressureNote(phases: (PhaseState | null)[]): string[] {
+    const hit = phases.filter(
+        (p): p is PhaseState => !!p && phaseUnderContextPressure(p),
+    );
+    if (!hit.length) return [];
+    const parts = hit.map((p) => {
+        const cut =
+            p.lastStopReason === "length" || p.lastStopReason === "max_tokens";
+        return `${p.label} ${phasePeakContext(p)}%${cut ? " (TRUNCATED)" : ""}`;
+    });
+    const truncated = hit.some(
+        (p) =>
+            p.lastStopReason === "length" || p.lastStopReason === "max_tokens",
+    );
+    return [
+        ``,
+        `> **Context pressure:** ${parts.join(", ")} — at or above ${CONTEXT_PRESSURE_PCT}% of the window.` +
+            (truncated
+                ? ` A TRUNCATED phase was cut off mid-turn: treat its later work as incomplete and re-check what it reported.`
+                : ` Quality degrades before this errors — the agent is losing its earlier context to make room.`) +
+            ` Consider a larger-window model for that role (PI_AGENT_<NAME>_MODEL) or more aggressive pruning (\`/pruner settings\`).`,
+    ];
+}
+
 // One "- **Name** (Ns, tokens) — digest [N dropped]" summary line for a phase.
 function summaryLine(label: string, phase: PhaseState, body: string): string {
     const dropped =
         phase.droppedLines > 0 ? ` [${phase.droppedLines} dropped]` : "";
-    return `- **${label}** (${secs(phase.elapsed)}${tokenNote(phase)}) — ${body}${dropped}`;
+    const truncated =
+        phase.lastStopReason === "length" || phase.lastStopReason === "max_tokens";
+    const ctx = phaseUnderContextPressure(phase)
+        ? ` [ctx ${phasePeakContext(phase)}%${truncated ? ", TRUNCATED" : ""}]`
+        : "";
+    return `- **${label}** (${secs(phase.elapsed)}${tokenNote(phase)}) — ${body}${dropped}${ctx}`;
 }
 
 // Cap individual phase output in the details section to prevent reports from
@@ -2028,6 +2092,15 @@ export function buildWorkflowReport(o: {
                   `> **Diagnostic:** ${o.totals.totalDroppedLines} malformed JSON line(s) were dropped from agent output streams during this run. This may indicate a pi subprocess protocol issue. Full agent logs are appended below.`,
               ]
             : []),
+        ...contextPressureNote([
+            o.scoutP,
+            o.planP,
+            o.refinerP,
+            o.implP,
+            o.reviewerP,
+            o.valP,
+            o.shipP,
+        ]),
         ``,
         `## Summary of work`,
         ``,
@@ -2755,6 +2828,7 @@ export async function runAgentWithFallback(
             phase.note = `⚠ transient error — retry ${tries}/${maxTransient}`;
             phase.toolCount = 0;
             phase.contextPct = 0;
+            phase.peakContextPct = 0;
             phase.droppedLines = 0;
             phase.log += `\n⚠ Transient error (retry ${tries}/${maxTransient}): ${first.slice(0, 200)}\n`;
             opts.notify?.(
@@ -2792,6 +2866,7 @@ export async function runAgentWithFallback(
         phase.modelFallback = true;
         phase.toolCount = 0;
         phase.contextPct = 0;
+        phase.peakContextPct = 0;
         phase.droppedLines = 0;
         phase.log += `\n⚠ Model ${primaryModel} failed — retrying with ${fallbackModel} (context reset from ${prevContextPct}%)\n`;
         opts.notify?.(
@@ -2865,6 +2940,7 @@ export async function runPhaseCore(
             : "";
     phase.toolCount = 0;
     phase.contextPct = 0;
+    phase.peakContextPct = 0;
     phase.droppedLines = 0;
     opts.updateWidget();
 
@@ -3381,6 +3457,10 @@ export function handleSpawnEvent(
                     ? Math.min(100, Math.round((ctxTokens / ctxWindow) * 100))
                     : 0;
             phase.contextPct = pct;
+            // Keep the high-water mark too: contextPct is the LAST turn's reading,
+            // and pruning can pull it back down, so a phase that ran right up to the
+            // window and then recovered would leave no trace of how close it came.
+            phase.peakContextPct = Math.max(phase.peakContextPct || 0, pct);
             state.contextPct = phase.contextPct;
             state.capturedTokens = {
                 input: state.cumulativeTokens.input,
