@@ -80,23 +80,36 @@ downstream agents, so it is never re-threaded through the context.
   `on-context-tag` mode; in the default `agent-message` mode the agents'
   `context_tag` calls are just harmless bookmarks.
 
-  **The sub-agent pruner patch is currently REVERTED — do not apply it.** In
-  `agent-message` mode pruning flushes only on the *final* assistant message, which
-  never happens mid-run in a spawned sub-agent (`pi -p` is one user turn, many
-  tool-calling messages, one final message at the end). So sub-agents accumulate
-  every turn's tool output for the whole phase and flush once, uselessly, at the end
-  — measured as a phase-implementer reaching 98.6% of a 256k window and truncating
-  a turn. `npm run patch:prune` made headless sessions flush per turn instead.
+  **Patch the pruner for sub-agents — `npm run patch:prune`.** In `agent-message`
+  mode pruning flushes only on the *final* assistant message, which never happens
+  mid-run in a spawned sub-agent (`pi -p` is one user turn, many tool-calling
+  messages, one final message at the end). So sub-agents carry every turn's tool
+  output for the whole phase and flush once, uselessly, at the end — measured as a
+  phase-implementer reaching 98.6% of a 256k window and truncating a turn, and later
+  as all 12 sessions of a build logging exactly ONE flush while context grew
+  monotonically and never dropped.
 
-  **That fix was worse than the bug.** Per-turn flushing summarizes a turn's tool
-  results away *before the next turn can use them*, and in an agentic loop turn N+1
-  is precisely the model acting on turn N's output. A planner asked to read a 113KB
-  spec looped ~30 times — `read`, `python3`, `dd | od`, `base64`, even ROT13, an
-  escalation pattern that says the model had concluded its output was being
-  redacted — with context pinned flat at 8-9k tokens across 27 turns while the
-  pruner flushed 31 times. Reverted with `npm run patch:prune -- --revert`.
-  The real fix needs a keep-recent window (never prune the last N turns); until
-  that exists, leave the pruner unpatched. `pi update` wipes the patch anyway.
+  The patch adds a **keep-recent window**: on each turn a headless session
+  summarizes every pending batch *except* the most recent `PI_PRUNE_KEEP_RECENT`
+  (default 3), which stay raw. Old output is reclaimed mid-run; a tool result is
+  always readable for the next few turns — long enough to be acted on. An earlier
+  attempt that flushed *every* turn was reverted: it removed turn N's output before
+  turn N+1 could use it, and an agent reading a 113KB file looped ~30 times trying
+  to get its own read back.
+
+  Verified behaviourally, not just by counting flushes — same 145KB file and chunked
+  read task, patched vs upstream:
+
+  | | upstream | keep-recent |
+  |---|---|---|
+  | mid-run flushes | 1 (at the end) | **11** |
+  | batches summarized | 13 | 13 |
+  | tokens recalled correctly | both | **both** |
+
+  Interactive sessions are untouched (`every-turn` keeps its upstream branch;
+  `agent-message` with a UI still flushes on the final message). `pi update` wipes
+  the patch, so re-run `npm run patch:prune` after upgrading; `-- --revert` restores
+  upstream.
 
 ## Quick start
 
@@ -317,6 +330,7 @@ ones:
 | `PI_AGENT_TRANSIENT_RETRIES` | Same-model retries on transient errors (interrupted stream, dropped connection, 429/502/503/504/529). |
 | `PI_WORKFLOW_AGENT_TIMEOUT` | Per-agent watchdog (minutes; 0 = off). |
 | `PI_CONFINE_CWD` | Confine sub-agents' file tools to the working directory. |
+| `PI_PRUNE_KEEP_RECENT` | Turns of tool output the pruner never summarizes in a headless session (default 3). |
 | `PI_ROADMAP_AUTOTICK` | `0` stops the orchestrator ticking milestones off `roadmap.md` on a validated run. |
 | `PI_WORKFLOW_ARCHIVE_PLANS` | Archive each run's final plan to `docs/plans/`. |
 | `PI_WORKFLOW_APPROVE_PROJECT` | Force project-trust `--approve` on/off for spawned agents (see below). |
