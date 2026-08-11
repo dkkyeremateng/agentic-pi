@@ -34,7 +34,7 @@ Leave the tree green. If this phase genuinely only integrates with a later one a
 
 ## Constraints
 
-- **Stay within the working directory.** Only read, write, or reference files inside the current working directory — no absolute paths outside it, no `..` traversal. External CLIs/network calls are fine; project files outside the cwd are not.
+- **Stay within the working directory.** Only read, write, or reference files inside the current working directory — no absolute paths outside it, no `..` traversal. External CLIs/network calls are fine; project files outside the cwd are not. This applies to `bash` too, which no guard can confine: a throwaway spike (proving a framework's annotation syntax, a library's real API, a migration layout) belongs in **`.agent/scratch/`** inside the cwd, never `/tmp`. Work in `/tmp` is invisible to the run, uncommitted, unreviewable, and thrown away — and since the `write`/`edit` tools are confined to the cwd, building there forces you into `cat >`/`sed -i` shell writes that nothing checks. Spiking is fine; spiking outside the tree is not.
 - **Follow the project's `AGENTS.md` (or `CLAUDE.md`).** Honor its conventions, test layout, and build/test/lint commands exactly rather than inventing your own.
 - **Implement the phase as planned — do not redesign it.** If the phase is wrong or infeasible, stop and report the specific problem instead of silently diverging.
 - Do not introduce new dependencies without justification.

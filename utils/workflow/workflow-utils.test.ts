@@ -306,7 +306,9 @@ describe("outcomeLine", () => {
     });
 
     it("returns paused message", () => {
-        assert.ok(outcomeLine("paused-no-remote", 1).includes("PAUSED"));
+        assert.ok(outcomeLine("shipped-local", 1).includes("COMPLETE"));
+        // Pre-rename spelling still renders, for historical reports.
+        assert.ok(outcomeLine("paused-no-remote", 1).includes("COMPLETE"));
     });
 
     it("returns failed message with attempt count", () => {
@@ -632,6 +634,7 @@ describe("milestoneEarned", () => {
     });
 
     it("earns when validation passed but there was no remote to open a PR on", () => {
+        assert.equal(milestoneEarned({ ...base, status: "shipped-local" }), true);
         assert.equal(milestoneEarned({ ...base, status: "paused-no-remote" }), true);
     });
 
@@ -695,5 +698,61 @@ describe("nextMilestone", () => {
             "- [ ] not started",
         ].join("\n");
         assert.equal(nextMilestone(rm)?.number, 3);
+    });
+});
+
+describe("gitPreflightNote — repo with no commits", () => {
+    it("warns on an initialised repo that has no commits", () => {
+        const note = gitPreflightNote(true, true, false);
+        assert.match(note, /no commits/i);
+        assert.match(note, /no base commit to branch from/);
+        assert.match(note, /--allow-empty/);
+    });
+
+    it("says less for a plan-only roster", () => {
+        const note = gitPreflightNote(true, false, false);
+        assert.match(note, /no commits/i);
+        assert.doesNotMatch(note, /work branch/);
+    });
+
+    it("stays silent for a healthy repo", () => {
+        assert.equal(gitPreflightNote(true, true, true), "");
+        assert.equal(gitPreflightNote(true, true), "");
+    });
+
+    it("the no-repo warning still wins over the no-commits one", () => {
+        assert.match(gitPreflightNote(false, true, false), /Not a git repository/);
+    });
+});
+
+describe("no remote is a completed run, not a pause", () => {
+    it("outcomeLine says COMPLETE and never PAUSED", () => {
+        const line = outcomeLine("shipped-local", 1);
+        assert.match(line, /^COMPLETE/);
+        assert.doesNotMatch(line, /PAUSED/);
+        assert.match(line, /committed on a local feature branch/);
+        assert.match(line, /no pull request was opened/);
+    });
+
+    it("a genuinely paused run still reads as paused", () => {
+        assert.match(outcomeLine("needs-review", 1), /NEEDS REVIEW/);
+    });
+});
+
+describe("detectShip accepts the LOCAL marker", () => {
+    it("reads SHIP: LOCAL as no-PR (same as the legacy PAUSED)", () => {
+        assert.equal(detectShip("SHIP: LOCAL\n\nCommitted on feat/x."), "paused");
+        assert.equal(detectShip("SHIP: PAUSED\n\nNo remote."), "paused");
+    });
+
+    it("still reads SHIP: SHIPPED as a PR", () => {
+        assert.equal(detectShip("SHIP: SHIPPED\n\nPR: https://x/pull/1"), "shipped");
+    });
+
+    it("the last marker wins", () => {
+        assert.equal(
+            detectShip("SHIP: SHIPPED\n...reconsidered...\nSHIP: LOCAL"),
+            "paused",
+        );
     });
 });

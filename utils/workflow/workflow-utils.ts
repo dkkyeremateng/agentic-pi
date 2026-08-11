@@ -97,14 +97,21 @@ export function detectCritique(output: string): CritiqueVerdict {
 }
 
 /**
- * Detect the ship step's outcome: PR opened or paused (no remote).
- * Prefers the explicit SHIP: marker; falls back to the first 20 lines only.
+ * Detect the ship step's outcome: was a PR opened, or is the work committed
+ * locally only? The "paused" return is about the PR, NOT about the run — a run
+ * with no remote still completes (see outcomeLine's `shipped-local`).
+ *
+ * `SHIP: LOCAL` is the current marker; `SHIP: PAUSED` is the older spelling of the
+ * same thing and is still accepted, both from in-flight sessions and from any
+ * shipper prompt that has not been updated.
  */
 export function detectShip(output: string): "shipped" | "paused" {
     // Take the LAST marker: the authoritative outcome is emitted at the end.
-    const markers = [...output.matchAll(/SHIP:\s*(SHIPPED|PAUSED)/gi)];
-    if (markers.length)
-        return markers[markers.length - 1][1].toLowerCase() === "paused" ? "paused" : "shipped";
+    const markers = [...output.matchAll(/SHIP:\s*(SHIPPED|PAUSED|LOCAL)/gi)];
+    if (markers.length) {
+        const v = markers[markers.length - 1][1].toLowerCase();
+        return v === "paused" || v === "local" ? "paused" : "shipped";
+    }
     // Fallback: only check the first 20 lines to avoid false positives.
     const head = output.split("\n").slice(0, 20).join("\n");
     if (/\bpaused\b/i.test(head) || /\bno\b[^.\n]{0,16}\bremote\b/i.test(head))
@@ -439,7 +446,14 @@ export function milestoneEarned(opts: {
 }): boolean {
     const { status, hadValidator, phasesTotal, phasesDone } = opts;
     if (!hadValidator) return false;
-    if (status !== "shipped" && status !== "paused-no-remote") return false;
+    // "paused-no-remote" is the pre-rename spelling of "shipped-local"; accepted so
+    // a roadmap ticked by an older run still reads consistently.
+    if (
+        status !== "shipped" &&
+        status !== "shipped-local" &&
+        status !== "paused-no-remote"
+    )
+        return false;
     return phasesTotal > 0 && phasesDone >= phasesTotal;
 }
 
@@ -455,20 +469,40 @@ export function milestoneEarned(opts: {
  *
  * Returns "" when there is nothing to warn about.
  */
-export function gitPreflightNote(isGitRepo: boolean, willBuild: boolean): string {
-    if (isGitRepo) return "";
-    const lost = willBuild
-        ? "/revert has no checkpoint to restore, no per-phase commits are made, and the shipper cannot branch or open a PR"
-        : "/revert has no checkpoint to restore";
-    return `Not a git repository — ${lost}. Run \`git init\` here (or start the workflow inside the target repo) if you want those.`;
+export function gitPreflightNote(
+    isGitRepo: boolean,
+    willBuild: boolean,
+    hasCommits = true,
+): string {
+    if (!isGitRepo) {
+        const lost = willBuild
+            ? "/revert has no checkpoint to restore, no per-phase commits are made, and the shipper cannot branch or open a PR"
+            : "/revert has no checkpoint to restore";
+        return `Not a git repository — ${lost}. Run \`git init\` here (or start the workflow inside the target repo) if you want those.`;
+    }
+    // A repo with NO commits is the more dangerous state, and the one that used to
+    // pass silently: `rev-parse --is-inside-work-tree` succeeds, so everything looks
+    // healthy, while `rev-parse HEAD` fails and takes the safety net with it.
+    // createCheckpoint stores an empty head, ensureWorkBranch returns null, and a
+    // whole run can complete with every file untracked and no rollback point.
+    // Observed live: five phases and 189 minutes with zero commits.
+    if (!hasCommits) {
+        const lost = willBuild
+            ? "there is no base commit to branch from, so no work branch is created, per-phase checkpoints have nothing to build on, and /revert cannot restore anything"
+            : "/revert has no base commit to restore to";
+        return `Git repository has no commits — ${lost}. Make an initial commit (\`git commit --allow-empty -m "init"\`) before a build run.`;
+    }
+    return "";
 }
 
 export function outcomeLine(status: string, passes: number): string {
     switch (status) {
         case "shipped":
             return "SHIPPED — the validator approved the change and opened a draft pull request.";
+        case "shipped-local":
+        // Pre-rename spelling, kept so historical reports still render.
         case "paused-no-remote":
-            return "PAUSED — no GitHub remote. The work is committed on a local feature branch; add a remote and re-run validation to open the PR.";
+            return "COMPLETE — the change is built, reviewed, and committed on a local feature branch. No git remote is configured, so no pull request was opened; add one and push the branch when you want a PR.";
         case "failed-after-retries":
             return `FAILED — the change did not pass validation after ${passes} attempt(s).`;
         case "needs-review":

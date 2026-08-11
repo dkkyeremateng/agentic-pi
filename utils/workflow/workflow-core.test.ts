@@ -28,9 +28,11 @@ import {
     mkPhase,
     freshPhases,
     roadmapTask,
+    implementTask,
     planTask,
     refineTask,
     ROADMAP_FILE,
+    PHASE_OUTPUT_MAX,
     dispatchEnv,
     subagentEnv,
     buildWorkflowReport,
@@ -67,6 +69,7 @@ import {
     type PhaseState,
     type SpawnEventState,
 } from "./workflow-core";
+import { detectCritique } from "./workflow-utils";
 import {
     writeFileSync,
     mkdtempSync,
@@ -1773,7 +1776,7 @@ describe("buildWorkflowMetrics", () => {
 
         const m = buildWorkflowMetrics({
             request: "build a todo app",
-            status: "paused-no-remote",
+            status: "shipped-local",
             verdict: "pass",
             passes: 1,
             maxLoops: 3,
@@ -1799,7 +1802,7 @@ describe("buildWorkflowMetrics", () => {
 
         assert.equal(m.schema, 1);
         assert.equal(m.team, "build");
-        assert.equal(m.shipOutcome, "paused");
+        assert.equal(m.shipOutcome, "shipped");
         assert.equal(m.passes, 1);
         assert.equal(m.maxLoops, 3);
         assert.equal(m.startedAt, "2026-06-10T19:25:00.000Z");
@@ -2618,5 +2621,67 @@ describe("roadmap-aware planning prompts", () => {
     it("neither planning agent is told to write the roadmap", () => {
         assert.match(planTask("x", "", MS, true), /Do NOT write to `roadmap\.md`/i);
         assert.match(refineTask("x", "", MS, true), /Do not write to `roadmap\.md`/i);
+    });
+});
+
+describe("implementTask restates the delegation contract", () => {
+    const t = implementTask("build the thing");
+
+    it("names the dispatch tools and the no-exceptions rule", () => {
+        assert.match(t, /DELEGATE EVERY PHASE/);
+        assert.match(t, /dispatch_parallel/);
+        assert.match(t, /dispatch_agent/);
+        assert.match(t, /no exception for a phase that looks small/i);
+    });
+
+    it("says the violation is audited, so skipping is not free", () => {
+        assert.match(t, /audited/i);
+        assert.match(t, /zero dispatches is re-run once/i);
+    });
+
+    it("requires a baseline commit and per-phase checkpoints", () => {
+        assert.match(t, /COMMIT EVERY PHASE/);
+        assert.match(t, /baseline commit FIRST/);
+        assert.match(t, /wip\(phase N\)/);
+    });
+
+    it("points spikes at an in-cwd scratch dir instead of /tmp", () => {
+        assert.match(t, /\.agent\/scratch\//);
+        assert.match(t, /never `\/tmp`/);
+    });
+
+    it("still carries the plan location and the original request", () => {
+        assert.match(t, /\.agent\/plan\.md/);
+        assert.match(t, /build the thing/);
+    });
+});
+
+// ── the clamped-verdict bug ──────────────────────────────────────────────────
+// A reviewer emitted 48k chars ending in a blocking review. clampOutput keeps
+// head 70% + tail 30%; the tail boundary fell INSIDE the final message and cut the
+// REVISE marker, so detectCritique read `unknown`, the ship gate saw no objection,
+// and a change with an unmet acceptance criterion shipped.
+
+describe("gates must read unclamped output", () => {
+    // Reproduces the shape: a long reasoning body, then a verdict whose marker sits
+    // just far enough from the very end to fall outside the retained tail.
+    const verdictBlock =
+        "REVISE BEFORE MERGE\n\n" + "Finding detail. ".repeat(600);
+    const full = "Reasoning. ".repeat(4000) + "\n\n" + verdictBlock;
+
+    it("the raw output carries the verdict", () => {
+        assert.ok(full.length > PHASE_OUTPUT_MAX);
+        assert.equal(detectCritique(full), "revise");
+    });
+
+    it("clamping loses it — this is the bug", () => {
+        assert.notEqual(detectCritique(clampOutput(full)), "revise");
+    });
+
+    it("clampOutput is still correct for display: head and tail both survive", () => {
+        const c = clampOutput(full);
+        assert.ok(c.startsWith("Reasoning."));
+        assert.ok(c.includes("truncated"));
+        assert.ok(c.length <= PHASE_OUTPUT_MAX + 200);
     });
 });

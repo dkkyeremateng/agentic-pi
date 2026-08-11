@@ -417,10 +417,11 @@ export function statusBadge(
     switch (lastStatus) {
         case "shipped":
             return theme.fg("dim", "  ·  ") + theme.fg("success", "✓ shipped");
-        case "paused-no-remote":
+        case "shipped-local":
+        case "paused-no-remote": // pre-rename spelling
             return (
                 theme.fg("dim", "  ·  ") +
-                theme.fg("accent", "‖ paused (no remote)")
+                theme.fg("success", "✓ committed (no remote)")
             );
         case "failed-after-retries":
             return theme.fg("dim", "  ·  ") + theme.fg("error", "✗ failed");
@@ -752,8 +753,9 @@ export function renderWorkflowFooter(opts: {
               ? "success"
               : lastStatus === "shipped"
                 ? "success"
-                : lastStatus === "paused-no-remote"
-                  ? "accent"
+                : lastStatus === "shipped-local" ||
+                  lastStatus === "paused-no-remote"
+                ? "success"
                   : lastStatus === "idle"
                     ? "dim"
                     : "error";
@@ -1030,7 +1032,8 @@ export function renderRunWorkflowResult(
     }
     const meta: Record<string, { icon: string; color: string }> = {
         shipped: { icon: "✓", color: "success" },
-        "paused-no-remote": { icon: "‖", color: "accent" },
+        "shipped-local": { icon: "✓", color: "success" },
+        "paused-no-remote": { icon: "✓", color: "success" }, // pre-rename spelling
         "failed-after-retries": { icon: "✗", color: "error" },
         "needs-review": { icon: "✗", color: "error" },
         error: { icon: "✗", color: "error" },
@@ -2185,7 +2188,7 @@ export interface WorkflowMetrics {
     endedAt: string; // ISO
     request: string;
     team?: string;
-    status: string; // raw terminal status (e.g. "paused-no-remote")
+    status: string; // raw terminal status (e.g. "shipped-local")
     shipOutcome: "shipped" | "paused" | "failed" | "unknown";
     verdict: string;
     passes: number; // attempts used
@@ -2239,6 +2242,14 @@ function shipOutcomeFromStatus(
     status: string,
     prUrl: string,
 ): WorkflowMetrics["shipOutcome"] {
+    // `shipped-local` counts as SHIPPED, not paused: the run built, reviewed, and
+    // committed the change, and the only thing it could not do is push to a remote
+    // that does not exist. Nothing is waiting on a human, so a dashboard should not
+    // show it alongside runs that genuinely stalled. The finer distinction survives
+    // in `status`. ("paused-no-remote" is the pre-rename spelling of the same
+    // outcome and is mapped alongside it so historical runs stay comparable.)
+    if (status === "shipped-local" || status === "paused-no-remote")
+        return "shipped";
     if (prUrl || /shipped/i.test(status)) return "shipped";
     if (/paus/i.test(status)) return "paused";
     if (/fail|block|abort/i.test(status)) return "failed";
@@ -2686,9 +2697,23 @@ export function reviewFixTask(
     ].join("\n");
 }
 
+// The delegation contract is restated here, not left to agents/implementer.md
+// alone. Observed live: an implementer ran 75 turns without once mentioning
+// dispatch — not refusing it, never considering it, because the rule was competing
+// with everything else in a long system prompt. Every other phase gets its key
+// constraint repeated in the task; this one was the exception.
+//
+// The scratch line exists because cwd-guard confines `write`/`edit` to the cwd but
+// deliberately cannot confine `bash`. An agent that decides to spike outside the
+// cwd is therefore FUNNELLED into `cat >`/`sed -i`, the one channel with no guard
+// and no write events — so the run cannot see what it built. Giving it a legal
+// place to work inside the tree is cheaper than trying to parse shell.
 export function implementTask(original: string): string {
     return [
         "Implement the approved plan in `.agent/plan.md` — read it for the phases, file list, and acceptance criteria.",
+        "DELEGATE EVERY PHASE. On a plan with 2+ phases each phase goes to a `phase-implementer` in a fresh context — `dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for a single one — with no exception for a phase that looks small. You are the COORDINATOR: you own the ledger, the per-phase re-verification, the checkpoint commits, and the final full-suite gate; the workers write the code. This is audited after your phase: a 2+-phase plan with zero dispatches is re-run once with the violation named.",
+        "COMMIT EVERY PHASE before starting the next. If the repo has no commits yet, make the baseline commit FIRST — without a base sha there is no work branch, no rollback point, and a run that dies mid-way leaves every file untracked with a ledger claiming the phases are done. One `wip(phase N)` commit per wave, yours to make, never the worker's.",
+        "Spike INSIDE the working directory — use `.agent/scratch/` for throwaway experiments, never `/tmp`. Work outside the cwd is invisible to the run, unguarded, uncommitted, and discarded; and because the file tools are confined to the cwd, building there forces you into shell writes that nothing can check.",
         "",
         "Original request:",
         original,
@@ -3004,16 +3029,14 @@ export async function runPhaseCore(
         ) => void;
         phaseLogs: { label: string; log: string }[];
     },
-): Promise<{ output: string; ok: boolean }> {
+): Promise<{ output: string; raw: string; ok: boolean }> {
     const def = agents.get(phase.agent);
     if (!def) {
         phase.status = "error";
         phase.note = `Agent "${phase.agent}" not found`;
         opts.updateWidget();
-        return {
-            output: `Agent "${phase.agent}" not found in .pi/agents/`,
-            ok: false,
-        };
+        const miss = `Agent "${phase.agent}" not found in .pi/agents/`;
+        return { output: miss, raw: miss, ok: false };
     }
 
     phase.attempt++;
@@ -3059,7 +3082,19 @@ export async function runPhaseCore(
     // Bound the output before it flows into the next phase's task / the context
     // bundle / the report — a safety ceiling so a verbose agent can't overload the
     // next. The plan is unaffected: the orchestrator re-reads it from .agent/plan.md.
-    return { output: clampOutput(res.output), ok: statusWord === "done" };
+    //
+    // `raw` carries the UNCLAMPED text alongside it, because a GATE must never read
+    // a truncated verdict. Observed live: a reviewer emitted 48k chars ending in a
+    // blocking review; clampOutput keeps head 70% + tail 30%, the tail boundary fell
+    // inside the final message and cut the marker, detectCritique read `unknown`
+    // instead of `revise`, and a change with an unmet acceptance criterion shipped.
+    // Clamping is for display and for what the NEXT agent reads — never for a
+    // decision.
+    return {
+        output: clampOutput(res.output),
+        raw: res.output,
+        ok: statusWord === "done",
+    };
 }
 
 // ── Token tracking ───────────────────────────────
@@ -3341,6 +3376,11 @@ export function subagentExtArgs(tools: string, readOnlyBash = false, opts?: { ob
     const hasBash = /\bbash\b/.test(t);
     const canWrite = /\b(write|edit)\b/.test(t);
     if (hasBash && (!canWrite || readOnlyBash)) add("readonly-guard.ts");
+    // The write-capable bash agents (implementer, shipper) load no readonly-guard,
+    // so nothing stops them running `git init` / `gh repo create` / `git remote
+    // add`. repo-guard covers exactly that gap; read-only agents already have those
+    // three blocked by readonly-policy, so it would be redundant for them.
+    else if (hasBash) add("repo-guard.ts");
     // Live observability: when PI_OBS=1, every sub-agent emits ObsEvents to the
     // shared sink so the dashboard shows the whole pipeline. PI_OBS_AGENT (set on
     // the spawn env) labels which agent's lane the events land in. opts.obs forces

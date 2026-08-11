@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     blockedCommands,
+    blockedFileWrites,
+    blockedRepoCreation,
     ghArgsReadOnly,
     gitArgsReadOnly,
 } from "./readonly-policy";
@@ -193,5 +195,91 @@ describe("blockedCommands", () => {
         ]);
         // a plain GET stays allowed
         assert.deepEqual(blockedCommands("gh api /repos/o/r/pulls/5"), []);
+    });
+});
+
+// ── shell file writes (the `sed -i` hole) ────────────────────────────────────
+
+describe("blockedFileWrites", () => {
+    for (const cmd of [
+        "sed -i '' 's/a/b/' roadmap.md",
+        "sed -i.bak s/a/b/ file.md",
+        "perl -i -pe 's/a/b/' file.md",
+        "echo hi > notes.md",
+        "cat foo >> bar.md",
+        "grep x plan.md | tee out.txt",
+        "truncate -s 0 log.txt",
+        "patch -p1 < fix.diff",
+        "dd if=/dev/zero of=blob.bin",
+        "cd /tmp && sed -i '' 's/x/y/' a.md",
+    ]) {
+        it(`blocks ${JSON.stringify(cmd)}`, () => {
+            assert.ok(blockedFileWrites(cmd).length > 0, cmd);
+        });
+    }
+
+    for (const cmd of [
+        "grep -n 'Milestone' roadmap.md",
+        "wc -w roadmap.md",
+        "command -v encore && encore version 2>/dev/null || echo missing",
+        "git log --oneline -10 2>/dev/null",
+        "go test ./... 2>&1",
+        "ls -la >/dev/null 2>&1",
+        "sed 's/a/b/' file.md",
+        "cat plan.md | tee /dev/null",
+        "npm test -- --reporter=dot",
+        "nl -ba plan.md | grep -E '^ *[0-9]+ #'",
+        "",
+    ]) {
+        it(`allows ${JSON.stringify(cmd)}`, () => {
+            assert.deepEqual(blockedFileWrites(cmd), [], cmd);
+        });
+    }
+});
+
+// ── repo creation (blocked for every agent, including write-capable ones) ────
+
+describe("blockedRepoCreation", () => {
+    for (const cmd of [
+        "git init",
+        "git init --bare .",
+        "cd /tmp/x && git init",
+        "gh repo create my-app --private",
+        "gh repo create --source=. --push",
+        "git remote add origin https://github.com/o/r.git",
+        "git -C sub remote add origin url",
+        "go test ./... && git init",
+    ]) {
+        it(`blocks ${JSON.stringify(cmd)}`, () => {
+            assert.ok(blockedRepoCreation(cmd).length > 0, cmd);
+        });
+    }
+
+    for (const cmd of [
+        "git status --short",
+        "git remote -v",
+        "git remote get-url origin",
+        "git switch -c feat/x",
+        "git add -A && git commit -m 'feat: x'",
+        "git push -u origin feat/x",
+        "gh repo view",
+        "gh pr create --draft --title x",
+        "go test ./...",
+        "",
+    ]) {
+        it(`allows ${JSON.stringify(cmd)}`, () => {
+            assert.deepEqual(blockedRepoCreation(cmd), [], cmd);
+        });
+    }
+
+    it("does not block the shipper's real workflow", () => {
+        const shipper = [
+            "git remote -v",
+            "git switch -c feat/m1-webhook-ingestion",
+            "git add .gitignore api/ go.mod",
+            "git commit -q -m 'feat(controlplane): scaffold'",
+            "gh pr create --draft",
+        ];
+        for (const c of shipper) assert.deepEqual(blockedRepoCreation(c), [], c);
     });
 });
