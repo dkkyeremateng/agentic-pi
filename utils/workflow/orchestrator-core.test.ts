@@ -18,6 +18,7 @@ import {
     stripPlanPreamble,
     savePlanDraft,
     resetRunScratch,
+    maybeTickMilestone,
     initProgressLedger,
     markAllPhasesDone,
     planArchiveName,
@@ -5268,5 +5269,96 @@ describe("peak context survives a pruner-induced dip", () => {
             phase.peakContextPct >= 95,
             `peak remembers the squeeze (${phase.peakContextPct}%)`,
         );
+    });
+});
+
+// ── roadmap milestone auto-tick (file-level) ─────────────────────────────────
+
+describe("maybeTickMilestone", () => {
+    const ROADMAP = [
+        "# Roadmap: Thing",
+        "",
+        "## Milestone 1: Scaffold",
+        "",
+        "- [x] complete — 2026-08-01, validator PASS",
+        "",
+        "## Milestone 2: Ingestion",
+        "",
+        "- [ ] not started",
+        "- **Done when:** fixtures replay",
+        "",
+    ].join("\n");
+
+    const PLAN = "# Plan: Ingestion\n\nMilestone: 2 of 9\n";
+
+    // A cwd with a roadmap and a fully-ticked phase ledger.
+    const setup = (opts?: { ledger?: string; roadmap?: string }) => {
+        const cwd = mkdtempSync(join(tmpdir(), "milestone-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, "roadmap.md"), opts?.roadmap ?? ROADMAP);
+        writeFileSync(
+            join(cwd, ".agent", "progress.md"),
+            opts?.ledger ?? "- [x] Phase 1: A\n- [x] Phase 2: B\n",
+        );
+        return cwd;
+    };
+
+    const pass = {
+        status: "shipped",
+        hadValidator: true,
+        plan: PLAN,
+        verdict: "pass" as const,
+        prUrl: "https://github.com/o/r/pull/7",
+    };
+
+    beforeEach(() => {
+        delete process.env.PI_ROADMAP_AUTOTICK;
+    });
+
+    it("ticks the plan's milestone and stamps run evidence", () => {
+        const cwd = setup();
+        assert.equal(maybeTickMilestone(cwd, pass), 2);
+        const out = readFileSync(join(cwd, "roadmap.md"), "utf-8");
+        assert.match(out, /## Milestone 2: Ingestion\n\n- \[x\] complete — .*validator PASS.*pull\/7/);
+        // Milestone 1's original stamp is preserved, not rewritten.
+        assert.match(out, /- \[x\] complete — 2026-08-01, validator PASS/);
+    });
+
+    it("is idempotent — a second passing run does not restamp", () => {
+        const cwd = setup();
+        assert.equal(maybeTickMilestone(cwd, pass), 2);
+        const after = readFileSync(join(cwd, "roadmap.md"), "utf-8");
+        assert.equal(maybeTickMilestone(cwd, { ...pass, prUrl: "https://github.com/o/r/pull/8" }), null);
+        assert.equal(readFileSync(join(cwd, "roadmap.md"), "utf-8"), after);
+    });
+
+    it("leaves the roadmap alone when a phase is still unfinished", () => {
+        const cwd = setup({ ledger: "- [x] Phase 1: A\n- [ ] Phase 2: B\n" });
+        assert.equal(maybeTickMilestone(cwd, pass), null);
+        assert.match(readFileSync(join(cwd, "roadmap.md"), "utf-8"), /- \[ \] not started/);
+    });
+
+    it("refuses without an independent validator, even on a shipped run", () => {
+        const cwd = setup();
+        assert.equal(maybeTickMilestone(cwd, { ...pass, hadValidator: false }), null);
+    });
+
+    it("refuses when the plan never named a milestone", () => {
+        const cwd = setup();
+        assert.equal(maybeTickMilestone(cwd, { ...pass, plan: "# Plan: x\n" }), null);
+    });
+
+    it("no-ops when there is no roadmap at all", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "milestone-none-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "progress.md"), "- [x] Phase 1: A\n");
+        assert.equal(maybeTickMilestone(cwd, pass), null);
+    });
+
+    it("honours PI_ROADMAP_AUTOTICK=0", () => {
+        const cwd = setup();
+        process.env.PI_ROADMAP_AUTOTICK = "0";
+        assert.equal(maybeTickMilestone(cwd, pass), null);
+        assert.match(readFileSync(join(cwd, "roadmap.md"), "utf-8"), /- \[ \] not started/);
     });
 });

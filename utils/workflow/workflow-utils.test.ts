@@ -11,6 +11,9 @@ import {
     isTransientError,
     isTrivialPing,
     gitPreflightNote,
+    parsePlanMilestone,
+    markMilestoneDone,
+    milestoneEarned,
 } from "./workflow-utils";
 
 // Run with: npx tsx --test workflow-utils.test.ts
@@ -540,4 +543,112 @@ describe("gitPreflightNote", () => {
         assert.doesNotMatch(note, /open a PR/);
         assert.doesNotMatch(note, /per-phase commits/);
     });
+});
+
+// ── roadmap milestone auto-tick ──────────────────────────────────────────────
+
+const ROADMAP = [
+    "# Roadmap: Thing",
+    "",
+    "## Milestone 1: Scaffold",
+    "",
+    "- [x] complete — 2026-08-01, validator PASS",
+    "- **Done when:** it builds",
+    "",
+    "## Milestone 2: Ingestion",
+    "",
+    "- [ ] not started",
+    "- **Done when:** fixtures replay",
+    "",
+    "## Milestone 3: Sandbox",
+    "",
+    "- [ ] not started",
+].join("\n");
+
+describe("parsePlanMilestone", () => {
+    it("reads the header the planner is told to write", () => {
+        assert.equal(parsePlanMilestone("# Plan: x\n\nMilestone: 2 of 9\n"), 2);
+    });
+
+    it("tolerates bold and list decoration", () => {
+        assert.equal(parsePlanMilestone("- **Milestone:** 4 of 9"), 4);
+        assert.equal(parsePlanMilestone("**Milestone**: #7"), 7);
+    });
+
+    it("returns null when the plan claims no milestone", () => {
+        assert.equal(parsePlanMilestone("# Plan: x\n\nType: feature\n"), null);
+        assert.equal(parsePlanMilestone(""), null);
+    });
+
+    it("ignores a milestone named far down in a Deferred section", () => {
+        const plan =
+            "# Plan: x\n" +
+            "\n".repeat(50) +
+            "## Deferred\nMilestone: 5 of 9 — not covered here\n";
+        assert.equal(parsePlanMilestone(plan), null);
+    });
+});
+
+describe("markMilestoneDone", () => {
+    it("flips only the named milestone, and stamps the evidence", () => {
+        const { text, changed } = markMilestoneDone(ROADMAP, 2, "2026-08-11, validator PASS");
+        assert.equal(changed, true);
+        assert.match(text, /- \[x\] complete — 2026-08-11, validator PASS/);
+        // Milestone 3 untouched
+        assert.match(text.split("## Milestone 3")[1], /- \[ \] not started/);
+    });
+
+    it("never restamps an already-complete milestone", () => {
+        const { text, changed } = markMilestoneDone(ROADMAP, 1, "2026-08-11, validator PASS");
+        assert.equal(changed, false);
+        assert.equal(text, ROADMAP);
+        assert.match(text, /- \[x\] complete — 2026-08-01/);
+    });
+
+    it("does not leak into the next milestone when one has no checkbox", () => {
+        const rm = [
+            "## Milestone 1: No box",
+            "- **Done when:** something",
+            "",
+            "## Milestone 2: Has box",
+            "- [ ] not started",
+        ].join("\n");
+        const { text, changed } = markMilestoneDone(rm, 1, "ev");
+        assert.equal(changed, false);
+        assert.match(text, /## Milestone 2: Has box\n- \[ \] not started/);
+    });
+
+    it("is a no-op for a milestone number that is not there", () => {
+        assert.equal(markMilestoneDone(ROADMAP, 9, "ev").changed, false);
+    });
+});
+
+describe("milestoneEarned", () => {
+    const base = { status: "shipped", hadValidator: true, phasesTotal: 4, phasesDone: 4 };
+
+    it("earns on a shipped run with a validator and every phase done", () => {
+        assert.equal(milestoneEarned(base), true);
+    });
+
+    it("earns when validation passed but there was no remote to open a PR on", () => {
+        assert.equal(milestoneEarned({ ...base, status: "paused-no-remote" }), true);
+    });
+
+    it("refuses a roster with no independent validator", () => {
+        assert.equal(milestoneEarned({ ...base, hadValidator: false }), false);
+    });
+
+    it("refuses when phases are still unfinished", () => {
+        assert.equal(milestoneEarned({ ...base, phasesDone: 3 }), false);
+    });
+
+    it("refuses an empty ledger — nothing was tracked, so nothing is proven", () => {
+        assert.equal(milestoneEarned({ ...base, phasesTotal: 0, phasesDone: 0 }), false);
+    });
+
+    for (const status of ["needs-review", "failed-after-retries", "done", "error"]) {
+        it(`refuses status ${JSON.stringify(status)}`, () => {
+            assert.equal(milestoneEarned({ ...base, status }), false);
+        });
+    }
 });

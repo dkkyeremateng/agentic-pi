@@ -204,9 +204,25 @@ the rest under Deferred:
 # then tick `- [x] Milestone 1` in roadmap.md yourself, and run `spec` again for milestone 2
 ```
 
-Ticking a milestone off is deliberately manual. A validator gate passing on one run
-is a narrower claim than a milestone being done, so no agent writes to `roadmap.md`
-except the roadmapper — which preserves every existing `[x]` when it re-runs.
+The orchestrator ticks a milestone off when the run that built it earns it, and
+stamps the evidence:
+
+```
+## Milestone 2: Ingestion
+- [x] complete — 2026-08-11, validator PASS, https://github.com/o/r/pull/7
+```
+
+The gate is conjunctive, because "shipped" alone is too weak a claim: the roster
+must have included a **validator** (an independent re-run, not the implementer's own
+GREEN), **every phase** in `.agent/progress.md` must be done, and the plan must have
+named which milestone it was building (`Milestone: 2 of 9`). A `soft-plan-build` run
+never ticks anything — it has no validator. Already-complete milestones are never
+restamped, so a re-run cannot rewrite history, and you can still tick one by hand.
+Set `PI_ROADMAP_AUTOTICK=0` to keep it fully manual.
+
+No agent writes to `roadmap.md` — only the roadmapper, which preserves every
+existing `[x]` when it re-runs, and the orchestrator, which is deterministic code
+holding the validator verdict rather than a model reporting on its own work.
 
 ### Resuming a build
 
@@ -297,6 +313,7 @@ ones:
 | `PI_AGENT_TRANSIENT_RETRIES` | Same-model retries on transient errors (interrupted stream, dropped connection, 429/502/503/504/529). |
 | `PI_WORKFLOW_AGENT_TIMEOUT` | Per-agent watchdog (minutes; 0 = off). |
 | `PI_CONFINE_CWD` | Confine sub-agents' file tools to the working directory. |
+| `PI_ROADMAP_AUTOTICK` | `0` stops the orchestrator ticking milestones off `roadmap.md` on a validated run. |
 | `PI_WORKFLOW_ARCHIVE_PLANS` | Archive each run's final plan to `docs/plans/`. |
 | `PI_WORKFLOW_APPROVE_PROJECT` | Force project-trust `--approve` on/off for spawned agents (see below). |
 | `PI_NOTIFY` | Desktop/terminal notifications when a run finishes. |

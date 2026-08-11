@@ -51,6 +51,9 @@ import {
     secs,
     isModelFailure,
     gitPreflightNote,
+    parsePlanMilestone,
+    markMilestoneDone,
+    milestoneEarned,
 } from "./workflow-utils";
 import { obsEmit } from "../../obs/obs-events";
 import {
@@ -1147,6 +1150,24 @@ async function runWorkflowCoreImpl(
     const prUrl =
         (ship.output.match(/https?:\/\/\S*\/pull\/\d+/) || [])[0] || "";
 
+    // Tick this run's milestone off the roadmap, but only on a claim strong enough
+    // to carry it: an independent validator PASS, every phase in the ledger done,
+    // and a plan that named which milestone it was building. The tick is stamped
+    // with the evidence, so a roadmap that drifts from what shipped stays auditable
+    // rather than silently wrong. PI_ROADMAP_AUTOTICK=0 keeps it manual.
+    const tickedMilestone = maybeTickMilestone(cwd, {
+        status,
+        hadValidator: !!valP,
+        plan: plan.output,
+        verdict,
+        prUrl,
+    });
+    if (tickedMilestone)
+        h.ui.notify(
+            `Milestone ${tickedMilestone} marked complete in ${ROADMAP_FILE}.`,
+            "info",
+        );
+
     const report = buildWorkflowReport({
         request,
         status,
@@ -1644,6 +1665,56 @@ export function reconcileLedgerBranch(cwd: string, branch: string): number {
 // only matches headings that begin that way, and initProgressLedger seeds the ledger
 // from them verbatim. It also fails safe — a hand-edited ledger undercounts, which
 // makes the audit quieter, never noisier.
+// Tick this run's milestone off `roadmap.md`, returning the milestone number when
+// one was flipped and null otherwise. Best-effort by design: a roadmap that cannot
+// be read or written must never fail an otherwise successful run — the milestone
+// stays unchecked and the human ticks it, which is the pre-existing behaviour.
+export function maybeTickMilestone(
+    cwd: string,
+    opts: {
+        status: string;
+        hadValidator: boolean;
+        plan: string;
+        verdict: Verdict;
+        prUrl?: string;
+    },
+): number | null {
+    if (process.env.PI_ROADMAP_AUTOTICK === "0") return null;
+    const file = join(cwd, ROADMAP_FILE);
+    if (!existsSync(file)) return null;
+
+    const phases = readPhaseStatus(cwd);
+    if (
+        !milestoneEarned({
+            status: opts.status,
+            hadValidator: opts.hadValidator,
+            phasesTotal: phases.length,
+            phasesDone: countDonePhases(cwd),
+        })
+    )
+        return null;
+
+    const n = parsePlanMilestone(opts.plan);
+    if (n === null) return null;
+
+    try {
+        const evidence = [
+            localDateStamp(new Date()),
+            `validator ${opts.verdict.toUpperCase()}`,
+            opts.status === "paused-no-remote" ? "no remote" : opts.prUrl,
+        ]
+            .filter(Boolean)
+            .join(", ");
+        const cur = readFileSync(file, "utf-8");
+        const { text, changed } = markMilestoneDone(cur, n, evidence);
+        if (!changed) return null;
+        writeFileSync(file, text, "utf-8");
+        return n;
+    } catch {
+        return null;
+    }
+}
+
 export function countDonePhases(cwd: string): number {
     return readPhaseStatus(cwd).filter((l) =>
         /^\s*-\s*\[[xX]\]\s*Phase\s+\d+/i.test(l),

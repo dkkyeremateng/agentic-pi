@@ -319,6 +319,82 @@ export function isTransientError(output: string): boolean {
     return false;
 }
 
+// ── Roadmap milestones ───────────────────────────────────────────────────────
+//
+// The milestone the plan claimed, from the header the planner writes
+// ("Milestone: 2 of 9"). Deliberately reads the PLAN rather than picking the
+// roadmap's first unchecked box: the plan is the record of what this run actually
+// built, and those two can differ — a request can name a specific milestone, and a
+// roadmap can gain a milestone mid-flight.
+//
+// Only the first 40 lines are scanned, so a "Milestone: 3" inside a Deferred
+// section listing the milestones this plan did NOT cover cannot be mistaken for
+// the one it did.
+export function parsePlanMilestone(plan: string): number | null {
+    for (const line of (plan || "").split(/\r?\n/).slice(0, 40)) {
+        const m = /^\s*(?:[-*]\s*)?(?:\*\*)?milestone(?:\*\*)?\s*[:—-]\s*(?:\*\*)?\s*#?(\d+)\b/i.exec(
+            line,
+        );
+        if (m) return parseInt(m[1], 10);
+    }
+    return null;
+}
+
+/**
+ * Flip milestone `n`'s checkbox to done in a roadmap, stamping the evidence that
+ * justified it.
+ *
+ * The evidence is the point. Auto-ticking an unattributed box would let the
+ * roadmap drift from what actually shipped, with no way to audit it later; a tick
+ * that says which run and which verdict closed it stays checkable. Never unticks,
+ * never renumbers, never touches another milestone, and leaves an already-checked
+ * box alone (so a re-run cannot restamp history).
+ */
+export function markMilestoneDone(
+    roadmap: string,
+    n: number,
+    evidence: string,
+): { text: string; changed: boolean } {
+    const lines = (roadmap || "").split(/\r?\n/);
+    const heading = new RegExp(`^#{1,6}\\s*milestone\\s+${n}\\b`, "i");
+    let inTarget = false;
+
+    for (let i = 0; i < lines.length; i++) {
+        if (/^#{1,6}\s*milestone\s+\d+\b/i.test(lines[i])) {
+            // Entering a new milestone section ends the previous one, so a
+            // milestone with no checkbox can never leak the flip into the next.
+            inTarget = heading.test(lines[i]);
+            continue;
+        }
+        if (!inTarget) continue;
+        const box = /^(\s*-\s*)\[([ xX])\](\s*)(.*)$/.exec(lines[i]);
+        if (!box) continue;
+        if (box[2] !== " ") return { text: roadmap, changed: false }; // already done
+        lines[i] = `${box[1]}[x]${box[3]}complete — ${evidence}`;
+        return { text: lines.join("\n"), changed: true };
+    }
+    return { text: roadmap, changed: false };
+}
+
+/**
+ * Whether a finished run is a strong enough claim to tick a milestone off.
+ *
+ * Conjunctive on purpose. "Shipped" alone is not enough: a roster with no
+ * validator never independently checked the work, and a plan whose phases are not
+ * all done did not deliver the milestone even if what it did deliver passed.
+ */
+export function milestoneEarned(opts: {
+    status: string;
+    hadValidator: boolean;
+    phasesTotal: number;
+    phasesDone: number;
+}): boolean {
+    const { status, hadValidator, phasesTotal, phasesDone } = opts;
+    if (!hadValidator) return false;
+    if (status !== "shipped" && status !== "paused-no-remote") return false;
+    return phasesTotal > 0 && phasesDone >= phasesTotal;
+}
+
 /**
  * Warning shown once at run start when the working directory is not a git repo.
  *

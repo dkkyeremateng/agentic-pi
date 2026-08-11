@@ -81,7 +81,9 @@ principle behind the ordering you chose.>
    milestone it blocks.>
 ```
 
-A milestone is `- [x] complete` only when a human ticks it. Never tick one yourself, and never tick one because a run passed — a green validator on one run is not the same claim as a milestone being done.
+**Never tick a milestone yourself.** Write every new milestone as `- [ ] not started` and leave it. The orchestrator flips the box to `- [x] complete — <date>, validator PASS, <PR url>` when a run for that milestone passes an independent validator with every phase done, and a human may tick one by hand. Either way the record is of something that happened; you are describing work that has not started yet.
+
+Keep the checkbox as the **first** `- [ ]` line under its `## Milestone N:` heading — that is the line the orchestrator flips.
 
 ## Final Message
 

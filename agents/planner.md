@@ -61,8 +61,11 @@ recorded in `roadmap.md` at the working-directory root. When that file is presen
 read it before anything else and scope yourself to **one** milestone — the first
 still marked `- [ ]`, unless the request names another.
 
-- Plan that milestone only: its phases, its files, its acceptance gate. State
-  which one you took at the top of the plan (e.g. `Milestone: 2 of 9`).
+- Plan that milestone only: its phases, its files, its acceptance gate. **State
+  which one you took on its own line near the top of the plan, in exactly this
+  form: `Milestone: 2 of 9`.** That line is machine-read — it is how the
+  orchestrator knows which milestone to tick off if the run passes validation — so
+  give the number plainly and never write it as a range or a title alone.
 - Every other milestone goes under `## Deferred / Out of scope`, named but not
   planned. Do not let a phase reach forward into a later milestone's scope.
 - The milestone's **Done when** is your acceptance contract — your Acceptance
