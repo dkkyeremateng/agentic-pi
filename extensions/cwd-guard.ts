@@ -14,6 +14,15 @@
 // can't be reliably parsed. True bash confinement needs OS-level sandboxing, which
 // pi does not provide. The agent prompts also instruct staying within the cwd as a
 // backstop for bash.
+//
+// That limitation has a PERVERSE EFFECT worth knowing: confining the write tools
+// while leaving bash open FUNNELS out-of-cwd work into bash. Observed live — an
+// implementer spiking in /tmp could not use `write` there, so it built the whole
+// spike with `cat >`/`sed -i`, producing no write events, no path checks, and
+// nothing the run could see. Turning confinement on made that work less visible,
+// not more. The mitigation is prompt-side and deliberate: the implementer prompts
+// point spikes at `.agent/scratch/` INSIDE the cwd, so the legal path is also the
+// convenient one (see workflow-core.implementTask).
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";

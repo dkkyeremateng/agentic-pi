@@ -9,6 +9,7 @@ plan-build:
 
 soft-plan-build:
     - scout
+    - roadmapper
     - planner
     - refiner
     - implementer

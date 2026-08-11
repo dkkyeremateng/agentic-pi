@@ -67,6 +67,71 @@ export function gitArgsReadOnly(rest: string[]): boolean {
     return true; // not a mutating subcommand
 }
 
+// Shell constructs that write a file directly, bypassing the `write`/`edit` tools
+// and therefore every guard watching them. Observed live: a `read-only-bash`
+// roadmapper reached for `sed -i` to fix a typo in its own deliverable. Harmless in
+// that instance — it may write that file — but the same move lets any read-only
+// agent rewrite anything in the tree, which is precisely what the guard exists to
+// prevent.
+//
+// Deliberately narrow. Only constructs with no legitimate read-only use are listed:
+// `mkdir`/`touch`/`cp` are NOT here, because a validator's test setup may run them
+// and a false block would break a real run — a worse trade than the leak it closes.
+export function blockedFileWrites(cmd: string): string[] {
+    if (typeof cmd !== "string" || !cmd.trim()) return [];
+    const bad: string[] = [];
+    for (const seg of segments(cmd)) {
+        const toks = commandTokens(seg);
+        const head = toks[0] || "";
+        const base = head.includes("/")
+            ? head.slice(head.lastIndexOf("/") + 1)
+            : head;
+        const rest = toks.slice(1);
+
+        // In-place stream editing: `sed -i`, `sed -i ''`, `sed -i.bak`, `perl -i`.
+        if (INPLACE_TOOLS.has(base) && rest.some((t) => /^-[a-zA-Z]*i/.test(t))) {
+            bad.push(`${base} -i (in-place file edit)`);
+        } else if (base === "tee") {
+            // `| tee file` writes; `| tee /dev/null` is a no-op sink.
+            const targets = rest.filter((t) => !t.startsWith("-"));
+            if (targets.some((t) => !isNullSink(t)))
+                bad.push(`tee ${targets.join(" ")}`);
+        } else if (ALWAYS_WRITES.has(base)) {
+            bad.push(toks.join(" "));
+        } else if (base === "dd" && rest.some((t) => t.startsWith("of="))) {
+            bad.push(toks.join(" "));
+        }
+
+        const redir = redirectTarget(seg);
+        if (redir) bad.push(`> ${redir} (shell redirection to a file)`);
+    }
+    return bad;
+}
+
+// Stream editors/interpreters whose `-i` flag rewrites the input file in place.
+const INPLACE_TOOLS = new Set(["sed", "perl", "ruby", "gawk"]);
+
+// Commands whose entire purpose is to modify file contents.
+const ALWAYS_WRITES = new Set(["truncate", "shred", "patch"]);
+
+function isNullSink(t: string): boolean {
+    return t === "/dev/null";
+}
+
+// The first `>`/`>>` redirection whose target is a real file. Skips fd duplication
+// (`2>&1`, `>&2` — `&` is excluded from the target class so they never match) and
+// the standard null/std sinks, which read-only agents use constantly.
+function redirectTarget(seg: string): string | null {
+    const re = /(?:^|\s)\d?>>?\s*([^\s|&;<>]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(seg))) {
+        const target = m[1];
+        if (/^\/dev\/(null|stdout|stderr|fd\/\d+|tty)$/.test(target)) continue;
+        return target;
+    }
+    return null;
+}
+
 // gh: read-only verbs per command (anything else → deny).
 const GH_READONLY_VERBS: Record<string, Set<string>> = {
     pr: new Set(["view", "diff", "checks", "list", "status"]),

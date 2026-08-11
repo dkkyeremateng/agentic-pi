@@ -309,6 +309,17 @@ export default function (pi: ExtensionAPI) {
                     return true;
                 }
             },
+            // `rev-parse HEAD` throws on a repo with no commits — which IS the case
+            // this exists to catch, so the throw must read as "no commits" rather
+            // than being swallowed. A broken git therefore also reports false, but
+            // the cost is one extra warning, never a blocked run.
+            hasCommits: (cwd) => {
+                try {
+                    return !!git(cwd)(["rev-parse", "HEAD"]).trim();
+                } catch {
+                    return false;
+                }
+            },
             ensureWorkBranch: (cwd, request) => {
                 try {
                     const wb = ensureWorkBranch(git(cwd), request);

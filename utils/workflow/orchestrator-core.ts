@@ -149,11 +149,16 @@ export function newOrchestratorState(): OrchestratorState {
 // Execution callbacks: run phases or individual agents
 export interface ExecutionCallbacks {
     // Run one phase (wraps the extension's model strategy + subprocess spawn).
+    // `raw` is the UNCLAMPED output. Gates (detectCritique/detectVerdict/detectShip)
+    // must read it, never `output` — clamping drops the middle of a long agent
+    // message and has been observed cutting a reviewer's REVISE marker, turning a
+    // blocking review into `unknown` and letting the change ship. Optional so a host
+    // that predates this still type-checks; the gates fall back to `output`.
     runPhase: (
         phase: PhaseState,
         task: string,
         cwd: string,
-    ) => Promise<{ output: string; ok: boolean }>;
+    ) => Promise<{ output: string; raw?: string; ok: boolean }>;
     // Run a single agent directly (dispatch_agent path).
     runAgent: (
         def: AgentDef,
@@ -187,6 +192,10 @@ export interface SetupCallbacks {
     // effects so the core stays pure; absent (older hosts) means "assume a repo"
     // and skip the preflight warning rather than warn on a false negative.
     isGitRepo?: (cwd: string) => boolean;
+    // True when the repo has at least one commit (`rev-parse HEAD` resolves).
+    // Separate from isGitRepo because an initialised repo with no commits passes
+    // the work-tree check while silently disabling checkpoints and work branches.
+    hasCommits?: (cwd: string) => boolean;
 }
 
 // Configuration flags
@@ -317,6 +326,13 @@ const FAIL_AGENT: Record<string, string> = {
 // metrics line — so failed runs are visible in workflow-report.md and the
 // .agent/metrics.jsonl trends, not just the conversation — and repaint. The abort
 // path stays out on purpose: it must not clobber the previous report with a stub.
+// The text a GATE should parse: the unclamped output when the host supplies it,
+// falling back to the clamped copy. Never inline `res.output` in a verdict call —
+// that is the bug this exists to prevent.
+function gateText(res: { output: string; raw?: string }): string {
+    return res.raw ?? res.output;
+}
+
 function finalizeError(
     s: OrchestratorState,
     h: OrchestratorHost,
@@ -601,7 +617,11 @@ async function runWorkflowCoreImpl(
     // proceeds and the first symptom is an agent's own `git status` dying with
     // "fatal: not a git repository" partway through.
     if (h.setup.isGitRepo) {
-        const note = gitPreflightNote(h.setup.isGitRepo(cwd), hasImplementer);
+        const note = gitPreflightNote(
+            h.setup.isGitRepo(cwd),
+            hasImplementer,
+            h.setup.hasCommits ? h.setup.hasCommits(cwd) : true,
+        );
         if (note) h.ui.notify(note, "warning");
     }
     if (hasImplementer && !hasPlanner && !hasExistingPlan) {
@@ -957,7 +977,7 @@ async function runWorkflowCoreImpl(
             );
             if (!review.ok) return fail(s, h, cwd, request, "Review", review.output);
 
-            reviewVerdict = detectCritique(review.output);
+            reviewVerdict = detectCritique(gateText(review));
             if (reviewVerdict !== "revise") break;
 
             if (loop === maxLoops || !implP) break;
@@ -1021,7 +1041,7 @@ async function runWorkflowCoreImpl(
             );
             if (!val.ok) return fail(s, h, cwd, request, "Validation", val.output);
 
-            verdict = detectVerdict(val.output);
+            verdict = detectVerdict(gateText(val));
 
             // The validator is required to open with `VERDICT: PASS` or
             // `VERDICT: FAIL` (agents/validator.md). When it ends without one,
@@ -1052,7 +1072,7 @@ async function runWorkflowCoreImpl(
                 );
                 if (!val.ok)
                     return fail(s, h, cwd, request, "Validation", val.output);
-                verdict = detectVerdict(val.output);
+                verdict = detectVerdict(gateText(val));
             }
 
             if (verdict !== "fail") break;
@@ -1143,7 +1163,7 @@ async function runWorkflowCoreImpl(
         status = "needs-review";
     } else if (shipP) {
         status =
-            detectShip(ship.output) === "paused"
+            detectShip(gateText(ship)) === "paused"
                 ? "paused-no-remote"
                 : "shipped";
     } else {

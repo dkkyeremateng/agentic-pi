@@ -2686,9 +2686,23 @@ export function reviewFixTask(
     ].join("\n");
 }
 
+// The delegation contract is restated here, not left to agents/implementer.md
+// alone. Observed live: an implementer ran 75 turns without once mentioning
+// dispatch — not refusing it, never considering it, because the rule was competing
+// with everything else in a long system prompt. Every other phase gets its key
+// constraint repeated in the task; this one was the exception.
+//
+// The scratch line exists because cwd-guard confines `write`/`edit` to the cwd but
+// deliberately cannot confine `bash`. An agent that decides to spike outside the
+// cwd is therefore FUNNELLED into `cat >`/`sed -i`, the one channel with no guard
+// and no write events — so the run cannot see what it built. Giving it a legal
+// place to work inside the tree is cheaper than trying to parse shell.
 export function implementTask(original: string): string {
     return [
         "Implement the approved plan in `.agent/plan.md` — read it for the phases, file list, and acceptance criteria.",
+        "DELEGATE EVERY PHASE. On a plan with 2+ phases each phase goes to a `phase-implementer` in a fresh context — `dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for a single one — with no exception for a phase that looks small. You are the COORDINATOR: you own the ledger, the per-phase re-verification, the checkpoint commits, and the final full-suite gate; the workers write the code. This is audited after your phase: a 2+-phase plan with zero dispatches is re-run once with the violation named.",
+        "COMMIT EVERY PHASE before starting the next. If the repo has no commits yet, make the baseline commit FIRST — without a base sha there is no work branch, no rollback point, and a run that dies mid-way leaves every file untracked with a ledger claiming the phases are done. One `wip(phase N)` commit per wave, yours to make, never the worker's.",
+        "Spike INSIDE the working directory — use `.agent/scratch/` for throwaway experiments, never `/tmp`. Work outside the cwd is invisible to the run, unguarded, uncommitted, and discarded; and because the file tools are confined to the cwd, building there forces you into shell writes that nothing can check.",
         "",
         "Original request:",
         original,
@@ -3004,16 +3018,14 @@ export async function runPhaseCore(
         ) => void;
         phaseLogs: { label: string; log: string }[];
     },
-): Promise<{ output: string; ok: boolean }> {
+): Promise<{ output: string; raw: string; ok: boolean }> {
     const def = agents.get(phase.agent);
     if (!def) {
         phase.status = "error";
         phase.note = `Agent "${phase.agent}" not found`;
         opts.updateWidget();
-        return {
-            output: `Agent "${phase.agent}" not found in .pi/agents/`,
-            ok: false,
-        };
+        const miss = `Agent "${phase.agent}" not found in .pi/agents/`;
+        return { output: miss, raw: miss, ok: false };
     }
 
     phase.attempt++;
@@ -3059,7 +3071,19 @@ export async function runPhaseCore(
     // Bound the output before it flows into the next phase's task / the context
     // bundle / the report — a safety ceiling so a verbose agent can't overload the
     // next. The plan is unaffected: the orchestrator re-reads it from .agent/plan.md.
-    return { output: clampOutput(res.output), ok: statusWord === "done" };
+    //
+    // `raw` carries the UNCLAMPED text alongside it, because a GATE must never read
+    // a truncated verdict. Observed live: a reviewer emitted 48k chars ending in a
+    // blocking review; clampOutput keeps head 70% + tail 30%, the tail boundary fell
+    // inside the final message and cut the marker, detectCritique read `unknown`
+    // instead of `revise`, and a change with an unmet acceptance criterion shipped.
+    // Clamping is for display and for what the NEXT agent reads — never for a
+    // decision.
+    return {
+        output: clampOutput(res.output),
+        raw: res.output,
+        ok: statusWord === "done",
+    };
 }
 
 // ── Token tracking ───────────────────────────────

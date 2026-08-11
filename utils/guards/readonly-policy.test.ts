@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     blockedCommands,
+    blockedFileWrites,
     ghArgsReadOnly,
     gitArgsReadOnly,
 } from "./readonly-policy";
@@ -194,4 +195,43 @@ describe("blockedCommands", () => {
         // a plain GET stays allowed
         assert.deepEqual(blockedCommands("gh api /repos/o/r/pulls/5"), []);
     });
+});
+
+// ── shell file writes (the `sed -i` hole) ────────────────────────────────────
+
+describe("blockedFileWrites", () => {
+    for (const cmd of [
+        "sed -i '' 's/a/b/' roadmap.md",
+        "sed -i.bak s/a/b/ file.md",
+        "perl -i -pe 's/a/b/' file.md",
+        "echo hi > notes.md",
+        "cat foo >> bar.md",
+        "grep x plan.md | tee out.txt",
+        "truncate -s 0 log.txt",
+        "patch -p1 < fix.diff",
+        "dd if=/dev/zero of=blob.bin",
+        "cd /tmp && sed -i '' 's/x/y/' a.md",
+    ]) {
+        it(`blocks ${JSON.stringify(cmd)}`, () => {
+            assert.ok(blockedFileWrites(cmd).length > 0, cmd);
+        });
+    }
+
+    for (const cmd of [
+        "grep -n 'Milestone' roadmap.md",
+        "wc -w roadmap.md",
+        "command -v encore && encore version 2>/dev/null || echo missing",
+        "git log --oneline -10 2>/dev/null",
+        "go test ./... 2>&1",
+        "ls -la >/dev/null 2>&1",
+        "sed 's/a/b/' file.md",
+        "cat plan.md | tee /dev/null",
+        "npm test -- --reporter=dot",
+        "nl -ba plan.md | grep -E '^ *[0-9]+ #'",
+        "",
+    ]) {
+        it(`allows ${JSON.stringify(cmd)}`, () => {
+            assert.deepEqual(blockedFileWrites(cmd), [], cmd);
+        });
+    }
 });

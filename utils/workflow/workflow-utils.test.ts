@@ -697,3 +697,27 @@ describe("nextMilestone", () => {
         assert.equal(nextMilestone(rm)?.number, 3);
     });
 });
+
+describe("gitPreflightNote — repo with no commits", () => {
+    it("warns on an initialised repo that has no commits", () => {
+        const note = gitPreflightNote(true, true, false);
+        assert.match(note, /no commits/i);
+        assert.match(note, /no base commit to branch from/);
+        assert.match(note, /--allow-empty/);
+    });
+
+    it("says less for a plan-only roster", () => {
+        const note = gitPreflightNote(true, false, false);
+        assert.match(note, /no commits/i);
+        assert.doesNotMatch(note, /work branch/);
+    });
+
+    it("stays silent for a healthy repo", () => {
+        assert.equal(gitPreflightNote(true, true, true), "");
+        assert.equal(gitPreflightNote(true, true), "");
+    });
+
+    it("the no-repo warning still wins over the no-commits one", () => {
+        assert.match(gitPreflightNote(false, true, false), /Not a git repository/);
+    });
+});

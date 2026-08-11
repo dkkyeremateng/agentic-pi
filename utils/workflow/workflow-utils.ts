@@ -455,12 +455,30 @@ export function milestoneEarned(opts: {
  *
  * Returns "" when there is nothing to warn about.
  */
-export function gitPreflightNote(isGitRepo: boolean, willBuild: boolean): string {
-    if (isGitRepo) return "";
-    const lost = willBuild
-        ? "/revert has no checkpoint to restore, no per-phase commits are made, and the shipper cannot branch or open a PR"
-        : "/revert has no checkpoint to restore";
-    return `Not a git repository — ${lost}. Run \`git init\` here (or start the workflow inside the target repo) if you want those.`;
+export function gitPreflightNote(
+    isGitRepo: boolean,
+    willBuild: boolean,
+    hasCommits = true,
+): string {
+    if (!isGitRepo) {
+        const lost = willBuild
+            ? "/revert has no checkpoint to restore, no per-phase commits are made, and the shipper cannot branch or open a PR"
+            : "/revert has no checkpoint to restore";
+        return `Not a git repository — ${lost}. Run \`git init\` here (or start the workflow inside the target repo) if you want those.`;
+    }
+    // A repo with NO commits is the more dangerous state, and the one that used to
+    // pass silently: `rev-parse --is-inside-work-tree` succeeds, so everything looks
+    // healthy, while `rev-parse HEAD` fails and takes the safety net with it.
+    // createCheckpoint stores an empty head, ensureWorkBranch returns null, and a
+    // whole run can complete with every file untracked and no rollback point.
+    // Observed live: five phases and 189 minutes with zero commits.
+    if (!hasCommits) {
+        const lost = willBuild
+            ? "there is no base commit to branch from, so no work branch is created, per-phase checkpoints have nothing to build on, and /revert cannot restore anything"
+            : "/revert has no base commit to restore to";
+        return `Git repository has no commits — ${lost}. Make an initial commit (\`git commit --allow-empty -m "init"\`) before a build run.`;
+    }
+    return "";
 }
 
 export function outcomeLine(status: string, passes: number): string {

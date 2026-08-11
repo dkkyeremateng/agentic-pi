@@ -21,13 +21,33 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
-import { blockedCommands } from "../utils/guards/readonly-policy";
+import {
+    blockedCommands,
+    blockedFileWrites,
+} from "../utils/guards/readonly-policy";
 
 export default function (pi: ExtensionAPI) {
     pi.on("tool_call", (event) => {
         if (!isToolCallEventType("bash", event)) return undefined;
         const input = event.input as { command?: string; cmd?: string };
         const cmd = input.command ?? input.cmd ?? "";
+
+        // File writes through the shell are reported separately from mutating
+        // gh/git, because the fix differs: the agent should use its `write` tool
+        // (if it has one) rather than reporting the change to someone else.
+        const writes = blockedFileWrites(cmd);
+        if (writes.length > 0) {
+            return {
+                block: true,
+                reason:
+                    "Blocked: this agent's `bash` is read-only inspection only, and " +
+                    `these write files through the shell: ${writes.join("; ")}. ` +
+                    "Shell writes bypass the guards that watch the write/edit tools. " +
+                    "If you have a `write` tool, use it for your own deliverable; " +
+                    "otherwise report the change instead of making it.",
+            };
+        }
+
         const bad = blockedCommands(cmd);
         if (bad.length === 0) return undefined;
         return {
