@@ -35,6 +35,8 @@ import {
     fixTask,
     validateTask,
     shipTask,
+    roadmapTask,
+    ROADMAP_FILE,
     sessionDirPath,
 } from "./workflow-core";
 import { commitStagedLearnings } from "./memory";
@@ -642,6 +644,7 @@ async function runWorkflowCoreImpl(
 
     const pm = buildPhaseMap(s.phases);
     const scoutP = pm.scout;
+    const roadmapP = pm.roadmapper;
     const planP = pm.planner;
     const refinerP = pm.refiner;
     const reviewerP = pm.reviewer;
@@ -676,6 +679,38 @@ async function runWorkflowCoreImpl(
         runArtifacts.recon = scoutFindings;
     }
 
+    // ── Roadmap (milestone breakdown for work too large for one plan) ──
+    // Writes `roadmap.md` at the cwd ROOT, not .agent/ — it has to outlive the run
+    // so later runs can plan the next milestone against it. Deliberately not fed
+    // through capturePlan/validatePlan: a roadmap has no file-level specificity by
+    // design, so it would fail plan validation and is not a plan.
+    if (roadmapP) {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
+        const roadmapRes = await h.execution.runPhase(
+            roadmapP,
+            shared(roadmapTask(request, scoutFindings), "roadmapper"),
+            cwd,
+        );
+        if (!roadmapRes.ok)
+            return fail(s, h, cwd, request, "Roadmap", roadmapRes.output);
+        if (!existsSync(join(cwd, ROADMAP_FILE))) {
+            return finalizeError(
+                s,
+                h,
+                cwd,
+                request,
+                `The roadmapper did not write ${ROADMAP_FILE}. Its deliverable is that file, not its message — re-run, or check that the roadmapper agent definition is complete.`,
+            );
+        }
+        emitAgentVerdict(roadmapP, "pass", "completed");
+    }
+
+    // A roadmap (from this run's roadmapper, or an earlier run's) scopes the
+    // planner to ONE milestone instead of the whole system. Checked after the
+    // roadmap phase so a freshly written one counts.
+    const hasRoadmap = existsSync(join(cwd, ROADMAP_FILE));
+
     // ── Plan ──
     let plan = { output: "", ok: true };
     if (planP) {
@@ -683,7 +718,7 @@ async function runWorkflowCoreImpl(
         if (aborted) return aborted;
         plan = await h.execution.runPhase(
             planP,
-            planTask(request, scoutFindings),
+            planTask(request, scoutFindings, hasRoadmap),
             cwd,
         );
         if (!plan.ok) return fail(s, h, cwd, request, "Planning", plan.output);
@@ -708,7 +743,7 @@ async function runWorkflowCoreImpl(
         savePlanDraft(cwd);
         const refine = await h.execution.runPhase(
             refinerP,
-            shared(refineTask(request, scoutFindings), "refiner"),
+            shared(refineTask(request, scoutFindings, hasRoadmap), "refiner"),
             cwd,
         );
         if (!refine.ok) return fail(s, h, cwd, request, "Refining", refine.output);

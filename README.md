@@ -13,8 +13,9 @@ only `.env` config — no code edits.
 ## Highlights
 
 - **Team presets** — `plan-build` (full, validated), `soft-plan-build` (no
-  validator), `spec` (plan only), and `build`, which **resumes** an existing plan
-  from the first unfinished phase.
+  validator), `spec` (plan only), `roadmap` (milestones for work too large for one
+  plan), and `build`, which **resumes** an existing plan from the first unfinished
+  phase.
 - **Verifiable, recoverable runs** — per-phase checkpoints with a progress ledger,
   transient-error retries, context-bounded prompts, and a live dashboard + a
   written run report.
@@ -151,6 +152,7 @@ Requires `tmux` on `PATH`.
 | Command | What it does |
 |---------|--------------|
 | `/agent-workflow <request>` | Run the full lifecycle on a request (prompts for a team). |
+| `/agent-workflow roadmap <request>` | Milestones only — runs the `roadmap` team (scout → roadmapper), writing `roadmap.md`. |
 | `/agent-workflow spec <request>` | Plan only — runs the `spec` team (scout → planner → refiner). |
 | `/agent-workflow-clear` | Clear the progress widget. |
 | `/agent-model` | List per-agent models; `/agent-model <agent> <model>` to set, `/agent-model <agent> reset` (or `/agent-model reset`) to clear — for this session only. |
@@ -173,8 +175,38 @@ Defined in [`agents/teams.yaml`](agents/teams.yaml) — the roster is the pipeli
 |------|--------|-----|
 | `plan-build` | scout → planner → refiner → implementer → reviewer → **validator** → shipper | Full, independently validated. |
 | `soft-plan-build` | scout → planner → refiner → implementer → reviewer → shipper | Skips the validator's full re-run — faster/cheaper. |
+| `roadmap` | scout → roadmapper | Cut work too large for one plan into milestones (`roadmap.md`). |
 | `spec` | scout → planner → refiner | Produce a reviewable plan only (no code). |
 | `build` | implementer → reviewer → validator → shipper | **Resume** / build from an existing `.agent/plan.md`. |
+
+### Work too large for one plan
+
+A big spec does not fit in one implementation plan, and forcing it produces a plan
+whose phases are each a week of work. The `roadmap` team adds a level above the
+plan:
+
+| | Milestone | Phase |
+|---|---|---|
+| Lives in | `roadmap.md` (project root) | `.agent/plan.md` |
+| Lifetime | many runs — survives `resetRunScratch` | one run — wiped on the next |
+| Written by | `roadmapper` | `planner` |
+| Sized for | one plan-and-build run | one dispatched worker |
+| Ticked off by | **you** | the implementer |
+
+Run the roadmap once, then a `spec` run per milestone. When `roadmap.md` exists the
+planner reads it and scopes itself to the **first milestone still `- [ ]`**, listing
+the rest under Deferred:
+
+```
+/agent-workflow roadmap break down the architecture in spec.md   # -> roadmap.md, N milestones
+/agent-workflow spec                                             # -> plans milestone 1
+/agent-workflow continue the implementation                      # -> build team
+# then tick `- [x] Milestone 1` in roadmap.md yourself, and run `spec` again for milestone 2
+```
+
+Ticking a milestone off is deliberately manual. A validator gate passing on one run
+is a narrower claim than a milestone being done, so no agent writes to `roadmap.md`
+except the roadmapper — which preserves every existing `[x]` when it re-runs.
 
 ### Resuming a build
 

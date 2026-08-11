@@ -15,6 +15,13 @@ soft-plan-build:
     - reviewer
     - shipper
 
+# For work too large for one plan: cuts a big spec into milestones and writes
+# roadmap.md at the project root. Run this ONCE, then run `spec` per milestone —
+# the planner reads roadmap.md and scopes itself to the first unchecked one.
+roadmap:
+    - scout
+    - roadmapper
+
 spec:
     - scout
     - planner

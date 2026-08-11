@@ -27,6 +27,10 @@ import {
     transientRetryLimit,
     mkPhase,
     freshPhases,
+    roadmapTask,
+    planTask,
+    refineTask,
+    ROADMAP_FILE,
     dispatchEnv,
     subagentEnv,
     buildWorkflowReport,
@@ -2544,5 +2548,72 @@ describe("context pressure reporting", () => {
         const note = contextPressureNote([mk({ peakContextPct: 93 })]).join("\n");
         assert.match(note, /Quality degrades before this errors/);
         assert.ok(!/cut off mid-turn/.test(note));
+    });
+});
+
+// ── roadmapper: the milestone level above a plan ─────────────────────────────
+
+describe("roadmapper pipeline wiring", () => {
+    it("slots between scout and planner, so a roadmap exists before planning", () => {
+        const phases = freshPhases([
+            "scout",
+            "roadmapper",
+            "planner",
+            "refiner",
+        ]);
+        assert.deepEqual(
+            phases.map((p) => p.agent),
+            ["scout", "roadmapper", "planner", "refiner"],
+        );
+        assert.equal(phases[1].label, "Roadmap");
+    });
+
+    it("the roadmap team resolves to just scout + roadmapper", () => {
+        const pm = buildPhaseMap(freshPhases(["scout", "roadmapper"]));
+        assert.ok(pm.roadmapper);
+        assert.equal(pm.planner, null);
+        assert.equal(pm.implementer, null);
+    });
+
+    it("a roster without a roadmapper leaves the phase null", () => {
+        const pm = buildPhaseMap(freshPhases(["scout", "planner", "refiner"]));
+        assert.equal(pm.roadmapper, null);
+    });
+});
+
+describe("roadmapTask", () => {
+    const task = roadmapTask("break down the factory spec");
+
+    it("points the deliverable at the durable root file, not .agent/", () => {
+        assert.match(task, /roadmap\.md/);
+        assert.match(task, /working-directory ROOT/);
+        assert.match(task, /Do NOT write `\.agent\/plan\.md`/);
+    });
+
+    it("preserves completed milestones on a re-run", () => {
+        assert.match(task, /preserve every completed `- \[x\]` milestone/);
+    });
+
+    it("names the file the orchestrator actually checks for", () => {
+        assert.ok(task.includes(ROADMAP_FILE));
+    });
+});
+
+describe("roadmap-aware planning prompts", () => {
+    it("planTask scopes to one milestone only when a roadmap exists", () => {
+        assert.doesNotMatch(planTask("x", ""), /roadmap\.md/);
+        const scoped = planTask("x", "", true);
+        assert.match(scoped, /first milestone still marked/i);
+        assert.match(scoped, /do NOT tick any milestone off/i);
+    });
+
+    it("refineTask checks the draft covers exactly one milestone", () => {
+        assert.doesNotMatch(refineTask("x", ""), /roadmap\.md/);
+        assert.match(refineTask("x", "", true), /exactly ONE milestone/);
+    });
+
+    it("neither planning agent is told to write the roadmap", () => {
+        assert.match(planTask("x", "", true), /Do NOT write to `roadmap\.md`/i);
+        assert.match(refineTask("x", "", true), /Do not write to `roadmap\.md`/i);
     });
 });

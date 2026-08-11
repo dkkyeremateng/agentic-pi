@@ -6,8 +6,9 @@
 // The spawn loads this into sub-agents that have `bash` but no `write`/`edit` tool
 // — the read-only agents (scout, reviewer, validator) that must query GitHub and
 // inspect the repo but never change state — AND into write-capable agents that opt
-// in with `read-only-bash: true` in frontmatter (planner, refiner: they write only
-// .agent/plan.md, so their bash must stay read-only). It blocks mutating git/gh
+// in with `read-only-bash: true` in frontmatter (planner and refiner write only
+// .agent/plan.md, the roadmapper only roadmap.md, so their bash must stay
+// read-only). It blocks mutating git/gh
 // shell commands, not the write/edit tools, so the plan write still works. Its mere
 // presence IS the policy; agents that legitimately mutate (the implementer, the
 // shipper/PR-opener) don't load it. See workflow-core.subagentExtArgs.
