@@ -2599,21 +2599,24 @@ describe("roadmapTask", () => {
     });
 });
 
+const MS = { number: 2, title: "Ingestion", body: "## Milestone 2: Ingestion\n- [ ] not started\n- **Done when:** fixtures replay" };
 describe("roadmap-aware planning prompts", () => {
     it("planTask scopes to one milestone only when a roadmap exists", () => {
         assert.doesNotMatch(planTask("x", ""), /roadmap\.md/);
-        const scoped = planTask("x", "", true);
-        assert.match(scoped, /first milestone still marked/i);
-        assert.match(scoped, /do NOT tick any milestone off/i);
+        const scoped = planTask("x", "", MS, true);
+        assert.match(scoped, /Plan \*\*Milestone 2: Ingestion\*\*/);
+        assert.match(scoped, /first one still unchecked/i);
+        assert.match(scoped, /fixtures replay/);
+        assert.match(scoped, /do NOT tick anything off/i);
     });
 
     it("refineTask checks the draft covers exactly one milestone", () => {
         assert.doesNotMatch(refineTask("x", ""), /roadmap\.md/);
-        assert.match(refineTask("x", "", true), /exactly ONE milestone/);
+        assert.match(refineTask("x", "", MS, true), /building \*\*Milestone 2: Ingestion\*\*/);
     });
 
     it("neither planning agent is told to write the roadmap", () => {
-        assert.match(planTask("x", "", true), /Do NOT write to `roadmap\.md`/i);
-        assert.match(refineTask("x", "", true), /Do not write to `roadmap\.md`/i);
+        assert.match(planTask("x", "", MS, true), /Do NOT write to `roadmap\.md`/i);
+        assert.match(refineTask("x", "", MS, true), /Do not write to `roadmap\.md`/i);
     });
 });

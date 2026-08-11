@@ -194,8 +194,12 @@ plan:
 | Ticked off by | **you** | the implementer |
 
 Run the roadmap once, then a `spec` run per milestone. When `roadmap.md` exists the
-planner reads it and scopes itself to the **first milestone still `- [ ]`**, listing
-the rest under Deferred:
+orchestrator resolves the **first milestone still `- [ ]`** and names it in the
+planner's task, quoting that milestone's section so its `Scope` and `Done when` are
+in front of the planner verbatim. Which milestone is next is therefore decided by
+code, not by a model scanning the file — and the same resolved number is what gets
+ticked off afterwards, so a planner that forgets the machine-read `Milestone: N`
+line no longer breaks the loop. The rest go under Deferred:
 
 ```
 /agent-workflow roadmap break down the architecture in spec.md   # -> roadmap.md, N milestones

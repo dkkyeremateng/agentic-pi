@@ -57,9 +57,12 @@ document into an executable build.
 ### If a `roadmap.md` exists, plan ONE milestone
 
 Work too large for a single plan is cut into **milestones** by the roadmapper and
-recorded in `roadmap.md` at the working-directory root. When that file is present,
-read it before anything else and scope yourself to **one** milestone — the first
-still marked `- [ ]`, unless the request names another.
+recorded in `roadmap.md` at the working-directory root. When one exists, the
+workflow resolves **which** milestone is next and names it in your task, quoting
+its section — you do not have to scan the roadmap and work it out. Read
+`roadmap.md` anyway for the surrounding order and what the neighbouring milestones
+assume, then plan the one you were given and nothing else. If your task names no
+milestone (you were run directly), take the first still marked `- [ ]`.
 
 - Plan that milestone only: its phases, its files, its acceptance gate. **State
   which one you took on its own line near the top of the plan, in exactly this

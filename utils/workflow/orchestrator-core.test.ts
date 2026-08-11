@@ -19,6 +19,7 @@ import {
     savePlanDraft,
     resetRunScratch,
     maybeTickMilestone,
+    readNextMilestone,
     initProgressLedger,
     markAllPhasesDone,
     planArchiveName,
@@ -5353,6 +5354,28 @@ describe("maybeTickMilestone", () => {
         mkdirSync(join(cwd, ".agent"), { recursive: true });
         writeFileSync(join(cwd, ".agent", "progress.md"), "- [x] Phase 1: A\n");
         assert.equal(maybeTickMilestone(cwd, pass), null);
+    });
+
+    it("ticks the orchestrator's milestone even when the planner omitted the header", () => {
+        const cwd = setup();
+        // The planner forgot `Milestone: 2` — the run should still tick, because
+        // the orchestrator resolved the milestone BEFORE planning.
+        assert.equal(
+            maybeTickMilestone(cwd, { ...pass, plan: "# Plan: x\n", milestone: 2 }),
+            2,
+        );
+        assert.match(readFileSync(join(cwd, "roadmap.md"), "utf-8"), /- \[x\] complete/);
+    });
+
+    it("readNextMilestone resolves the next unchecked milestone from disk", () => {
+        const cwd = setup();
+        const m = readNextMilestone(cwd);
+        assert.equal(m?.number, 2);
+        assert.equal(m?.title, "Ingestion");
+    });
+
+    it("readNextMilestone returns null when there is no roadmap", () => {
+        assert.equal(readNextMilestone(mkdtempSync(join(tmpdir(), "no-rm-"))), null);
     });
 
     it("honours PI_ROADMAP_AUTOTICK=0", () => {

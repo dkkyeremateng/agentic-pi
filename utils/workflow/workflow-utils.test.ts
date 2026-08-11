@@ -12,6 +12,7 @@ import {
     isTrivialPing,
     gitPreflightNote,
     parsePlanMilestone,
+    nextMilestone,
     markMilestoneDone,
     milestoneEarned,
 } from "./workflow-utils";
@@ -651,4 +652,48 @@ describe("milestoneEarned", () => {
             assert.equal(milestoneEarned({ ...base, status }), false);
         });
     }
+});
+
+describe("nextMilestone", () => {
+    it("skips completed milestones and returns the first unchecked one", () => {
+        const m = nextMilestone(ROADMAP);
+        assert.equal(m?.number, 2);
+        assert.equal(m?.title, "Ingestion");
+        assert.match(m!.body, /fixtures replay/);
+        // The body is that milestone's section only.
+        assert.doesNotMatch(m!.body, /Sandbox/);
+        assert.doesNotMatch(m!.body, /Scaffold/);
+    });
+
+    it("returns null when every milestone is complete", () => {
+        const done = ROADMAP.replace(/- \[ \] not started/g, "- [x] complete — x");
+        assert.equal(nextMilestone(done), null);
+    });
+
+    it("treats a milestone with no checkbox as not started", () => {
+        const rm = [
+            "## Milestone 1: Done",
+            "- [x] complete",
+            "",
+            "## Milestone 2: No box at all",
+            "- **Done when:** something",
+        ].join("\n");
+        assert.equal(nextMilestone(rm)?.number, 2);
+    });
+
+    it("returns null for an empty or boxless roadmap", () => {
+        assert.equal(nextMilestone(""), null);
+        assert.equal(nextMilestone("# Roadmap\n\nno milestones here"), null);
+    });
+
+    it("respects the roadmap's own order, not numeric order", () => {
+        const rm = [
+            "## Milestone 3: Third",
+            "- [ ] not started",
+            "",
+            "## Milestone 1: First",
+            "- [ ] not started",
+        ].join("\n");
+        assert.equal(nextMilestone(rm)?.number, 3);
+    });
 });

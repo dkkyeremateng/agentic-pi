@@ -52,6 +52,8 @@ import {
     isModelFailure,
     gitPreflightNote,
     parsePlanMilestone,
+    nextMilestone,
+    type RoadmapMilestone,
     markMilestoneDone,
     milestoneEarned,
 } from "./workflow-utils";
@@ -713,6 +715,10 @@ async function runWorkflowCoreImpl(
     // planner to ONE milestone instead of the whole system. Checked after the
     // roadmap phase so a freshly written one counts.
     const hasRoadmap = existsSync(join(cwd, ROADMAP_FILE));
+    // Resolve WHICH milestone here, deterministically, instead of asking the
+    // planner to scan the roadmap and judge. Null means the file exists but every
+    // milestone is already complete — a real state the prompts handle explicitly.
+    const milestone = hasRoadmap ? readNextMilestone(cwd) : null;
 
     // ── Plan ──
     let plan = { output: "", ok: true };
@@ -721,7 +727,7 @@ async function runWorkflowCoreImpl(
         if (aborted) return aborted;
         plan = await h.execution.runPhase(
             planP,
-            planTask(request, scoutFindings, hasRoadmap),
+            planTask(request, scoutFindings, milestone, hasRoadmap),
             cwd,
         );
         if (!plan.ok) return fail(s, h, cwd, request, "Planning", plan.output);
@@ -746,7 +752,10 @@ async function runWorkflowCoreImpl(
         savePlanDraft(cwd);
         const refine = await h.execution.runPhase(
             refinerP,
-            shared(refineTask(request, scoutFindings, hasRoadmap), "refiner"),
+            shared(
+                refineTask(request, scoutFindings, milestone, hasRoadmap),
+                "refiner",
+            ),
             cwd,
         );
         if (!refine.ok) return fail(s, h, cwd, request, "Refining", refine.output);
@@ -1161,6 +1170,7 @@ async function runWorkflowCoreImpl(
         plan: plan.output,
         verdict,
         prUrl,
+        milestone: milestone?.number ?? null,
     });
     if (tickedMilestone)
         h.ui.notify(
@@ -1665,6 +1675,19 @@ export function reconcileLedgerBranch(cwd: string, branch: string): number {
 // only matches headings that begin that way, and initProgressLedger seeds the ledger
 // from them verbatim. It also fails safe — a hand-edited ledger undercounts, which
 // makes the audit quieter, never noisier.
+
+// The next unplanned milestone from `roadmap.md`, or null when the file is absent,
+// unreadable, or every milestone in it is already complete.
+export function readNextMilestone(cwd: string): RoadmapMilestone | null {
+    try {
+        return nextMilestone(
+            readFileSync(join(cwd, ROADMAP_FILE), "utf-8"),
+        );
+    } catch {
+        return null;
+    }
+}
+
 // Tick this run's milestone off `roadmap.md`, returning the milestone number when
 // one was flipped and null otherwise. Best-effort by design: a roadmap that cannot
 // be read or written must never fail an otherwise successful run — the milestone
@@ -1677,6 +1700,11 @@ export function maybeTickMilestone(
         plan: string;
         verdict: Verdict;
         prUrl?: string;
+        // The milestone the orchestrator resolved BEFORE planning. Authoritative:
+        // it is what the planner was told to build, so it holds even if the planner
+        // forgot the machine-read `Milestone: N` line. Falls back to parsing the
+        // plan, which still covers a request that named a milestone directly.
+        milestone?: number | null;
     },
 ): number | null {
     if (process.env.PI_ROADMAP_AUTOTICK === "0") return null;
@@ -1694,7 +1722,7 @@ export function maybeTickMilestone(
     )
         return null;
 
-    const n = parsePlanMilestone(opts.plan);
+    const n = parsePlanMilestone(opts.plan) ?? opts.milestone ?? null;
     if (n === null) return null;
 
     try {

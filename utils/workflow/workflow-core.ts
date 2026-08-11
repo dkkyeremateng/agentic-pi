@@ -42,6 +42,7 @@ import {
     digest,
     testSignal,
     outcomeLine,
+    type RoadmapMilestone,
 } from "./workflow-utils";
 
 // This module lives in utils/workflow/. The repo layout is
@@ -2527,8 +2528,25 @@ const SOURCE_DOC_LINE_ROADMAP =
 // the first unchecked milestone instead of trying to plan the whole system. Ticking
 // a milestone off is deliberately left to a human — a validator gate passing on one
 // run is a narrower claim than a milestone being done.
-const ROADMAP_SCOPE_LINE =
-    "A `roadmap.md` exists in the working directory. READ IT FIRST. Unless the request names a specific milestone, scope this plan to the FIRST milestone still marked `- [ ]`, and plan ONLY that one: its phases, its files, its acceptance gate. Say at the top of the plan which milestone you took. Every later milestone belongs under `## Deferred / Out of scope`, named but not planned. Do NOT write to `roadmap.md` and do NOT tick any milestone off — that is the human's call.";
+// Scope block naming the exact milestone to plan. The orchestrator resolves which
+// one that is (workflow-utils.nextMilestone) rather than asking the planner to scan
+// the roadmap and judge — a wrong judgement plans the wrong milestone silently, and
+// naming it here also makes the number authoritative for ticking off afterwards.
+// The milestone's own section is quoted so its Scope and Done when are in front of
+// the planner verbatim; it still reads roadmap.md for the surrounding order.
+export function roadmapScopeBlock(m: RoadmapMilestone | null): string[] {
+    if (!m)
+        return [
+            "A `roadmap.md` exists but every milestone in it is already complete. Do NOT invent a new one. If the request is genuinely new work, plan it and say in your final message that the roadmap needs a milestone added; otherwise report that there is nothing left to plan.",
+        ];
+    return [
+        `A \`roadmap.md\` exists. Plan **Milestone ${m.number}${m.title ? `: ${m.title}` : ""}** and ONLY that milestone — it is the first one still unchecked. Read \`roadmap.md\` for the surrounding order, but this is your scope:`,
+        "",
+        m.body,
+        "",
+        `Put \`Milestone: ${m.number}\` on its own line near the top of the plan — that line is machine-read. This milestone's "Done when" is your acceptance contract: your Acceptance Criteria must satisfy it and your Verification commands must actually check it. Every other milestone goes under \`## Deferred / Out of scope\`, named but not planned; no phase may reach forward into one. Do NOT write to \`roadmap.md\` and do NOT tick anything off.`,
+    ];
+}
 
 // Optional reconnaissance brief from the scout agent, injected into the planner
 // prompts when a Scout phase ran first.
@@ -2578,12 +2596,13 @@ export function roadmapTask(original: string, recon = ""): string {
 export function planTask(
     original: string,
     recon = "",
+    milestone: RoadmapMilestone | null = null,
     hasRoadmap = false,
 ): string {
     return [
         "Produce a structured, phased implementation plan.",
         "Write the COMPLETE plan to `.agent/plan.md` yourself — that file is your deliverable and every downstream agent reads it from disk. Do NOT paste the plan into your final message: a large plan hits the message output cap and truncates, and a truncated plan is a silently corrupt one. Reply with the short confirmation your agent definition specifies.",
-        ...(hasRoadmap ? [ROADMAP_SCOPE_LINE] : []),
+        ...(hasRoadmap ? roadmapScopeBlock(milestone) : []),
         SOURCE_DOC_LINE,
         "",
         "Request:",
@@ -2596,6 +2615,7 @@ export function planTask(
 export function refineTask(
     original: string,
     recon = "",
+    milestone: RoadmapMilestone | null = null,
     hasRoadmap = false,
 ): string {
     return [
@@ -2606,7 +2626,9 @@ export function refineTask(
         "If the draft cites a source document, open it and check the draft against it: every requirement covered or explicitly deferred, no phase contradicting a decision the document already settled, and each citation pointing at the section it claims.",
         ...(hasRoadmap
             ? [
-                  "A `roadmap.md` exists. Check the draft plans exactly ONE milestone — the first unchecked one unless the request named another — and that it neither bleeds into a later milestone's scope nor drops part of the one it claims. Do not write to `roadmap.md`.",
+                  milestone
+                      ? `A \`roadmap.md\` exists and this run is building **Milestone ${milestone.number}${milestone.title ? `: ${milestone.title}` : ""}**. Check the draft plans exactly that milestone — that it neither bleeds into a later one's scope nor drops part of its own, that its Acceptance Criteria satisfy the milestone's "Done when", and that \`Milestone: ${milestone.number}\` appears near the top (it is machine-read; add it if the planner omitted it). Do not write to \`roadmap.md\`.`
+                      : "A `roadmap.md` exists but every milestone in it is complete. Do not tick or add anything; just harden the draft.",
               ]
             : []),
         "",
