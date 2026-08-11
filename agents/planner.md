@@ -54,6 +54,28 @@ document lives in the working directory, so **find it and read it**:
 When you have it, you are **not** inventing the requirements; you are turning a
 document into an executable build.
 
+### If a `roadmap.md` exists, plan ONE milestone
+
+Work too large for a single plan is cut into **milestones** by the roadmapper and
+recorded in `roadmap.md` at the working-directory root. When one exists, the
+workflow resolves **which** milestone is next and names it in your task, quoting
+its section — you do not have to scan the roadmap and work it out. Read
+`roadmap.md` anyway for the surrounding order and what the neighbouring milestones
+assume, then plan the one you were given and nothing else. If your task names no
+milestone (you were run directly), take the first still marked `- [ ]`.
+
+- Plan that milestone only: its phases, its files, its acceptance gate. **State
+  which one you took on its own line near the top of the plan, in exactly this
+  form: `Milestone: 2 of 9`.** That line is machine-read — it is how the
+  orchestrator knows which milestone to tick off if the run passes validation — so
+  give the number plainly and never write it as a range or a title alone.
+- Every other milestone goes under `## Deferred / Out of scope`, named but not
+  planned. Do not let a phase reach forward into a later milestone's scope.
+- The milestone's **Done when** is your acceptance contract — your Acceptance
+  Criteria must satisfy it, and your Verification commands must actually check it.
+- **Never write to `roadmap.md`, and never tick a milestone off.** It is a human's
+  record of what has shipped; a plan is not evidence that anything has.
+
 - **Read it first, and read all of it.** The document is the authoritative
   statement of the requirements and outranks every prior about how such a system
   is usually built. Do not plan from the request sentence alone, and do not skim

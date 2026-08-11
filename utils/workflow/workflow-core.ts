@@ -42,6 +42,7 @@ import {
     digest,
     testSignal,
     outcomeLine,
+    type RoadmapMilestone,
 } from "./workflow-utils";
 
 // This module lives in utils/workflow/. The repo layout is
@@ -2441,6 +2442,7 @@ export function contextBundle(a: RunArtifacts): string {
 // Selective bundling reduces token consumption ~30% on complex runs.
 const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     scout: ["recon"],
+    roadmapper: ["recon"],
     planner: ["recon"],
     refiner: [], // refineTask threads BOTH the draft plan and the recon inline,
     // so the bundle must add nothing — otherwise recon is sent twice.
@@ -2519,6 +2521,33 @@ export function clampOutput(text: string, max = PHASE_OUTPUT_MAX): string {
 const SOURCE_DOC_LINE =
     "If the request points at a source document (a spec, design doc, RFC, or an existing high-level plan), find it in the working directory and READ IT IN FULL first, then plan FROM it: cover every requirement it states or list it as explicitly deferred, cite the section each phase comes from, and do not re-decide what the document has already settled. Never write to that document — your only write is `.agent/plan.md`, which is a different file even when the source is also called `plan.md`.";
 
+const SOURCE_DOC_LINE_ROADMAP =
+    "The request points at a source document (a spec, design doc, RFC, or architecture write-up). Find it in the working directory and READ IT IN FULL first — never `.agent/`, which is run scratch. Every milestone cites the section it comes from, and anything the source asks for that no milestone covers goes under Deferred / Out of scope with a reason. Do not re-decide what the document has already settled, and never write to it.";
+
+// Injected into planTask when a roadmap.md exists: the planner scopes itself to
+// the first unchecked milestone instead of trying to plan the whole system. Ticking
+// a milestone off is deliberately left to a human — a validator gate passing on one
+// run is a narrower claim than a milestone being done.
+// Scope block naming the exact milestone to plan. The orchestrator resolves which
+// one that is (workflow-utils.nextMilestone) rather than asking the planner to scan
+// the roadmap and judge — a wrong judgement plans the wrong milestone silently, and
+// naming it here also makes the number authoritative for ticking off afterwards.
+// The milestone's own section is quoted so its Scope and Done when are in front of
+// the planner verbatim; it still reads roadmap.md for the surrounding order.
+export function roadmapScopeBlock(m: RoadmapMilestone | null): string[] {
+    if (!m)
+        return [
+            "A `roadmap.md` exists but every milestone in it is already complete. Do NOT invent a new one. If the request is genuinely new work, plan it and say in your final message that the roadmap needs a milestone added; otherwise report that there is nothing left to plan.",
+        ];
+    return [
+        `A \`roadmap.md\` exists. Plan **Milestone ${m.number}${m.title ? `: ${m.title}` : ""}** and ONLY that milestone — it is the first one still unchecked. Read \`roadmap.md\` for the surrounding order, but this is your scope:`,
+        "",
+        m.body,
+        "",
+        `Put \`Milestone: ${m.number}\` on its own line near the top of the plan — that line is machine-read. This milestone's "Done when" is your acceptance contract: your Acceptance Criteria must satisfy it and your Verification commands must actually check it. Every other milestone goes under \`## Deferred / Out of scope\`, named but not planned; no phase may reach forward into one. Do NOT write to \`roadmap.md\` and do NOT tick anything off.`,
+    ];
+}
+
 // Optional reconnaissance brief from the scout agent, injected into the planner
 // prompts when a Scout phase ran first.
 function reconBlock(recon: string): string[] {
@@ -2540,10 +2569,40 @@ export function scoutTask(original: string): string {
     ].join("\n");
 }
 
-export function planTask(original: string, recon = ""): string {
+// The milestone ledger, at the cwd ROOT so it survives resetRunScratch. Written by
+// the roadmapper, read (never written) by the planner and refiner, ticked off by a
+// human.
+export const ROADMAP_FILE = "roadmap.md";
+
+// The roadmapper's deliverable is `roadmap.md` at the cwd root — NOT .agent/plan.md.
+// It has to outlive the run: .agent/ is wiped by resetRunScratch on the next one,
+// and a milestone list that vanishes between runs cannot be the thing a multi-run
+// build is sequenced against.
+export function roadmapTask(original: string, recon = ""): string {
+    return [
+        "Break this work into MILESTONES and write the roadmap.",
+        "Write `roadmap.md` in the working-directory ROOT — that file is your deliverable, and unlike `.agent/` it survives across runs. Do NOT write `.agent/plan.md`; you are not producing an implementation plan, and naming individual files is the planner's job once each milestone is actually being built.",
+        "Size each milestone so a planner can turn it into one plan and an implementer can finish and verify it in one run. Cut on dependency seams, not on the source document's section numbering.",
+        "If `roadmap.md` already exists, read it first and preserve every completed `- [x]` milestone exactly as written; you may add, split, or re-order only the unchecked ones.",
+        SOURCE_DOC_LINE_ROADMAP,
+        "",
+        "Request:",
+        original,
+        "",
+        ...reconBlock(recon),
+    ].join("\n");
+}
+
+export function planTask(
+    original: string,
+    recon = "",
+    milestone: RoadmapMilestone | null = null,
+    hasRoadmap = false,
+): string {
     return [
         "Produce a structured, phased implementation plan.",
         "Write the COMPLETE plan to `.agent/plan.md` yourself — that file is your deliverable and every downstream agent reads it from disk. Do NOT paste the plan into your final message: a large plan hits the message output cap and truncates, and a truncated plan is a silently corrupt one. Reply with the short confirmation your agent definition specifies.",
+        ...(hasRoadmap ? roadmapScopeBlock(milestone) : []),
         SOURCE_DOC_LINE,
         "",
         "Request:",
@@ -2553,13 +2612,25 @@ export function planTask(original: string, recon = ""): string {
     ].join("\n");
 }
 
-export function refineTask(original: string, recon = ""): string {
+export function refineTask(
+    original: string,
+    recon = "",
+    milestone: RoadmapMilestone | null = null,
+    hasRoadmap = false,
+): string {
     return [
         "Review and refine the implementation plan before it goes to the implementer.",
         "Read the draft plan from `.agent/plan.md` and VERIFY its load-bearing claims against the actual files (read/grep the real files — every path, every 'exists/missing', every symbol location; the draft and any recon can describe a codebase that isn't there). Then apply your production-grade review rules.",
         "Keep the required structure (## Phase N, Acceptance Criteria, file-level specificity); refine, do not rewrite from scratch.",
         "Write the COMPLETE hardened plan to `.agent/plan.md` yourself, overwriting the draft — that file is your deliverable and every downstream agent reads it from disk. Do NOT paste the plan into your final message: a large plan hits the message output cap and truncates, and a truncated plan is a silently corrupt one. Reply with the short confirmation your agent definition specifies.",
         "If the draft cites a source document, open it and check the draft against it: every requirement covered or explicitly deferred, no phase contradicting a decision the document already settled, and each citation pointing at the section it claims.",
+        ...(hasRoadmap
+            ? [
+                  milestone
+                      ? `A \`roadmap.md\` exists and this run is building **Milestone ${milestone.number}${milestone.title ? `: ${milestone.title}` : ""}**. Check the draft plans exactly that milestone — that it neither bleeds into a later one's scope nor drops part of its own, that its Acceptance Criteria satisfy the milestone's "Done when", and that \`Milestone: ${milestone.number}\` appears near the top (it is machine-read; add it if the planner omitted it). Do not write to \`roadmap.md\`.`
+                      : "A `roadmap.md` exists but every milestone in it is complete. Do not tick or add anything; just harden the draft.",
+              ]
+            : []),
         "",
         "Original request:",
         original,
@@ -2680,6 +2751,7 @@ export function shipTask(original: string, validationReport: string): string {
 // freshPhases() changes order).
 export interface PhaseMap {
     scout: PhaseState | null;
+    roadmapper: PhaseState | null;
     planner: PhaseState | null;
     refiner: PhaseState | null;
     implementer: PhaseState | null;
@@ -2697,6 +2769,7 @@ export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
 
     return {
         scout: byAgent("scout"),
+        roadmapper: byAgent("roadmapper"),
         planner: byAgent("planner"),
         refiner: byAgent("refiner"),
         implementer: byAgent("implementer"),
@@ -2752,6 +2825,7 @@ export function mkPhase(
 // scout -> planner -> refiner).
 export const PIPELINE_ORDER = [
     "scout",
+    "roadmapper",
     "planner",
     "refiner",
     "implementer",
@@ -2762,6 +2836,7 @@ export const PIPELINE_ORDER = [
 
 const PHASE_LABELS: Record<string, string> = {
     scout: "Scout",
+    roadmapper: "Roadmap",
     planner: "Plan",
     refiner: "Refine",
     implementer: "Implement",

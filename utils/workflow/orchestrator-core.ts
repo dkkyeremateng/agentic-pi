@@ -35,6 +35,8 @@ import {
     fixTask,
     validateTask,
     shipTask,
+    roadmapTask,
+    ROADMAP_FILE,
     sessionDirPath,
 } from "./workflow-core";
 import { commitStagedLearnings } from "./memory";
@@ -49,6 +51,11 @@ import {
     secs,
     isModelFailure,
     gitPreflightNote,
+    parsePlanMilestone,
+    nextMilestone,
+    type RoadmapMilestone,
+    markMilestoneDone,
+    milestoneEarned,
 } from "./workflow-utils";
 import { obsEmit } from "../../obs/obs-events";
 import {
@@ -642,6 +649,7 @@ async function runWorkflowCoreImpl(
 
     const pm = buildPhaseMap(s.phases);
     const scoutP = pm.scout;
+    const roadmapP = pm.roadmapper;
     const planP = pm.planner;
     const refinerP = pm.refiner;
     const reviewerP = pm.reviewer;
@@ -676,6 +684,42 @@ async function runWorkflowCoreImpl(
         runArtifacts.recon = scoutFindings;
     }
 
+    // ── Roadmap (milestone breakdown for work too large for one plan) ──
+    // Writes `roadmap.md` at the cwd ROOT, not .agent/ — it has to outlive the run
+    // so later runs can plan the next milestone against it. Deliberately not fed
+    // through capturePlan/validatePlan: a roadmap has no file-level specificity by
+    // design, so it would fail plan validation and is not a plan.
+    if (roadmapP) {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
+        const roadmapRes = await h.execution.runPhase(
+            roadmapP,
+            shared(roadmapTask(request, scoutFindings), "roadmapper"),
+            cwd,
+        );
+        if (!roadmapRes.ok)
+            return fail(s, h, cwd, request, "Roadmap", roadmapRes.output);
+        if (!existsSync(join(cwd, ROADMAP_FILE))) {
+            return finalizeError(
+                s,
+                h,
+                cwd,
+                request,
+                `The roadmapper did not write ${ROADMAP_FILE}. Its deliverable is that file, not its message — re-run, or check that the roadmapper agent definition is complete.`,
+            );
+        }
+        emitAgentVerdict(roadmapP, "pass", "completed");
+    }
+
+    // A roadmap (from this run's roadmapper, or an earlier run's) scopes the
+    // planner to ONE milestone instead of the whole system. Checked after the
+    // roadmap phase so a freshly written one counts.
+    const hasRoadmap = existsSync(join(cwd, ROADMAP_FILE));
+    // Resolve WHICH milestone here, deterministically, instead of asking the
+    // planner to scan the roadmap and judge. Null means the file exists but every
+    // milestone is already complete — a real state the prompts handle explicitly.
+    const milestone = hasRoadmap ? readNextMilestone(cwd) : null;
+
     // ── Plan ──
     let plan = { output: "", ok: true };
     if (planP) {
@@ -683,7 +727,7 @@ async function runWorkflowCoreImpl(
         if (aborted) return aborted;
         plan = await h.execution.runPhase(
             planP,
-            planTask(request, scoutFindings),
+            planTask(request, scoutFindings, milestone, hasRoadmap),
             cwd,
         );
         if (!plan.ok) return fail(s, h, cwd, request, "Planning", plan.output);
@@ -708,7 +752,10 @@ async function runWorkflowCoreImpl(
         savePlanDraft(cwd);
         const refine = await h.execution.runPhase(
             refinerP,
-            shared(refineTask(request, scoutFindings), "refiner"),
+            shared(
+                refineTask(request, scoutFindings, milestone, hasRoadmap),
+                "refiner",
+            ),
             cwd,
         );
         if (!refine.ok) return fail(s, h, cwd, request, "Refining", refine.output);
@@ -1111,6 +1158,25 @@ async function runWorkflowCoreImpl(
     const passes = s.iteration;
     const prUrl =
         (ship.output.match(/https?:\/\/\S*\/pull\/\d+/) || [])[0] || "";
+
+    // Tick this run's milestone off the roadmap, but only on a claim strong enough
+    // to carry it: an independent validator PASS, every phase in the ledger done,
+    // and a plan that named which milestone it was building. The tick is stamped
+    // with the evidence, so a roadmap that drifts from what shipped stays auditable
+    // rather than silently wrong. PI_ROADMAP_AUTOTICK=0 keeps it manual.
+    const tickedMilestone = maybeTickMilestone(cwd, {
+        status,
+        hadValidator: !!valP,
+        plan: plan.output,
+        verdict,
+        prUrl,
+        milestone: milestone?.number ?? null,
+    });
+    if (tickedMilestone)
+        h.ui.notify(
+            `Milestone ${tickedMilestone} marked complete in ${ROADMAP_FILE}.`,
+            "info",
+        );
 
     const report = buildWorkflowReport({
         request,
@@ -1609,6 +1675,74 @@ export function reconcileLedgerBranch(cwd: string, branch: string): number {
 // only matches headings that begin that way, and initProgressLedger seeds the ledger
 // from them verbatim. It also fails safe — a hand-edited ledger undercounts, which
 // makes the audit quieter, never noisier.
+
+// The next unplanned milestone from `roadmap.md`, or null when the file is absent,
+// unreadable, or every milestone in it is already complete.
+export function readNextMilestone(cwd: string): RoadmapMilestone | null {
+    try {
+        return nextMilestone(
+            readFileSync(join(cwd, ROADMAP_FILE), "utf-8"),
+        );
+    } catch {
+        return null;
+    }
+}
+
+// Tick this run's milestone off `roadmap.md`, returning the milestone number when
+// one was flipped and null otherwise. Best-effort by design: a roadmap that cannot
+// be read or written must never fail an otherwise successful run — the milestone
+// stays unchecked and the human ticks it, which is the pre-existing behaviour.
+export function maybeTickMilestone(
+    cwd: string,
+    opts: {
+        status: string;
+        hadValidator: boolean;
+        plan: string;
+        verdict: Verdict;
+        prUrl?: string;
+        // The milestone the orchestrator resolved BEFORE planning. Authoritative:
+        // it is what the planner was told to build, so it holds even if the planner
+        // forgot the machine-read `Milestone: N` line. Falls back to parsing the
+        // plan, which still covers a request that named a milestone directly.
+        milestone?: number | null;
+    },
+): number | null {
+    if (process.env.PI_ROADMAP_AUTOTICK === "0") return null;
+    const file = join(cwd, ROADMAP_FILE);
+    if (!existsSync(file)) return null;
+
+    const phases = readPhaseStatus(cwd);
+    if (
+        !milestoneEarned({
+            status: opts.status,
+            hadValidator: opts.hadValidator,
+            phasesTotal: phases.length,
+            phasesDone: countDonePhases(cwd),
+        })
+    )
+        return null;
+
+    const n = parsePlanMilestone(opts.plan) ?? opts.milestone ?? null;
+    if (n === null) return null;
+
+    try {
+        const evidence = [
+            localDateStamp(new Date()),
+            `validator ${opts.verdict.toUpperCase()}`,
+            opts.status === "paused-no-remote" ? "no remote" : opts.prUrl,
+        ]
+            .filter(Boolean)
+            .join(", ");
+        const cur = readFileSync(file, "utf-8");
+        const { text, changed } = markMilestoneDone(cur, n, evidence);
+        if (!changed) return null;
+        writeFileSync(file, text, "utf-8");
+        return n;
+    } catch {
+        return null;
+    }
+}
+
 export function countDonePhases(cwd: string): number {
     return readPhaseStatus(cwd).filter((l) =>
         /^\s*-\s*\[[xX]\]\s*Phase\s+\d+/i.test(l),

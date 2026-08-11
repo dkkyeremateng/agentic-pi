@@ -13,8 +13,9 @@ only `.env` config — no code edits.
 ## Highlights
 
 - **Team presets** — `plan-build` (full, validated), `soft-plan-build` (no
-  validator), `spec` (plan only), and `build`, which **resumes** an existing plan
-  from the first unfinished phase.
+  validator), `spec` (plan only), `roadmap` (milestones for work too large for one
+  plan), and `build`, which **resumes** an existing plan from the first unfinished
+  phase.
 - **Verifiable, recoverable runs** — per-phase checkpoints with a progress ledger,
   transient-error retries, context-bounded prompts, and a live dashboard + a
   written run report.
@@ -151,6 +152,7 @@ Requires `tmux` on `PATH`.
 | Command | What it does |
 |---------|--------------|
 | `/agent-workflow <request>` | Run the full lifecycle on a request (prompts for a team). |
+| `/agent-workflow roadmap <request>` | Milestones only — runs the `roadmap` team (scout → roadmapper), writing `roadmap.md`. |
 | `/agent-workflow spec <request>` | Plan only — runs the `spec` team (scout → planner → refiner). |
 | `/agent-workflow-clear` | Clear the progress widget. |
 | `/agent-model` | List per-agent models; `/agent-model <agent> <model>` to set, `/agent-model <agent> reset` (or `/agent-model reset`) to clear — for this session only. |
@@ -173,8 +175,58 @@ Defined in [`agents/teams.yaml`](agents/teams.yaml) — the roster is the pipeli
 |------|--------|-----|
 | `plan-build` | scout → planner → refiner → implementer → reviewer → **validator** → shipper | Full, independently validated. |
 | `soft-plan-build` | scout → planner → refiner → implementer → reviewer → shipper | Skips the validator's full re-run — faster/cheaper. |
+| `roadmap` | scout → roadmapper | Cut work too large for one plan into milestones (`roadmap.md`). |
 | `spec` | scout → planner → refiner | Produce a reviewable plan only (no code). |
 | `build` | implementer → reviewer → validator → shipper | **Resume** / build from an existing `.agent/plan.md`. |
+
+### Work too large for one plan
+
+A big spec does not fit in one implementation plan, and forcing it produces a plan
+whose phases are each a week of work. The `roadmap` team adds a level above the
+plan:
+
+| | Milestone | Phase |
+|---|---|---|
+| Lives in | `roadmap.md` (project root) | `.agent/plan.md` |
+| Lifetime | many runs — survives `resetRunScratch` | one run — wiped on the next |
+| Written by | `roadmapper` | `planner` |
+| Sized for | one plan-and-build run | one dispatched worker |
+| Ticked off by | **you** | the implementer |
+
+Run the roadmap once, then a `spec` run per milestone. When `roadmap.md` exists the
+orchestrator resolves the **first milestone still `- [ ]`** and names it in the
+planner's task, quoting that milestone's section so its `Scope` and `Done when` are
+in front of the planner verbatim. Which milestone is next is therefore decided by
+code, not by a model scanning the file — and the same resolved number is what gets
+ticked off afterwards, so a planner that forgets the machine-read `Milestone: N`
+line no longer breaks the loop. The rest go under Deferred:
+
+```
+/agent-workflow roadmap break down the architecture in spec.md   # -> roadmap.md, N milestones
+/agent-workflow spec                                             # -> plans milestone 1
+/agent-workflow continue the implementation                      # -> build team
+# then tick `- [x] Milestone 1` in roadmap.md yourself, and run `spec` again for milestone 2
+```
+
+The orchestrator ticks a milestone off when the run that built it earns it, and
+stamps the evidence:
+
+```
+## Milestone 2: Ingestion
+- [x] complete — 2026-08-11, validator PASS, https://github.com/o/r/pull/7
+```
+
+The gate is conjunctive, because "shipped" alone is too weak a claim: the roster
+must have included a **validator** (an independent re-run, not the implementer's own
+GREEN), **every phase** in `.agent/progress.md` must be done, and the plan must have
+named which milestone it was building (`Milestone: 2 of 9`). A `soft-plan-build` run
+never ticks anything — it has no validator. Already-complete milestones are never
+restamped, so a re-run cannot rewrite history, and you can still tick one by hand.
+Set `PI_ROADMAP_AUTOTICK=0` to keep it fully manual.
+
+No agent writes to `roadmap.md` — only the roadmapper, which preserves every
+existing `[x]` when it re-runs, and the orchestrator, which is deterministic code
+holding the validator verdict rather than a model reporting on its own work.
 
 ### Resuming a build
 
@@ -265,6 +317,7 @@ ones:
 | `PI_AGENT_TRANSIENT_RETRIES` | Same-model retries on transient errors (interrupted stream, dropped connection, 429/502/503/504/529). |
 | `PI_WORKFLOW_AGENT_TIMEOUT` | Per-agent watchdog (minutes; 0 = off). |
 | `PI_CONFINE_CWD` | Confine sub-agents' file tools to the working directory. |
+| `PI_ROADMAP_AUTOTICK` | `0` stops the orchestrator ticking milestones off `roadmap.md` on a validated run. |
 | `PI_WORKFLOW_ARCHIVE_PLANS` | Archive each run's final plan to `docs/plans/`. |
 | `PI_WORKFLOW_APPROVE_PROJECT` | Force project-trust `--approve` on/off for spawned agents (see below). |
 | `PI_NOTIFY` | Desktop/terminal notifications when a run finishes. |
