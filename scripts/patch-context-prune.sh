@@ -25,8 +25,28 @@
 # post-shutdown text-only turn the handler already guards against. Interactive
 # sessions are unaffected and keep their prefix-cache-friendly batching.
 #
-# Idempotent: safe to re-run. `pi update` replaces the package and wipes this, so
-# re-run it after upgrading (npm run patch:prune).
+# !! DO NOT APPLY — THIS PATCH IS REVERTED. It is kept only so the failure is
+# reproducible and the revert path stays tested.
+#
+# Per-turn flushing is destructive for an agent that must ACT on what it just read.
+# The pruner summarizes a turn's tool results away at turn_end, but in an agentic
+# loop turn N+1 IS the model acting on turn N's output — so the content is gone
+# exactly when it is needed. Interactively this is invisible (the model has already
+# answered before the next user message); headless it is fatal.
+#
+# Observed live: a planner asked to read a 113KB spec looped ~30 times over the same
+# file — `read`, `python3 read_text`, `dd | od`, `head -c | base64`, `node`, and
+# finally ROT13 (`tr 'A-Za-z' 'N-ZA-Mn-za-m'`), an escalation that only makes sense
+# if the model believes its output is being filtered. Context stayed pinned at
+# 8-9k tokens across 27 turns (turn 2 spiked to 19,602 as the read landed, then fell
+# back to 8,580) while the pruner logged 31 flushes and 21 summaries.
+#
+# The real fix is a keep-recent window — never prune the last N turns — so a tool
+# result always survives long enough to be used. Until that exists, leave the
+# pruner alone: the original bug only wastes context, this "fix" loses work.
+#
+# Idempotent: safe to re-run. `--revert` restores the upstream source.
+#   npm run patch:prune -- --revert
 set -euo pipefail
 
 PKG="${PI_CONTEXT_PRUNE_DIR:-$HOME/.pi/agent/npm/node_modules/pi-context-prune}"
@@ -39,10 +59,57 @@ MARKER="PATCH (agentic-pi): headless sessions must flush per turn"
     exit 1
 }
 
+# --revert restores the upstream single-flush behaviour. Needed because per-turn
+# flushing is destructive for an agent that must ACT on what it just read: see the
+# header note above and `npm run patch:prune -- --revert`.
+if [[ "${1:-}" == "--revert" || "${1:-}" == "--unpatch" ]]; then
+    if ! grep -qF "$MARKER" "$FILE"; then
+        echo "patch-context-prune: not applied — nothing to revert."
+        exit 0
+    fi
+    python3 - "$FILE" <<'PY'
+import re, sys
+
+path = sys.argv[1]
+src = open(path, encoding="utf-8").read()
+
+# Match the patched block from our marker comment through the `} else {` that
+# closes the widened condition, and restore the upstream two-line original.
+PATCHED = re.compile(
+    r"[ \t]*// PATCH \(agentic-pi\): headless sessions must flush per turn\.\n"
+    r"(?:[ \t]*//.*\n)*"
+    r"[ \t]*const headless = ctx\?\.hasUI === false;\n"
+    r"[ \t]*if \(\n"
+    r"[ \t]*currentConfig\.value\.pruneOn === \"every-turn\" \|\|\n"
+    r"[ \t]*\(headless && currentConfig\.value\.pruneOn === \"agent-message\"\)\n"
+    r"[ \t]*\) \{\n"
+)
+ORIGINAL = '    if (currentConfig.value.pruneOn === "every-turn") {\n'
+
+if not PATCHED.search(src):
+    sys.exit(
+        "patch-context-prune: marker present but the patched block does not match.\n"
+        "  Revert index.ts from your package manager instead (pi install npm:pi-context-prune)."
+    )
+
+open(path, "w", encoding="utf-8").write(PATCHED.sub(ORIGINAL, src, count=1))
+print(f"patch-context-prune: reverted {path}")
+PY
+    node --experimental-strip-types --check "$FILE" >/dev/null 2>&1 &&
+        echo "patch-context-prune: syntax OK" ||
+        { echo "patch-context-prune: SYNTAX CHECK FAILED — reinstall pi-context-prune" >&2; exit 1; }
+    exit 0
+fi
+
 if grep -qF "$MARKER" "$FILE"; then
     echo "patch-context-prune: already applied — nothing to do."
     exit 0
 fi
+
+echo "patch-context-prune: WARNING — this patch is known to break headless runs." >&2
+echo "  Per-turn flushing removes a turn's tool output before the next turn can use" >&2
+echo "  it; a planner reading a large file loops until it gives up. See the header." >&2
+echo "  Revert with: npm run patch:prune -- --revert" >&2
 
 python3 - "$FILE" <<'PY'
 import sys

@@ -2510,6 +2510,15 @@ export function clampOutput(text: string, max = PHASE_OUTPUT_MAX): string {
     );
 }
 
+// A request often points at the document the work comes FROM — a spec, design doc,
+// RFC, or an existing high-level plan ("generate an implementation plan from
+// plan.md"). Those requirements have to be READ, not inferred from the one-line
+// request, so both planning prompts carry this cue. The document lives in the cwd
+// like any other file; agents/planner.md covers finding it (including a pasted
+// absolute path) and planning from it without re-deciding what it settled.
+const SOURCE_DOC_LINE =
+    "If the request points at a source document (a spec, design doc, RFC, or an existing high-level plan), find it in the working directory and READ IT IN FULL first, then plan FROM it: cover every requirement it states or list it as explicitly deferred, cite the section each phase comes from, and do not re-decide what the document has already settled. Never write to that document — your only write is `.agent/plan.md`, which is a different file even when the source is also called `plan.md`.";
+
 // Optional reconnaissance brief from the scout agent, injected into the planner
 // prompts when a Scout phase ran first.
 function reconBlock(recon: string): string[] {
@@ -2534,7 +2543,8 @@ export function scoutTask(original: string): string {
 export function planTask(original: string, recon = ""): string {
     return [
         "Produce a structured, phased implementation plan.",
-        "Emit the COMPLETE plan as your final message — that is your deliverable; the workflow saves it to `.agent/plan.md` for the downstream agents. Do not emit a summary in place of the plan. Start the message at the `# Plan:` heading — no preamble, acknowledgement, or closing remarks; the whole message is the plan.",
+        "Write the COMPLETE plan to `.agent/plan.md` yourself — that file is your deliverable and every downstream agent reads it from disk. Do NOT paste the plan into your final message: a large plan hits the message output cap and truncates, and a truncated plan is a silently corrupt one. Reply with the short confirmation your agent definition specifies.",
+        SOURCE_DOC_LINE,
         "",
         "Request:",
         original,
@@ -2548,7 +2558,8 @@ export function refineTask(original: string, recon = ""): string {
         "Review and refine the implementation plan before it goes to the implementer.",
         "Read the draft plan from `.agent/plan.md` and VERIFY its load-bearing claims against the actual files (read/grep the real files — every path, every 'exists/missing', every symbol location; the draft and any recon can describe a codebase that isn't there). Then apply your production-grade review rules.",
         "Keep the required structure (## Phase N, Acceptance Criteria, file-level specificity); refine, do not rewrite from scratch.",
-        "Emit the COMPLETE hardened plan as your final message — that is your deliverable; the workflow saves it to `.agent/plan.md` (overwriting the draft) for the downstream agents. Do not emit a summary in place of the plan. Start the message at the `# Plan:` heading — no preamble, acknowledgement, or closing remarks; the whole message is the plan.",
+        "Write the COMPLETE hardened plan to `.agent/plan.md` yourself, overwriting the draft — that file is your deliverable and every downstream agent reads it from disk. Do NOT paste the plan into your final message: a large plan hits the message output cap and truncates, and a truncated plan is a silently corrupt one. Reply with the short confirmation your agent definition specifies.",
+        "If the draft cites a source document, open it and check the draft against it: every requirement covered or explicitly deferred, no phase contradicting a decision the document already settled, and each citation pointing at the section it claims.",
         "",
         "Original request:",
         original,

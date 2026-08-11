@@ -48,6 +48,7 @@ import {
     isTrivialPing,
     secs,
     isModelFailure,
+    gitPreflightNote,
 } from "./workflow-utils";
 import { obsEmit } from "../../obs/obs-events";
 import {
@@ -175,6 +176,10 @@ export interface SetupCallbacks {
         cwd: string,
         request: string,
     ) => { branch: string; base: string } | null;
+    // True when `cwd` is inside a git work tree. Injected like the other git
+    // effects so the core stays pure; absent (older hosts) means "assume a repo"
+    // and skip the preflight warning rather than warn on a false negative.
+    isGitRepo?: (cwd: string) => boolean;
 }
 
 // Configuration flags
@@ -584,6 +589,14 @@ async function runWorkflowCoreImpl(
     const planPath = join(cwd, ".agent", "plan.md");
     const hasExistingPlan = existsSync(planPath);
     const resuming = hasImplementer && !hasPlanner && hasExistingPlan;
+
+    // Preflight: say up front when there is no git repo. Without this the run
+    // proceeds and the first symptom is an agent's own `git status` dying with
+    // "fatal: not a git repository" partway through.
+    if (h.setup.isGitRepo) {
+        const note = gitPreflightNote(h.setup.isGitRepo(cwd), hasImplementer);
+        if (note) h.ui.notify(note, "warning");
+    }
     if (hasImplementer && !hasPlanner && !hasExistingPlan) {
         // Nothing to build from: no planner to produce a plan, and none on disk.
         s.runStartedAt = Date.now();

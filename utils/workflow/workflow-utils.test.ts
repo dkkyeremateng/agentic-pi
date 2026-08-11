@@ -10,6 +10,7 @@ import {
     isModelFailure,
     isTransientError,
     isTrivialPing,
+    gitPreflightNote,
 } from "./workflow-utils";
 
 // Run with: npx tsx --test workflow-utils.test.ts
@@ -516,4 +517,27 @@ describe("isTrivialPing", () => {
             assert.equal(isTrivialPing(s), false);
         });
     }
+});
+
+describe("gitPreflightNote", () => {
+    it("says nothing when the cwd is a git repo", () => {
+        assert.equal(gitPreflightNote(true, true), "");
+        assert.equal(gitPreflightNote(true, false), "");
+    });
+
+    it("names the build-specific losses for a roster that implements", () => {
+        const note = gitPreflightNote(false, true);
+        assert.match(note, /Not a git repository/);
+        assert.match(note, /per-phase commits/);
+        assert.match(note, /open a PR/);
+        assert.match(note, /git init/);
+    });
+
+    it("omits commit\/PR losses for a plan-only roster", () => {
+        const note = gitPreflightNote(false, false);
+        assert.match(note, /Not a git repository/);
+        assert.match(note, /revert has no checkpoint/);
+        assert.doesNotMatch(note, /open a PR/);
+        assert.doesNotMatch(note, /per-phase commits/);
+    });
 });
