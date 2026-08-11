@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
     blockedCommands,
     blockedFileWrites,
+    blockedRepoCreation,
     ghArgsReadOnly,
     gitArgsReadOnly,
 } from "./readonly-policy";
@@ -234,4 +235,51 @@ describe("blockedFileWrites", () => {
             assert.deepEqual(blockedFileWrites(cmd), [], cmd);
         });
     }
+});
+
+// ── repo creation (blocked for every agent, including write-capable ones) ────
+
+describe("blockedRepoCreation", () => {
+    for (const cmd of [
+        "git init",
+        "git init --bare .",
+        "cd /tmp/x && git init",
+        "gh repo create my-app --private",
+        "gh repo create --source=. --push",
+        "git remote add origin https://github.com/o/r.git",
+        "git -C sub remote add origin url",
+        "go test ./... && git init",
+    ]) {
+        it(`blocks ${JSON.stringify(cmd)}`, () => {
+            assert.ok(blockedRepoCreation(cmd).length > 0, cmd);
+        });
+    }
+
+    for (const cmd of [
+        "git status --short",
+        "git remote -v",
+        "git remote get-url origin",
+        "git switch -c feat/x",
+        "git add -A && git commit -m 'feat: x'",
+        "git push -u origin feat/x",
+        "gh repo view",
+        "gh pr create --draft --title x",
+        "go test ./...",
+        "",
+    ]) {
+        it(`allows ${JSON.stringify(cmd)}`, () => {
+            assert.deepEqual(blockedRepoCreation(cmd), [], cmd);
+        });
+    }
+
+    it("does not block the shipper's real workflow", () => {
+        const shipper = [
+            "git remote -v",
+            "git switch -c feat/m1-webhook-ingestion",
+            "git add .gitignore api/ go.mod",
+            "git commit -q -m 'feat(controlplane): scaffold'",
+            "gh pr create --draft",
+        ];
+        for (const c of shipper) assert.deepEqual(blockedRepoCreation(c), [], c);
+    });
 });

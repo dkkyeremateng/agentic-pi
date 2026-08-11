@@ -132,6 +132,46 @@ function redirectTarget(seg: string): string | null {
     return null;
 }
 
+// Commands that bring a repository into existence, or repoint one at a new remote.
+// Blocked for EVERY workflow agent, including write-capable ones: where a project's
+// history begins, and where it pushes, is the user's decision — never a side effect
+// of a build run. An unasked-for `git init` is also awkward to undo cleanly once
+// commits land on top of it.
+//
+// Read-only agents are already covered by blockedCommands (git init and
+// `git remote add` are mutating, `gh repo create` is not an allowlisted verb); this
+// exists for the agents that legitimately mutate git — the implementer and the
+// shipper — which otherwise load no guard at all.
+export function blockedRepoCreation(cmd: string): string[] {
+    if (typeof cmd !== "string" || !/\b(git|gh)\b/.test(cmd)) return [];
+    const bad: string[] = [];
+    for (const seg of segments(cmd)) {
+        const toks = commandTokens(seg);
+        const head = toks[0] || "";
+        const base = head.includes("/")
+            ? head.slice(head.lastIndexOf("/") + 1)
+            : head;
+        const rest = toks.slice(1);
+        const words = rest.filter((t) => !t.startsWith("-"));
+        if (base === "git") {
+            const i = gitSubcommandIndex(rest);
+            if (i === -1) continue;
+            const sub = rest[i].toLowerCase();
+            const after = rest.slice(i + 1).filter((t) => !t.startsWith("-"));
+            if (sub === "init") bad.push("git init");
+            else if (sub === "remote" && (after[0] || "").toLowerCase() === "add")
+                bad.push("git remote add");
+        } else if (base === "gh") {
+            if (
+                (words[0] || "").toLowerCase() === "repo" &&
+                (words[1] || "").toLowerCase() === "create"
+            )
+                bad.push("gh repo create");
+        }
+    }
+    return bad;
+}
+
 // gh: read-only verbs per command (anything else → deny).
 const GH_READONLY_VERBS: Record<string, Set<string>> = {
     pr: new Set(["view", "diff", "checks", "list", "status"]),

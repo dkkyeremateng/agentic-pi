@@ -3376,6 +3376,11 @@ export function subagentExtArgs(tools: string, readOnlyBash = false, opts?: { ob
     const hasBash = /\bbash\b/.test(t);
     const canWrite = /\b(write|edit)\b/.test(t);
     if (hasBash && (!canWrite || readOnlyBash)) add("readonly-guard.ts");
+    // The write-capable bash agents (implementer, shipper) load no readonly-guard,
+    // so nothing stops them running `git init` / `gh repo create` / `git remote
+    // add`. repo-guard covers exactly that gap; read-only agents already have those
+    // three blocked by readonly-policy, so it would be redundant for them.
+    else if (hasBash) add("repo-guard.ts");
     // Live observability: when PI_OBS=1, every sub-agent emits ObsEvents to the
     // shared sink so the dashboard shows the whole pipeline. PI_OBS_AGENT (set on
     // the spawn env) labels which agent's lane the events land in. opts.obs forces
