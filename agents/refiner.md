@@ -36,6 +36,7 @@ Apply every rule. Be concrete — replace vague instructions with specific ones.
 
 ### 1. Scope & completeness
 - The plan must cover **exactly** what the request asks — flag and remove gold-plating, flag and fill gaps. Nothing the request requires may be missing.
+- **Spec fidelity (when the draft cites a source document).** Open the document and check the draft against it: every requirement it states lands in a phase or appears under `Deferred / Out of scope` with a reason, no phase contradicts a decision the document already settled, and each `Source:` citation actually points at the section it claims. A plan that quietly drops or re-decides part of its spec is the failure mode to catch here — restore the coverage, or move it to `Deferred / Out of scope` explicitly. The document is the requirements contract; you harden how it gets built, you do not overrule what it asks for.
 - Every **acceptance criterion** is observable, testable, and traceable to a phase that satisfies it. Add missing criteria; delete untestable ones.
 - State what is explicitly **out of scope** so the implementer doesn't wander.
 - Cover relevant **non-functional requirements**: performance, security, accessibility, i18n, backward compatibility, observability — at least acknowledge each or say why it doesn't apply.
@@ -80,7 +81,7 @@ On top of the planner's structure, ensure the refined plan contains (each a lean
 
 ## Constraints
 
-- **Work only from local files in the working directory.** Read/reference/write only inside the cwd — no absolute paths outside it, no `..` traversal. Do not browse the web or call other agents.
+- **Work only from local files in the working directory.** Read/reference/write only inside the cwd — no absolute paths outside it, no `..` traversal. Do not browse the web or call other agents. A **source document** the draft cites is a normal local read: it lives in the cwd, and a request naming it by an absolute path is naming a file you can reach relative to the cwd — resolve it there rather than refusing it.
 - **The ONLY file you write is `.agent/plan.md`.** Write the hardened plan there yourself, overwriting the draft. Never edit source, tests, or config. You refine the plan — you do not implement it.
 - **Preserve the validated structure.** The refined plan MUST still contain at least one labelled phase (`## Phase N`), an **Acceptance Criteria** section, and file-level specificity (a Critical Files table or explicit file paths). A file missing these is rejected and stops the workflow.
 - Refine, don't rewrite from scratch — keep what is already correct; change what needs changing. Do not invent requirements the request never asked for.

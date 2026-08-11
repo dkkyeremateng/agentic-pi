@@ -319,6 +319,26 @@ export function isTransientError(output: string): boolean {
     return false;
 }
 
+/**
+ * Warning shown once at run start when the working directory is not a git repo.
+ *
+ * The workflow degrades cleanly without one — createCheckpoint returns null and
+ * ensureWorkBranch no-ops — but it degrades SILENTLY, so the first sign of trouble
+ * is an agent's own `git status` failing mid-run with "fatal: not a git repository"
+ * and taking its whole bash call down with it. Say it up front instead, and name
+ * what is actually lost: /revert has nothing to restore, and a build roster has no
+ * way to commit, branch, or open a PR.
+ *
+ * Returns "" when there is nothing to warn about.
+ */
+export function gitPreflightNote(isGitRepo: boolean, willBuild: boolean): string {
+    if (isGitRepo) return "";
+    const lost = willBuild
+        ? "/revert has no checkpoint to restore, no per-phase commits are made, and the shipper cannot branch or open a PR"
+        : "/revert has no checkpoint to restore";
+    return `Not a git repository — ${lost}. Run \`git init\` here (or start the workflow inside the target repo) if you want those.`;
+}
+
 export function outcomeLine(status: string, passes: number): string {
     switch (status) {
         case "shipped":

@@ -49,6 +49,7 @@ import { secs } from "../utils/workflow/workflow-utils";
 import { emitNotification } from "../utils/shared/notify";
 import {
     createCheckpoint,
+    isGitRepo,
     ensureWorkBranch,
 } from "../utils/workflow/checkpoint";
 import {
@@ -299,6 +300,15 @@ export default function (pi: ExtensionAPI) {
             setupSessions: (cwd, wipe) => setupSessions(cwd, wipe),
             loadAgents: (cwd) => loadAgents(cwd),
             prepareRun: () => {},
+            // Assume a repo if the probe itself fails, so a broken `git` can never
+            // produce a spurious "not a git repository" warning.
+            isGitRepo: (cwd) => {
+                try {
+                    return isGitRepo(git(cwd));
+                } catch {
+                    return true;
+                }
+            },
             ensureWorkBranch: (cwd, request) => {
                 try {
                     const wb = ensureWorkBranch(git(cwd), request);

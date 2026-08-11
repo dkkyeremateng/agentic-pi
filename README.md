@@ -79,15 +79,23 @@ downstream agents, so it is never re-threaded through the context.
   `on-context-tag` mode; in the default `agent-message` mode the agents'
   `context_tag` calls are just harmless bookmarks.
 
-  **Patch the pruner for sub-agents — `npm run patch:prune`.** In `agent-message`
-  mode (the recommended one) pruning flushes only on the *final* assistant message.
-  That never happens mid-run in a spawned sub-agent, which runs `pi -p`: one user
-  turn, many tool-calling messages, one final message at the very end. So sub-agents
-  accumulate every turn's tool output for the whole phase and flush once, uselessly,
-  at the end — measured here as a phase-implementer reaching 98.6% of a 256k window
-  and truncating a turn. The patch also flushes per turn when the session is headless
-  (`ctx.hasUI === false`), leaving interactive sessions and their prefix cache alone.
-  `pi update` wipes it, so re-run `npm run patch:prune` after upgrading.
+  **The sub-agent pruner patch is currently REVERTED — do not apply it.** In
+  `agent-message` mode pruning flushes only on the *final* assistant message, which
+  never happens mid-run in a spawned sub-agent (`pi -p` is one user turn, many
+  tool-calling messages, one final message at the end). So sub-agents accumulate
+  every turn's tool output for the whole phase and flush once, uselessly, at the end
+  — measured as a phase-implementer reaching 98.6% of a 256k window and truncating
+  a turn. `npm run patch:prune` made headless sessions flush per turn instead.
+
+  **That fix was worse than the bug.** Per-turn flushing summarizes a turn's tool
+  results away *before the next turn can use them*, and in an agentic loop turn N+1
+  is precisely the model acting on turn N's output. A planner asked to read a 113KB
+  spec looped ~30 times — `read`, `python3`, `dd | od`, `base64`, even ROT13, an
+  escalation pattern that says the model had concluded its output was being
+  redacted — with context pinned flat at 8-9k tokens across 27 turns while the
+  pruner flushed 31 times. Reverted with `npm run patch:prune -- --revert`.
+  The real fix needs a keep-recent window (never prune the last N turns); until
+  that exists, leave the pruner unpatched. `pi update` wipes the patch anyway.
 
 ## Quick start
 
