@@ -1164,7 +1164,7 @@ async function runWorkflowCoreImpl(
     } else if (shipP) {
         status =
             detectShip(gateText(ship)) === "paused"
-                ? "paused-no-remote"
+                ? "shipped-local"
                 : "shipped";
     } else {
         status = "done";
@@ -1275,15 +1275,23 @@ async function runWorkflowCoreImpl(
             `verdict:${verdict}`,
         );
     if (shipP && passed && reviewOk)
-        emitAgentVerdict(shipP, status === "shipped" ? "pass" : "open", status);
+        emitAgentVerdict(
+            shipP,
+            status === "shipped" || status === "shipped-local" ? "pass" : "open",
+            status,
+        );
 
     // Run-level verdict for the observability stream — the regression signal the
     // dashboard's run history tracks. pass = the run landed; fail = retries
-    // exhausted; everything else (needs-review, paused-no-remote) stays open.
+    // exhausted; everything else (needs-review) stays open. `shipped-local` is a
+    // PASS: the work is built, reviewed, and committed — the only thing missing is
+    // a remote to push to, which is a property of the repo, not of the run.
     // `obs-cli score` can override it later (last verdict wins).
     obsEmit("verdict", {
         status:
-            status === "shipped" || status === "done"
+            status === "shipped" ||
+            status === "shipped-local" ||
+            status === "done"
                 ? "pass"
                 : status === "failed-after-retries"
                   ? "fail"
@@ -1749,7 +1757,7 @@ export function maybeTickMilestone(
         const evidence = [
             localDateStamp(new Date()),
             `validator ${opts.verdict.toUpperCase()}`,
-            opts.status === "paused-no-remote" ? "no remote" : opts.prUrl,
+            opts.status === "shipped-local" ? "no remote" : opts.prUrl,
         ]
             .filter(Boolean)
             .join(", ");

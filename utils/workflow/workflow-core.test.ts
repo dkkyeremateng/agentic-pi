@@ -1776,7 +1776,7 @@ describe("buildWorkflowMetrics", () => {
 
         const m = buildWorkflowMetrics({
             request: "build a todo app",
-            status: "paused-no-remote",
+            status: "shipped-local",
             verdict: "pass",
             passes: 1,
             maxLoops: 3,
@@ -1802,7 +1802,7 @@ describe("buildWorkflowMetrics", () => {
 
         assert.equal(m.schema, 1);
         assert.equal(m.team, "build");
-        assert.equal(m.shipOutcome, "paused");
+        assert.equal(m.shipOutcome, "shipped");
         assert.equal(m.passes, 1);
         assert.equal(m.maxLoops, 3);
         assert.equal(m.startedAt, "2026-06-10T19:25:00.000Z");

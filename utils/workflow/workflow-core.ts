@@ -417,10 +417,11 @@ export function statusBadge(
     switch (lastStatus) {
         case "shipped":
             return theme.fg("dim", "  ·  ") + theme.fg("success", "✓ shipped");
-        case "paused-no-remote":
+        case "shipped-local":
+        case "paused-no-remote": // pre-rename spelling
             return (
                 theme.fg("dim", "  ·  ") +
-                theme.fg("accent", "‖ paused (no remote)")
+                theme.fg("success", "✓ committed (no remote)")
             );
         case "failed-after-retries":
             return theme.fg("dim", "  ·  ") + theme.fg("error", "✗ failed");
@@ -752,8 +753,9 @@ export function renderWorkflowFooter(opts: {
               ? "success"
               : lastStatus === "shipped"
                 ? "success"
-                : lastStatus === "paused-no-remote"
-                  ? "accent"
+                : lastStatus === "shipped-local" ||
+                  lastStatus === "paused-no-remote"
+                ? "success"
                   : lastStatus === "idle"
                     ? "dim"
                     : "error";
@@ -1030,7 +1032,8 @@ export function renderRunWorkflowResult(
     }
     const meta: Record<string, { icon: string; color: string }> = {
         shipped: { icon: "✓", color: "success" },
-        "paused-no-remote": { icon: "‖", color: "accent" },
+        "shipped-local": { icon: "✓", color: "success" },
+        "paused-no-remote": { icon: "✓", color: "success" }, // pre-rename spelling
         "failed-after-retries": { icon: "✗", color: "error" },
         "needs-review": { icon: "✗", color: "error" },
         error: { icon: "✗", color: "error" },
@@ -2185,7 +2188,7 @@ export interface WorkflowMetrics {
     endedAt: string; // ISO
     request: string;
     team?: string;
-    status: string; // raw terminal status (e.g. "paused-no-remote")
+    status: string; // raw terminal status (e.g. "shipped-local")
     shipOutcome: "shipped" | "paused" | "failed" | "unknown";
     verdict: string;
     passes: number; // attempts used
@@ -2239,6 +2242,14 @@ function shipOutcomeFromStatus(
     status: string,
     prUrl: string,
 ): WorkflowMetrics["shipOutcome"] {
+    // `shipped-local` counts as SHIPPED, not paused: the run built, reviewed, and
+    // committed the change, and the only thing it could not do is push to a remote
+    // that does not exist. Nothing is waiting on a human, so a dashboard should not
+    // show it alongside runs that genuinely stalled. The finer distinction survives
+    // in `status`. ("paused-no-remote" is the pre-rename spelling of the same
+    // outcome and is mapped alongside it so historical runs stay comparable.)
+    if (status === "shipped-local" || status === "paused-no-remote")
+        return "shipped";
     if (prUrl || /shipped/i.test(status)) return "shipped";
     if (/paus/i.test(status)) return "paused";
     if (/fail|block|abort/i.test(status)) return "failed";
