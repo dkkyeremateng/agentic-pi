@@ -1259,12 +1259,14 @@ async function runWorkflowCoreImpl(
         implP,
         reviewerP,
         valP,
+        docP,
         shipP,
         scoutFindings,
         plan: plan.output,
         impl: impl.output,
         review: review.output,
         val: val.output,
+        doc: doc.output,
         ship: ship.output,
         // The FILE gets the unclamped text; the summary never shows bodies at all.
         //
@@ -1283,6 +1285,7 @@ async function runWorkflowCoreImpl(
             impl: impl.raw,
             review: review.raw,
             val: val.raw,
+            doc: doc.raw,
             ship: ship.raw,
         },
     };
