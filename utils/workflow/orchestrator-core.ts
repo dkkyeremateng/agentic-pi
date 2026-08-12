@@ -697,6 +697,10 @@ async function runWorkflowCoreImpl(
     // task — correct for threading, wrong for the durable record, which is supposed
     // to be complete. Without this the "full" report still silently drops the middle
     // of any phase over 24k ("[output truncated — N chars omitted]").
+    // Unclamped output for the two phases whose result object does NOT survive to
+    // report time: `scoutFindings` is narrowed to a string, and `plan` is replaced by
+    // selectPlan's return, which carries no `raw`. Every other phase is read live off
+    // its own result — a shadow copy that must be hand-synced will drift, and did.
     const rawOut: Record<string, string> = {};
     if (scoutP) {
         aborted = checkAbort(s, h);
@@ -878,7 +882,6 @@ async function runWorkflowCoreImpl(
             cwd,
         );
         if (!impl.ok) return fail(s, h, cwd, request, "Implementing", impl.output);
-        rawOut.impl = impl.raw ?? impl.output;
 
         // Fresh-context audit: a multi-phase plan implemented without dispatching a
         // single phase-implementer means every phase shared one context. Re-run the
@@ -990,7 +993,6 @@ async function runWorkflowCoreImpl(
             );
             if (!review.ok) return fail(s, h, cwd, request, "Review", review.output);
 
-            rawOut.review = review.raw ?? review.output;
             reviewVerdict = detectCritique(gateText(review));
             if (reviewVerdict !== "revise") break;
 
@@ -1086,7 +1088,6 @@ async function runWorkflowCoreImpl(
                 );
                 if (!val.ok)
                     return fail(s, h, cwd, request, "Validation", val.output);
-                rawOut.val = val.raw ?? val.output;
                 verdict = detectVerdict(gateText(val));
             }
 
@@ -1168,7 +1169,6 @@ async function runWorkflowCoreImpl(
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
         doc = await h.execution.runPhase(docP, documentTask(request), cwd);
-        rawOut.doc = doc.raw ?? doc.output;
         emitAgentVerdict(docP, doc.ok ? "pass" : "open", doc.ok ? "documented" : "doc-failed");
         if (!doc.ok)
             h.ui.notify(
@@ -1186,7 +1186,6 @@ async function runWorkflowCoreImpl(
             cwd,
         );
         if (!ship.ok) return fail(s, h, cwd, request, "Shipping", ship.output);
-        rawOut.ship = ship.raw ?? ship.output;
     }
 
     // ── Terminal status, from whichever phases ran ──
@@ -1268,13 +1267,23 @@ async function runWorkflowCoreImpl(
         val: val.output,
         ship: ship.output,
         // The FILE gets the unclamped text; the summary never shows bodies at all.
+        //
+        // Read `.raw` off the LIVE result for every phase that still has one, rather
+        // than a shadow copy assigned at the call site. `impl` is reassigned three
+        // times (initial, fresh-context retry, review-fix round) and the shadow was
+        // only set after the first — so the report showed the FIRST implementer run
+        // and silently omitted the fix that made the change shippable. A copy that
+        // must be kept in sync by hand will drift; this cannot.
+        //
+        // scout and plan still need rawOut: `scoutFindings` is narrowed to a string,
+        // and `plan` is replaced by selectPlan's return, which carries no `raw`.
         rawDetails: {
             scoutFindings: rawOut.scout,
             plan: rawOut.plan,
-            impl: rawOut.impl,
-            review: rawOut.review,
-            val: rawOut.val,
-            ship: rawOut.ship,
+            impl: impl.raw,
+            review: review.raw,
+            val: val.raw,
+            ship: ship.raw,
         },
     };
     const report = buildWorkflowReport(reportArgs, "full");
