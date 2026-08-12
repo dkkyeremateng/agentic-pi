@@ -203,3 +203,64 @@ describe("renderTodos shows the phase title, not its test evidence", () => {
         assert.ok(out[1].length < 60);
     });
 });
+
+// ── parallel waves in the Todos panel ───────────────────────────────────────
+// A wave can run several phases at once. Marking only the first unfinished one
+// made a parallel wave look serial: two workers building phases 1 and 2 showed
+// phase 1 running and phase 2 pending.
+
+describe("renderTodos marks every in-flight phase", () => {
+    const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+    const items = [
+        { label: "Phase 1: State machine", done: false },
+        { label: "Phase 2: Sandbox contract", done: false },
+        { label: "Phase 3: Docker provider", done: false },
+    ];
+    const marks = (out: string[]) =>
+        out.slice(1).map((l) => l.trim().slice(0, 3));
+
+    it("marks two rows when two workers are running", () => {
+        const out = renderTodos(items, theme, { running: true, inProgress: 2 });
+        assert.deepEqual(marks(out), ["[•]", "[•]", "[ ]"]);
+    });
+
+    it("marks one row when a single phase is running", () => {
+        const out = renderTodos(items, theme, { running: true, inProgress: 1 });
+        assert.deepEqual(marks(out), ["[•]", "[ ]", "[ ]"]);
+    });
+
+    it("defaults to one when the caller cannot count workers", () => {
+        const out = renderTodos(items, theme, { running: true });
+        assert.deepEqual(marks(out), ["[•]", "[ ]", "[ ]"]);
+    });
+
+    it("treats 0 while running as 1 — the coordinator is between waves", () => {
+        const out = renderTodos(items, theme, { running: true, inProgress: 0 });
+        assert.deepEqual(marks(out), ["[•]", "[ ]", "[ ]"]);
+    });
+
+    it("never marks a completed phase, and skips past it", () => {
+        const mixed = [
+            { label: "Phase 1: done", done: true },
+            { label: "Phase 2: running", done: false },
+            { label: "Phase 3: running", done: false },
+            { label: "Phase 4: pending", done: false },
+        ];
+        const out = renderTodos(mixed, theme, { running: true, inProgress: 2 });
+        assert.deepEqual(marks(out), ["[x]", "[•]", "[•]", "[ ]"]);
+    });
+
+    it("never marks more rows than remain unfinished", () => {
+        const nearlyDone = [
+            { label: "Phase 1: done", done: true },
+            { label: "Phase 2: last one", done: false },
+        ];
+        const out = renderTodos(nearlyDone, theme, { running: true, inProgress: 5 });
+        assert.deepEqual(marks(out), ["[x]", "[•]"]);
+    });
+
+    it("marks nothing when the run is not active", () => {
+        const out = renderTodos(items, theme, { running: false, inProgress: 2 });
+        assert.deepEqual(marks(out), ["[ ]", "[ ]", "[ ]"]);
+    });
+});

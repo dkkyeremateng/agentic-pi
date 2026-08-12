@@ -310,7 +310,14 @@ export function renderEmptyAgentMessage(theme: any): string[] {
 
 // The implementer's phase checklist (from .agent/progress.md), rendered as a live
 // todo list under the pipeline cards:
-//   [x] done   [•] in-progress (the first unfinished phase while a run is active)
+//   [x] done   [•] in-progress   [ ] pending
+//
+// A wave can run SEVERAL phases at once (the implementer batches provably
+// independent ones through dispatch_parallel), so `inProgress` says how many of the
+// unfinished phases are actually in flight and that many get the [•] mark. Marking
+// only the first made a parallel wave look serial: two workers building phases 1
+// and 2 showed phase 1 running and phase 2 pending, which misreads the run's
+// concurrency and hides where the time is going.
 //   [ ] pending
 // Returns [] when there are no items, so the caller can omit the section entirely.
 // The ledger records a finished phase as `Phase N: <title> — tests: <command> (sha …)`.
@@ -325,7 +332,16 @@ export function phaseTitleOnly(label: string): string {
 export function renderTodos(
     items: { label: string; done: boolean }[],
     theme: any,
-    opts: { running?: boolean; width?: number; title?: string } = {},
+    opts: {
+        running?: boolean;
+        width?: number;
+        title?: string;
+        // How many unfinished phases are executing right now. Defaults to 1 so a
+        // caller that cannot count workers keeps the old single-marker behaviour;
+        // 0 while running also means 1, because the coordinator is between waves
+        // and the next phase is what it is about to start.
+        inProgress?: number;
+    } = {},
 ): string[] {
     if (!items || items.length === 0) return [];
     const max = Math.max(10, (opts.width ?? 80) - 6);
@@ -333,12 +349,20 @@ export function renderTodos(
         const t = phaseTitleOnly(s);
         return t.length > max ? t.slice(0, max - 1) + "…" : t;
     };
-    const firstPending = items.findIndex((i) => !i.done);
+    const active = Math.max(1, opts.inProgress ?? 1);
+    // The [•] rows are the first `active` UNFINISHED phases — a completed phase
+    // never carries the mark, and a wave never marks more rows than remain.
+    const inFlight = new Set(
+        items
+            .map((it, i) => (it.done ? -1 : i))
+            .filter((i) => i >= 0)
+            .slice(0, active),
+    );
     const lines: string[] = [
         theme.fg("accent", theme.bold(opts.title ?? " # Todos")),
     ];
     items.forEach((it, idx) => {
-        const inProgress = !!opts.running && !it.done && idx === firstPending;
+        const inProgress = !!opts.running && !it.done && inFlight.has(idx);
         const mark = it.done ? "[x]" : inProgress ? "[•]" : "[ ]";
         const color = it.done ? "dim" : inProgress ? "accent" : "muted";
         lines.push(
