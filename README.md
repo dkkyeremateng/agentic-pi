@@ -89,22 +89,29 @@ downstream agents, so it is never re-threaded through the context.
   as all 12 sessions of a build logging exactly ONE flush while context grew
   monotonically and never dropped.
 
-  The patch adds a **keep-recent window**: on each turn a headless session
-  summarizes every pending batch *except* the most recent `PI_PRUNE_KEEP_RECENT`
-  (default 3), which stay raw. Old output is reclaimed mid-run; a tool result is
-  always readable for the next few turns — long enough to be acted on. An earlier
-  attempt that flushed *every* turn was reverted: it removed turn N's output before
-  turn N+1 could use it, and an agent reading a 113KB file looped ~30 times trying
-  to get its own read back.
+  The patch is **pressure-triggered with a keep-recent floor**: below
+  `PI_PRUNE_AT_PCT` (default 60) of the context window it prunes *nothing* — there
+  is room, and an agent's working set is worth more than the tokens — and above it
+  it summarizes oldest-first while always keeping the most recent
+  `PI_PRUNE_KEEP_RECENT` (default 3) batches raw.
 
-  Verified behaviourally, not just by counting flushes — same 145KB file and chunked
-  read task, patched vs upstream:
+  Two earlier attempts pruned on a schedule instead, and both failed with the window
+  barely 10% full. Flushing every turn removed turn N's output before turn N+1 could
+  use it: an agent reading a 113KB file looped ~30 times at 8-9k of a 1M window,
+  escalating through `python3`, `dd`, `base64` and ROT13 to get its own read back.
+  Keeping only the last 3 turns was better but still wrong: a planner surveying a
+  codebase at 25k of a 256k window re-read the same files every ~3 minutes for 53
+  turns. Pruning exists to prevent overflow, so it should fire when overflow
+  threatens — not on a cadence.
 
-  | | upstream | keep-recent |
+  Verified behaviourally in both directions — 12 source files, one read per turn,
+  then recall every file's token without re-reading:
+
+  | | below threshold | forced (`PI_PRUNE_AT_PCT=1`) |
   |---|---|---|
-  | mid-run flushes | 1 (at the end) | **11** |
-  | batches summarized | 13 | 13 |
-  | tokens recalled correctly | both | **both** |
+  | mid-run flushes | 1 (end only) | **10** |
+  | tokens recalled | **12/12** | **12/12** |
+  | files re-read | none | none |
 
   Interactive sessions are untouched (`every-turn` keeps its upstream branch;
   `agent-message` with a UI still flushes on the final message). `pi update` wipes
@@ -330,7 +337,8 @@ ones:
 | `PI_AGENT_TRANSIENT_RETRIES` | Same-model retries on transient errors (interrupted stream, dropped connection, 429/502/503/504/529). |
 | `PI_WORKFLOW_AGENT_TIMEOUT` | Per-agent watchdog (minutes; 0 = off). |
 | `PI_CONFINE_CWD` | Confine sub-agents' file tools to the working directory. |
-| `PI_PRUNE_KEEP_RECENT` | Turns of tool output the pruner never summarizes in a headless session (default 3). |
+| `PI_PRUNE_AT_PCT` | Context-window % at which a headless session starts pruning at all (default 60). |
+| `PI_PRUNE_KEEP_RECENT` | Turns of tool output never summarized, even under pressure (default 3). |
 | `PI_ROADMAP_AUTOTICK` | `0` stops the orchestrator ticking milestones off `roadmap.md` on a validated run. |
 | `PI_WORKFLOW_ARCHIVE_PLANS` | Archive each run's final plan to `docs/plans/`. |
 | `PI_WORKFLOW_APPROVE_PROJECT` | Force project-trust `--approve` on/off for spawned agents (see below). |
