@@ -5,6 +5,7 @@ plan-build:
     - implementer
     - reviewer
     - validator
+    - documenter
     - shipper
 
 soft-plan-build:
@@ -14,6 +15,7 @@ soft-plan-build:
     - refiner
     - implementer
     - reviewer
+    - documenter
     - shipper
 
 # For work too large for one plan: cuts a big spec into milestones and writes
@@ -35,4 +37,5 @@ build:
     - implementer
     - reviewer
     - validator
+    - documenter
     - shipper

@@ -2482,6 +2482,9 @@ const PHASE_ARTIFACT_WHITELIST: Record<string, (keyof RunArtifacts)[]> = {
     implementer: ["recon"],
     reviewer: [],
     validator: [],
+    // The documenter describes the REPO, not the run: it reads the real files and
+    // the roadmap itself, so a recon dump would only crowd out what it must verify.
+    documenter: [],
     // shipTask threads only the validation report, so the implementer's change
     // summary (for the PR body) is added here. The full plan is NOT — no full plan
     // belongs in any bundle; the shipper reads .agent/plan.md from disk if it needs
@@ -2773,6 +2776,21 @@ export function validateTask(original: string, implSummary: string): string {
     ].join("\n");
 }
 
+// The documenter keeps README.md truthful. It runs only after a passing run, so
+// everything it describes has actually landed, and before the shipper so the README
+// change is committed with the work it describes.
+export function documentTask(original: string): string {
+    return [
+        "Update `README.md` so it accurately describes this project as it exists NOW.",
+        "READ THE EXISTING README IN FULL FIRST (if there is one) and PRESERVE every section that is still accurate, verbatim — badges, licence, contribution notes, links, and the project's own voice are not yours to rewrite. Change only what this run made untrue; add only what is now missing. If you cannot tell whether something is stale, leave it and say so.",
+        "Verify before you write: confirm every command against the real `package.json`/`Makefile`/`go.mod` (or the project's AGENTS.md/CLAUDE.md, which is authoritative), and confirm every path and package with `ls`/`find`. Do not carry a directory over from the plan that was deferred and never created, and do not document a feature that is not built.",
+        "Your ONLY write is `README.md`. Never touch source, tests, config, `roadmap.md`, or `.agent/`.",
+        "",
+        "The change this run delivered:",
+        original,
+    ].join("\n");
+}
+
 export function shipTask(original: string, validationReport: string): string {
     return [
         "The change has passed validation. Ship it — commit the code, tests, and any",
@@ -2799,6 +2817,7 @@ export interface PhaseMap {
     implementer: PhaseState | null;
     reviewer: PhaseState | null;
     validator: PhaseState | null;
+    documenter: PhaseState | null;
     shipper: PhaseState | null;
 }
 
@@ -2817,6 +2836,7 @@ export function buildPhaseMap(phases: PhaseState[]): PhaseMap {
         implementer: byAgent("implementer"),
         reviewer: byAgent("reviewer"),
         validator: byAgent("validator"),
+        documenter: byAgent("documenter"),
         shipper: byAgent("shipper"),
     };
 }
@@ -2873,6 +2893,10 @@ export const PIPELINE_ORDER = [
     "implementer",
     "reviewer",
     "validator",
+    // AFTER validation and BEFORE the shipper on purpose: gated on a passing run so
+    // the README never advertises work that did not land, and ahead of the commit so
+    // the README change ships with the change it describes.
+    "documenter",
     "shipper",
 ] as const;
 
@@ -2884,6 +2908,7 @@ const PHASE_LABELS: Record<string, string> = {
     implementer: "Implement",
     reviewer: "Review",
     validator: "Validate",
+    documenter: "Document",
     shipper: "Ship",
 };
 

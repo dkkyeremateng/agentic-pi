@@ -3,9 +3,9 @@
 Configuration that turns [**pi**](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
 into a multi-agent software-engineering workflow. A primary orchestrator drives a
 team of specialized sub-agents — **scout → planner → refiner → implementer →
-reviewer → validator → shipper** — through a self-healing **plan → refine →
-implement → review → validate → ship** pipeline, each agent running its own
-configurable model.
+reviewer → validator → documenter → shipper** — through a self-healing **plan →
+refine → implement → review → validate → document → ship** pipeline, each agent
+running its own configurable model.
 
 The folder is **relocatable**: copy it anywhere, on any machine, and run it with
 only `.env` config — no code edits.
@@ -41,8 +41,8 @@ only `.env` config — no code edits.
 The active team's roster **is** the pipeline. A typical full run:
 
 ```
-scout → planner → refiner → implementer → reviewer → validator → shipper
-(recon)  (plan)   (harden)   (build)      (review)   (gate)      (PR)
+scout → planner → refiner → implementer → reviewer → validator → documenter → shipper
+(recon)  (plan)   (harden)   (build)      (review)   (gate)      (README)     (PR)
 ```
 
 The validator's verdict drives a feedback loop rather than a static chain:
@@ -193,11 +193,29 @@ Defined in [`agents/teams.yaml`](agents/teams.yaml) — the roster is the pipeli
 
 | Team | Roster | Use |
 |------|--------|-----|
-| `plan-build` | scout → planner → refiner → implementer → reviewer → **validator** → shipper | Full, independently validated. |
-| `soft-plan-build` | scout → planner → refiner → implementer → reviewer → shipper | Skips the validator's full re-run — faster/cheaper. |
+| `plan-build` | scout → planner → refiner → implementer → reviewer → **validator** → documenter → shipper | Full, independently validated. |
+| `soft-plan-build` | scout → planner → refiner → implementer → reviewer → documenter → shipper | Skips the validator's full re-run — faster/cheaper. |
 | `roadmap` | scout → roadmapper | Cut work too large for one plan into milestones (`roadmap.md`). |
 | `spec` | scout → planner → refiner | Produce a reviewable plan only (no code). |
-| `build` | implementer → reviewer → validator → shipper | **Resume** / build from an existing `.agent/plan.md`. |
+| `build` | implementer → reviewer → validator → documenter → shipper | **Resume** / build from an existing `.agent/plan.md`. |
+
+### Keeping the README honest
+
+The `documenter` phase updates the project's `README.md` at the end of a run. It is
+gated on the same condition as the shipper — the run must have **passed** — so the
+README never advertises work that did not land, and it runs **before** the shipper
+so the README change is committed with the change it describes.
+
+It edits rather than regenerates: it reads the existing README first and preserves
+every section that is still accurate, verbatim. Badges, licence, contribution notes
+and your prose are not its to rewrite; it corrects what the run made untrue and adds
+what is now missing. Commands and paths are verified against the real
+`package.json`/`Makefile`/`go.mod` (or your `AGENTS.md`, which wins) before being
+written, so a README cannot promise a command that does not run. Its only write is
+`README.md`.
+
+A failure here is not fatal — the work is already validated, so the run still ships
+and you get a warning to update the README by hand.
 
 ### Work too large for one plan
 

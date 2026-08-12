@@ -35,6 +35,7 @@ import {
     fixTask,
     validateTask,
     shipTask,
+    documentTask,
     roadmapTask,
     ROADMAP_FILE,
     sessionDirPath,
@@ -675,6 +676,7 @@ async function runWorkflowCoreImpl(
     const reviewerP = pm.reviewer;
     const implP = pm.implementer;
     const valP = pm.validator;
+    const docP = pm.documenter;
     const shipP = pm.shipper;
 
     // Wipe per-run scratch EXCEPT when resuming — then keep plan.md and the
@@ -1121,8 +1123,9 @@ async function runWorkflowCoreImpl(
 
     // ── Ship ──
     // When a validator ran, ship only on PASS; otherwise (no validator to gate on)
-    // ship straight after whatever build work happened. The implementer updates any
-    // docs/comments as part of the change, so there is no separate document phase.
+    // ship straight after whatever build work happened. The implementer updates
+    // docs/comments alongside the code it touches; the optional `documenter` phase
+    // below covers only README.md, which describes the project rather than a change.
     const passed = valP ? verdict === "pass" : true;
     // An unresolved REVISE BEFORE MERGE is a blocking review: the reviewer never
     // signed off, so the change must not ship even when the validator passed. With
@@ -1153,6 +1156,25 @@ async function runWorkflowCoreImpl(
             !!h.config.archivePlans,
             outcome,
         );
+    }
+
+    // ── Document (README) ──
+    // Same gate as the shipper — a README must never advertise work that did not
+    // land — and ahead of it, so the README change is committed with the change it
+    // describes. A failure here is NOT fatal: the work is already validated, and
+    // losing a doc update is not worth discarding a passing run. It is reported.
+    let doc: PhaseRes = { output: "", ok: true };
+    if (passed && reviewOk && docP) {
+        aborted = checkAbort(s, h);
+        if (aborted) return aborted;
+        doc = await h.execution.runPhase(docP, documentTask(request), cwd);
+        rawOut.doc = doc.raw ?? doc.output;
+        emitAgentVerdict(docP, doc.ok ? "pass" : "open", doc.ok ? "documented" : "doc-failed");
+        if (!doc.ok)
+            h.ui.notify(
+                "README update failed — the change is still validated and will ship; update README.md by hand.",
+                "warning",
+            );
     }
 
     if (passed && reviewOk && shipP) {
