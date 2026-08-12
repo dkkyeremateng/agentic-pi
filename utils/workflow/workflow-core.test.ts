@@ -2661,6 +2661,14 @@ describe("implementTask restates the delegation contract", () => {
         assert.match(t, /zero dispatches is re-run once/i);
     });
 
+    it("bounds the coordinator's repair loop to one attempt", () => {
+        assert.match(t, /at most ONE bounded fix attempt/);
+        assert.match(t, /re-dispatch that phase with the exact failure text/);
+        assert.match(t, /Never iterate read-edit-test/);
+        // The number is the argument: repair costs ~6x a verification pass.
+        assert.match(t, /44k/);
+    });
+
     it("requires a baseline commit and per-phase checkpoints", () => {
         assert.match(t, /COMMIT EVERY PHASE/);
         assert.match(t, /baseline commit FIRST/);
