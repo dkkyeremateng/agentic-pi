@@ -20,6 +20,7 @@ import {
     resetRunScratch,
     maybeTickMilestone,
     readNextMilestone,
+    countPlannedPhases,
     initProgressLedger,
     markAllPhasesDone,
     planArchiveName,
@@ -5376,6 +5377,33 @@ describe("maybeTickMilestone", () => {
 
     it("readNextMilestone returns null when there is no roadmap", () => {
         assert.equal(readNextMilestone(mkdtempSync(join(tmpdir(), "no-rm-"))), null);
+    });
+
+    it("ticks when the ledger carries EXTRA rows beyond the plan's phases", () => {
+        // A well-behaved run records unplanned work — a validator-driven fix, a
+        // follow-up — as its own ledger row. That row is not `Phase <N>`, so it can
+        // never be counted done; when it also inflated the total, 7 >= 8 was false
+        // and the milestone silently stayed unticked. Observed live on a run whose
+        // 7 phases were all green and whose validator returned PASS.
+        const cwd = setup({
+            ledger:
+                "- [x] Phase 1: A\n" +
+                "- [x] Phase 2: B\n" +
+                "- [x] Validator fix (AC 10 non-regression): isolate worker tests\n",
+        });
+        assert.equal(countPlannedPhases(cwd), 2, "extra row is not a planned phase");
+        assert.equal(maybeTickMilestone(cwd, pass), 2);
+        assert.match(readFileSync(join(cwd, "roadmap.md"), "utf-8"), /- \[x\] complete/);
+    });
+
+    it("still refuses when a real phase is unfinished, extra rows notwithstanding", () => {
+        const cwd = setup({
+            ledger:
+                "- [x] Phase 1: A\n" +
+                "- [ ] Phase 2: B\n" +
+                "- [x] Validator fix: something\n",
+        });
+        assert.equal(maybeTickMilestone(cwd, pass), null);
     });
 
     it("honours PI_ROADMAP_AUTOTICK=0", () => {

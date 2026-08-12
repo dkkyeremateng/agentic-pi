@@ -1771,12 +1771,18 @@ export function maybeTickMilestone(
     const file = join(cwd, ROADMAP_FILE);
     if (!existsSync(file)) return null;
 
-    const phases = readPhaseStatus(cwd);
+    // Both counts MUST use the same `Phase <N>` rule. They did not, and it silently
+    // blocked the tick on a well-behaved run: the denominator counted every ledger
+    // checkbox while the numerator counted only `- [x] Phase <N>` rows, so an
+    // implementer that recorded extra work — a validator-driven fix, a follow-up —
+    // added to the total it could never satisfy. Observed live: 7 phases all done
+    // plus one `- [x] Validator fix (AC 10 …)` row gave 7 >= 8 = false. The better
+    // the run behaved, the less likely it ticked, and it failed silently.
     if (
         !milestoneEarned({
             status: opts.status,
             hadValidator: opts.hadValidator,
-            phasesTotal: phases.length,
+            phasesTotal: countPlannedPhases(cwd),
             phasesDone: countDonePhases(cwd),
         })
     )
@@ -1801,6 +1807,16 @@ export function maybeTickMilestone(
     } catch {
         return null;
     }
+}
+
+// Ledger rows that name a plan phase, done or not — the denominator that pairs
+// with countDonePhases. Deliberately keyed on the same `Phase <N>` prefix, so a row
+// the implementer added for unplanned work (which parsePlanPhases never seeded and
+// countDonePhases will never match) cannot inflate the total.
+export function countPlannedPhases(cwd: string): number {
+    return readPhaseStatus(cwd).filter((l) =>
+        /^\s*-\s*\[[ xX]\]\s*Phase\s+\d+/i.test(l),
+    ).length;
 }
 
 export function countDonePhases(cwd: string): number {
