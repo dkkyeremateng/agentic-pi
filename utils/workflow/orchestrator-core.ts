@@ -1198,7 +1198,12 @@ async function runWorkflowCoreImpl(
             "info",
         );
 
-    const report = buildWorkflowReport({
+    // Built twice from the same run data: the FULL report is the durable record
+    // written to workflow-report.md, and the SUMMARY is what goes in the
+    // conversation. Publishing the full one meant the reader saw a 50k dump the
+    // renderer clipped anyway, and — worse — the per-phase truncation needed to make
+    // it renderable was baked into the file too, so the detail was lost everywhere.
+    const reportArgs = {
         request,
         status,
         verdict,
@@ -1226,7 +1231,9 @@ async function runWorkflowCoreImpl(
         review: review.output,
         val: val.output,
         ship: ship.output,
-    });
+    };
+    const report = buildWorkflowReport(reportArgs, "full");
+    const reportSummary = buildWorkflowReport(reportArgs, "summary");
 
     writeReport(h, cwd, report);
 
@@ -1312,7 +1319,9 @@ async function runWorkflowCoreImpl(
     if (!passed) void reflectFailedRun(process.env.PI_OBS_RUN);
 
     h.ui.publishLogs();
-    return { status, report, reportWritten: true };
+    // The SUMMARY is what surfaces in the conversation; the full report is on
+    // disk at workflow-report.md (written above).
+    return { status, report: reportSummary, reportWritten: true };
 }
 
 function writeReport(h: OrchestratorHost, cwd: string, report: string): void {

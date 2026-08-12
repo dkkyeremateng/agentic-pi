@@ -2410,7 +2410,7 @@ describe("loadDotEnv project override precedence", () => {
 // ── Report truncation must keep the conclusion (the verdict lives at the end) ──
 
 describe("buildWorkflowReport phase truncation", () => {
-    const mk = (val: string) =>
+    const mk = (val: string, detail: "full" | "summary" = "summary") =>
         buildWorkflowReport({
             request: "r",
             status: "needs-review",
@@ -2439,26 +2439,45 @@ describe("buildWorkflowReport phase truncation", () => {
             review: "",
             val,
             ship: "",
-        });
+        }, detail);
 
-    it("keeps the tail of an over-long phase, not just the head", () => {
+    it("the FULL report keeps the whole phase output, untruncated", () => {
         // A real run ended `needs-review` with the validation section cut off
-        // mid-investigation, so the reason for the outcome was absent from the
-        // report a human opens to understand it.
+        // mid-investigation, so the reason for the outcome was absent from the file
+        // a human opens to understand it. The file is the durable record: it must
+        // carry everything.
         const long =
             "START-OF-VALIDATION\n" + "x".repeat(20000) + "\nCONCLUSION: the tail matters";
-        const report = mk(long);
+        const report = mk(long, "full");
         assert.ok(report.includes("START-OF-VALIDATION"), "head is kept");
-        assert.ok(
-            report.includes("CONCLUSION: the tail matters"),
-            "tail is kept — the conclusion survives truncation",
-        );
-        assert.ok(/truncated/.test(report), "truncation is disclosed");
-        assert.ok(report.length < long.length, "and it did actually shrink");
+        assert.ok(report.includes("CONCLUSION: the tail matters"), "tail is kept");
+        assert.ok(!/truncated/.test(report), "nothing is truncated in the full report");
+        assert.ok(report.includes(long), "the phase output is present verbatim");
+    });
+
+    it("the SUMMARY omits phase dumps and points at the file", () => {
+        const long =
+            "START-OF-VALIDATION\n" + "x".repeat(20000) + "\nCONCLUSION: the tail matters";
+        const summary = mk(long, "summary");
+        // A digest line may quote the opening of a phase — that is the summary
+        // doing its job. What must NOT appear is the bulk body.
+        assert.ok(!summary.includes("x".repeat(500)), "no phase dump");
+        assert.ok(!summary.includes("CONCLUSION: the tail matters"), "no phase tail");
+        assert.ok(!/^## Details/m.test(summary), "no Details section");
+        assert.match(summary, /workflow-report\.md/, "points at the file");
+        assert.ok(summary.length < 4000, `summary stays small (was ${summary.length})`);
+    });
+
+    it("the summary still carries the outcome and per-phase lines", () => {
+        const summary = mk("VERDICT: PASS\nall good", "summary");
+        assert.match(summary, /# Workflow Report/);
+        assert.match(summary, /\*\*Outcome:\*\*/);
+        assert.match(summary, /## Summary of work/);
+        assert.match(summary, /Validator/);
     });
 
     it("leaves a short phase output untouched", () => {
-        const report = mk("VERDICT: PASS\nshort and complete");
+        const report = mk("VERDICT: PASS\nshort and complete", "full");
         assert.ok(report.includes("VERDICT: PASS"));
         assert.ok(!/phase output exceeded/.test(report));
     });
@@ -2683,5 +2702,49 @@ describe("gates must read unclamped output", () => {
         assert.ok(c.startsWith("Reasoning."));
         assert.ok(c.includes("truncated"));
         assert.ok(c.length <= PHASE_OUTPUT_MAX + 200);
+    });
+});
+
+// ── the agent card's context bar ─────────────────────────────────────────────
+// Regression: the card fell through to `tokenCount / contextWindow`, where
+// tokenCount is the phase's CUMULATIVE usage across every turn. A planner whose
+// context actually peaked at 15.5% displayed 97.0%/256K, and a refiner at 11.7%
+// displayed 100.0% — the bar read "about to overflow" with the window one-seventh
+// full, which is the opposite of the decision it informs.
+
+describe("context bar prefers the per-turn percent over cumulative tokens", () => {
+    const WINDOW = 256_000;
+
+    it("shows the real occupancy, not cumulative-tokens/window", () => {
+        const { display } = formatContextUsage({
+            contextPct: 15.5,
+            tokenCount: 248_000, // cumulative across the phase
+            contextWindow: WINDOW,
+            barLength: 5,
+            preferContextPct: true,
+        });
+        assert.match(display, /15\.5%/);
+        assert.doesNotMatch(display, /9[0-9]\.[0-9]%|100\.0%/);
+    });
+
+    it("without the flag it reproduces the bug — cumulative tokens dominate", () => {
+        const { display } = formatContextUsage({
+            contextPct: 15.5,
+            tokenCount: 248_000,
+            contextWindow: WINDOW,
+            barLength: 5,
+        });
+        assert.match(display, /9[0-9]\.[0-9]%/); // the wrong reading, documented
+    });
+
+    it("clamps rather than exceeding 100% when cumulative beats the window", () => {
+        const { display } = formatContextUsage({
+            contextPct: 11.7,
+            tokenCount: 434_000,
+            contextWindow: WINDOW,
+            barLength: 5,
+            preferContextPct: true,
+        });
+        assert.match(display, /11\.7%/);
     });
 });
