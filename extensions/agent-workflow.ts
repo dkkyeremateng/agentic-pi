@@ -769,9 +769,16 @@ export default function (pi: ExtensionAPI) {
         // commits them. Separated by a blank ROW: pi-tui's Text renders nothing for an
         // empty/whitespace line, so a visible gap needs a zero-width space (survives
         // .trim() yet is invisible). Omitted until a ledger exists.
+        // Count the phase workers actually in flight: a parallel wave gets one
+        // PhaseState per instance, so this is the number of [•] rows the ledger
+        // should show. Falls back to 1 between waves.
+        const workersRunning = st.phases.filter(
+            (p) => p.agent === "phase-implementer" && p.status === "running",
+        ).length;
         const todos = renderTodos(readProgressItems(), theme, {
             running: st.running,
             width,
+            inProgress: workersRunning,
         });
         if (todos.length) {
             lines.push("\u200b");
