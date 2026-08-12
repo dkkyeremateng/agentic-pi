@@ -2070,6 +2070,18 @@ export function buildWorkflowReport(o: {
     review: string;
     val: string;
     ship: string;
+    // Unclamped per-phase output for the FULL report only. `runPhaseCore` clamps
+    // its return to 24k so a verbose agent cannot overload the next phase; that is
+    // right for threading and wrong for the durable record. Absent entries fall
+    // back to the clamped copy.
+    rawDetails?: Partial<{
+        scoutFindings: string;
+        plan: string;
+        impl: string;
+        review: string;
+        val: string;
+        ship: string;
+    }>;
 },
     // `detail` picks what the caller needs from the SAME run data:
     //   "full"    — every phase's complete output, untruncated. For the FILE, which
@@ -2082,6 +2094,10 @@ export function buildWorkflowReport(o: {
     // chars]" too, and the detail was simply lost.
     detail: "full" | "summary" = "full",
 ): string {
+    // Prefer the unclamped copy when the caller supplied one — the file is the only
+    // place the complete output survives.
+    const body = (k: keyof NonNullable<typeof o.rawDetails>, fallback: string) =>
+        o.rawDetails?.[k] ?? fallback;
     return [
         `# Workflow Report`,
         ``,
@@ -2147,13 +2163,13 @@ export function buildWorkflowReport(o: {
                   `## Details`,
                   ``,
                   ...(o.scoutP
-                      ? [`### Reconnaissance`, ``, o.scoutFindings, ``]
+                      ? [`### Reconnaissance`, ``, body("scoutFindings", o.scoutFindings), ``]
                       : []),
-                  ...(o.planP ? [`### Plan`, ``, o.plan, ``] : []),
-                  ...(o.implP ? [`### Implementation`, ``, o.impl, ``] : []),
-                  ...(o.reviewerP ? [`### Review`, ``, o.review, ``] : []),
-                  ...(o.valP ? [`### Validation`, ``, o.val, ``] : []),
-                  ...(o.shipP ? [`### Ship`, ``, o.ship, ``] : []),
+                  ...(o.planP ? [`### Plan`, ``, body("plan", o.plan), ``] : []),
+                  ...(o.implP ? [`### Implementation`, ``, body("impl", o.impl), ``] : []),
+                  ...(o.reviewerP ? [`### Review`, ``, body("review", o.review), ``] : []),
+                  ...(o.valP ? [`### Validation`, ``, body("val", o.val), ``] : []),
+                  ...(o.shipP ? [`### Ship`, ``, body("ship", o.ship), ``] : []),
               ]),
     ].join("\n");
 }

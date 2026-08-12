@@ -2748,3 +2748,43 @@ describe("context bar prefers the per-turn percent over cumulative tokens", () =
         assert.match(display, /11\.7%/);
     });
 });
+
+describe("the full report uses UNCLAMPED phase output", () => {
+    // runPhaseCore clamps its return to 24k so a verbose agent cannot overload the
+    // next phase's task. Correct for threading, wrong for the durable record: a real
+    // run's file carried BOTH "[output truncated — 7914 chars omitted]" (the 24k
+    // clamp) and "[truncated — phase output exceeded 12000 chars]".
+    const P = (a: string) =>
+        ({ agent: a, label: a, status: "done", elapsed: 1, attempt: 1, toolCount: 0,
+           droppedLines: 0, contextPct: 0, peakContextPct: 0, note: "", log: "" }) as any;
+    const raw = "# Plan\n" + "body ".repeat(6000) + "\nFINAL-LINE";
+    const args: any = {
+        request: "r", status: "shipped", verdict: "pass", passes: 1, maxLoops: 3,
+        passed: true, prUrl: "",
+        totals: { runElapsedMs: 1, totalToolCalls: 1,
+                  totalTokens: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
+                  totalDroppedLines: 0, totalCostUsd: 0 },
+        scoutP: null, planP: P("planner"), refinerP: null, implP: null,
+        reviewerP: null, valP: null, shipP: null,
+        scoutFindings: "", plan: clampOutput(raw), impl: "", review: "", val: "", ship: "",
+        rawDetails: { plan: raw },
+    };
+
+    it("prefers rawDetails over the clamped copy", () => {
+        const full = buildWorkflowReport(args, "full");
+        assert.ok(full.includes(raw), "the whole phase output is present");
+        assert.ok(!/output truncated|phase output exceeded/.test(full), "no markers");
+    });
+
+    it("falls back to the clamped copy when raw is absent", () => {
+        const full = buildWorkflowReport({ ...args, rawDetails: undefined }, "full");
+        assert.ok(full.includes("FINAL-LINE"), "tail survives via clampOutput");
+        assert.match(full, /output truncated/, "and the clamp is disclosed");
+    });
+
+    it("the summary never carries a body, raw or clamped", () => {
+        const sum = buildWorkflowReport(args, "summary");
+        assert.ok(!sum.includes("FINAL-LINE"));
+        assert.ok(sum.length < 3000);
+    });
+});
