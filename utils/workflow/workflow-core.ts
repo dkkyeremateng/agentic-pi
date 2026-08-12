@@ -2063,12 +2063,14 @@ export function buildWorkflowReport(o: {
     implP: PhaseState | null;
     reviewerP: PhaseState | null;
     valP: PhaseState | null;
+    docP: PhaseState | null;
     shipP: PhaseState | null;
     scoutFindings: string;
     plan: string;
     impl: string;
     review: string;
     val: string;
+    doc: string;
     ship: string;
     // Unclamped per-phase output for the FULL report only. `runPhaseCore` clamps
     // its return to 24k so a verbose agent cannot overload the next phase; that is
@@ -2080,6 +2082,7 @@ export function buildWorkflowReport(o: {
         impl: string;
         review: string;
         val: string;
+        doc: string;
         ship: string;
     }>;
 },
@@ -2119,6 +2122,7 @@ export function buildWorkflowReport(o: {
             o.implP,
             o.reviewerP,
             o.valP,
+            o.docP,
             o.shipP,
         ]),
         ``,
@@ -2152,6 +2156,7 @@ export function buildWorkflowReport(o: {
                   ),
               ]
             : []),
+        ...(o.docP ? [summaryLine("Document", o.docP, digest(o.doc))] : []),
         ...(o.shipP ? [summaryLine("Ship", o.shipP, digest(o.ship))] : []),
         ``,
         ...(detail === "summary"
@@ -2169,6 +2174,9 @@ export function buildWorkflowReport(o: {
                   ...(o.implP ? [`### Implementation`, ``, body("impl", o.impl), ``] : []),
                   ...(o.reviewerP ? [`### Review`, ``, body("review", o.review), ``] : []),
                   ...(o.valP ? [`### Validation`, ``, body("val", o.val), ``] : []),
+                  ...(o.docP
+                      ? [`### Documentation`, ``, body("doc", o.doc), ``]
+                      : []),
                   ...(o.shipP ? [`### Ship`, ``, body("ship", o.ship), ``] : []),
               ]),
     ].join("\n");

@@ -2433,12 +2433,14 @@ describe("buildWorkflowReport phase truncation", () => {
             implP: null,
             reviewerP: null,
             valP: { agent: "validator" } as any,
+            docP: null,
             shipP: null,
             scoutFindings: "",
             plan: "",
             impl: "",
             review: "",
             val,
+            doc: "",
             ship: "",
         }, detail);
 
@@ -2766,8 +2768,8 @@ describe("the full report uses UNCLAMPED phase output", () => {
                   totalTokens: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
                   totalDroppedLines: 0, totalCostUsd: 0 },
         scoutP: null, planP: P("planner"), refinerP: null, implP: null,
-        reviewerP: null, valP: null, shipP: null,
-        scoutFindings: "", plan: clampOutput(raw), impl: "", review: "", val: "", ship: "",
+        reviewerP: null, valP: null, docP: null, shipP: null,
+        scoutFindings: "", plan: clampOutput(raw), impl: "", review: "", val: "", doc: "", ship: "",
         rawDetails: { plan: raw },
     };
 
@@ -2841,5 +2843,51 @@ describe("documentTask", () => {
 
     it("passes the run's change through", () => {
         assert.match(t, /add the job state machine/);
+    });
+});
+
+describe("the documenter appears in the report", () => {
+    const P = (a: string) =>
+        ({ agent: a, label: a, status: "done", elapsed: 5000, attempt: 1, toolCount: 2,
+           droppedLines: 0, contextPct: 0, peakContextPct: 0, note: "", log: "" }) as any;
+    const args: any = {
+        request: "r", status: "shipped-local", verdict: "pass", passes: 1, maxLoops: 3,
+        passed: true, prUrl: "",
+        totals: { runElapsedMs: 1, totalToolCalls: 1,
+                  totalTokens: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
+                  totalDroppedLines: 0, totalCostUsd: 0 },
+        scoutP: null, planP: null, refinerP: null, implP: null, reviewerP: null,
+        valP: null, docP: P("documenter"), shipP: null,
+        scoutFindings: "", plan: "", impl: "", review: "", val: "",
+        doc: "Updated README: added the sandbox section, preserved the licence block.",
+        ship: "",
+    };
+
+    it("gets a summary line", () => {
+        const sum = buildWorkflowReport(args, "summary");
+        assert.match(sum, /\*\*Document\*\*/);
+        assert.match(sum, /preserved the licence block/);
+    });
+
+    it("gets its own Details section in the full report", () => {
+        const full = buildWorkflowReport(args, "full");
+        assert.match(full, /^### Documentation$/m);
+        assert.match(full, /preserved the licence block/);
+    });
+
+    it("is omitted entirely when the phase did not run", () => {
+        const none = buildWorkflowReport({ ...args, docP: null }, "full");
+        assert.doesNotMatch(none, /### Documentation/);
+        assert.doesNotMatch(none, /\*\*Document\*\*/);
+    });
+
+    it("prefers the unclamped copy for the file", () => {
+        const long = "readme detail ".repeat(3000);
+        const full = buildWorkflowReport(
+            { ...args, doc: clampOutput(long), rawDetails: { doc: long } },
+            "full",
+        );
+        assert.ok(full.includes(long));
+        assert.ok(!/output truncated/.test(full));
     });
 });
