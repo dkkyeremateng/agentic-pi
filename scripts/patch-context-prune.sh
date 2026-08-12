@@ -59,7 +59,7 @@ set -euo pipefail
 
 PKG="${PI_CONTEXT_PRUNE_DIR:-$HOME/.pi/agent/npm/node_modules/pi-context-prune}"
 FILE="$PKG/index.ts"
-MARKER="PATCH (agentic-pi): headless keep-recent pruning"
+MARKER="PATCH (agentic-pi): headless pressure-triggered pruning"
 
 [[ -f "$FILE" ]] || {
     echo "patch-context-prune: $FILE not found — is pi-context-prune installed?" >&2
@@ -85,8 +85,8 @@ src = open(path, encoding="utf-8").read()
 # Match our whole inserted block: the marker comment through the `} else {` that
 # closes it, and restore the two-line upstream original.
 PATCHED = re.compile(
-    r"[ \t]*// PATCH \(agentic-pi\): headless keep-recent pruning\.\n"
-    r"(?:[ \t]*//.*\n)*"
+    r"[ \t]*// PATCH \(agentic-pi\): headless pressure-triggered pruning with a keep-recent floor\.\n"
+    r"(?:[ \t]*//.*\n|[ \t]*\n)*?"
     r"[ \t]*const headless = ctx\?\.hasUI === false;\n"
     r"[ \t]*if \(headless && currentConfig\.value\.pruneOn === \"agent-message\"\) \{\n"
     r"(?:.*\n)*?"
@@ -124,32 +124,57 @@ path = sys.argv[1]
 src = open(path, encoding="utf-8").read()
 OLD = os.environ["ORIGINAL"]
 
-NEW = '''    // PATCH (agentic-pi): headless keep-recent pruning.
-    // A spawned sub-agent (`pi -p`) has exactly ONE final assistant message, at the
-    // very end, so `agent-message` never flushes mid-run and the agent carries every
-    // turn's tool output for its whole phase (measured: 98.6% of a 256k window, then
-    // a turn truncated with stopReason "length").
-    // Flushing on EVERY turn is worse: turn N+1 is the model acting on turn N's
-    // output, so summarizing it at turn_end removes it exactly when it is needed —
-    // an agent reading a large file looped ~30 times trying to get its own read back.
-    // So: prune the OLD batches and keep the most recent PI_PRUNE_KEEP_RECENT
-    // (default 3) raw. capturePendingBatches reads from the SESSION, so held-back
-    // batches stay unindexed and are simply re-offered next turn; we also put them
-    // back on the queue array to keep the session-read-failed fallback correct.
-    // Interactive sessions are untouched — `every-turn` keeps its upstream behaviour
+NEW = '''    // PATCH (agentic-pi): headless pressure-triggered pruning with a keep-recent floor.
+    //
+    // Pruning exists to prevent context OVERFLOW, so it should fire when overflow
+    // threatens -- not on a fixed cadence. Two earlier attempts got this wrong by
+    // pruning on a schedule regardless of how full the window was:
+    //   * flush every turn: removed turn N's tool output before turn N+1 could use
+    //     it. An agent reading a 113KB file looped ~30 times at 8-9k of a 1M window,
+    //     escalating through python/dd/base64/ROT13 to get its own read back.
+    //   * keep the last 3 turns: better, but a planner surveying a codebase at 25k
+    //     of a 256k window still re-read the same files every ~3 minutes for 53
+    //     turns. Every one of those flushes reclaimed space that was never scarce.
+    // Both failures happened with the window barely 10% full.
+    //
+    // So: below PI_PRUNE_AT_PCT (default 60) of the context window, prune NOTHING --
+    // there is room, and an agent's working set is worth more than the tokens. Above
+    // it, summarize oldest-first while always keeping the most recent
+    // PI_PRUNE_KEEP_RECENT (default 3) batches raw, so a tool result is still
+    // readable for the next few turns.
+    //
+    // If the host cannot report usage (older pi, no getContextUsage), fall back to
+    // the keep-recent behaviour alone rather than pruning blindly.
+    //
+    // Interactive sessions are untouched: `every-turn` keeps its upstream branch
     // below, and `agent-message` with a UI still flushes on the final message.
     const headless = ctx?.hasUI === false;
     if (headless && currentConfig.value.pruneOn === "agent-message") {
       const keepRaw = parseInt(process.env.PI_PRUNE_KEEP_RECENT || "3", 10);
       const keep = Number.isNaN(keepRaw) || keepRaw < 1 ? 3 : keepRaw;
-      const all = capturePendingBatches(ctx);
-      if (all.length > keep) {
-        const older = all.slice(0, all.length - keep);
-        const held = all.slice(all.length - keep);
-        await flushPending(ctx, { delivery: "session", previewedBatches: older });
-        // flushPending drains the queue; restore the recent tail at the FRONT so a
-        // batch captured during the await cannot be reordered ahead of it.
-        pendingBatches.unshift(...held);
+      const atRaw = parseFloat(process.env.PI_PRUNE_AT_PCT || "60");
+      const atPct = Number.isNaN(atRaw) || atRaw <= 0 || atRaw > 100 ? 60 : atRaw;
+
+      let underPressure = true; // no usage API -> keep-recent only
+      try {
+        const cu = ctx?.getContextUsage?.();
+        if (cu && cu.contextWindow > 0) {
+          underPressure = (cu.tokens / cu.contextWindow) * 100 >= atPct;
+        }
+      } catch {
+        // treat an unreadable usage API as "cannot tell" -> keep-recent only
+      }
+
+      if (underPressure) {
+        const all = capturePendingBatches(ctx);
+        if (all.length > keep) {
+          const older = all.slice(0, all.length - keep);
+          const held = all.slice(all.length - keep);
+          await flushPending(ctx, { delivery: "session", previewedBatches: older });
+          // flushPending drains the queue; restore the recent tail at the FRONT so a
+          // batch captured during the await cannot be reordered ahead of it.
+          pendingBatches.unshift(...held);
+        }
       }
     } else if (currentConfig.value.pruneOn === "every-turn") {
       await flushPending(ctx, { delivery: "session" });
