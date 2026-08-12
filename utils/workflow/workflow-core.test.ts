@@ -29,6 +29,7 @@ import {
     freshPhases,
     roadmapTask,
     implementTask,
+    documentTask,
     planTask,
     refineTask,
     ROADMAP_FILE,
@@ -2786,5 +2787,59 @@ describe("the full report uses UNCLAMPED phase output", () => {
         const sum = buildWorkflowReport(args, "summary");
         assert.ok(!sum.includes("FINAL-LINE"));
         assert.ok(sum.length < 3000);
+    });
+});
+
+// ── documenter ───────────────────────────────────────────────────────────────
+
+describe("documenter pipeline wiring", () => {
+    it("sits after the validator and BEFORE the shipper", () => {
+        const phases = freshPhases([
+            "implementer", "reviewer", "validator", "documenter", "shipper",
+        ]);
+        assert.deepEqual(
+            phases.map((p) => p.agent),
+            ["implementer", "reviewer", "validator", "documenter", "shipper"],
+        );
+        // Before the shipper is the point: the README change must be in the commit.
+        const order = phases.map((p) => p.agent);
+        assert.ok(order.indexOf("documenter") < order.indexOf("shipper"));
+        assert.ok(order.indexOf("documenter") > order.indexOf("validator"));
+    });
+
+    it("is optional — a roster without it leaves the phase null", () => {
+        const pm = buildPhaseMap(freshPhases(["implementer", "shipper"]));
+        assert.equal(pm.documenter, null);
+        assert.ok(pm.shipper);
+    });
+
+    it("carries the Document label", () => {
+        assert.equal(freshPhases(["documenter"])[0].label, "Document");
+    });
+});
+
+describe("documentTask", () => {
+    const t = documentTask("add the job state machine");
+
+    it("leads with preserve-do-not-clobber", () => {
+        assert.match(t, /PRESERVE every section that is still accurate, verbatim/);
+        assert.match(t, /READ THE EXISTING README IN FULL FIRST/);
+        assert.match(t, /leave it and say so/);
+    });
+
+    it("requires commands and paths to be verified against the repo", () => {
+        assert.match(t, /package\.json/);
+        assert.match(t, /AGENTS\.md/);
+        assert.match(t, /do not document a feature that is not built/i);
+    });
+
+    it("confines the write to README.md", () => {
+        assert.match(t, /ONLY write is `README\.md`/);
+        assert.match(t, /roadmap\.md/);
+        assert.match(t, /\.agent\//);
+    });
+
+    it("passes the run's change through", () => {
+        assert.match(t, /add the job state machine/);
     });
 });
