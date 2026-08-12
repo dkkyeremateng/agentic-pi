@@ -690,6 +690,12 @@ async function runWorkflowCoreImpl(
 
     // ── Scout (read-only recon) ──
     let scoutFindings = "";
+    // Unclamped phase output, kept ONLY for the file report. `runPhaseCore` clamps
+    // what it returns to 24k so a verbose agent cannot overload the next phase's
+    // task — correct for threading, wrong for the durable record, which is supposed
+    // to be complete. Without this the "full" report still silently drops the middle
+    // of any phase over 24k ("[output truncated — N chars omitted]").
+    const rawOut: Record<string, string> = {};
     if (scoutP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
@@ -701,6 +707,7 @@ async function runWorkflowCoreImpl(
         if (!scoutRes.ok) return fail(s, h, cwd, request, "Scouting", scoutRes.output);
         emitAgentVerdict(scoutP, "pass", "completed");
         scoutFindings = scoutRes.output;
+        rawOut.scout = scoutRes.raw ?? scoutRes.output;
         runArtifacts.recon = scoutFindings;
     }
 
@@ -741,7 +748,9 @@ async function runWorkflowCoreImpl(
     const milestone = hasRoadmap ? readNextMilestone(cwd) : null;
 
     // ── Plan ──
-    let plan = { output: "", ok: true };
+    // `raw` carries the unclamped output for the file report (see rawOut).
+    type PhaseRes = { output: string; ok: boolean; raw?: string };
+    let plan: PhaseRes = { output: "", ok: true };
     if (planP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
@@ -756,6 +765,7 @@ async function runWorkflowCoreImpl(
         // confirmation; older models emit it inline. Take whichever is a valid plan
         // (message first, then the file it wrote) and persist it. resetRunScratch
         // cleared any prior plan.md above, so the file can only be THIS run's.
+        rawOut.plan = plan.raw ?? plan.output;
         plan = selectPlan(runArtifacts, cwd, [
             stripPlanPreamble(plan.output),
             readPlanFile(cwd),
@@ -827,7 +837,7 @@ async function runWorkflowCoreImpl(
     }
 
     // ── Implement (first pass) ──
-    let impl = { output: "", ok: false };
+    let impl: PhaseRes = { output: "", ok: false };
     if (implP) {
         aborted = checkAbort(s, h);
         if (aborted) return aborted;
@@ -866,6 +876,7 @@ async function runWorkflowCoreImpl(
             cwd,
         );
         if (!impl.ok) return fail(s, h, cwd, request, "Implementing", impl.output);
+        rawOut.impl = impl.raw ?? impl.output;
 
         // Fresh-context audit: a multi-phase plan implemented without dispatching a
         // single phase-implementer means every phase shared one context. Re-run the
@@ -953,7 +964,7 @@ async function runWorkflowCoreImpl(
     // The reviewer checks the implementation against the plan; on REVISE BEFORE
     // MERGE the implementer fixes exactly the issues raised and the reviewer
     // re-reviews, looping up to maxLoops.
-    let review = { output: "", ok: true };
+    let review: PhaseRes = { output: "", ok: true };
     let reviewVerdict: CritiqueVerdict = "unknown";
     let priorReview = ""; // last round's findings — threaded into a re-review
     // (!implP || impl.ok): a roster can carry a reviewer without an implementer —
@@ -977,6 +988,7 @@ async function runWorkflowCoreImpl(
             );
             if (!review.ok) return fail(s, h, cwd, request, "Review", review.output);
 
+            rawOut.review = review.raw ?? review.output;
             reviewVerdict = detectCritique(gateText(review));
             if (reviewVerdict !== "revise") break;
 
@@ -1014,8 +1026,8 @@ async function runWorkflowCoreImpl(
         runArtifacts.review = review.output;
     }
 
-    let val = { output: "", ok: false };
-    let ship = { output: "", ok: false };
+    let val: PhaseRes = { output: "", ok: false };
+    let ship: PhaseRes = { output: "", ok: false };
     let verdict: Verdict = "unknown";
     // At most ONE corrective re-ask across the whole validate loop, so a validator
     // that simply never emits a verdict can't double the run's cost.
@@ -1072,6 +1084,7 @@ async function runWorkflowCoreImpl(
                 );
                 if (!val.ok)
                     return fail(s, h, cwd, request, "Validation", val.output);
+                rawOut.val = val.raw ?? val.output;
                 verdict = detectVerdict(gateText(val));
             }
 
@@ -1151,6 +1164,7 @@ async function runWorkflowCoreImpl(
             cwd,
         );
         if (!ship.ok) return fail(s, h, cwd, request, "Shipping", ship.output);
+        rawOut.ship = ship.raw ?? ship.output;
     }
 
     // ── Terminal status, from whichever phases ran ──
@@ -1198,7 +1212,12 @@ async function runWorkflowCoreImpl(
             "info",
         );
 
-    const report = buildWorkflowReport({
+    // Built twice from the same run data: the FULL report is the durable record
+    // written to workflow-report.md, and the SUMMARY is what goes in the
+    // conversation. Publishing the full one meant the reader saw a 50k dump the
+    // renderer clipped anyway, and — worse — the per-phase truncation needed to make
+    // it renderable was baked into the file too, so the detail was lost everywhere.
+    const reportArgs = {
         request,
         status,
         verdict,
@@ -1226,7 +1245,18 @@ async function runWorkflowCoreImpl(
         review: review.output,
         val: val.output,
         ship: ship.output,
-    });
+        // The FILE gets the unclamped text; the summary never shows bodies at all.
+        rawDetails: {
+            scoutFindings: rawOut.scout,
+            plan: rawOut.plan,
+            impl: rawOut.impl,
+            review: rawOut.review,
+            val: rawOut.val,
+            ship: rawOut.ship,
+        },
+    };
+    const report = buildWorkflowReport(reportArgs, "full");
+    const reportSummary = buildWorkflowReport(reportArgs, "summary");
 
     writeReport(h, cwd, report);
 
@@ -1312,7 +1342,9 @@ async function runWorkflowCoreImpl(
     if (!passed) void reflectFailedRun(process.env.PI_OBS_RUN);
 
     h.ui.publishLogs();
-    return { status, report, reportWritten: true };
+    // The SUMMARY is what surfaces in the conversation; the full report is on
+    // disk at workflow-report.md (written above).
+    return { status, report: reportSummary, reportWritten: true };
 }
 
 function writeReport(h: OrchestratorHost, cwd: string, report: string): void {

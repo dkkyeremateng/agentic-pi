@@ -2043,20 +2043,11 @@ function summaryLine(label: string, phase: PhaseState, body: string): string {
 // Cap individual phase output in the details section to prevent reports from
 // growing unbounded when an agent produces very long output. The summary section
 // already uses digest() which is bounded; this bounds the raw details section.
-const REPORT_PHASE_MAX = 12000;
 // Head+tail, never head-only: an agent's conclusion is at the END — the validator's
 // VERDICT line, the reviewer's verdict, the implementer's Risks section. A flat
 // head slice drops exactly the part a human opens the report to read, and it was
 // observed doing so: a run that ended `needs-review` had its validation section cut
 // off mid-investigation, with the reasoning for the outcome nowhere in the report.
-function truncatePhaseOutput(text: string): string {
-    if (text.length <= REPORT_PHASE_MAX) return text;
-    return (
-        clampOutput(text, REPORT_PHASE_MAX) +
-        `\n\n... [truncated — phase output exceeded ${REPORT_PHASE_MAX} chars]`
-    );
-}
-
 export function buildWorkflowReport(o: {
     request: string;
     status: string;
@@ -2079,9 +2070,34 @@ export function buildWorkflowReport(o: {
     review: string;
     val: string;
     ship: string;
-}): string {
-    // Each section appears only when its phase actually ran — the active team
-    // determines which phases exist.
+    // Unclamped per-phase output for the FULL report only. `runPhaseCore` clamps
+    // its return to 24k so a verbose agent cannot overload the next phase; that is
+    // right for threading and wrong for the durable record. Absent entries fall
+    // back to the clamped copy.
+    rawDetails?: Partial<{
+        scoutFindings: string;
+        plan: string;
+        impl: string;
+        review: string;
+        val: string;
+        ship: string;
+    }>;
+},
+    // `detail` picks what the caller needs from the SAME run data:
+    //   "full"    — every phase's complete output, untruncated. For the FILE, which
+    //               is the durable record and the only place the detail survives.
+    //   "summary" — header, per-phase summary lines, and a pointer to the file. For
+    //               the conversation, where a 50k markdown dump is unreadable and
+    //               gets clipped by the renderer anyway.
+    // Previously one truncated string served both, so the file — the thing meant to
+    // hold the full record — carried "[truncated — phase output exceeded 12000
+    // chars]" too, and the detail was simply lost.
+    detail: "full" | "summary" = "full",
+): string {
+    // Prefer the unclamped copy when the caller supplied one — the file is the only
+    // place the complete output survives.
+    const body = (k: keyof NonNullable<typeof o.rawDetails>, fallback: string) =>
+        o.rawDetails?.[k] ?? fallback;
     return [
         `# Workflow Report`,
         ``,
@@ -2138,22 +2154,23 @@ export function buildWorkflowReport(o: {
             : []),
         ...(o.shipP ? [summaryLine("Ship", o.shipP, digest(o.ship))] : []),
         ``,
-        `## Details`,
-        ``,
-        ...(o.scoutP
-            ? [`### Reconnaissance`, ``, truncatePhaseOutput(o.scoutFindings), ``]
-            : []),
-        ...(o.planP ? [`### Plan`, ``, truncatePhaseOutput(o.plan), ``] : []),
-        ...(o.implP
-            ? [`### Implementation`, ``, truncatePhaseOutput(o.impl), ``]
-            : []),
-        ...(o.reviewerP
-            ? [`### Review`, ``, truncatePhaseOutput(o.review), ``]
-            : []),
-        ...(o.valP
-            ? [`### Validation`, ``, truncatePhaseOutput(o.val), ``]
-            : []),
-        ...(o.shipP ? [`### Ship`, ``, truncatePhaseOutput(o.ship), ``] : []),
+        ...(detail === "summary"
+            ? [
+                  `Full per-phase output is in **workflow-report.md** — not repeated here.`,
+                  ``,
+              ]
+            : [
+                  `## Details`,
+                  ``,
+                  ...(o.scoutP
+                      ? [`### Reconnaissance`, ``, body("scoutFindings", o.scoutFindings), ``]
+                      : []),
+                  ...(o.planP ? [`### Plan`, ``, body("plan", o.plan), ``] : []),
+                  ...(o.implP ? [`### Implementation`, ``, body("impl", o.impl), ``] : []),
+                  ...(o.reviewerP ? [`### Review`, ``, body("review", o.review), ``] : []),
+                  ...(o.valP ? [`### Validation`, ``, body("val", o.val), ``] : []),
+                  ...(o.shipP ? [`### Ship`, ``, body("ship", o.ship), ``] : []),
+              ]),
     ].join("\n");
 }
 

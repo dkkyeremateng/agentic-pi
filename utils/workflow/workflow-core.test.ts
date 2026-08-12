@@ -2410,7 +2410,7 @@ describe("loadDotEnv project override precedence", () => {
 // ── Report truncation must keep the conclusion (the verdict lives at the end) ──
 
 describe("buildWorkflowReport phase truncation", () => {
-    const mk = (val: string) =>
+    const mk = (val: string, detail: "full" | "summary" = "summary") =>
         buildWorkflowReport({
             request: "r",
             status: "needs-review",
@@ -2439,26 +2439,45 @@ describe("buildWorkflowReport phase truncation", () => {
             review: "",
             val,
             ship: "",
-        });
+        }, detail);
 
-    it("keeps the tail of an over-long phase, not just the head", () => {
+    it("the FULL report keeps the whole phase output, untruncated", () => {
         // A real run ended `needs-review` with the validation section cut off
-        // mid-investigation, so the reason for the outcome was absent from the
-        // report a human opens to understand it.
+        // mid-investigation, so the reason for the outcome was absent from the file
+        // a human opens to understand it. The file is the durable record: it must
+        // carry everything.
         const long =
             "START-OF-VALIDATION\n" + "x".repeat(20000) + "\nCONCLUSION: the tail matters";
-        const report = mk(long);
+        const report = mk(long, "full");
         assert.ok(report.includes("START-OF-VALIDATION"), "head is kept");
-        assert.ok(
-            report.includes("CONCLUSION: the tail matters"),
-            "tail is kept — the conclusion survives truncation",
-        );
-        assert.ok(/truncated/.test(report), "truncation is disclosed");
-        assert.ok(report.length < long.length, "and it did actually shrink");
+        assert.ok(report.includes("CONCLUSION: the tail matters"), "tail is kept");
+        assert.ok(!/truncated/.test(report), "nothing is truncated in the full report");
+        assert.ok(report.includes(long), "the phase output is present verbatim");
+    });
+
+    it("the SUMMARY omits phase dumps and points at the file", () => {
+        const long =
+            "START-OF-VALIDATION\n" + "x".repeat(20000) + "\nCONCLUSION: the tail matters";
+        const summary = mk(long, "summary");
+        // A digest line may quote the opening of a phase — that is the summary
+        // doing its job. What must NOT appear is the bulk body.
+        assert.ok(!summary.includes("x".repeat(500)), "no phase dump");
+        assert.ok(!summary.includes("CONCLUSION: the tail matters"), "no phase tail");
+        assert.ok(!/^## Details/m.test(summary), "no Details section");
+        assert.match(summary, /workflow-report\.md/, "points at the file");
+        assert.ok(summary.length < 4000, `summary stays small (was ${summary.length})`);
+    });
+
+    it("the summary still carries the outcome and per-phase lines", () => {
+        const summary = mk("VERDICT: PASS\nall good", "summary");
+        assert.match(summary, /# Workflow Report/);
+        assert.match(summary, /\*\*Outcome:\*\*/);
+        assert.match(summary, /## Summary of work/);
+        assert.match(summary, /Validator/);
     });
 
     it("leaves a short phase output untouched", () => {
-        const report = mk("VERDICT: PASS\nshort and complete");
+        const report = mk("VERDICT: PASS\nshort and complete", "full");
         assert.ok(report.includes("VERDICT: PASS"));
         assert.ok(!/phase output exceeded/.test(report));
     });
@@ -2683,5 +2702,89 @@ describe("gates must read unclamped output", () => {
         assert.ok(c.startsWith("Reasoning."));
         assert.ok(c.includes("truncated"));
         assert.ok(c.length <= PHASE_OUTPUT_MAX + 200);
+    });
+});
+
+// ── the agent card's context bar ─────────────────────────────────────────────
+// Regression: the card fell through to `tokenCount / contextWindow`, where
+// tokenCount is the phase's CUMULATIVE usage across every turn. A planner whose
+// context actually peaked at 15.5% displayed 97.0%/256K, and a refiner at 11.7%
+// displayed 100.0% — the bar read "about to overflow" with the window one-seventh
+// full, which is the opposite of the decision it informs.
+
+describe("context bar prefers the per-turn percent over cumulative tokens", () => {
+    const WINDOW = 256_000;
+
+    it("shows the real occupancy, not cumulative-tokens/window", () => {
+        const { display } = formatContextUsage({
+            contextPct: 15.5,
+            tokenCount: 248_000, // cumulative across the phase
+            contextWindow: WINDOW,
+            barLength: 5,
+            preferContextPct: true,
+        });
+        assert.match(display, /15\.5%/);
+        assert.doesNotMatch(display, /9[0-9]\.[0-9]%|100\.0%/);
+    });
+
+    it("without the flag it reproduces the bug — cumulative tokens dominate", () => {
+        const { display } = formatContextUsage({
+            contextPct: 15.5,
+            tokenCount: 248_000,
+            contextWindow: WINDOW,
+            barLength: 5,
+        });
+        assert.match(display, /9[0-9]\.[0-9]%/); // the wrong reading, documented
+    });
+
+    it("clamps rather than exceeding 100% when cumulative beats the window", () => {
+        const { display } = formatContextUsage({
+            contextPct: 11.7,
+            tokenCount: 434_000,
+            contextWindow: WINDOW,
+            barLength: 5,
+            preferContextPct: true,
+        });
+        assert.match(display, /11\.7%/);
+    });
+});
+
+describe("the full report uses UNCLAMPED phase output", () => {
+    // runPhaseCore clamps its return to 24k so a verbose agent cannot overload the
+    // next phase's task. Correct for threading, wrong for the durable record: a real
+    // run's file carried BOTH "[output truncated — 7914 chars omitted]" (the 24k
+    // clamp) and "[truncated — phase output exceeded 12000 chars]".
+    const P = (a: string) =>
+        ({ agent: a, label: a, status: "done", elapsed: 1, attempt: 1, toolCount: 0,
+           droppedLines: 0, contextPct: 0, peakContextPct: 0, note: "", log: "" }) as any;
+    const raw = "# Plan\n" + "body ".repeat(6000) + "\nFINAL-LINE";
+    const args: any = {
+        request: "r", status: "shipped", verdict: "pass", passes: 1, maxLoops: 3,
+        passed: true, prUrl: "",
+        totals: { runElapsedMs: 1, totalToolCalls: 1,
+                  totalTokens: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
+                  totalDroppedLines: 0, totalCostUsd: 0 },
+        scoutP: null, planP: P("planner"), refinerP: null, implP: null,
+        reviewerP: null, valP: null, shipP: null,
+        scoutFindings: "", plan: clampOutput(raw), impl: "", review: "", val: "", ship: "",
+        rawDetails: { plan: raw },
+    };
+
+    it("prefers rawDetails over the clamped copy", () => {
+        const full = buildWorkflowReport(args, "full");
+        assert.ok(full.includes(raw), "the whole phase output is present");
+        assert.ok(!/output truncated|phase output exceeded/.test(full), "no markers");
+    });
+
+    it("falls back to the clamped copy when raw is absent", () => {
+        const full = buildWorkflowReport({ ...args, rawDetails: undefined }, "full");
+        assert.ok(full.includes("FINAL-LINE"), "tail survives via clampOutput");
+        assert.match(full, /output truncated/, "and the clamp is disclosed");
+    });
+
+    it("the summary never carries a body, raw or clamped", () => {
+        const sum = buildWorkflowReport(args, "summary");
+        assert.ok(!sum.includes("FINAL-LINE"));
+        assert.ok(sum.length < 3000);
     });
 });

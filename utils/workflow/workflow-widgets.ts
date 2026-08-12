@@ -122,6 +122,14 @@ export function renderRichCard(opts: {
         tokenCount: ctxTotalTok,
         contextWindow: ctxWindow || undefined,
         barLength: 5,
+        // Trust the per-turn context percent, exactly as the footer does. Without
+        // this the card fell through to `tokenCount / contextWindow`, where
+        // tokenCount is the phase's CUMULATIVE usage across every turn — so a
+        // planner whose context peaked at 15.5% displayed 97.0%/256K (248K
+        // cumulative / 256K window) and a refiner at 11.7% displayed 100.0%
+        // (434K clamped). The bar read "about to overflow" with the window
+        // one-seventh full, which is the opposite of the decision it informs.
+        preferContextPct: true,
     });
     // Append the phase's USD cost to the usage line (where tokens already live)
     // so the card height stays constant. Always shown ($0.00 for unpriced models).
