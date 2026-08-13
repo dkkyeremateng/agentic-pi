@@ -1676,6 +1676,8 @@ export function makeExtensionSpawnWrapper(opts: {
     state: Parameters<typeof makeSpawnWrapper>[0]["state"];
     sessionDir: () => string;
     agentTimeoutMs: number;
+    // Silence-based stall kill (ms); see SpawnConfig.agentStallMs.
+    agentStallMs?: number;
     updateWidget: () => void;
     /** Every spawned proc, so cancellation can kill them all. Each removes itself
      *  on exit, which makes the spawn's own setCurrentProc(null) a harmless no-op. */
@@ -1689,6 +1691,7 @@ export function makeExtensionSpawnWrapper(opts: {
         state: opts.state,
         sessionDir: opts.sessionDir,
         agentTimeoutMs: opts.agentTimeoutMs,
+        agentStallMs: opts.agentStallMs,
         updateWidget: opts.updateWidget,
         setCurrentProc: (p: any) => {
             if (p) {
@@ -1736,6 +1739,8 @@ export function makeSpawnWrapper(opts: {
     };
     sessionDir: string | (() => string);
     agentTimeoutMs: number;
+    // Silence-based stall kill (ms); see SpawnConfig.agentStallMs.
+    agentStallMs?: number;
     updateWidget: () => void;
     setCurrentProc: (proc: any) => void;
     getFallbackContextWindow?: (model: string) => number;
@@ -1751,6 +1756,7 @@ export function makeSpawnWrapper(opts: {
         state,
         sessionDir: sessionDirOpt,
         agentTimeoutMs,
+        agentStallMs,
         updateWidget,
         setCurrentProc,
         getFallbackContextWindow,
@@ -1764,6 +1770,7 @@ export function makeSpawnWrapper(opts: {
         const cfg: SpawnConfig = {
             sessionDir: getSessionDir(),
             agentTimeoutMs,
+            agentStallMs,
             updateWidget,
             setCurrentProc,
             getFallbackContextWindow,
@@ -3202,6 +3209,10 @@ export function tokenNote(phase: PhaseState): string {
 export interface SpawnConfig {
     sessionDir: string;
     agentTimeoutMs: number;
+    // Kill a child that has emitted NOTHING for this long (ms). 0/undefined
+    // disables it. Distinct from agentTimeoutMs: this measures silence, not
+    // elapsed time, so a slow-but-streaming agent is never killed.
+    agentStallMs?: number;
     updateWidget: () => void;
     setCurrentProc: (proc: any) => void;
     // Context window for the bar when the provider doesn't report one in usage
@@ -3679,6 +3690,10 @@ export function computeSpawnResult(
     timedOut: boolean,
     agentTimeoutMs: number,
     stderrTail: string,
+    // >0 when the kill came from the STALL watchdog (silence) rather than the
+    // wall-clock one, so the report names the cause the operator must act on:
+    // a stall means blocked, a timeout means slow.
+    stalledAfterMs = 0,
 ): SpawnResult {
     let output = state.answer.join("") || state.finalText;
     if (state.finalError) {
@@ -3687,9 +3702,11 @@ export function computeSpawnResult(
             `[agent error] ${state.finalError.slice(0, STDERR_TAIL_CAP)}`;
     }
     if (timedOut) {
-        output +=
-            (output ? "\n\n" : "") +
-            `[timed out after ${Math.round(agentTimeoutMs / 60_000)}m — killed by PI_WORKFLOW_AGENT_TIMEOUT]`;
+        const why =
+            stalledAfterMs > 0
+                ? `[stalled — no output for ${Math.round(stalledAfterMs / 60_000)}m; killed by PI_WORKFLOW_AGENT_STALL]`
+                : `[timed out after ${Math.round(agentTimeoutMs / 60_000)}m — killed by PI_WORKFLOW_AGENT_TIMEOUT]`;
+        output += (output ? "\n\n" : "") + why;
     }
     if ((exitCode ?? 1) !== 0 && stderrTail.trim()) {
         output += (output ? "\n\n" : "") + `[stderr]\n${stderrTail.trim()}`;
@@ -3929,6 +3946,37 @@ export function spawnAgentWithModel(
                   }, config.agentTimeoutMs)
                 : null;
 
+        // STALL watchdog — distinct from the wall-clock one above, and the reason
+        // it exists: a wall-clock limit cannot tell "working slowly" from "not
+        // working at all", so any value low enough to catch a hang also kills
+        // legitimate long work. Observed live: a `docker run` against a wedged
+        // daemon never returned, the agent sat on that one tool call for TWO HOURS
+        // emitting nothing, and the wall-clock watchdog (default 0 = off) never
+        // fired. Meanwhile a sibling coordinator legitimately ran 68 minutes.
+        //
+        // Silence is the signal that separates them. A healthy agent emits stream
+        // events continuously — tool_start, deltas, turn_end — so a long gap with
+        // ZERO output means the child is blocked, not thinking. Kill on that
+        // instead, and slow-but-working agents are never touched.
+        //
+        // Off by default (0) so no existing run changes behaviour; opt in with
+        // PI_WORKFLOW_AGENT_STALL (minutes).
+        let stalled = false;
+        let lastOutputAt = Date.now();
+        const stallMs = config.agentStallMs ?? 0;
+        const stallTimer =
+            stallMs > 0
+                ? setInterval(() => {
+                      if (Date.now() - lastOutputAt < stallMs) return;
+                      stalled = true;
+                      timedOut = true;
+                      killTree("SIGTERM");
+                  }, Math.min(stallMs, 30_000))
+                : null;
+        const markOutput = () => {
+            lastOutputAt = Date.now();
+        };
+
         let lastPaint = 0;
         const paint = (force = false) => {
             const now = Date.now();
@@ -3945,6 +3993,7 @@ export function spawnAgentWithModel(
         let buffer = "";
         proc.stdout!.setEncoding("utf-8");
         proc.stdout!.on("data", (chunk: string) => {
+            markOutput();
             buffer += chunk;
             const lines = buffer.split("\n");
             buffer = lines.pop() || "";
@@ -3955,6 +4004,7 @@ export function spawnAgentWithModel(
         });
         proc.stderr!.setEncoding("utf-8");
         proc.stderr!.on("data", (chunk: string) => {
+            markOutput();
             state.stderrTail += chunk;
             if (state.stderrTail.length > STDERR_TAIL_CAP)
                 state.stderrTail = state.stderrTail.slice(-STDERR_TAIL_CAP);
@@ -3970,6 +4020,7 @@ export function spawnAgentWithModel(
                 handleSpawnLine(buffer, state, phase, () => {});
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
+            if (stallTimer) clearInterval(stallTimer);
             if (killEscalation) clearTimeout(killEscalation);
             pane?.close();
             phase.paneActive = false;
@@ -3988,6 +4039,7 @@ export function spawnAgentWithModel(
                     timedOut,
                     config.agentTimeoutMs,
                     state.stderrTail,
+                    stalled ? stallMs : 0,
                 ),
             );
         });
@@ -3996,6 +4048,7 @@ export function spawnAgentWithModel(
             config.setCurrentProc(null);
             clearInterval(timer);
             if (watchdog) clearTimeout(watchdog);
+            if (stallTimer) clearInterval(stallTimer);
             if (killEscalation) clearTimeout(killEscalation);
             pane?.close();
             phase.paneActive = false;
