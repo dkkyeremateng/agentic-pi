@@ -151,6 +151,14 @@ const WORKER_MODEL = process.env.PI_WORKFLOW_MODEL || "";
 const AGENT_TIMEOUT_MS =
     Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_TIMEOUT || "0") || 0) *
     60_000;
+// Stall watchdog (PI_WORKFLOW_AGENT_STALL, in minutes). 0 / unset = off. Kills a
+// child that has emitted NOTHING for this long — see the rationale at the stall
+// timer in workflow-core: silence separates "blocked" from "slow", which a
+// wall-clock limit cannot. 20 is a sane opt-in value; a healthy agent streams
+// events every few seconds, so even a long model call stays far under it.
+const AGENT_STALL_MS =
+    Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_STALL || "0") || 0) *
+    60_000;
 // Opt-in curated cross-agent context bundle (on by default). When enabled, each
 // later phase receives a "Shared run context" block containing the durable artifacts
 // earlier agents produced (recon, review, etc.) that the task builders do not
@@ -320,6 +328,9 @@ export default function (pi: ExtensionAPI) {
                     return false;
                 }
             },
+            // Read-only git for core decisions (see SetupCallbacks.git). Bound to
+            // cwd and handed over as-is: the core only ever asks questions with it.
+            git: (cwd) => git(cwd),
             ensureWorkBranch: (cwd, request) => {
                 try {
                     const wb = ensureWorkBranch(git(cwd), request);
@@ -836,6 +847,7 @@ export default function (pi: ExtensionAPI) {
         state: st,
         sessionDir: () => sessionDir,
         agentTimeoutMs: AGENT_TIMEOUT_MS,
+        agentStallMs: AGENT_STALL_MS,
         updateWidget: () => updateWidget(),
         liveProcs,
         ctx: () => widgetCtx,

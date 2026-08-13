@@ -69,7 +69,7 @@ import {
 } from "fs";
 import { join, dirname } from "path";
 import { fileLink } from "./workflow-widgets";
-import { slugifyBranch } from "./checkpoint";
+import { slugifyBranch, type GitRunner } from "./checkpoint";
 
 // The mutable run/session state shared between the orchestration here and the
 // extension's widget/footer/hooks. Created by the extension; mutated by both.
@@ -197,6 +197,12 @@ export interface SetupCallbacks {
     // Separate from isGitRepo because an initialised repo with no commits passes
     // the work-tree check while silently disabling checkpoints and work branches.
     hasCommits?: (cwd: string) => boolean;
+    // A git runner bound to `cwd`, for read-only queries the core needs to make a
+    // decision — currently whether the ledger's cited commits are reachable from
+    // HEAD, which is what distinguishes a RENAMED branch from a genuinely
+    // different one. Injected like the other git effects; absent (older hosts)
+    // degrades to the previous branch-name comparison.
+    git?: (cwd: string) => GitRunner;
 }
 
 // Configuration flags
@@ -862,7 +868,11 @@ async function runWorkflowCoreImpl(
             // Resuming an existing ledger: its `[x]` marks are only meaningful on the
             // branch that made them. If this run is on a different branch, that work
             // is not in our tree — reopen those phases rather than skipping them.
-            const reopened = reconcileLedgerBranch(cwd, wb?.branch ?? "");
+            const reopened = reconcileLedgerBranch(
+                cwd,
+                wb?.branch ?? "",
+                h.setup.git?.(cwd),
+            );
             if (reopened)
                 h.ui.notify(
                     `Reopened ${reopened} phase(s): the ledger recorded them done on a different branch, whose commits are not in this run's tree.`,
@@ -1719,7 +1729,35 @@ export function initProgressLedger(
 // changed) and clear every `[x]`, leaving a note explaining why. Returns the number
 // of phases reopened. A ledger with no `Branch:` line predates this and is left
 // alone — the implementer is separately told to re-verify `[x]` phases.
-export function reconcileLedgerBranch(cwd: string, branch: string): number {
+// Whether EVERY commit the ledger's `[x]` lines cite is reachable from HEAD.
+//
+// Ledger evidence looks like `- [x] Phase 1: … — tests: … (cbfb108)`, so the sha is
+// the last parenthesised hex token on the line. Returns false when no line cites a
+// sha: with nothing to verify there is no evidence the work is present, and the
+// caller must fall back to reopening (the safe direction).
+export function ledgerCommitsPresent(raw: string, run: GitRunner): boolean {
+    const shas = raw
+        .split(/\r?\n/)
+        .filter((l) => /^\s*-\s*\[[xX]\]/.test(l))
+        // Both evidence forms occur in the wild: `(cbfb108)` and `(sha cbfb108)`.
+        .map((l) => l.match(/\((?:sha\s+)?([0-9a-f]{7,40})\)\s*$/)?.[1])
+        .filter((s): s is string => !!s);
+    if (shas.length === 0) return false;
+    return shas.every((sha) => {
+        try {
+            run(["merge-base", "--is-ancestor", sha, "HEAD"]);
+            return true;
+        } catch {
+            return false; // non-zero exit: not an ancestor, or not a known object
+        }
+    });
+}
+
+export function reconcileLedgerBranch(
+    cwd: string,
+    branch: string,
+    run?: GitRunner,
+): number {
     const file = join(cwd, ".agent", "progress.md");
     if (!branch || !existsSync(file)) return 0;
     let raw: string;
@@ -1730,6 +1768,30 @@ export function reconcileLedgerBranch(cwd: string, branch: string): number {
     }
     const recorded = raw.match(/^Branch:\s*(\S+)\s*$/m)?.[1];
     if (!recorded || recorded === branch) return 0;
+
+    // A DIFFERENT branch name is not proof the work is missing — the branch may
+    // simply have been RENAMED. Observed live: a branch renamed off the `agent/`
+    // prefix (to stop ensureWorkBranch cutting a fresh one every run) made this
+    // discard 11 completed items whose commits were all reachable from HEAD, and
+    // the next run began re-implementing ~5,000 lines that already existed.
+    //
+    // So ask git, not the string: if every sha the ledger cites is an ancestor of
+    // HEAD, the work IS in this tree. Adopt the new branch name and keep the marks.
+    // Reopen only when a cited commit is genuinely absent (or when there are no
+    // shas to check, which is the old fail-safe).
+    if (run && ledgerCommitsPresent(raw, run)) {
+        try {
+            writeFileSync(
+                file,
+                raw.replace(/^Branch:.*$/m, `Branch: ${branch}`),
+                "utf-8",
+            );
+        } catch {
+            // A failed rewrite only means the stale name persists; the marks are
+            // still correct, so still do not reopen.
+        }
+        return 0;
+    }
 
     let reopened = 0;
     const lines = raw.split(/\r?\n/).map((l) => {

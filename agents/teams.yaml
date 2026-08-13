@@ -39,3 +39,14 @@ build:
     - validator
     - documenter
     - shipper
+
+# Gates an implementation that is ALREADY committed — no planner and no
+# implementer, so the reviewer reviews the working tree directly. Because the
+# roster neither plans nor builds, resetRunScratch is skipped and .agent/plan.md
+# plus the progress ledger survive (the plan is not this run's scratch to
+# destroy). Use it to re-run the gates after a build was interrupted, or to
+# review work a previous run committed.
+review:
+    - reviewer
+    - validator
+    - documenter

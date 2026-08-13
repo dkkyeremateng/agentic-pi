@@ -3025,6 +3025,46 @@ describe("handleSpawnEvent", () => {
     });
 });
 
+describe("computeSpawnResult — stall vs wall-clock kill", () => {
+    const base = {
+        answer: [],
+        finalText: "work in progress",
+        finalError: "",
+        activity: "",
+        stderrTail: "",
+        droppedLines: 0,
+        toolCount: 0,
+        contextPct: 0,
+        cumulativeTokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    } as unknown as SpawnEventState;
+
+    it("names the STALL when the kill came from silence, not elapsed time", () => {
+        // The operator has to act differently on the two: a stall means the agent
+        // is blocked (the live case was a `docker run` against a wedged daemon),
+        // a timeout means it is merely slow. Reporting both as "timed out" sent
+        // two hours of debugging at the wrong thing.
+        const r = computeSpawnResult(base, null, true, 0, "", 20 * 60_000);
+        assert.match(r.output, /stalled — no output for 20m/);
+        assert.match(r.output, /PI_WORKFLOW_AGENT_STALL/);
+        assert.ok(!/PI_WORKFLOW_AGENT_TIMEOUT/.test(r.output));
+    });
+
+    it("still names the wall-clock timeout when that is what fired", () => {
+        const r = computeSpawnResult(base, null, true, 30 * 60_000, "", 0);
+        assert.match(r.output, /timed out after 30m/);
+        assert.match(r.output, /PI_WORKFLOW_AGENT_TIMEOUT/);
+        assert.ok(!/stalled/.test(r.output));
+    });
+
+    it("keeps the partial answer alongside the kill note", () => {
+        // Whatever the agent produced before being killed is still the most useful
+        // thing in the result — appending must not replace it.
+        const r = computeSpawnResult(base, null, true, 0, "", 20 * 60_000);
+        assert.match(r.output, /work in progress/);
+        assert.equal(r.exitCode, 1);
+    });
+});
+
 describe("computeSpawnResult", () => {
     function mkState(
         overrides: Partial<SpawnEventState> = {},
@@ -4867,6 +4907,89 @@ describe("reconcileLedgerBranch", () => {
     };
     const read = (cwd: string) =>
         readFileSync(join(cwd, ".agent", "progress.md"), "utf-8");
+
+    it("keeps the marks when the branch was RENAMED and every cited commit is reachable", () => {
+        // The live failure this exists to prevent: a branch renamed off the
+        // `agent/` prefix (to stop ensureWorkBranch cutting a fresh branch every
+        // run) made this discard 11 completed items whose commits were all in
+        // HEAD's history, and the next run began re-implementing ~5,000 lines.
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-rename-"));
+        write(
+            cwd,
+            [
+                "# Implementation progress",
+                "",
+                "Branch: agent/build-the-plan-1895d82",
+                "",
+                "- [x] Phase 1 — contract — tests: go test (cbfb108)",
+                "- [x] Phase 2 — proxy — tests: go test (cde43a6)",
+                "- [ ] Phase 3 — image",
+                "",
+            ].join("\n"),
+        );
+        const asked: string[][] = [];
+        const run = (args: string[]): string => {
+            asked.push(args);
+            return ""; // every ancestry check succeeds
+        };
+
+        const n = reconcileLedgerBranch(cwd, "m4-codingagent", run);
+        const out = read(cwd);
+
+        assert.equal(n, 0, "nothing is reopened");
+        assert.equal((out.match(/^- \[x\]/gm) || []).length, 2, "marks survive");
+        assert.match(out, /Branch: m4-codingagent/, "the new name is adopted");
+        assert.ok(!/reopened/.test(out), "no reopen note is added");
+        assert.deepEqual(asked, [
+            ["merge-base", "--is-ancestor", "cbfb108", "HEAD"],
+            ["merge-base", "--is-ancestor", "cde43a6", "HEAD"],
+        ]);
+    });
+
+    it("still reopens when a cited commit is NOT reachable from HEAD", () => {
+        // A genuinely different branch: the fork case the original guard caught.
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-fork-"));
+        write(
+            cwd,
+            [
+                "# Implementation progress",
+                "",
+                "Branch: agent/build-the-plan-1895d82",
+                "",
+                "- [x] Phase 1 — contract — tests: go test (cbfb108)",
+                "- [x] Phase 2 — proxy — tests: go test (cde43a6)",
+                "",
+            ].join("\n"),
+        );
+        const run = (args: string[]): string => {
+            if (args.includes("cde43a6")) throw new Error("not an ancestor");
+            return "";
+        };
+
+        const n = reconcileLedgerBranch(cwd, "agent/continue-1895d82", run);
+        const out = read(cwd);
+
+        assert.equal(n, 2, "one absent commit reopens the whole ledger");
+        assert.equal((out.match(/^- \[x\]/gm) || []).length, 0);
+        assert.match(out, /reopened 2 phase\(s\)/);
+    });
+
+    it("reopens when no commit is cited at all — nothing to verify is not evidence", () => {
+        const cwd = mkdtempSync(join(tmpdir(), "ledger-noshas-"));
+        write(
+            cwd,
+            [
+                "# Implementation progress",
+                "",
+                "Branch: agent/old-1895d82",
+                "",
+                "- [x] Phase 1 — contract",
+                "",
+            ].join("\n"),
+        );
+        const n = reconcileLedgerBranch(cwd, "agent/new-1895d82", () => "");
+        assert.equal(n, 1);
+    });
 
     it("reopens phases recorded on a different branch and drops their evidence", () => {
         // The live failure: a ledger claimed phases done with shas from a previous
