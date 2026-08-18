@@ -3,7 +3,8 @@
 # install.sh — set up the pi agent-workflow on macOS / Linux.
 #
 # Installs everything needed to RUN and DEVELOP the workflow + observability
-# server, EXCLUDING the React dashboard app (pi-obs/), which has its own setup.
+# server. The dashboard (obs/ui) needs no setup to *run* — its build is committed
+# and obs-server serves it; `cd obs/ui && npm install` is only for developing it.
 #
 # What it does:
 #   1. checks Node.js + npm (required) and python3 (for skills; warn-only)
@@ -185,7 +186,7 @@ have pi || die "'pi' is still not on PATH — ensure npm's global bin dir is on 
 say "pi → $(command -v pi)"
 
 # 4. repo dev dependencies (tsx, typescript, @types/node) — ROOT ONLY.
-#    pi-obs/ is a separate package and is deliberately left out.
+#    obs/ui is a separate package; its committed dist/ is all the server needs.
 say "installing repo dev dependencies (npm install)"
 npm install --no-audit --no-fund
 
@@ -355,6 +356,7 @@ about above and can be re-run — the section is idempotent. Skip with --no-skil
   • the atlassian/linear/lsp CLIs live in ~/.local/bin — put it on your PATH
   • gopls needs a Go toolchain; install Go then: go install golang.org/x/tools/gopls@latest
 
-Excluded by design — the React dashboard app:
-  cd pi-obs && npm install     # set it up separately
+The obs dashboard (obs/ui) already works — its build is committed and the obs
+server serves it at http://127.0.0.1:7616/. To develop the UI itself:
+  cd obs/ui && npm install && npm run dev     # then rebuild + commit dist/
 EOF

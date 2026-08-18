@@ -4,9 +4,10 @@
 node_modules
 **/node_modules
 
-# The React dashboard is intentionally excluded — the container serves the
-# bundled vanilla dashboard from obs/obs-ui, not pi-obs.
-pi-obs
+# The dashboard ships as its committed BUILD only. obs/ui/dist is what the server
+# serves; its React sources, deps and tooling never run in the container.
+obs/ui/*
+!obs/ui/dist
 mockups
 
 # Local scratch / runtime artifacts.

@@ -1,8 +1,8 @@
 # Running the observability server in Docker
 
 The image runs **only the obs server** — the dashboard (`/`) and the JSON API
-(`/api`). It serves the bundled vanilla dashboard from `obs/obs-ui`; the React
-app (`pi-obs/`) is intentionally **not** included.
+(`/api`). It serves the React dashboard from `obs/ui/dist`, whose build is
+committed to the repo, so the image needs no bundler stage.
 
 The server is plain Node + `tsx` with no native dependencies, so the image is a
 single slim layer (`node:20-slim`).

@@ -25,8 +25,8 @@ only `.env` config — no code edits.
   (`./run.sh --bg`), then attach/detach the terminal or steer it live from the
   dashboard without reattaching.
 - **Observability** — an offline metrics analyzer (per-run reports + cross-project
-  trends) and an opt-in live dashboard (`PI_OBS=1`) with seven views (Swimlane,
-  Single, Race, Trace, Stats, Compare, Search), full run history, automated
+  trends) and an opt-in live dashboard (`PI_OBS=1`) with eight segments (Runs,
+  Live, Analytics, Datasets, Monitors, Prompts, Chat, Search), full run history, automated
   **evals** (+ optional LLM-as-judge), a versioned prompt-config registry, and an
   OpenTelemetry export — spanning every pi instance you're running.
 - **Skills** — LSP diagnostics & navigation (Python/Go/TS/PHP), Playwright browser
@@ -127,9 +127,9 @@ downstream agents, so it is never re-threaded through the context.
 ```
 
 [`install.sh`](install.sh) sets up everything to run/develop the workflow and the
-observability server (it excludes the React dashboard in `pi-obs/` — set that up
-separately with `cd pi-obs && npm install`). Already have `pi` and the deps? Just
-`cp example.env .env` and `./run.sh`.
+observability server, including its dashboard — the React app in
+[`obs/ui`](obs/ui) ships as a committed build, so it needs no separate setup to
+run. Already have `pi` and the deps? Just `cp example.env .env` and `./run.sh`.
 
 `run.sh` loads the extensions resolved relative to itself, so you never edit pi's
 global settings per machine. Then, inside pi:
@@ -455,27 +455,44 @@ by default): a one-time **boot snapshot** (selected tools, loaded skills, contex
 hashes, system-prompt size/hash), then turns, tool calls (with **execution latency**),
 tokens, cost, **per-turn throughput (tok/s)**, model changes, compaction, the run's
 **verdict** (pass/fail/paused), and **provider errors**. A dependency-free Node server
-tails that file and streams it to a browser dashboard over SSE with seven views:
+tails that file and streams it to the browser over SSE. The dashboard is the React
+app in [`obs/ui`](obs/ui), served by the same server at `/` (and `/app/`), with
+eight segments:
 
-- **Swimlane** — a live lane per agent.
-- **Single** — one agent's full (virtualized) timeline, banded by turn-cycle, with
-  filters, search, a stat bar + context widget, and click-to-expand tool args/results.
-- **Race** — a turn-normalized grid of who reached which step, grouped by agent
-  (parallel instances collapse under one header) and, across projects, by project.
-- **Trace** — a hierarchical waterfall of one run: the orchestrator at the root with
-  each dispatched agent nested on a shared time axis, annotated with dispatch
-  retries/truncation.
-- **Stats** — aggregate analytics (latency percentiles, cost/tokens by agent, a
-  tool-duration leaderboard, cost over time) with vs-previous-run deltas, plus
-  **automated evaluators** that grade the selected run against cost / duration /
-  tool-call budgets — and, with `PI_OBS_LLM=1`, an **LLM-as-judge** rubric score
-  (0–100 on a small rubric, cached per run).
-- **Compare** — a side-by-side diff of any two runs (A baseline vs B candidate):
-  headline metrics, per-agent and tool usage, and setup changes from the boot snapshots.
-- **Search** — server-side substring search over **every run ever recorded**, with
-  `run:` / `agent:` / `type:` / `project:` filters.
+- **Runs** — the inbox: filter by status, date window, project, and free text, with
+  low-signal no-op runs folded away. Opening a run gives its hero metrics
+  (cost/tokens/duration/verdict), a digest pane (narrative, anomaly cards, pass/fail
+  scoring) and six tabs — **Trace** (span tree with per-span I/O), **Timeline**
+  (zoomable gantt + scrubbable replay), **Events** (turn-banded feed), **Stats**,
+  **Evals**, and **Raw** (JSONL). Open runs stream live into every tab.
+- **Live** — an agent wall off the event stream: a card per session with rollups, a
+  live tail, throughput, stall badges, and which sub-agents the orchestrator is
+  blocked on. Pausable (buffers rather than drops).
+- **Analytics** — KPI strip, throughput chart, run history, and **Compare** A/B: a
+  side-by-side diff of any two runs (headline metrics, per-agent and tool usage,
+  and setup changes from the boot snapshots).
+- **Datasets** — curated run sets (a regression suite, a golden set, a
+  known-failures bucket) tracked by their aggregate evaluator scores.
+- **Monitors** — thresholds on cost, latency, eval score, or error rate; breaches
+  raise alerts in the header and can relay to a webhook.
+- **Prompts** — the versioned per-agent boot snapshots (prompt hash, model, tools,
+  skills, context files), plus a one-shot prompt playground.
+- **Chat** — talk to an agent with streaming replies and attachments; a chat can
+  attach to a live run and steer it, with an optional approval gate on its tools.
+- **Search** — server-side substring search over **every run ever recorded**, with a
+  `tool:` / `status:` / `agent:` / `model:` / `run:` prefix grammar and a facet rail.
 
-A **⌘K command palette** jumps to any view, project, or run.
+Automated **evaluators** grade a run against cost / duration / tool-call budgets, and
+with `PI_OBS_LLM=1` an **LLM-as-judge** rubric adds a 0–100 score (cached per run);
+run explanations, I/O summaries, the playground and Chat need the same flag. A
+**⌘K command palette** jumps to any segment, project, or run, and every view is
+linkable via the hash router (`#/<segment>[/<runId>/<tab>]`).
+
+The UI's own README documents its architecture, configuration and deploy modes —
+including pointing one deployed dashboard at several agents with `?api=<obs-url>`.
+Its build (`obs/ui/dist`) is **committed**, so the server has a working dashboard
+with no bundler step; after changing `obs/ui/src`, run `npm run build` there and
+commit the result.
 
 **Run history & selection.** The server indexes the whole sink by run, so the dashboard
 isn't limited to the live tail: `/runs` lists **every run ever recorded** and any one's

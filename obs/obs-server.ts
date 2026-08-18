@@ -27,7 +27,7 @@ import {
     appendFileSync,
     readdirSync,
 } from "fs";
-import { join, resolve as resolvePath, dirname } from "path";
+import { join, resolve as resolvePath, dirname, sep } from "path";
 import { homedir } from "os";
 import { randomBytes } from "crypto";
 import { fileURLToPath } from "url";
@@ -71,7 +71,12 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // process that doesn't, so load it here too (real env wins). Lets PI_OBS_LLM* live
 // in .env like every other setting. HERE = <repo>/obs → repo root is ...
 loadRepoEnv(join(HERE, "..", ".env"));
-const UI_DIR = join(HERE, "obs-ui");
+// The dashboard is the React app in obs/ui, served from its committed build.
+// dist/ is checked in on purpose so a fresh clone (and the Docker image) has a
+// working UI with no build step; rebuild it with `cd obs/ui && npm run build`
+// after changing src/. Its assets are absolute under /app/, which is why the
+// same index.html can be served from both "/" and "/app/".
+const UI_DIR = join(HERE, "ui", "dist");
 
 // Shared-secret auth (read after loadRepoEnv so PI_OBS_TOKEN can live in .env).
 // Empty => auth disabled: the server stays open, matching the loopback default.
@@ -1761,16 +1766,63 @@ const CONTENT: Record<string, string> = {
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".svg": "image/svg+xml; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
+    ".ico": "image/x-icon",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".txt": "text/plain; charset=utf-8",
 };
 
-function serveStatic(res: import("http").ServerResponse, file: string): void {
-    if (!existsSync(file)) {
+function serveStatic(res: import("http").ServerResponse, file: string, cache?: string): void {
+    if (!existsSync(file) || !statSync(file).isFile()) {
         res.writeHead(404).end("not found");
         return;
     }
     const ext = file.slice(file.lastIndexOf("."));
-    res.writeHead(200, { "content-type": CONTENT[ext] ?? "text/plain" });
+    res.writeHead(200, {
+        "content-type": CONTENT[ext] ?? "text/plain",
+        // Vite fingerprints asset filenames, so they are safe to cache forever;
+        // index.html must never be cached or a deploy would keep serving the old
+        // bundle's <script src>.
+        "cache-control": cache ?? "no-cache",
+    });
     res.end(readFileSync(file));
+}
+
+// Map a request path under the /app mount to a file inside the built dashboard.
+// Returns null when the path escapes UI_DIR (traversal, absolute paths, symlink
+// tricks) — resolving both sides and comparing prefixes is stricter than
+// stripping "..", which misses encoded and mixed-separator forms.
+// The SPA shell. dist/ is committed, so a missing index.html means someone
+// cleaned the build — say so instead of answering a bare 404 that reads like a
+// broken server.
+function serveAppShell(res: Res): void {
+    const index = join(UI_DIR, "index.html");
+    if (existsSync(index)) {
+        serveStatic(res, index);
+        return;
+    }
+    res.writeHead(503, { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" });
+    res.end(
+        "<h1>Dashboard build missing</h1><p>The API is up at <code>/api</code>. " +
+            "Rebuild the UI with <code>cd obs/ui &amp;&amp; npm install &amp;&amp; npm run build</code>.</p>",
+    );
+}
+
+function resolveUiAsset(rel: string): string | null {
+    let decoded: string;
+    try {
+        decoded = decodeURIComponent(rel);
+    } catch {
+        return null; // malformed %-escape
+    }
+    if (decoded.includes("\0")) return null;
+    const base = resolvePath(UI_DIR);
+    const file = resolvePath(base, "." + (decoded.startsWith("/") ? decoded : `/${decoded}`));
+    return file === base || file.startsWith(base + sep) ? file : null;
 }
 
 function handleRequest(req: Req, res: Res): void {
@@ -1778,34 +1830,33 @@ function handleRequest(req: Req, res: Res): void {
     const qIdx = raw.indexOf("?");
     const url = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
     const query = new URLSearchParams(qIdx >= 0 ? raw.slice(qIdx + 1) : "");
-    // Public API for external UIs/integrations; legacy routes below serve the
-    // bundled dashboard.
+    // Public API for external UIs/integrations; the routes below serve the
+    // bundled dashboard and its run data.
     if (url === "/api" || url.startsWith("/api/")) {
         handleApi(req, res, url, query);
         return;
     }
+    // The dashboard is served from two places on purpose: "/" is the front door
+    // (and the Docker healthcheck target), while "/app/…" is the mount the build
+    // was made for — its asset URLs are absolute under /app/, so the same
+    // index.html boots correctly from either.
     if (url === "/" || url === "/index.html") {
-        serveStatic(res, join(UI_DIR, "index.html"));
+        serveAppShell(res);
         return;
     }
-    // Dashboard client scripts (vanilla, no bundler) live under obs-ui/scripts/,
-    // stylesheets under obs-ui/styles/. Serve only flat names — no traversal.
-    if (url.startsWith("/scripts/")) {
-        const name = url.slice("/scripts/".length);
-        if (/^[a-zA-Z0-9_-]+\.js$/.test(name)) {
-            serveStatic(res, join(UI_DIR, "scripts", name));
-        } else {
-            res.writeHead(404).end("not found");
+    if (url === "/app" || url.startsWith("/app/")) {
+        const rel = url === "/app" ? "" : url.slice("/app/".length);
+        const file = rel ? resolveUiAsset(rel) : null;
+        if (file && existsSync(file) && statSync(file).isFile()) {
+            // Hashed filenames (assets/index-<hash>.js) are immutable; anything
+            // else served by name could change under the same URL.
+            const immutable = rel.startsWith("assets/");
+            serveStatic(res, file, immutable ? "public, max-age=31536000, immutable" : "no-cache");
+            return;
         }
-        return;
-    }
-    if (url.startsWith("/styles/")) {
-        const name = url.slice("/styles/".length);
-        if (/^[a-zA-Z0-9_-]+\.css$/.test(name)) {
-            serveStatic(res, join(UI_DIR, "styles", name));
-        } else {
-            res.writeHead(404).end("not found");
-        }
+        // Unknown path under the mount = a client route (#/… deep links land
+        // here after a hard refresh), so fall back to the SPA shell.
+        serveAppShell(res);
         return;
     }
     if (url === "/favicon.svg") {
@@ -1816,7 +1867,7 @@ function handleRequest(req: Req, res: Res): void {
         res.writeHead(204).end();
         return;
     }
-    // The static shell above (index.html, /scripts, /styles, favicon) stays open
+    // The static shell above (index.html, /app assets, favicon) stays open
     // so the browser can load and present a token; everything below serves run
     // data, so it requires the token when one is configured.
     if (crossOriginDenied(req)) {

@@ -1,7 +1,8 @@
 # Observability server image — serves the bundled dashboard + /api only.
-# The React app (pi-obs/) is intentionally NOT included; the container serves the
-# vanilla dashboard from obs/obs-ui. The server is plain Node + tsx with no native
-# deps, so a single slim stage suffices.
+# The dashboard is the React app in obs/ui, copied in as its committed build
+# (obs/ui/dist) — .dockerignore keeps its src/ and node_modules out, so no
+# bundler stage is needed. The server is plain Node + tsx with no native deps,
+# so a single slim stage suffices.
 FROM node:20-slim
 
 WORKDIR /app

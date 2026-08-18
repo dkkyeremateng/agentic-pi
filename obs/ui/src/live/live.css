@@ -1,0 +1,390 @@
+/* Live wall — ported from mockups/v5-decided-all.html (#v-live). */
+.live-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ctx {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px 0;
+}
+.runtag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 13px;
+  border-radius: 10px;
+  border: 1px solid rgba(124, 108, 242, 0.4);
+  background: linear-gradient(180deg, rgba(124, 108, 242, 0.13), rgba(124, 108, 242, 0.05));
+  font: 550 12px var(--ui);
+  color: var(--t1);
+}
+.runtag .mono {
+  color: var(--t3);
+  font-size: 10.5px;
+}
+.chip.warn {
+  color: var(--warn);
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: 600 10px var(--ui);
+}
+/* active-only toggle — quiet when off, green/live accent when on */
+.livechip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: none;
+  font: 550 11px var(--ui);
+  color: var(--t3);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.livechip:hover {
+  color: var(--t2);
+  border-color: var(--line2);
+}
+.livechip .livedot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--t3);
+  transition: background 0.12s;
+}
+.livechip.on {
+  border-color: rgba(74, 222, 128, 0.45);
+  background: rgba(74, 222, 128, 0.1);
+  color: #b6f0c6;
+}
+.livechip.on .livedot {
+  background: #4ade80;
+  box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.18);
+}
+.linkbtn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--acc, #9b8cff);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.spacer {
+  flex: 1;
+}
+.meta-r {
+  font: 11px var(--mono);
+  color: var(--t3);
+}
+.pausebtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--line2);
+  border-radius: 9px;
+  background: none;
+  color: var(--t2);
+  font: 550 11.5px var(--ui);
+}
+.live-cols {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 14px;
+  padding: 12px 16px 16px;
+}
+.wall {
+  overflow: auto;
+  min-height: 0;
+}
+/* masonry: cards pack into balanced columns instead of grid rows, so a short
+   card never leaves a gap beside a tall one. Inner wrapper is auto-height so
+   multicol balances rather than overflowing the fixed-height scroll area. */
+.wall-inner {
+  columns: 2;
+  column-gap: 12px;
+}
+.wall-empty {
+  display: grid;
+  place-items: center;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  text-align: center;
+}
+.wall-empty h3 {
+  margin: 0 0 6px;
+  color: var(--t1);
+  font: 650 15px var(--ui);
+}
+.wall-empty p {
+  margin: 0;
+  color: var(--t3);
+  font-size: 12px;
+  max-width: 320px;
+}
+
+.lcard {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  break-inside: avoid; /* keep a card whole within its column */
+  margin-bottom: 12px;
+}
+.lcard.runn {
+  border-color: rgba(124, 108, 242, 0.35);
+  box-shadow: 0 6px 26px rgba(124, 108, 242, 0.1);
+}
+.lcard.stall {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+.lcard.done {
+  opacity: 0.62;
+}
+/* same-run agents share a coloured left accent (run colour from --run) — after
+   the state rules so it wins the left border regardless of run/stall/done. */
+.lcard.runaccent {
+  border-left: 3px solid var(--run);
+}
+.chead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px 9px;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  flex: none;
+}
+.dot.on {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+.dot.w {
+  background: var(--warn);
+  box-shadow: 0 0 8px var(--warn);
+}
+.cname {
+  font: 650 13px var(--ui);
+  color: var(--t1);
+  flex: none;
+}
+.crun {
+  font: 10px var(--mono);
+  color: var(--run, var(--t3));
+  background: color-mix(in srgb, var(--run, var(--t3)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--run, var(--line)) 45%, transparent);
+  border-radius: 6px;
+  padding: 1.5px 7px;
+  flex: none;
+}
+.cmodel {
+  font: 10.5px var(--mono);
+  color: var(--t3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.cmeter {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 10px var(--mono);
+  color: var(--t3);
+}
+.meter {
+  width: 54px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+.meter i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--cy);
+}
+.meter i.w {
+  background: var(--warn);
+}
+.cfeed {
+  padding: 2px 8px 6px;
+  display: flex;
+  flex-direction: column;
+}
+.frow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3.5px 6px;
+  border-radius: 7px;
+  font: 11.5px var(--mono);
+  color: var(--t2);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.frow .ts {
+  color: var(--t3);
+  flex: none;
+}
+.frow .d {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.cfoot {
+  display: flex;
+  gap: 14px;
+  padding: 8px 14px 11px;
+  border-top: 1px solid var(--line);
+  font: 10.5px var(--mono);
+  color: var(--t3);
+  flex-wrap: wrap;
+}
+.cfoot b {
+  color: var(--t2);
+  font-weight: 500;
+}
+.stallchip {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--warn);
+  font: 600 10px var(--ui);
+}
+
+/* live tail */
+.tail {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.tail .thead {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.tail .thead h3 {
+  margin: 0;
+  font: 650 13px var(--ui);
+  color: var(--t1);
+}
+.followchip {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2.5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  color: var(--ok);
+  font: 600 10px var(--ui);
+}
+.followchip.paused {
+  border-color: rgba(251, 191, 36, 0.35);
+  color: var(--warn);
+}
+.trows {
+  flex: 1;
+  overflow: auto;
+  padding: 6px 8px;
+}
+.trow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3.5px 6px;
+  border-radius: 7px;
+  font: 11px var(--mono);
+  color: var(--t2);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.adot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.adot.a1 { background: var(--a1); }
+.adot.a2 { background: var(--a2); }
+.adot.a3 { background: var(--a3); }
+.adot.a4 { background: var(--a4); }
+.adot.a5 { background: var(--a5); }
+.trow .ag {
+  flex: none;
+  width: 74px;
+  color: var(--t3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trow .d {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.trow .ts {
+  color: var(--t3);
+  flex: none;
+  font-size: 10px;
+}
+.tfoot {
+  border-top: 1px solid var(--line);
+  padding: 9px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tfoot .k {
+  font: 600 9.5px var(--ui);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+.tput {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.5px;
+  height: 18px;
+  flex: 1;
+}
+.tput i {
+  flex: 1;
+  border-radius: 1px;
+  background: rgba(124, 108, 242, 0.5);
+  min-height: 1px;
+}
+.tput i.h {
+  background: var(--vi);
+}
+.tfoot .v {
+  font: 600 12px var(--mono);
+  color: var(--t1);
+}

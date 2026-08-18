@@ -1,0 +1,89 @@
+@import "./tokens.css";
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+html,
+body {
+  overflow: hidden;
+}
+body {
+  background:
+    radial-gradient(900px 500px at 8% -10%, rgba(124, 108, 242, 0.13), transparent 60%),
+    radial-gradient(900px 600px at 105% 110%, rgba(76, 201, 240, 0.09), transparent 60%),
+    var(--bg);
+  color: var(--t2);
+  font: 13px/1.5 var(--ui);
+  -webkit-font-smoothing: antialiased;
+}
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* scrollbars — thin floating pills that match the dark surfaces.
+   Firefox uses scrollbar-width/color; WebKit/Chromium uses ::-webkit-*. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border: 3px solid transparent; /* padding so the pill floats, ~5px visible */
+  border-radius: 999px;
+  background-clip: padding-box;
+  transition: background-color var(--dur) var(--ease);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:active {
+  background: rgba(124, 108, 242, 0.5); /* brand tint while dragging */
+  background-clip: padding-box;
+}
+.icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+:focus-visible {
+  outline: 2px solid var(--vi);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* app frame */
+#root {
+  display: flex;
+  flex-direction: column;
+}

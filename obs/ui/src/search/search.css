@@ -1,0 +1,246 @@
+/* Search — ported from mockups/v5-decided-all.html (#v-search). */
+.swrap {
+  flex: 1;
+  min-height: 0;
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.sbarwrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sbar {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 16px;
+  background: var(--glass);
+  border: 1px solid var(--line2);
+  border-radius: 13px;
+}
+.sbar:focus-within {
+  border-color: rgba(124, 108, 242, 0.5);
+}
+.sbar .q {
+  flex: 1;
+  background: none;
+  border: 0;
+  outline: none;
+  font: 14px var(--mono);
+  color: var(--t1);
+}
+.sbar .rc {
+  font: 11px var(--mono);
+  color: var(--t3);
+  white-space: nowrap;
+}
+.pfx {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding-left: 2px;
+}
+.pchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: none;
+  font: 11.5px var(--ui);
+  color: var(--t3);
+}
+.pchip code {
+  font: 10.5px var(--mono);
+  color: var(--cy);
+}
+.pchip.on {
+  border-color: rgba(124, 108, 242, 0.5);
+  background: rgba(124, 108, 242, 0.12);
+}
+.pchip.on code {
+  color: #c9c2ff;
+}
+
+.sgrid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 14px;
+  min-height: 0;
+}
+.facets {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+}
+.fgroup {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 13px;
+}
+.fgroup h4 {
+  margin: 0 0 9px;
+  font: 600 9.5px var(--ui);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+.fnull {
+  color: var(--t3);
+  font-size: 12px;
+  padding: 2px 6px;
+}
+.fct {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  background: none;
+  border-radius: 7px;
+  font: 12px var(--ui);
+  color: var(--t2);
+  text-align: left;
+}
+.fct:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.fct .dotc {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+.fct .fl {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fct .fn {
+  font: 10.5px var(--mono);
+  color: var(--t3);
+}
+
+.reslist {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.reshd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.reshd .t {
+  font: 650 12.5px var(--ui);
+  color: var(--t1);
+}
+.reshd .sortby {
+  margin-left: auto;
+  font: 10.5px var(--mono);
+  color: var(--t3);
+}
+.resrows {
+  overflow: auto;
+  padding: 6px 8px;
+}
+.res {
+  display: grid;
+  grid-template-columns: 18px 150px 1fr 76px;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.res:hover {
+  background: rgba(255, 255, 255, 0.028);
+}
+.res:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.res .rdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.res .rdot.a1 { background: var(--a1); }
+.res .rdot.a2 { background: var(--a2); }
+.res .rdot.a3 { background: var(--a3); }
+.res .rdot.a4 { background: var(--a4); }
+.res .rdot.a5 { background: var(--a5); }
+.res .rmeta {
+  min-width: 0;
+}
+.res .rrun {
+  font: 12px var(--ui);
+  color: var(--t1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.res .ragent {
+  font: 10px var(--mono);
+  color: var(--t3);
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.res .tk {
+  flex: none;
+  font: 700 8px var(--ui);
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.tk.err {
+  color: #fda4b3;
+  background: rgba(251, 113, 133, 0.16);
+}
+.tk.disp {
+  color: #c9c2ff;
+  background: rgba(124, 108, 242, 0.16);
+}
+.res .snip {
+  font: 11.5px/1.5 var(--mono);
+  color: var(--t2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.res .rright {
+  text-align: right;
+  font: 10.5px var(--mono);
+  color: var(--t3);
+}
+mark {
+  background: rgba(124, 108, 242, 0.32);
+  color: #fff;
+  border-radius: 3px;
+  padding: 0 2px;
+}

@@ -1,0 +1,159 @@
+/* Token auth modal — mirrors the command-palette overlay idiom (glass panel,
+   blurred backdrop, violet/cyan accents) so it reads as part of the dashboard. */
+
+.tg-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200; /* above the ⌘K palette (100) */
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 16vh;
+  animation: tg-fade var(--dur) var(--ease);
+}
+
+.tg {
+  position: relative;
+  width: 420px;
+  max-width: 92vw;
+  padding: 26px 26px 20px;
+  background: var(--pop);
+  border: 1px solid var(--line2);
+  border-radius: var(--r-lg);
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(124, 108, 242, 0.06);
+  animation: tg-rise var(--dur) var(--ease);
+}
+
+/* A faint accent wash along the top edge ties it to the brand without shouting. */
+.tg::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: linear-gradient(90deg, var(--a1), var(--a2));
+  opacity: 0.7;
+}
+
+.tg-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 14px;
+  border-radius: var(--r-md);
+  color: var(--a2);
+  background: rgba(76, 201, 240, 0.12);
+  border: 1px solid rgba(76, 201, 240, 0.22);
+}
+
+.tg-title {
+  margin: 0 0 6px;
+  font: 600 16px var(--ui);
+  color: var(--t1);
+  letter-spacing: -0.01em;
+}
+
+.tg-sub {
+  margin: 0 0 16px;
+  font: 13px/1.5 var(--ui);
+  color: var(--t2);
+}
+.tg-sub code {
+  font: 12px var(--mono);
+  color: var(--t1);
+  background: var(--glass2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 1px 5px;
+}
+
+.tg-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 42px;
+  padding: 0 13px;
+  font: 13px var(--mono);
+  color: var(--t1);
+  background: #0c0c0f;
+  border: 1px solid var(--line2);
+  border-radius: var(--r-md);
+  outline: none;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.tg-input::placeholder {
+  color: var(--t3);
+  font-family: var(--ui);
+}
+.tg-input:focus {
+  border-color: var(--a1);
+  box-shadow: 0 0 0 3px rgba(124, 108, 242, 0.22);
+}
+
+.tg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.tg-btn {
+  height: 36px;
+  padding: 0 16px;
+  font: 600 13px var(--ui);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: filter var(--dur) var(--ease), background var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+.tg-ghost {
+  color: var(--t2);
+  background: var(--glass);
+  border: 1px solid var(--line2);
+}
+.tg-ghost:hover {
+  background: var(--glass2);
+  color: var(--t1);
+}
+.tg-primary {
+  color: #0b0b10;
+  background: linear-gradient(135deg, var(--a1), var(--a2));
+  border: 0;
+}
+.tg-primary:hover {
+  filter: brightness(1.08);
+}
+.tg-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
+}
+
+.tg-hint {
+  margin: 13px 0 0;
+  font: 11px/1.4 var(--ui);
+  color: var(--t3);
+}
+
+@keyframes tg-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes tg-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tg-backdrop,
+  .tg {
+    animation: none;
+  }
+  .tg-btn,
+  .tg-input {
+    transition: none;
+  }
+}
