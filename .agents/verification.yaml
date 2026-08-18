@@ -1,0 +1,23 @@
+# Verification for the AI agent factory.
+#
+# These are the ONLY commands the factory may run to check a change it
+# proposes. The list is an allowlist matched exactly and it fails closed:
+# a command that is not here is not run, and an empty list verifies nothing.
+#
+# This file was proposed automatically from what the repository contains.
+# It belongs to this repository now — edit it freely.
+
+commands:
+  # because package.json#scripts.typecheck is present
+  - "npm run typecheck"
+  # because package.json#scripts.test is present
+  - "npm test"
+
+# The whole run is bounded. A suite that exceeds this fails the job
+# rather than running until something else stops it.
+timeout_seconds: 900
+memory_mb: 2048
+
+# Verification runs with no route to the internet except the factory's own
+# model proxy. Dependencies are fetched before the sandbox is sealed.
+network: proxy-only
