@@ -71,11 +71,12 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // process that doesn't, so load it here too (real env wins). Lets PI_OBS_LLM* live
 // in .env like every other setting. HERE = <repo>/obs → repo root is ...
 loadRepoEnv(join(HERE, "..", ".env"));
-// The dashboard is the React app in obs/ui, served from its committed build.
-// dist/ is checked in on purpose so a fresh clone (and the Docker image) has a
-// working UI with no build step; rebuild it with `cd obs/ui && npm run build`
-// after changing src/. Its assets are absolute under /app/, which is why the
-// same index.html can be served from both "/" and "/app/".
+// The dashboard is the React app in obs/ui, served from its build output. That
+// build is NOT tracked — install.sh produces it and the Docker image builds its
+// own — so it can legitimately be absent here; serveAppShell answers 503 with
+// rebuild instructions rather than pretending the server is broken. Rebuild with
+// `cd obs/ui && npm run build` after changing src/. Its assets are absolute
+// under /app/, which is why the same index.html serves from "/" and "/app/".
 const UI_DIR = join(HERE, "ui", "dist");
 
 // Shared-secret auth (read after loadRepoEnv so PI_OBS_TOKEN can live in .env).
@@ -1796,9 +1797,9 @@ function serveStatic(res: import("http").ServerResponse, file: string, cache?: s
 // Returns null when the path escapes UI_DIR (traversal, absolute paths, symlink
 // tricks) — resolving both sides and comparing prefixes is stricter than
 // stripping "..", which misses encoded and mixed-separator forms.
-// The SPA shell. dist/ is committed, so a missing index.html means someone
-// cleaned the build — say so instead of answering a bare 404 that reads like a
-// broken server.
+// The SPA shell. dist/ is untracked and built on demand, so a missing index.html
+// is an expected state on a fresh clone — say what to run instead of answering a
+// bare 404 that reads like a broken server.
 function serveAppShell(res: Res): void {
     const index = join(UI_DIR, "index.html");
     if (existsSync(index)) {

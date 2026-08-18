@@ -12,17 +12,16 @@
 node_modules/
 
 # ── build output ─────────────────────────────────────────────────────────────
-# A top-level build dir only. The leading slash ANCHORS this to the repo root —
-# it does not match obs/ui/dist (or any other nested dist/).
+# A top-level build dir. The leading slash anchors it to the repo root.
 /dist
 
-# NOTE: obs/ui/dist is deliberately NOT ignored — it is committed on purpose.
-# obs-server serves the dashboard straight from it, so a fresh clone and the
-# Docker image get a working UI with no bundler step. Do NOT drop the leading
-# slash above: a blanket `dist/` would match obs/ui/dist, and while that can't
-# untrack the files already committed, it would make `git add` silently skip the
-# NEW hashed asset a rebuild emits — shipping a stale dashboard.
-# Rebuild and commit it after changing obs/ui/src: cd obs/ui && npm run build
+# The dashboard build is a derived artifact and is NOT tracked. obs-server reads
+# it from disk, so it has to be produced before the server can serve a UI:
+#   cd obs/ui && npm install && npm run build
+# install.sh does this, and the Dockerfile builds it in its own stage. Without it
+# the server still runs and /api works — the dashboard route answers 503 with
+# these instructions (see serveAppShell in obs/obs-server.ts).
+obs/ui/dist/
 
 # ── caches ───────────────────────────────────────────────────────────────────
 *.tsbuildinfo

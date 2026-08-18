@@ -4,10 +4,10 @@
 node_modules
 **/node_modules
 
-# The dashboard ships as its committed BUILD only. obs/ui/dist is what the server
-# serves; its React sources, deps and tooling never run in the container.
-obs/ui/*
-!obs/ui/dist
+# The dashboard is BUILT in the image (see the ui-build stage), so obs/ui's
+# sources must stay in the context. Only the local build output is excluded — the
+# image makes its own, and a stale host dist/ must never shadow it.
+obs/ui/dist
 mockups
 
 # Local scratch / runtime artifacts.

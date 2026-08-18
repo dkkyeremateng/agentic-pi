@@ -15,8 +15,8 @@ import { fileURLToPath } from "node:url";
 // SAFETY: the repo-root .env also holds unrelated secrets (Linear, Atlassian,
 // Telegram). Vite only exposes VITE_-prefixed vars to client code, so those never
 // reach the bundle — but that cuts both ways: anything you prefix with VITE_ IS
-// public. Since obs/ui/dist is committed, a VITE_PI_OBS_TOKEN would be baked into
-// a tracked file; the build warns about that (see below).
+// public. A VITE_PI_OBS_TOKEN is inlined verbatim into the JS every browser
+// downloads, so the build warns about it (see below).
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 //
 // PI_OBS_URL — where the dev/preview server proxies /api (the obs-server). A full
@@ -62,13 +62,13 @@ export default defineConfig(({ mode, command }) => {
     const host = normalizeHost(env.VITE_HOST);
     const proxy = { "/api": { target: OBS, changeOrigin: true } };
 
-    // dist/ is committed, so a token baked in at build time would be committed
-    // with it. Harmless in dev (nothing is written); loud on `vite build`.
+    // A token set at build time is inlined into the JS bundle, readable by anyone
+    // who loads the page. Harmless in dev (nothing is emitted); loud on a build.
     if (command === "build" && env.VITE_PI_OBS_TOKEN) {
         console.warn(
-            "\n⚠  VITE_PI_OBS_TOKEN is set — the obs token will be EMBEDDED in dist/,\n" +
-                "   which is committed to this repo. Unset it and let the in-app TokenGate\n" +
-                "   prompt for the token instead, unless you intend to publish it.\n",
+            "\n⚠  VITE_PI_OBS_TOKEN is set — the obs token will be EMBEDDED in the\n" +
+                "   JS bundle in plain text, readable by anyone served this build. Unset it\n" +
+                "   and let the in-app TokenGate prompt instead, unless the build is private.\n",
         );
     }
 

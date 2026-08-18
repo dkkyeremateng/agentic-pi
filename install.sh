@@ -3,8 +3,8 @@
 # install.sh — set up the pi agent-workflow on macOS / Linux.
 #
 # Installs everything needed to RUN and DEVELOP the workflow + observability
-# server. The dashboard (obs/ui) needs no setup to *run* — its build is committed
-# and obs-server serves it; `cd obs/ui && npm install` is only for developing it.
+# server, including building its dashboard (obs/ui) — that build is a derived
+# artifact, not in the repo, so the server has no UI to serve until it is made.
 #
 # What it does:
 #   1. checks Node.js + npm (required) and python3 (for skills; warn-only)
@@ -186,9 +186,22 @@ have pi || die "'pi' is still not on PATH — ensure npm's global bin dir is on 
 say "pi → $(command -v pi)"
 
 # 4. repo dev dependencies (tsx, typescript, @types/node) — ROOT ONLY.
-#    obs/ui is a separate package; its committed dist/ is all the server needs.
+#    obs/ui is a separate package, installed and built in step 4b.
 say "installing repo dev dependencies (npm install)"
 npm install --no-audit --no-fund
+
+# 4b. the obs dashboard (obs/ui). Its build output is a derived artifact and is
+#     not in the repo, so it must be produced here or the dashboard route serves
+#     a 503 telling you to run exactly this. Warn-only: the obs server and its
+#     /api are fully usable without a UI, so a failed UI build must not abort the
+#     whole install.
+say "building the obs dashboard (obs/ui)"
+if (cd obs/ui && npm install --no-audit --no-fund && npm run build); then
+    say "dashboard built → obs/ui/dist"
+else
+    warn "obs dashboard build failed — the server and /api still work, but the
+    dashboard will 503 until you run: cd obs/ui && npm install && npm run build"
+fi
 
 # 5. link pi's types so tsc + the tsx tests resolve the pi API
 say "linking pi types into node_modules"
@@ -356,7 +369,8 @@ about above and can be re-run — the section is idempotent. Skip with --no-skil
   • the atlassian/linear/lsp CLIs live in ~/.local/bin — put it on your PATH
   • gopls needs a Go toolchain; install Go then: go install golang.org/x/tools/gopls@latest
 
-The obs dashboard (obs/ui) already works — its build is committed and the obs
-server serves it at http://127.0.0.1:7616/. To develop the UI itself:
-  cd obs/ui && npm install && npm run dev     # then rebuild + commit dist/
+The obs dashboard (obs/ui) was built above into obs/ui/dist (untracked), and the
+obs server serves it at http://127.0.0.1:7616/. Rebuild it after changing its
+sources — the server reads the build, not the sources:
+  cd obs/ui && npm run build                 # or `npm run dev` to work on it
 EOF

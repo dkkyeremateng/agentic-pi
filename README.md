@@ -127,9 +127,9 @@ downstream agents, so it is never re-threaded through the context.
 ```
 
 [`install.sh`](install.sh) sets up everything to run/develop the workflow and the
-observability server, including its dashboard — the React app in
-[`obs/ui`](obs/ui) ships as a committed build, so it needs no separate setup to
-run. Already have `pi` and the deps? Just `cp example.env .env` and `./run.sh`.
+observability server, including building its dashboard — the React app in
+[`obs/ui`](obs/ui), whose build output is not in the repo. Already have `pi` and
+the deps? Just `cp example.env .env` and `./run.sh`.
 
 `run.sh` loads the extensions resolved relative to itself, so you never edit pi's
 global settings per machine. Then, inside pi:
@@ -490,9 +490,11 @@ linkable via the hash router (`#/<segment>[/<runId>/<tab>]`).
 
 The UI's own README documents its architecture, configuration and deploy modes —
 including pointing one deployed dashboard at several agents with `?api=<obs-url>`.
-Its build (`obs/ui/dist`) is **committed**, so the server has a working dashboard
-with no bundler step; after changing `obs/ui/src`, run `npm run build` there and
-commit the result.
+Its build (`obs/ui/dist`) is a derived artifact and is **not tracked** — `install.sh`
+produces it, and the Docker image builds its own. The server reads the build, not
+the sources, so after changing `obs/ui/src` run `npm run build` there. Until a
+build exists the server and `/api` work normally and the dashboard route answers
+503 with that instruction.
 
 **Run history & selection.** The server indexes the whole sink by run, so the dashboard
 isn't limited to the live tail: `/runs` lists **every run ever recorded** and any one's

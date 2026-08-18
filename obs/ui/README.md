@@ -44,7 +44,7 @@ The essentials:
 |-----|------|---------|
 | `PI_OBS_URL` | Dev/preview **proxy target** (the obs-server). Full URL or bare host (scheme → `http://`, port → `7616`; use explicit `https://…` for a `tailscale serve` front). | `http://127.0.0.1:7616` |
 | `VITE_API_BASE` | **Runtime** API base the browser calls. Set an absolute URL to point a build straight at a remote agent (no proxy; that server needs CORS + token). | `/api` (same-origin) |
-| `VITE_PI_OBS_TOKEN` | obs API token exposed to the client so it auto-authenticates (else the TokenGate prompts). Keep the `VITE_` prefix. ⚠ **Public** — inlined into `dist/`, which is committed; the build warns if set. | — |
+| `VITE_PI_OBS_TOKEN` | obs API token exposed to the client so it auto-authenticates (else the TokenGate prompts). Keep the `VITE_` prefix. ⚠ **Public** — inlined into the JS bundle in plain text; the build warns if set. | — |
 | `VITE_BASE` | Public base path. `/` to host at an origin root. | `/app/` |
 | `VITE_HOST` | Dev/preview bind. `true`/`0.0.0.0` for LAN/Tailscale. | localhost |
 | `VITE_PORT` / `VITE_PREVIEW_PORT` | Dev / preview ports. | 5174 / 5175 |
