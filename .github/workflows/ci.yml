@@ -23,9 +23,33 @@ jobs:
       - name: Unit tests
         run: npx tsx --test utils/*/*.test.ts obs/*.test.ts
       # Parse-only check of every extension + util + obs. `node --check` does no
-      # module resolution, so it needs no pi packages either.
+      # module resolution, so it needs no pi packages either. obs/ui is pruned:
+      # it is the browser dashboard, whose .d.ts/ambient declarations are not
+      # erasable-syntax-only and so cannot be type-stripped. It has its own job.
       - name: Syntax check
-        run: find extensions utils obs -name '*.ts' -print0 | xargs -0 -n1 node --experimental-strip-types --check
+        run: find extensions utils obs -path obs/ui -prune -o -name '*.ts' -print0 | xargs -0 -n1 node --experimental-strip-types --check
+
+  dashboard:
+    name: Dashboard (obs/ui)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: obs/ui/package-lock.json
+      # The dashboard is a self-contained React package with its own deps and
+      # tsconfig, so it gets its own install and its own gates. The build is the
+      # last one because it is what obs-server actually serves.
+      - run: npm ci
+        working-directory: obs/ui
+      - run: npm run typecheck
+        working-directory: obs/ui
+      - run: npm test
+        working-directory: obs/ui
+      - run: npm run build
+        working-directory: obs/ui
 
   python:
     name: Python skill tests

@@ -25,9 +25,10 @@ only `.env` config — no code edits.
   (`./run.sh --bg`), then attach/detach the terminal or steer it live from the
   dashboard without reattaching.
 - **Observability** — an offline metrics analyzer (per-run reports + cross-project
-  trends) and an opt-in live dashboard (`PI_OBS=1`) with eight segments (Runs,
-  Live, Analytics, Datasets, Monitors, Prompts, Chat, Search), full run history, automated
-  **evals** (+ optional LLM-as-judge), a versioned prompt-config registry, and an
+  trends) and an opt-in live dashboard (`PI_OBS=1`) — a React app in
+  [`obs/ui`](obs/ui) with eight segments (Runs, Live, Analytics, Datasets,
+  Monitors, Prompts, Chat, Search), full run history, automated **evals**
+  (+ optional LLM-as-judge), a versioned prompt-config registry, and an
   OpenTelemetry export — spanning every pi instance you're running.
 - **Skills** — LSP diagnostics & navigation (Python/Go/TS/PHP), Playwright browser
   automation, Linear and Jira CLIs, GitHub, and commit helpers.
@@ -60,7 +61,11 @@ downstream agents, so it is never re-threaded through the context.
 
 - **`pi`** on your `PATH` — the only hard requirement to *run*.
 - **`python3`** — for the skills (`lsp`, `linear`, `atlassian`) and Playwright.
-- **Node.js** — only for type-checking/tests during development (not to run).
+- **Node.js + npm** — runs the observability server (via `tsx`) and builds the
+  obs dashboard, and is used for type-checking/tests during development. Not
+  needed to run the workflow itself.
+- **`just`** (optional) — runs the [`justfile`](justfile) recipes; every one of
+  them is a plain command you can also type by hand.
 - **`tmux`** (optional) — only for [background sessions](#background-sessions)
   (`./run.sh --bg`); `install.sh` installs it best-effort.
 - Optional per-language tools you want the agents to use: language servers for
@@ -502,13 +507,26 @@ run explanations, I/O summaries, the playground and Chat need the same flag. A
 **⌘K command palette** jumps to any segment, project, or run, and every view is
 linkable via the hash router (`#/<segment>[/<runId>/<tab>]`).
 
-The UI's own README documents its architecture, configuration and deploy modes —
-including pointing one deployed dashboard at several agents with `?api=<obs-url>`.
-Its build (`obs/ui/dist`) is a derived artifact and is **not tracked** — `install.sh`
-produces it, and the Docker image builds its own. The server reads the build, not
-the sources, so after changing `obs/ui/src` run `npm run build` there. Until a
-build exists the server and `/api` work normally and the dashboard route answers
-503 with that instruction.
+The UI's own [README](obs/ui/README.md) documents its architecture, configuration
+and deploy modes — including pointing one deployed dashboard at several agents
+with `?api=<obs-url>`.
+
+**Its build (`obs/ui/dist`) is a derived artifact and is not tracked.**
+`install.sh` produces it and the Docker image builds its own (in a first stage,
+so the React toolchain stays out of the runtime layer). The server reads the
+build, not the sources, so after changing `obs/ui/src` run `just ui-build` (or
+`npm run build` there). Until a build exists the server and `/api` work normally
+and the dashboard route answers **503** with that instruction rather than a bare
+404.
+
+**Its config lives in this repo's `.env`**, not a second file — `vite.config.ts`
+points Vite's `envDir` at the repo root, so `PI_OBS_URL` (which obs-server the
+dev proxy targets) sits beside the `PI_OBS_TOKEN`/`PI_OBS_PORT` it pairs with.
+None of it is needed to *use* the dashboard; it only affects `just ui-dev` and
+custom builds. See the "dashboard UI" section of [`example.env`](example.env).
+Only `VITE_`-prefixed vars reach browser code, so the other secrets in `.env`
+never enter the bundle — and by the same rule anything you *do* prefix with
+`VITE_` is public, which is why a `VITE_PI_OBS_TOKEN` makes the build warn.
 
 **Run history & selection.** The server indexes the whole sink by run, so the dashboard
 isn't limited to the live tail: `/runs` lists **every run ever recorded** and any one's
@@ -652,21 +670,36 @@ globally-installed pi (the exact version you run) into `node_modules`:
 
 ```bash
 npm run setup:types     # link pi types (auto-runs before typecheck/test)
-npm test                # unit tests (tsx) — utils/*/*.test.ts — the source of truth
-npm run typecheck       # tsc --noEmit — best-effort; see note below
+npm test                # unit tests (tsx) — utils/*/*.test.ts + obs/*.test.ts
+npm run typecheck       # tsc --noEmit
 npm run test:linear     # Python tests for the linear skill
 npm run test:atlassian  # Python tests for the atlassian skill
 ```
 
-`npm test` is the primary gate. `npm run typecheck` is best-effort: the extensions
-use loose (`any`) handler signatures that don't fully line up with pi's strict type
-defs, so `tsc` reports known mismatches. For a quick per-file syntax/type-strip
-check use `node --experimental-strip-types --check <file>`.
+`npm test` is the primary gate. For a quick per-file syntax/type-strip check use
+`node --experimental-strip-types --check <file>`.
 
-**CI** (`.github/workflows/ci.yml`) runs on every push to `main` and every PR: the
-tsx unit suite + a `node --check` of every `extensions/` and `utils/` `.ts` file,
-and the Python skill tests. It needs no `pi` install — the pi imports are type-only
-(erased at runtime) and `node --check` does no module resolution.
+**The dashboard is a separate package.** `obs/ui` is browser code (DOM, JSX) with
+its own `package.json` and tsconfig, so it has its own gates — and the root
+tsconfig deliberately **excludes** it. Running the two together is a config
+mismatch, not a finding:
+
+```bash
+cd obs/ui
+npm ci && npm test      # 139 unit tests
+npm run typecheck       # tsc -b --noEmit
+npm run build           # → dist/, which obs-server serves (untracked)
+```
+
+`just verify` runs both suites, both typechecks and a dashboard build in one go.
+
+**CI** (`.github/workflows/ci.yml`) runs on every push to `main` and every PR, in
+three jobs: the tsx unit suite + a `node --check` of every `extensions/`, `utils/`
+and `obs/` `.ts` file; the dashboard's typecheck/tests/build; and the Python skill
+tests. The syntax check prunes `obs/ui` — its ambient `.d.ts` declarations aren't
+erasable-syntax-only, so they can't be type-stripped. The first job needs no `pi`
+install: the pi imports are type-only (erased at runtime) and `node --check` does
+no module resolution.
 
 `node_modules` is dev-only and gitignored — it is **not** needed to run.
 
