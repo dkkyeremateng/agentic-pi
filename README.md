@@ -131,6 +131,20 @@ observability server, including building its dashboard — the React app in
 [`obs/ui`](obs/ui), whose build output is not in the repo. Already have `pi` and
 the deps? Just `cp example.env .env` and `./run.sh`.
 
+If you have [`just`](https://github.com/casey/just), the [`justfile`](justfile)
+wraps these and the rest of the day-to-day commands — `just` on its own lists
+them, grouped by setup / run / ui / test / metrics / docker:
+
+```bash
+just install                 # ./install.sh
+just obs                     # pi + the dashboard server
+just ui-build                # rebuild obs/ui after editing it
+just verify                  # both test suites, both typechecks, a dashboard build
+```
+
+The recipes are thin wrappers, so `install.sh`, `run.sh` and the npm scripts
+stay the source of truth and nothing has to be kept in sync.
+
 `run.sh` loads the extensions resolved relative to itself, so you never edit pi's
 global settings per machine. Then, inside pi:
 
