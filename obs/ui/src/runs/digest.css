@@ -1,0 +1,164 @@
+.dbody {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.dsum b {
+  color: var(--t1);
+  font-weight: 600;
+}
+
+/* AI summary card (LLM enrichment, opt-in) */
+.ai-card {
+  border: 1px solid rgba(124, 108, 242, 0.35);
+  border-radius: 12px;
+  padding: 11px 13px;
+  background: linear-gradient(180deg, rgba(124, 108, 242, 0.1), rgba(124, 108, 242, 0.03));
+}
+.ai-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 10.5px var(--ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #c9c2ff;
+}
+.ai-h .ai-model {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--t3);
+  font: 10px var(--mono);
+}
+.ai-narr {
+  margin: 7px 0 0;
+  font: 12.5px/1.6 var(--ui);
+  color: var(--t1);
+}
+.ai-recs {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ai-recs li {
+  font: 11.5px/1.5 var(--ui);
+  color: var(--t2);
+}
+/* markdown-rendered AI output (narrative + recs) — keep the wrapping <p> from
+   adding block margins so it sits tight in the card / list item */
+.ai-narr.chmd > :first-child,
+.ai-recs li.chmd > :first-child {
+  margin-top: 0;
+}
+.ai-narr.chmd > :last-child,
+.ai-recs li.chmd > :last-child {
+  margin-bottom: 0;
+}
+.ai-recs li.chmd p {
+  margin: 0;
+}
+.ai-loading {
+  margin: 7px 0 0;
+  font: 12px var(--ui);
+  color: var(--t3);
+}
+.ai-loading::after {
+  content: "…";
+}
+.ai-err {
+  margin: 7px 0 0;
+  font: 12px var(--ui);
+  color: var(--err);
+}
+.ai-off {
+  margin: 7px 0 0;
+  font: 11.5px/1.5 var(--ui);
+  color: var(--t3);
+}
+.anom {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 9px 12px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.anom .ah {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: 600 10.5px var(--ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.anom .ah.w {
+  color: var(--warn);
+}
+.anom .ah.e {
+  color: var(--err);
+}
+.anom .ah.i {
+  color: var(--cy);
+}
+.anom p {
+  margin: 4px 0 0;
+  font: 11.5px/1.55 var(--ui);
+  color: var(--t2);
+}
+.anom p code {
+  font: 10.5px var(--mono);
+  color: var(--t1);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.score2 {
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  padding: 12px 16px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.sc {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 0;
+  border-radius: 10px;
+  font: 650 12.5px var(--ui);
+  border: 1px solid;
+  background: none;
+}
+.sc:disabled {
+  opacity: 0.5;
+}
+.sc.p {
+  color: var(--ok);
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(52, 211, 153, 0.08);
+}
+.sc.f {
+  color: var(--err);
+  border-color: rgba(251, 113, 133, 0.4);
+  background: rgba(251, 113, 133, 0.08);
+}
+.sc.on {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+/* dashed outline = an auto-assigned verdict (green pass / red fail), awaiting
+   a human to confirm. currentColor is the button's own pass/fail colour. */
+.sc.auto {
+  outline: 1.5px dashed currentColor;
+  outline-offset: 1px;
+  opacity: 0.85;
+}
+/* inline failure notice for a score submit that didn't land */
+.verr {
+  margin: 8px 16px 0;
+  font: 11.5px var(--ui);
+  color: var(--err);
+}

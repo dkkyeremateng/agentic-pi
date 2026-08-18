@@ -1,0 +1,75 @@
+/* filterable dropdown — matches the dark combobox styling */
+.cmb {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+.cmb-input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line2);
+  background: var(--glass);
+  color: var(--t1);
+  font: 12px var(--ui);
+}
+.cmb-input:focus {
+  outline: none;
+  border-color: var(--vi);
+}
+.cmb-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  max-width: 420px;
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 40;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--line2);
+  background: var(--pop);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+}
+.cmb-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--t2);
+  font: 12px var(--ui);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cmb-item.active {
+  background: rgba(255, 255, 255, 0.05);
+}
+.cmb-item.cur {
+  color: var(--t1);
+}
+.cmb-check {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  color: var(--vi);
+}
+.cmb-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmb-sub {
+  color: var(--t3);
+  font-size: 11px;
+}
+.cmb-empty {
+  padding: 8px 10px;
+  color: var(--t3);
+  font-size: 11px;
+}

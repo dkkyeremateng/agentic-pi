@@ -1,0 +1,29 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: 600 10px var(--ui);
+  white-space: nowrap;
+}
+.chip.pass {
+  color: var(--ok);
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+.chip.fail {
+  color: var(--err);
+  background: rgba(251, 113, 133, 0.1);
+  border: 1px solid rgba(251, 113, 133, 0.3);
+}
+.chip.live {
+  color: var(--cy);
+  background: rgba(76, 201, 240, 0.1);
+  border: 1px solid rgba(76, 201, 240, 0.3);
+}
+.chip.open {
+  color: var(--t3);
+  background: var(--glass);
+  border: 1px solid var(--line2);
+}

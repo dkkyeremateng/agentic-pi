@@ -1,19 +1,63 @@
+# Single ignore file for the whole repo, including the obs dashboard (obs/ui),
+# which had its own before being vendored in. Patterns without a slash match at
+# any depth, so the generic rules below cover obs/ui too.
+
+# ── secrets / machine-specific config ────────────────────────────────────────
+# Config for every package lives in the repo-root .env (obs/ui reads it via
+# Vite's envDir). example.env is the committed reference and matches neither rule.
 .env
-.DS_Store
-*/DS_Store
-.claude/
+.env.*
+
+# ── dependencies ─────────────────────────────────────────────────────────────
 node_modules/
+
+# ── build output ─────────────────────────────────────────────────────────────
+# A top-level build dir. The leading slash anchors it to the repo root.
+/dist
+
+# The dashboard build is a derived artifact and is NOT tracked. obs-server reads
+# it from disk, so it has to be produced before the server can serve a UI:
+#   cd obs/ui && npm install && npm run build
+# install.sh does this, and the Dockerfile builds it in its own stage. Without it
+# the server still runs and /api works — the dashboard route answers 503 with
+# these instructions (see serveAppShell in obs/obs-server.ts).
+obs/ui/dist/
+
+# ── caches ───────────────────────────────────────────────────────────────────
+*.tsbuildinfo
+.vite/
 __pycache__/
 *.pyc
+
+# ── runtime state / logs ─────────────────────────────────────────────────────
 .agent/
 .pi/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.obs-bridge.pid
+
+# ── tooling ──────────────────────────────────────────────────────────────────
+.claude/
 .playwright-mcp/
 .playwright-cli/
 .playwright/
-.obs-server.log
-.obs-bridge.log
-.obs-bridge.pid
-obs/obs-ui/mockups/
+
+# ── editors ──────────────────────────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+*/DS_Store
+Thumbs.db
+
+# ── project-specific ─────────────────────────────────────────────────────────
 extensions/qa-review.ts
 mockups/
 /docs/
+obs/ui/ds/

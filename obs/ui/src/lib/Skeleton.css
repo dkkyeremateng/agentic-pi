@@ -1,0 +1,30 @@
+.skel {
+  display: block;
+  background: linear-gradient(
+    100deg,
+    var(--glass) 30%,
+    var(--glass2) 50%,
+    var(--glass) 70%
+  );
+  background-size: 220% 100%;
+  animation: skel-shimmer 1.3s ease-in-out infinite;
+}
+@keyframes skel-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+.skel-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 18px;
+}
+.skel-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}

@@ -1,0 +1,79 @@
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: 10px var(--ui);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+.stepper-box {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line2);
+  border-radius: 7px;
+  background: var(--glass);
+  overflow: hidden;
+  transition: border-color 0.12s;
+}
+.stepper-box:focus-within {
+  border-color: var(--vi);
+}
+.stepper-b {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  border: none;
+  background: none;
+  color: var(--t2);
+  font: 600 14px var(--ui);
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.stepper-b:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--t1);
+}
+.stepper-b:active:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+.stepper-b:disabled {
+  color: var(--t3);
+  opacity: 0.4;
+  cursor: default;
+}
+.stepper-pfx {
+  display: grid;
+  place-items: center;
+  padding-left: 7px;
+  color: var(--t3);
+  font: 11px var(--mono);
+}
+.stepper-box input {
+  border: none;
+  background: none;
+  color: var(--t1);
+  font: 11px var(--mono);
+  text-align: center;
+  padding: 4px 2px;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+.stepper-pfx + input {
+  border-left: none;
+  padding-left: 2px;
+}
+.stepper-box input:focus {
+  outline: none;
+}
+/* hide the native spinners — the whole point of the custom control */
+.stepper-box input::-webkit-outer-spin-button,
+.stepper-box input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.stepper-box input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

@@ -13,4 +13,9 @@
         "verbatimModuleSyntax": false,
     },
     "include": ["utils/**/*.ts", "extensions/**/*.ts", "obs/**/*.ts"],
+    // obs/ui is the dashboard: browser code (DOM lib, JSX, bundler resolution)
+    // with its own tsconfig and its own `npm run typecheck`. This config targets
+    // Node and would report its window/DOM references as errors, so keep the two
+    // type-check passes separate.
+    "exclude": ["obs/ui"],
 }

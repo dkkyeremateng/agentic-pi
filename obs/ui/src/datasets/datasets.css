@@ -1,0 +1,239 @@
+/* Datasets view — curated run sets + aggregate evaluator scores */
+.dscols {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+}
+.dspane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+.dspane .ph {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dspane .ph h2 {
+  margin: 0;
+  font: 600 13px var(--ui);
+  color: var(--t1);
+}
+.dspane .count {
+  margin-left: auto;
+  font: 10.5px var(--mono);
+  color: var(--t3);
+}
+.dsnew {
+  display: flex;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.dsnew input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--line2);
+  background: var(--glass);
+  color: var(--t1);
+  font: 12px var(--ui);
+}
+.dsnew input:focus {
+  outline: none;
+  border-color: var(--vi);
+}
+.dsnew button {
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--line2);
+  background: var(--glass);
+  color: var(--t2);
+  font: 600 11px var(--ui);
+  cursor: pointer;
+}
+.dsnew button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.dslist {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px;
+}
+.dslist .empty {
+  padding: 16px 8px;
+  color: var(--t3);
+  font: 11.5px/1.5 var(--ui);
+}
+.dsitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--t2);
+  font: 12px var(--ui);
+  text-align: left;
+  cursor: pointer;
+}
+.dsitem:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.dsitem.on {
+  background: rgba(124, 108, 242, 0.13);
+  color: var(--t1);
+}
+.dsitem .dsn {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsitem .dsc {
+  font-size: 11px;
+  color: var(--t3);
+}
+
+/* main detail */
+.dsmain {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.dshd {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.dshd h2 {
+  margin: 0;
+  font: 600 15px var(--ui);
+  color: var(--t1);
+}
+.dsscore {
+  font: 600 18px var(--mono);
+  color: var(--t1);
+}
+.dsscore i {
+  font: 11px var(--mono);
+  font-style: normal;
+  color: var(--t3);
+}
+.dsscore.pass {
+  color: var(--ok);
+}
+.dsscore.warn {
+  color: var(--warn);
+}
+.dsscore.fail {
+  color: var(--err);
+}
+.dshd .seln {
+  font: 10.5px var(--mono);
+  color: var(--t3);
+}
+.dsdel {
+  margin-left: auto;
+  padding: 4px 11px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--err) 35%, transparent);
+  background: none;
+  color: var(--err);
+  font: 600 11px var(--ui);
+  cursor: pointer;
+}
+.dsdel:hover {
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
+
+.dsevals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 6px 20px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.dsevalr {
+  display: grid;
+  grid-template-columns: 1fr 60px 38px;
+  align-items: center;
+  gap: 10px;
+}
+.dsevalr .pn {
+  color: var(--t1);
+  font: 12px var(--ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsevalr .pp {
+  color: var(--t3);
+  text-align: right;
+}
+
+.dsruns {
+  padding: 8px 10px 16px;
+}
+.dsrun {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px;
+  border-radius: 8px;
+}
+.dsrun:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+.dsrn {
+  border: 0;
+  background: none;
+  color: var(--t1);
+  font: 12.5px var(--ui);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsrn:hover {
+  color: var(--vi);
+}
+.dsrm {
+  color: var(--t3);
+  font-size: 11px;
+}
+.dsrs {
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 24px;
+  text-align: right;
+}
+.dsx {
+  border: 0;
+  background: none;
+  color: var(--t3);
+  cursor: pointer;
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 5px;
+}
+.dsx:hover {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}

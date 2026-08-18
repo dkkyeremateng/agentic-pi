@@ -1,0 +1,125 @@
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+}
+.palette {
+  width: 560px;
+  max-width: 92vw;
+  background: var(--pop);
+  border: 1px solid var(--line2);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+.palette-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--line);
+}
+.palette-input input {
+  flex: 1;
+  background: none;
+  border: 0;
+  outline: none;
+  color: var(--t1);
+  font: 14px var(--ui);
+}
+.palette-input kbd {
+  font: 10px var(--mono);
+  border: 1px solid var(--line2);
+  border-radius: 5px;
+  padding: 2px 6px;
+  color: var(--t3);
+}
+.palette-list {
+  max-height: 50vh;
+  overflow: auto;
+  padding: 6px;
+}
+.palette-empty {
+  color: var(--t3);
+  padding: 18px;
+  text-align: center;
+  font-size: 12.5px;
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  background: none;
+  border-radius: 9px;
+  text-align: left;
+}
+.palette-item.active {
+  background: rgba(124, 108, 242, 0.14);
+}
+.pi-kind {
+  flex: none;
+  font: 700 8.5px var(--ui);
+  letter-spacing: 0.07em;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.pi-kind.k-run {
+  color: #c9c2ff;
+  background: rgba(124, 108, 242, 0.16);
+}
+.pi-kind.k-seg {
+  color: #9fdcf5;
+  background: rgba(76, 201, 240, 0.14);
+}
+.pi-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--t1);
+  font: 13px var(--ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pi-sub {
+  flex: none;
+  max-width: 45%;
+  color: var(--t3);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* keyboard-hint footer — makes the run-navigation shortcuts discoverable */
+.palette-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line);
+  color: var(--t3);
+  font: 11px var(--ui);
+}
+.palette-foot kbd {
+  font: 10px var(--mono);
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin: 0 1px;
+  color: var(--t2);
+}
+.palette-foot .pf-sep {
+  margin-left: auto;
+  color: var(--t3);
+  opacity: 0.7;
+}

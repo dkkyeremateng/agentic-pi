@@ -1,7 +1,23 @@
-# Observability server image — serves the bundled dashboard + /api only.
-# The React app (pi-obs/) is intentionally NOT included; the container serves the
-# vanilla dashboard from obs/obs-ui. The server is plain Node + tsx with no native
-# deps, so a single slim stage suffices.
+# Observability server image — serves the dashboard + /api only.
+#
+# The dashboard is the React app in obs/ui. Its build (obs/ui/dist) is a derived
+# artifact and is NOT in the repo, so stage 1 builds it and stage 2 copies only
+# the output — none of the React toolchain reaches the runtime image.
+
+# ── stage 1: build the dashboard ─────────────────────────────────────────────
+# Kept at the same path as the repo layout (/app/obs/ui): vite.config.ts resolves
+# the repo root as ../../ to read the .env. None is copied here, so the build
+# takes its defaults — base /app/, same-origin /api, and no baked-in token, which
+# is exactly right for a container serving its own UI.
+FROM node:20-slim AS ui-build
+WORKDIR /app/obs/ui
+COPY obs/ui/package.json obs/ui/package-lock.json ./
+RUN npm ci
+COPY obs/ui/ ./
+RUN npm run build
+
+# ── stage 2: the server ──────────────────────────────────────────────────────
+# Plain Node + tsx, no native deps, so a single slim stage suffices.
 FROM node:20-slim
 
 WORKDIR /app
@@ -16,6 +32,11 @@ RUN npm ci && npm cache clean --force
 COPY tsconfig.json ./
 COPY utils ./utils
 COPY obs ./obs
+
+# obs/ui's sources came along with obs/ — drop them and keep only the built
+# dashboard from stage 1, which is what obs-server actually serves.
+RUN rm -rf obs/ui
+COPY --from=ui-build /app/obs/ui/dist ./obs/ui/dist
 
 # 0.0.0.0 so a published port can reach it (a loopback bind inside a container is
 # unreachable). Gate it with PI_OBS_TOKEN — see DOCKER.md. The sink defaults to a

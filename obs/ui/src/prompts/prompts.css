@@ -1,0 +1,353 @@
+/* Prompts view — per-agent boot-config registry with versions */
+.prcols {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+}
+.prpane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+.prpane .ph {
+  display: flex;
+  align-items: center;
+}
+.prpane .ph h2 {
+  margin: 0;
+  font: 600 13px var(--ui);
+  color: var(--t1);
+}
+.prpane .count {
+  margin-left: auto;
+  font: 10.5px var(--mono);
+  color: var(--t3);
+}
+.prlist {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px;
+}
+.prlist .empty {
+  padding: 16px 8px;
+  color: var(--t3);
+  font: 11.5px/1.5 var(--ui);
+}
+.pritem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--t2);
+  font: 12px var(--ui);
+  text-align: left;
+  cursor: pointer;
+}
+.pritem:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.pritem.on {
+  background: rgba(124, 108, 242, 0.13);
+  color: var(--t1);
+}
+.pritem .prn {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pritem .prc {
+  font-size: 11px;
+  color: var(--t3);
+}
+
+.prmain {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.prhd {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.prhd h2 {
+  margin: 0;
+  font: 600 15px var(--ui);
+  color: var(--t1);
+}
+.prhd .seln {
+  font: 10.5px var(--mono);
+  color: var(--t3);
+}
+.prversions {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pv {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--glass);
+  padding: 12px 14px;
+}
+.pv.current {
+  border-color: color-mix(in srgb, var(--vi) 40%, transparent);
+}
+.pv-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pv-tag {
+  font: 700 10px var(--ui);
+  letter-spacing: 0.04em;
+  color: var(--t1);
+  background: var(--glass2);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  padding: 1px 7px;
+}
+.pv-cur {
+  font: 600 9px var(--ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #c9c2ff;
+  background: rgba(124, 108, 242, 0.18);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+.pv-hash {
+  font-size: 11px;
+  color: var(--t3);
+}
+.pv-model {
+  font-size: 11px;
+  color: var(--cy);
+}
+.pv-when {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--t3);
+}
+.pv-meta {
+  margin-top: 7px;
+  font-size: 11px;
+  color: var(--t3);
+}
+.pv-diff {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+.dchg {
+  font: 10.5px var(--mono);
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line2);
+  color: var(--t2);
+}
+.dchg.add {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
+.dchg.rem {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 40%, transparent);
+}
+.dchg.up {
+  color: var(--warn);
+}
+.dchg.down {
+  color: var(--cy);
+}
+.dchg.model {
+  color: #c9c2ff;
+  border-color: rgba(124, 108, 242, 0.4);
+}
+.dchg.same {
+  color: var(--t3);
+}
+.pv-lists {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.pv-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+.pv-k {
+  font: 10px var(--ui);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--t3);
+  padding-top: 3px;
+}
+.pv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+/* scoped under .pv-chips: search.css owns the bare .pchip (prefix-hint chips),
+   and bundle order otherwise decides which rule wins */
+.pv-chips .pchip {
+  font: 10.5px var(--mono);
+  color: var(--t2);
+  background: var(--glass2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+.pv-none {
+  color: var(--t3);
+  font: 11px var(--ui);
+}
+/* clickable run chip — jump from a prompt version to a run that used it */
+.pv-chips .pchip.prun {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--cy);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.pv-chips .pchip.prun:hover {
+  background: color-mix(in srgb, var(--cy) 16%, transparent);
+  border-color: color-mix(in srgb, var(--cy) 45%, transparent);
+}
+.pv-chips .pchip.prun .icon {
+  opacity: 0.75;
+}
+
+/* pinned playground entry in the agent list */
+.pritem.pin {
+  margin: 4px 8px 2px;
+  width: calc(100% - 16px);
+  color: #c9c2ff;
+  border: 1px solid color-mix(in srgb, var(--vi) 30%, transparent);
+  background: rgba(124, 108, 242, 0.08);
+}
+.pritem.pin.on {
+  background: rgba(124, 108, 242, 0.18);
+}
+.pritem.pin .icon {
+  color: var(--vi);
+}
+
+/* prompt playground */
+.pg {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.pgbody {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+.pglabel {
+  font: 10px var(--ui);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--t3);
+  margin-top: 6px;
+}
+.pgmeta {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cy);
+}
+.pgta {
+  width: 100%;
+  resize: vertical;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--line2);
+  background: var(--glass);
+  color: var(--t1);
+  font: 12px/1.55 var(--mono);
+}
+.pgta:focus {
+  outline: none;
+  border-color: var(--vi);
+}
+.pgrun {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.pgmodel {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line2);
+  background: var(--glass);
+  color: var(--t1);
+  font: 11.5px var(--mono);
+}
+.pgmodel:focus {
+  outline: none;
+  border-color: var(--vi);
+}
+.pgbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 0;
+  background: linear-gradient(135deg, var(--vi), #5b8cf0);
+  color: #fff;
+  font: 600 12px var(--ui);
+  cursor: pointer;
+}
+.pgbtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.pgout {
+  margin: 0;
+  padding: 11px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--t1);
+  font: 12px/1.6 var(--mono);
+  white-space: pre-wrap;
+  max-height: 360px;
+  overflow: auto;
+}
+.pgerr {
+  margin: 4px 0 0;
+  color: var(--err);
+  font: 11.5px var(--ui);
+}
+.pgnote {
+  margin: 6px 0 0;
+  color: var(--t3);
+  font: 11px/1.5 var(--ui);
+}

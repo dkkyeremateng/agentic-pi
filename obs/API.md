@@ -54,7 +54,7 @@ When set, send the token one of two ways:
 - **`?token=<token>`** query parameter — for the SSE endpoints (`/api/stream`,
   `/api/chat`, `/api/chat-live`), which use `EventSource` and cannot set headers.
 
-The static dashboard shell (`/`, `/scripts/*`, `/styles/*`) stays unauthenticated
+The static dashboard shell (`/`, `/app/*`, `/favicon.svg`) stays unauthenticated
 so the page can load; it then prompts for the token and stores it in
 `localStorage` (`pi_obs_token`), attaching it to every data request and stream.
 Missing/invalid tokens get `401` with a `WWW-Authenticate: Bearer` header. The
