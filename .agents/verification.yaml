@@ -22,6 +22,12 @@ commands:
   # The server serves the BUILD, not the sources, so a change that breaks the
   # build is a change that never reaches the running dashboard.
   - "npm run build --workspace obs/ui"
+  # Everything above is blind to whitespace. An agent asked to add a tail to
+  # RawTab.tsx produced its block at ONE space of indentation where the file
+  # uses two, and typecheck, the tests and the build were all green on it — the
+  # change reached pull request #96 looking finished. .editorconfig already
+  # states the rule for obs/ui; this is what makes breaking it fail a job.
+  - "npm run format:check"
 
 # The whole run is bounded. A suite that exceeds this fails the job
 # rather than running until something else stops it.
