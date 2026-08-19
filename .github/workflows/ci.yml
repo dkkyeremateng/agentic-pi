@@ -15,11 +15,14 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci
+      # --workspaces=false: this job runs tsx and node --check only, so the obs/ui
+      # workspace's React toolchain would be installed and never used. The
+      # dashboard job below installs it.
+      - run: npm ci --workspaces=false
       # The unit suite is the source of truth (see AGENTS.md). tsx erases the
       # type-only pi imports at runtime, so no pi install or type-linking is needed —
-      # we run tsx directly rather than `npm test`, whose pretest hook links pi types
-      # for `tsc` (which AGENTS.md says not to run; the types aren't installed here).
+      # we run tsx directly rather than `npm test`, whose pretest hook links types
+      # from a global pi install that does not exist on a runner.
       - name: Unit tests
         run: npx tsx --test utils/*/*.test.ts obs/*.test.ts
       # Parse-only check of every extension + util + obs. `node --check` does no
@@ -38,18 +41,14 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: obs/ui/package-lock.json
-      # The dashboard is a self-contained React package with its own deps and
-      # tsconfig, so it gets its own install and its own gates. The build is the
-      # last one because it is what obs-server actually serves.
+      # obs/ui is an npm workspace, so its dependencies come from the ROOT install
+      # and there is no obs/ui lockfile to cache against.
       - run: npm ci
-        working-directory: obs/ui
-      - run: npm run typecheck
-        working-directory: obs/ui
-      - run: npm test
-        working-directory: obs/ui
-      - run: npm run build
-        working-directory: obs/ui
+      # It still has its own tsconfig and its own gates. The build runs last
+      # because it is what obs-server actually serves.
+      - run: npm run typecheck --workspace obs/ui
+      - run: npm test --workspace obs/ui
+      - run: npm run build --workspace obs/ui
 
   python:
     name: Python skill tests

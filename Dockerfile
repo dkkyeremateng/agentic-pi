@@ -10,11 +10,16 @@
 # takes its defaults — base /app/, same-origin /api, and no baked-in token, which
 # is exactly right for a container serving its own UI.
 FROM node:20-slim AS ui-build
-WORKDIR /app/obs/ui
-COPY obs/ui/package.json obs/ui/package-lock.json ./
+WORKDIR /app
+# obs/ui is an npm WORKSPACE: the root manifest and lockfile own its dependency
+# tree, so the install runs from the root and there is no obs/ui lockfile to copy.
+# Manifests first (both of them) so the install layer caches on dependency
+# changes rather than on every source edit.
+COPY package.json package-lock.json ./
+COPY obs/ui/package.json obs/ui/package.json
 RUN npm ci
-COPY obs/ui/ ./
-RUN npm run build
+COPY obs/ui/ ./obs/ui/
+RUN npm run build --workspace obs/ui
 
 # ── stage 2: the server ──────────────────────────────────────────────────────
 # Plain Node + tsx, no native deps, so a single slim stage suffices.
@@ -24,8 +29,11 @@ WORKDIR /app
 
 # Install deps first for layer caching. tsx (a devDependency) runs the TS server
 # directly, so we keep dev deps; there are no runtime/native packages to build.
+# --workspaces=false: the server needs only the ROOT dependencies. The obs/ui
+# workspace is built in stage 1 and arrives here as static files, so installing
+# its React toolchain into the runtime image would be pure weight.
 COPY package.json package-lock.json ./
-RUN npm ci && npm cache clean --force
+RUN npm ci --workspaces=false && npm cache clean --force
 
 # Only what the server needs at runtime: the obs sources, the one util module
 # they import, and tsconfig. (.dockerignore keeps everything else out.)

@@ -2,6 +2,9 @@
   "name": "pi-config",
   "private": true,
   "description": "pi extensions + agent definitions (workflow orchestrators)",
+  "workspaces": [
+    "obs/ui"
+  ],
   "scripts": {
     "setup:types": "bash scripts/link-pi-types.sh",
     "pretypecheck": "bash scripts/link-pi-types.sh",

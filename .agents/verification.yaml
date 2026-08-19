@@ -12,6 +12,16 @@ commands:
   - "npm run typecheck"
   # because package.json#scripts.test is present
   - "npm test"
+  # The two above cover the Node side ONLY. obs/ui is the browser dashboard: the
+  # root test glob does not reach its tests and the root tsconfig excludes it, so
+  # without the three below a change to the dashboard is verified by nothing.
+  # They need no extra install — obs/ui is an npm workspace, so the root install
+  # that happens before the sandbox is sealed already provides its dependencies.
+  - "npm run typecheck --workspace obs/ui"
+  - "npm test --workspace obs/ui"
+  # The server serves the BUILD, not the sources, so a change that breaks the
+  # build is a change that never reaches the running dashboard.
+  - "npm run build --workspace obs/ui"
 
 # The whole run is bounded. A suite that exceeds this fails the job
 # rather than running until something else stops it.
