@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRunEvents } from "../../data/queries";
 import { highlightJson, markTerm } from "./rawHighlight";
 import { TabSkeleton } from "../../lib/Skeleton";
+import { TailChip, useTail } from "../../lib/Tail";
 import { AgentFilter, inScope, useAgentScope, useEventScopes } from "../AgentFilter";
 import "./tabs.css";
 // render cap — huge runs would otherwise mount tens of thousands of <pre>s.
@@ -40,6 +41,14 @@ export function RawTab({ runId }: { runId: string }) {
   const visible = showAll ? shown : shown.slice(0, ROW_CAP);
   const hidden = shown.length - visible.length;
 
+  // Tail the feed: useRunEvents polls while the run is live, so rows append
+  // while you watch. The tail pins the view to the newest event and counts
+  // anything that lands while the reader scrolls back.
+  const tail = useTail(shown.length, {
+    resetKey: runId,
+    layoutKey: `${q}|${showAll}|${scope?.value ?? ""}`, // each changes the rendered height
+  });
+
   if (evQ.isLoading) return <TabSkeleton label="Loading raw events…" />;
   if (!all.length) return <div className="tab-empty">No events.</div>;
 
@@ -57,6 +66,7 @@ export function RawTab({ runId }: { runId: string }) {
           · JSONL
         </span>
         <AgentFilter options={scopes} width={150} />
+        <TailChip tail={tail} noun="event" />
         <input
           className="rawsearch"
           type="search"
@@ -71,7 +81,7 @@ export function RawTab({ runId }: { runId: string }) {
           copy
         </button>
       </div>
-      <div className="rawbody">
+      <div className="rawbody" ref={tail.ref} onScroll={tail.onScroll}>
         {shown.length === 0 ? (
           <div className="tab-empty small">No events match “{q.trim()}”.</div>
         ) : (
