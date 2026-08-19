@@ -21,6 +21,8 @@ drop one with these sections in any project root and the pipeline will respect i
   - the indent split above — guessing the repo's dominant 4 inside `obs/ui` never matches;
   - **Unicode punctuation in source and UI strings** — em dash `—` (U+2014), arrow `→`, ellipsis `…`, middle dot `·`, curly quotes `“ ”`. Retyping them as `--`, `->`, `...`, `.`, `"` never matches. Keep them: the curly quotes and ellipses are user-visible UI text, and the em dashes are house style.
   Re-read immediately before each edit — a file that moved underneath you (a revert, a branch switch) invalidates any text cached earlier in the session.
+- **Multi-line `oldText` must carry the leading whitespace of EVERY line, not just the first.** The common failure is emitting one space per line instead of the real depth: in `obs/ui` a JSX body sits at 6 or 8 spaces, so `"</div>\n <div className=\"rawbody\">"` will never match `"</div>\n      <div …>"`. The same flattening in `newText` produces code that is merely mis-indented, which is why it goes unnoticed until an `oldText` depends on it.
+- **Prefer one edit per call over a batch.** Batched edits are matched against the file as it was, so a batch that partly applies leaves the file in a state that matches neither the original nor the target — and the next attempt, re-read from that state, fails differently. If a batch reports a partial failure, re-read and reconcile before retrying; do not re-send the batch.
 - Put pure, testable logic in `utils/` (unit-tested); keep `extensions/*.ts` thin wrappers over it.
 - Agent definitions are `agents/*.md` (frontmatter + system prompt); skills are `skills/<name>/`.
 - Keep changes minimal and focused; don't introduce dependencies without justification.
