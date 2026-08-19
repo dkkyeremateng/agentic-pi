@@ -9,6 +9,7 @@
     "setup:types": "bash scripts/link-pi-types.sh",
     "pretypecheck": "bash scripts/link-pi-types.sh",
     "typecheck": "tsc --noEmit",
+    "format:check": "node scripts/check-indent.mjs",
     "pretest": "bash scripts/link-pi-types.sh",
     "test": "tsx --test utils/*/*.test.ts obs/*.test.ts",
     "metrics": "tsx obs/obs-cli.ts",
