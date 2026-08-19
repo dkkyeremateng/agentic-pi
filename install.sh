@@ -185,22 +185,22 @@ fi
 have pi || die "'pi' is still not on PATH — ensure npm's global bin dir is on your PATH."
 say "pi → $(command -v pi)"
 
-# 4. repo dev dependencies (tsx, typescript, @types/node) — ROOT ONLY.
-#    obs/ui is a separate package, installed and built in step 4b.
+# 4. repo dev dependencies (tsx, typescript, @types/node) AND the obs/ui
+#    workspace's, which this one install covers — obs/ui is an npm workspace, so
+#    it has no separate install step.
 say "installing repo dev dependencies (npm install)"
 npm install --no-audit --no-fund
 
-# 4b. the obs dashboard (obs/ui). Its build output is a derived artifact and is
-#     not in the repo, so it must be produced here or the dashboard route serves
-#     a 503 telling you to run exactly this. Warn-only: the obs server and its
-#     /api are fully usable without a UI, so a failed UI build must not abort the
-#     whole install.
+# 4b. the obs dashboard build. Its output is a derived artifact and is not in the
+#     repo, so it must be produced here or the dashboard route serves a 503
+#     telling you to run exactly this. Warn-only: the obs server and its /api are
+#     fully usable without a UI, so a failed UI build must not abort the install.
 say "building the obs dashboard (obs/ui)"
-if (cd obs/ui && npm install --no-audit --no-fund && npm run build); then
+if npm run build --workspace obs/ui; then
     say "dashboard built → obs/ui/dist"
 else
     warn "obs dashboard build failed — the server and /api still work, but the
-    dashboard will 503 until you run: cd obs/ui && npm install && npm run build"
+    dashboard will 503 until you run: npm run build --workspace obs/ui"
 fi
 
 # 5. link pi's types so tsc + the tsx tests resolve the pi API
