@@ -1,0 +1,38 @@
+# Editor/agent-readable formatting conventions. There is no formatter in this
+# repo (no prettier/eslint config anywhere), so the style is whatever the files
+# already do — this file just states it instead of leaving it to be inferred.
+#
+# It matters most for the indent split: the repo is 4-space TypeScript EXCEPT
+# obs/ui, which is 2-space. Anything editing a file by exact-match (an agent's
+# oldText, a patch) has to reproduce the indentation byte for byte, and guessing
+# the repo's dominant 4 inside obs/ui is a silent no-match every time.
+#
+# Values below were measured, not chosen: 5237 four-space steps outside obs/ui
+# vs 1910 two-space steps inside it, zero trailing whitespace, and all 262
+# tracked files already ending in a newline.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# The obs dashboard is a self-contained React package and keeps its own 2-space
+# style (it was developed as a standalone repo before being vendored in).
+[obs/ui/**]
+indent_size = 2
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.json]
+indent_size = 2
+
+# Markdown uses two trailing spaces for a hard line break, so trimming would
+# silently change rendering.
+[*.md]
+trim_trailing_whitespace = false

@@ -10,11 +10,19 @@ drop one with these sections in any project root and the pipeline will respect i
 
 - **Run the unit suite:** `npx tsx --test utils/*/*.test.ts obs/*.test.ts`
 - **Syntax-check a file:** `node --experimental-strip-types --check <file>`
-- **Do NOT use `tsc`** for type-checking — the type packages aren't installed here; it does not work. Use the syntax check above.
+- **Type-check:** `npx tsc --noEmit` (covers `utils/`, `extensions/`, `obs/` — it excludes `obs/ui`, which has its own).
+- **The obs dashboard is a separate package** — `cd obs/ui` first: `npm test` (139 tests), `npm run typecheck`, `npm run build`. Its build output is untracked, and obs-server serves the *build*, so **editing `obs/ui/src` changes nothing until you rebuild**.
+- `just` wraps all of the above — `just verify` runs both suites, both type-checks and a dashboard build.
 
 ## Conventions
 
-- TypeScript, 4-space indentation; match the surrounding file's style, naming, and idioms.
+- TypeScript, 4-space indentation — **except `obs/ui`, which is 2-space**. See `.editorconfig`; match the surrounding file's style, naming, and idioms.
+- **Editing by exact match: copy `oldText` verbatim from a fresh read of the file.** Two things in this repo break a retyped match, and both fail with "could not find … must match exactly":
+  - the indent split above — guessing the repo's dominant 4 inside `obs/ui` never matches;
+  - **Unicode punctuation in source and UI strings** — em dash `—` (U+2014), arrow `→`, ellipsis `…`, middle dot `·`, curly quotes `“ ”`. Retyping them as `--`, `->`, `...`, `.`, `"` never matches. Keep them: the curly quotes and ellipses are user-visible UI text, and the em dashes are house style.
+  Re-read immediately before each edit — a file that moved underneath you (a revert, a branch switch) invalidates any text cached earlier in the session.
+- **Multi-line `oldText` must carry the leading whitespace of EVERY line, not just the first.** The common failure is emitting one space per line instead of the real depth: in `obs/ui` a JSX body sits at 6 or 8 spaces, so `"</div>\n <div className=\"rawbody\">"` will never match `"</div>\n      <div …>"`. The same flattening in `newText` produces code that is merely mis-indented, which is why it goes unnoticed until an `oldText` depends on it.
+- **Prefer one edit per call over a batch.** Batched edits are matched against the file as it was, so a batch that partly applies leaves the file in a state that matches neither the original nor the target — and the next attempt, re-read from that state, fails differently. If a batch reports a partial failure, re-read and reconcile before retrying; do not re-send the batch.
 - Put pure, testable logic in `utils/` (unit-tested); keep `extensions/*.ts` thin wrappers over it.
 - Agent definitions are `agents/*.md` (frontmatter + system prompt); skills are `skills/<name>/`.
 - Keep changes minimal and focused; don't introduce dependencies without justification.
@@ -29,5 +37,10 @@ drop one with these sections in any project root and the pipeline will respect i
 
 Run the unit suite (`npx tsx --test utils/*/*.test.ts obs/*.test.ts`), typecheck
 (`npx tsc --noEmit` — covers utils/, extensions/, obs/), and syntax-check every
-changed `.ts` file. A change is done only when the suite passes (currently 680
+changed `.ts` file. A change is done only when the suite passes (currently 967
 tests), `tsc` is clean, and the files check clean.
+
+If you touched `obs/ui`, that package is not covered by any of the above: also run
+its own `npm test` (139 tests) and `npm run typecheck`, then `npm run build` — the
+server serves the build, so an unbuilt change is an unshipped one. `just verify`
+runs the whole set.
