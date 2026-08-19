@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRunEvents } from "../../data/queries";
 import { highlightJson, markTerm } from "./rawHighlight";
 import { TabSkeleton } from "../../lib/Skeleton";
+import { TailChip, useTail } from "../../lib/Tail";
 import { AgentFilter, inScope, useAgentScope, useEventScopes } from "../AgentFilter";
 import "./tabs.css";
 // render cap — huge runs would otherwise mount tens of thousands of <pre>s.
@@ -37,7 +38,7 @@ export function RawTab({ runId }: { runId: string }) {
     () => (needle ? rows.filter((r) => r.hay.includes(needle)) : rows),
     [rows, needle],
   );
-  const visible = showAll ? shown : shown.slice(0, ROW_CAP);
+  const visible = showAll ? shown : shown.slice(-ROW_CAP);
   const hidden = shown.length - visible.length;
 
   if (evQ.isLoading) return <TabSkeleton label="Loading raw events…" />;
