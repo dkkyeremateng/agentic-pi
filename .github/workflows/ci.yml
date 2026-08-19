@@ -44,6 +44,10 @@ jobs:
       # obs/ui is an npm workspace, so its dependencies come from the ROOT install
       # and there is no obs/ui lockfile to cache against.
       - run: npm ci
+      # Indentation first: it is the cheapest check and the only one that can see
+      # whitespace. Everything below compiles or runs the code, so a block pasted
+      # at the wrong indent passes all of them — that is how it reached review.
+      - run: npm run format:check
       # It still has its own tsconfig and its own gates. The build runs last
       # because it is what obs-server actually serves.
       - run: npm run typecheck --workspace obs/ui

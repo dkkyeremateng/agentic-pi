@@ -19,6 +19,15 @@
 // Continuation lines are the reason for the odd/even rule rather than a
 // strict-multiple-of-2 rule on nesting: code that aligns to an open paren or a
 // JSX attribute is still even, so it passes without needing an exception.
+//
+// There is deliberately NO attempt to track template literals. Counting
+// backticks per line cannot tell a template apart from a backtick inside a
+// regex, a string or a comment, and guessing wrong is not a harmless miss: one
+// unbalanced line flips the state and every later line in that file goes
+// unchecked. chat/markdown.ts is the worked example — its code-span regexes
+// (/`([^`]+)`/g) and fence handling left 130 of its lines silently skipped, in
+// the one file that most needs checking. Checking every line instead costs
+// nothing: the tree has zero odd-indented lines inside templates today.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
@@ -43,14 +52,7 @@ const problems = [];
 for (const root of ROOTS) {
   for (const file of sources(root)) {
     const lines = readFileSync(file, "utf8").split("\n");
-    // Track whether we are inside a template literal: a backtick string may
-    // carry any indentation the author wants and is not this check's business.
-    let inTemplate = false;
     lines.forEach((line, i) => {
-      const ticks = (line.match(/`/g) || []).length;
-      const wasInTemplate = inTemplate;
-      if (ticks % 2 === 1) inTemplate = !inTemplate;
-      if (wasInTemplate) return;
       if (line.trim() === "") return;
       // A block comment's continuation lines align their asterisks under the
       // opening slash-star, which puts them one space in. That is the house
