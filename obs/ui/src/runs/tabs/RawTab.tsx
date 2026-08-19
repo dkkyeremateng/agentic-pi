@@ -2,11 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useRunEvents } from "../../data/queries";
 import { highlightJson, markTerm } from "./rawHighlight";
 import { TabSkeleton } from "../../lib/Skeleton";
+import { TailChip, useTail } from "../../lib/Tail";
 import { AgentFilter, inScope, useAgentScope, useEventScopes } from "../AgentFilter";
+import { tailWindow } from "./rawWindow";
 import "./tabs.css";
-// render cap — huge runs would otherwise mount tens of thousands of <pre>s.
-// "Show all" lifts it (copy always covers the full filtered set).
-const ROW_CAP = 500;
 
 export function RawTab({ runId }: { runId: string }) {
   const evQ = useRunEvents(runId);
@@ -37,8 +36,15 @@ export function RawTab({ runId }: { runId: string }) {
     () => (needle ? rows.filter((r) => r.hay.includes(needle)) : rows),
     [rows, needle],
   );
-  const visible = showAll ? shown : shown.slice(0, ROW_CAP);
-  const hidden = shown.length - visible.length;
+
+  // Tail the feed: it rides the live stream (useLiveEvents pushes straight
+  // into this query's cache), so rows append while you watch.
+  const tail = useTail(shown.length, {
+    resetKey: runId,
+    layoutKey: `${needle}|${showAll}|${scope?.value ?? ""}`, // each changes the rendered height
+  });
+
+  const { visible, hidden } = tailWindow(shown, showAll);
 
   if (evQ.isLoading) return <TabSkeleton label="Loading raw events…" />;
   if (!all.length) return <div className="tab-empty">No events.</div>;
@@ -70,12 +76,18 @@ export function RawTab({ runId }: { runId: string }) {
         <button className="cp" onClick={copyAll}>
           copy
         </button>
+        <TailChip tail={tail} noun="event" />
       </div>
-      <div className="rawbody">
+      <div className="rawbody" ref={tail.ref} onScroll={tail.onScroll}>
         {shown.length === 0 ? (
           <div className="tab-empty small">No events match “{q.trim()}”.</div>
         ) : (
           <>
+            {hidden > 0 && (
+              <button className="showall" onClick={() => setShowAll(true)}>
+                Show {hidden.toLocaleString()} older events ({shown.length.toLocaleString()} total)
+              </button>
+            )}
             {visible.map((r) => (
               <pre
                 className="rawev"
@@ -83,11 +95,6 @@ export function RawTab({ runId }: { runId: string }) {
                 dangerouslySetInnerHTML={{ __html: needle ? markTerm(r.html, q) : r.html }}
               />
             ))}
-            {hidden > 0 && (
-              <button className="showall" onClick={() => setShowAll(true)}>
-                Show all {shown.length.toLocaleString()} events ({hidden.toLocaleString()} more)
-              </button>
-            )}
           </>
         )}
       </div>
