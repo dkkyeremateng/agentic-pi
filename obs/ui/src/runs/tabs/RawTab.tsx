@@ -39,6 +39,7 @@ export function RawTab({ runId }: { runId: string }) {
   );
   const visible = showAll ? shown : shown.slice(0, ROW_CAP);
   const hidden = shown.length - visible.length;
+ // tail
 
   if (evQ.isLoading) return <TabSkeleton label="Loading raw events…" />;
   if (!all.length) return <div className="tab-empty">No events.</div>;
