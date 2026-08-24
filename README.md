@@ -348,6 +348,7 @@ each is an optional one-time install that puts a command on your `PATH`.
 |-------|--------------------------|---------|
 | `lsp` | Type/compile **diagnostics** + **navigation** (def/refs/hover/symbols) for Python/Go/TS/PHP. The implementer and validator run `lsp diagnostics` as a required check. | `bash skills/lsp/install.sh` (then install the language servers you use) |
 | `bowser` | Playwright browser automation — headless browsing, scraping, screenshots, UI testing. | see `skills/bowser/SKILL.md` |
+| `chrome-agent` | Drive a **real Chrome over CDP** — any protocol command one-shot, any event streamed via `attach`. For live/observable browsers, network + console forensics, and human-agent sharing. | `uv tool install chrome-agent` (needs system Chrome) |
 | `linear` | Linear GraphQL CLI. | `bash skills/linear/install.sh` (`LINEAR_API_KEY`) |
 | `atlassian` | Jira Cloud REST CLI. | `bash skills/atlassian/install.sh` (`ATLASSIAN_*`) |
 | `github` / `commit` | GitHub (`gh`) recon helpers and commit conventions. | — |
