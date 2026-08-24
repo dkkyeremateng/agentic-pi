@@ -124,41 +124,38 @@ downstream agents, so it is never re-threaded through the context.
   the patch, so re-run `npm run patch:prune` after upgrading; `-- --revert` restores
   upstream.
 
-### Dashboard stale rows (absolute-repaint pulse)
+### The sticky widget is a status line, not a dashboard
 
-The dashboard could accumulate stale rows: an agent card growing a new `running Ns`
-line every second instead of overwriting it, and the `# Todos` header appearing
-twice — with **different frame numbers**, so two frames were on screen at once.
+The terminal widget shows **at most 6 rows**:
 
-**Neither the widget nor pi's composition was wrong.** Two dumps established that:
-`PI_WORKFLOW_DEBUG_WIDGET=1` shows the array the extension hands pi (one header per
-frame), and pi's own composed frame also had exactly one. The extra rows were
-already on the terminal.
+```
+ plan-build ▸ Implement 3/5 · 2m 14s · $0.41 · 12.4%/256K · CH 88% ●
+ ▸ Implementer  ● running 21s · 5 tools  ◆ gfr_local/gateframe_ionix/dspark
+   todos 2/3 · review 4/7
+   → read path=styles.css
+```
 
-pi re-renders only a **live region** (widget + editor + footer). Everything above is
-terminal scrollback it does not own, so a live region pushed up rather than
-overwritten leaves its rows visible. Only an absolute repaint clears that (it wipes
-screen *and* scrollback), and pi reaches one solely through `clearOnShrink` — when
-the composed frame gets **shorter**. A dashboard of stable height never shrinks, so
-upstream emitted **zero** absolute clears in a whole session and stale rows survived
-until restart.
+It used to render a five-card grid, per-agent context bars, a todo ledger, a review
+checklist and a live log — about **40 rows**, four times pi's `MAX_WIDGET_LINES`
+budget of 10. A sticky region that large competes with the renderer for the screen:
+it has to be height-managed, it pushes the transcript around, and rows a previous
+frame left behind stay visible (the duplicated `# Todos` header and the agent card
+that grew a `running Ns` line every second). Every rendering problem the dashboard
+had came from its size.
 
-So the widget makes the frame shrink on purpose: every `PI_WORKFLOW_REPAINT_MS`
-(default 4000, `0` disables) it drops a trailing spacer row, pi's own
-`clearOnShrink` fires, and the screen is repainted. Measured against an
-**unmodified** pi-tui: 0 clears without the pulse, 11 with it over ~5s.
-
-This needs `clearOnShrink` on, which `run.sh` exports (`PI_CLEAR_ON_SHRINK=1`); pi's
-own `terminal.clearOnShrink` setting outranks the env var. Without it the pulse is
-harmless but does nothing.
-
-No pi package is modified.
+None of that detail needed to be in a non-scrolling region. [`obs/ui`](obs/ui)
+already shows runs, live agents, analytics and full history, and pi already streams
+each sub-agent's tool trail into the transcript — both of which scroll. What a
+terminal status line is for is "is it moving, where is it, what is it costing".
 
 ```bash
-PI_WORKFLOW_REPAINT_MS=2000 ./run.sh   # repaint more often
-PI_WORKFLOW_REPAINT_MS=0    ./run.sh   # disable the pulse
-PI_WORKFLOW_DEBUG_WIDGET=1  ./run.sh   # dump the widget array to ~/.pi/agent/pi-widget.log
+PI_WORKFLOW_WIDGET=full ./run.sh    # restore the old five-card dashboard
+PI_WORKFLOW_REPAINT_MS=4000 ./run.sh  # force periodic repaints (only `full` needs this)
+PI_WORKFLOW_DEBUG_WIDGET=1 ./run.sh   # dump the widget array to ~/.pi/agent/pi-widget.log
 ```
+
+No pi package is modified. The card/grid builders are still there and still tested —
+`full` uses them, and they are what a future on-demand overlay would reuse.
 
 ## Quick start
 

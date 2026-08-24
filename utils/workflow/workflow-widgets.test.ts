@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
     renderLspServers,
     renderTodos,
+    renderStatusWidget,
+    STATUS_WIDGET_MAX_LINES,
     shouldRepaint,
     phaseTitleOnly,
     renderRichCard,
@@ -109,6 +111,85 @@ describe("renderTodos", () => {
         }).length;
         assert.equal(before, 2);
         assert.equal(after, 2);
+    });
+});
+
+// ── compact status widget ───────────────────────────────────────────────────
+// The sticky widget is a status LINE, not a dashboard. pi budgets extension
+// widgets at MAX_WIDGET_LINES = 10; the old five-card view was ~40 rows, and a
+// sticky region that size is what made the renderer strand rows. These tests pin
+// the two properties that keep it out of that regime: bounded height, and no line
+// that can wrap.
+describe("renderStatusWidget", () => {
+    const phase = (o: any) => ({
+        agent: "implementer", label: "Implement", status: "pending",
+        elapsed: 0, toolCount: 0, ...o,
+    });
+    const base = {
+        team: "plan-build", running: true, lastStatus: "", iteration: 1, maxLoops: 3,
+        elapsedMs: 134000, costUsd: 0.41, contextPct: 12.4, width: 100,
+    };
+
+    it("stays within the line budget even with everything to show", () => {
+        const out = renderStatusWidget({
+            ...base,
+            phases: Array.from({ length: 8 }, (_, i) =>
+                phase({ agent: `a${i}`, label: `P${i}`, status: "running", elapsed: 1000 })),
+            todos: { done: 2, total: 3 },
+            review: { done: 4, total: 7 },
+            activity: "→ read styles.css",
+        } as any, theme);
+        assert.ok(out.length <= STATUS_WIDGET_MAX_LINES, `${out.length} lines`);
+    });
+
+    it("never emits a line wider than the width it was given", () => {
+        // A line one column over wraps to a second physical row while pi counts
+        // one, and every row below is then drawn one place off -- permanently.
+        const out = renderStatusWidget({
+            ...base,
+            width: 40,
+            phases: [phase({ status: "running", elapsed: 21000, toolCount: 5,
+                activeModel: "some/extremely/long/model/identifier/that/will/not/fit" })],
+            todos: { done: 2, total: 3 },
+            activity: "→ " + "x".repeat(300),
+        } as any, theme);
+        for (const l of out) assert.ok(l.length <= 40, `line ${l.length} > 40: ${l}`);
+    });
+
+    it("counts extra parallel agents instead of listing them", () => {
+        const out = renderStatusWidget({
+            ...base,
+            phases: Array.from({ length: 6 }, (_, i) =>
+                phase({ agent: `seeker${i}`, status: "running", elapsed: 5000 })),
+        } as any, theme);
+        assert.ok(out.some((l) => /\+\d+ more running/.test(l)));
+    });
+
+    it("shows an idle line with no run in flight", () => {
+        const out = renderStatusWidget({
+            ...base, team: "", phases: [], running: false, agentCount: 12, teamCount: 4,
+        } as any, theme);
+        assert.equal(out.length, 2);
+        assert.match(out[0], /agent-workflow/);
+        assert.match(out[0], /12 agents/);
+    });
+
+    it("omits ledger counts that have nothing in them", () => {
+        const out = renderStatusWidget({
+            ...base,
+            phases: [phase({ status: "running" })],
+            todos: { done: 0, total: 0 },
+            review: { done: 0, total: 0 },
+        } as any, theme);
+        assert.ok(!out.some((l) => l.includes("todos")));
+        assert.ok(!out.some((l) => l.includes("review")));
+    });
+
+    it("surfaces the retry attempt when the validator has looped", () => {
+        const out = renderStatusWidget({
+            ...base, iteration: 2, phases: [phase({ status: "running" })],
+        } as any, theme);
+        assert.match(out[0], /attempt 2\/3/);
     });
 });
 

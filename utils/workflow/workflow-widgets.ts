@@ -329,6 +329,171 @@ export function phaseTitleOnly(label: string): string {
     return label.replace(/\s+[—-]\s+tests:.*$/i, "").trim() || label.trim();
 }
 
+export interface StatusWidgetInput {
+    /** Active team, or "" when idle. */
+    team: string;
+    phases: PhaseState[];
+    running: boolean;
+    lastStatus: string;
+    iteration: number;
+    maxLoops: number;
+    elapsedMs: number;
+    costUsd: number;
+    /** 0-100, the run's context usage. */
+    contextPct: number;
+    contextWindow?: number;
+    /** Prompt-cache hit rate, 0-100. Omitted when nothing has been cached. */
+    cacheHitPct?: number;
+    todos?: { done: number; total: number };
+    review?: { done: number; total: number };
+    /** One line of "what is happening right now" (last tool, current step). */
+    activity?: string;
+    dispatchMode?: boolean;
+    /** Agents known, for the idle line. */
+    agentCount?: number;
+    teamCount?: number;
+    width: number;
+}
+
+/** Hard ceiling. pi budgets extension widgets at MAX_WIDGET_LINES = 10; staying
+ *  well inside it is the entire point of this view. */
+export const STATUS_WIDGET_MAX_LINES = 6;
+
+/**
+ * The sticky dashboard, as a STATUS LINE rather than a dashboard.
+ *
+ * The previous widget rendered a five-card grid, per-agent context bars, a todo
+ * ledger, a review checklist and a live log -- about 40 rows, four times pi's
+ * budget for an extension widget. A sticky region that large competes with the
+ * renderer for the screen: it has to be height-managed, it pushes the transcript
+ * around, and rows a previous frame left behind stay visible. Every rendering
+ * problem this dashboard has had came from that size.
+ *
+ * The detail did not need to be here. `obs/ui` already shows runs, live agents,
+ * analytics and history, with scrolling and history a sticky region cannot have,
+ * and pi already streams each sub-agent's tool trail into the transcript. What a
+ * terminal status line is for is answering "is it moving, where is it, what is it
+ * costing" at a glance -- which fits in four lines.
+ *
+ * Every line is truncated to `width`; nothing here can wrap.
+ */
+const modelRaw = (p: PhaseState): string => (p.activeModel ? `  ◆ ${p.activeModel}` : "");
+
+export function renderStatusWidget(input: StatusWidgetInput, theme: any): string[] {
+    const w = Math.max(20, input.width);
+    const out: string[] = [];
+
+    // Assemble each line from RAW segments and style only what fits. Truncating a
+    // styled string means slicing through ANSI escapes; budgeting the raw text
+    // first and colouring after cannot produce a broken sequence, and cannot
+    // produce a line wider than `w` -- which is what wraps and drifts the render.
+    type Seg = [text: string, color?: string, bold?: boolean];
+    const line = (segs: Seg[]): string => {
+        let used = 0;
+        let s = "";
+        for (const [text, color, bold] of segs) {
+            if (used >= w) break;
+            const room = w - used;
+            const raw = text.length > room ? text.slice(0, Math.max(0, room - 1)) + "…" : text;
+            used += raw.length;
+            const styled = bold ? theme.bold(raw) : raw;
+            s += color ? theme.fg(color, styled) : styled;
+        }
+        return s;
+    };
+
+    // ── idle ────────────────────────────────────────────────────────────────
+    if (input.phases.length === 0 && !input.dispatchMode) {
+        const agents = input.agentCount ?? 0;
+        const teams = input.teamCount ?? 0;
+        out.push(
+            line([
+                [" "],
+                ["agent-workflow", "accent", true],
+                [
+                    ` · ${agents} agent${agents === 1 ? "" : "s"}` +
+                        (teams ? ` · ${teams} team${teams === 1 ? "" : "s"}` : ""),
+                    "dim",
+                ],
+            ]),
+        );
+        out.push(line([["   /agent-workflow <request>   ·   dashboard: PI_OBS=1", "muted"]]));
+        return out;
+    }
+
+    // ── header: where the run is, and what it has cost ──────────────────────
+    const done = input.phases.filter((p) => p.status === "done").length;
+    const active = input.phases.filter((p) => p.status === "running");
+    const here = active[0]?.label ?? input.phases[done]?.label ?? "";
+    const label = input.dispatchMode ? "dispatch" : input.team || "agent-workflow";
+    const pos = input.dispatchMode ? "" : ` ${done}/${input.phases.length}`;
+
+    const bits: string[] = [];
+    if (input.elapsedMs > 0) bits.push(secs(input.elapsedMs));
+    bits.push(formatCostUsd(input.costUsd));
+    if (input.contextPct > 0) {
+        const win = input.contextWindow
+            ? `/${Math.round(input.contextWindow / 1000)}K`
+            : "";
+        bits.push(`${input.contextPct.toFixed(1)}%${win}`);
+    }
+    if (input.cacheHitPct && input.cacheHitPct > 0) bits.push(`CH ${Math.round(input.cacheHitPct)}%`);
+
+    const attemptRaw =
+        input.iteration > 1 ? ` · attempt ${input.iteration}/${input.maxLoops}` : "";
+    const { icon, color } = statusMeta(
+        input.running ? "running" : input.phases.every((p) => p.status === "done") ? "done" : "pending",
+    );
+    out.push(
+        line([
+            [" "],
+            [label, "accent", true],
+            [here ? ` ▸ ${here}${pos}` : pos, "muted"],
+            [bits.length ? ` · ${bits.join(" · ")}` : "", "dim"],
+            [attemptRaw, "dim"],
+            [` ${icon}`, color],
+        ]),
+    );
+
+    // ── the agent(s) actually working ───────────────────────────────────────
+    // Parallel waves get one line each, capped so the widget cannot grow past
+    // its budget; the overflow is counted rather than listed.
+    const ROOM = STATUS_WIDGET_MAX_LINES - 3; // header + summary + activity
+    const shown = active.slice(0, Math.max(1, ROOM));
+    for (const p of shown) {
+        const meta = statusMeta(p.status);
+        const tools = p.toolCount > 0 ? ` · ${p.toolCount} tool${p.toolCount === 1 ? "" : "s"}` : "";
+
+        out.push(
+            line([
+                [" "],
+                ["▸ ", meta.color],
+                [displayName(p.agent), "accent"],
+                [`  ${meta.icon} ${p.status} ${secs(p.elapsed)}${tools}`, meta.color],
+                [modelRaw(p), "dim"],
+            ]),
+        );
+    }
+    if (active.length > shown.length) {
+        out.push(line([[`   +${active.length - shown.length} more running`, "dim"]]));
+    }
+
+    // ── ledger summary: counts, not the ledgers themselves ──────────────────
+    const summary: string[] = [];
+    if (input.todos && input.todos.total > 0) {
+        summary.push(`todos ${input.todos.done}/${input.todos.total}`);
+    }
+    if (input.review && input.review.total > 0) {
+        summary.push(`review ${input.review.done}/${input.review.total}`);
+    }
+    if (summary.length) out.push(line([["   " + summary.join(" · "), "muted"]]));
+
+    // ── what it is doing this second ────────────────────────────────────────
+    if (input.activity) out.push(line([["   " + input.activity.trim(), "dim"]]));
+
+    return out.slice(0, STATUS_WIDGET_MAX_LINES);
+}
+
 /** Mutable clock for {@link shouldRepaint}. */
 export interface RepaintPulseState {
     last: number;

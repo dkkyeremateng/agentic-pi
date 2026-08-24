@@ -66,6 +66,7 @@ import {
     renderEmptyAgentMessage,
     renderRichCard,
     renderTodos,
+    renderStatusWidget,
     shouldRepaint,
     type RepaintPulseState,
     MAX_CARD_WIDTH,
@@ -657,6 +658,12 @@ export default function (pi: ExtensionAPI) {
         }
     }
 
+    // The sticky widget is a STATUS LINE by default (<= 6 rows). The old five-card
+    // dashboard is ~40 rows -- four times pi's MAX_WIDGET_LINES budget -- and a
+    // sticky region that size competes with the renderer for the screen.
+    // PI_WORKFLOW_WIDGET=full restores it.
+    const WIDGET_STYLE = process.env.PI_WORKFLOW_WIDGET === "full" ? "full" : "compact";
+
     // Absolute-repaint pulse — the fix for the dashboard's stale rows.
     //
     // pi re-renders only a LIVE REGION (this widget + editor + footer). Everything
@@ -685,8 +692,13 @@ export default function (pi: ExtensionAPI) {
     // own `terminal.clearOnShrink` setting outranks it). Without it the pulse is
     // harmless but does nothing. PI_WORKFLOW_REPAINT_MS=0 disables.
     const PULSE_MS = (() => {
+        // Default OFF. The pulse existed to force pi's absolute repaint because a
+        // ~40-row sticky widget left rows behind; a <= 6-row status line does not
+        // push the live region around in the first place. Kept as an escape hatch
+        // (PI_WORKFLOW_REPAINT_MS=4000) and still used by PI_WORKFLOW_WIDGET=full.
         const raw = Number(process.env.PI_WORKFLOW_REPAINT_MS);
-        return Number.isFinite(raw) && raw >= 0 ? raw : 4000;
+        if (Number.isFinite(raw) && raw >= 0) return raw;
+        return WIDGET_STYLE === "full" ? 4000 : 0;
     })();
     const pulseState: RepaintPulseState = { last: 0 };
 
@@ -784,7 +796,79 @@ export default function (pi: ExtensionAPI) {
     // setWidget overload (below) so pi owns the diffing/redraw — re-issuing a
     // custom component each tick made the sticky widget redraw incorrectly
     // (status lines ghosted frame-over-frame).
+    // The sticky widget is a STATUS LINE by default (<= 6 rows). The old
+    // five-card dashboard is ~40 rows -- four times pi's MAX_WIDGET_LINES budget
+    // -- and a sticky region that size competes with the renderer for the screen;
+    // every rendering problem this dashboard had came from its size. The detail it
+    // showed lives in obs/ui (runs, live agents, analytics, history) and in the
+    // transcript, both of which can scroll. PI_WORKFLOW_WIDGET=full restores it.
+
+    // One line of "what is it doing right now", taken from the running phase's
+    // streamed tail. Streamed output carries ANSI and control characters -- a
+    // stray \r or cursor-move makes the whole terminal jump -- so strip them the
+    // same way the live-log panel does before putting the text on a sticky row.
+    function lastActivityLine(): string | undefined {
+        const live = st.phases.find((p) => p.status === "running");
+        const log = live?.log;
+        if (!log) return undefined;
+        const clean = log
+            .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+            .replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, "")
+            .replace(/\x1b[@-Z\\-_]/g, "")
+            .replace(/\t/g, "  ")
+            .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+        const rows = clean
+            .split("\n")
+            .map((l) => l.trim())
+            .filter(Boolean);
+        // Prefer the newest tool invocation over prose: "-> read path=x" says more
+        // about progress than a half-streamed sentence.
+        for (let i = rows.length - 1; i >= 0; i--) {
+            if (/^[→>]/.test(rows[i]) || /^[✓✗]/.test(rows[i])) return rows[i];
+        }
+        return rows[rows.length - 1];
+    }
+
+    function buildCompactLines(width: number, theme: any): string[] {
+        const items = readProgressItems();
+        const reviewItems = buildReviewChecklist(st.phases, reviewMarks);
+        const live = st.phases.find((p) => p.status === "running");
+        const tokens = live?.tokens;
+        const chDen = (tokens?.cacheRead || 0) + (tokens?.input || 0);
+        return renderStatusWidget(
+            {
+                team: st.activeTeamName,
+                phases: st.phases,
+                running: st.running,
+                lastStatus: st.lastStatus,
+                iteration: st.iteration,
+                maxLoops: st.maxLoopsRef,
+                elapsedMs: st.dispatchMode ? st.dispatchElapsedMs : st.runElapsedMs,
+                costUsd: st.totalCostUsd,
+                contextPct: live?.contextPct ?? 0,
+                contextWindow: tokens?.contextWindow,
+                cacheHitPct: chDen > 0 ? ((tokens?.cacheRead || 0) / chDen) * 100 : 0,
+                todos: { done: items.filter((i) => i.done).length, total: items.length },
+                review: {
+                    done: reviewItems.filter((i) => i.done).length,
+                    total: reviewItems.length,
+                },
+                activity: lastActivityLine(),
+                dispatchMode: st.dispatchMode,
+                agentCount: st.agents.size,
+                teamCount: Object.keys(st.teams).length,
+                width,
+            },
+            theme,
+        );
+    }
+
     function buildWidgetLines(width: number, theme: any): string[] {
+        if (WIDGET_STYLE === "compact") return buildCompactLines(width, theme);
+        return buildFullWidgetLines(width, theme);
+    }
+
+    function buildFullWidgetLines(width: number, theme: any): string[] {
         if (st.phases.length === 0 || st.dispatchMode) {
             // Idle or ad-hoc dispatch: the team grid (selected cards marked once
             // the orchestrator dispatches), with the running agent's live log below.
