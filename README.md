@@ -126,33 +126,46 @@ downstream agents, so it is never re-threaded through the context.
 
 ### Dashboard stale rows (`pi-tui` renderer patch)
 
-On a terminal where the rendered content is **taller than the window**, pi-tui's
-differential renderer can desync and stop overwriting rows: an agent card grows a
-new `running Ns` line every second instead of replacing the old one, and the
-`# Todos` header appears twice. Two frames end up on screen at once.
+The dashboard can accumulate stale rows: an agent card grows a new `running Ns`
+line every second instead of overwriting the old one, and the `# Todos` header
+appears twice — with **different frame numbers**, so two frames are on screen at
+once.
 
-The cause is upstream, not in the widget. pi positions the cursor with **relative**
-moves (`\e[NA` / `\e[NB`), which terminals **clamp** at the screen edges — ask to
-move up 70 rows from screen row 8 and you land on row 0, not −62. pi records the
-move as successful, so the error is inherited by every later frame and never
-self-heals. It is only reachable when content overflows the window, because
-otherwise every row is trivially on screen.
+**The cause is below the widget.** Two dumps established that:
+`PI_WORKFLOW_DEBUG_WIDGET=1` shows the array we hand pi (one header per frame),
+and `PI_DEBUG_RENDER_LINES=1` shows pi's fully composed frame (also one header).
+Both are correct, so the extra rows are neither ours nor pi's composition.
 
-`npm run patch:tui` re-validates both endpoints of the move immediately before it
-is emitted and falls back to an absolute repaint when either is off screen. It is
-strictly conservative — it only turns an *unsafe* incremental render into a correct
-full one — and it makes an existing desync **recover** instead of persisting.
+pi re-renders only a **live region** (widget + editor + footer, ~30 rows);
+everything above is terminal scrollback it does not own. When a previously drawn
+live region is pushed up rather than overwritten in place, its rows stay visible.
+`fullRender(true)` clears exactly that (`\e[2J\e[H\e[3J` wipes screen *and*
+scrollback) — but it is only reached via `clearOnShrink`, i.e. when a frame gets
+**shorter**. A dashboard of stable height never shrinks, so on 90 constant-height
+frames upstream emits **zero** absolute clears and anything stale persists for the
+whole session.
+
+`npm run patch:tui` adds:
+
+1. **A periodic absolute repaint** (default every 40 frames,
+   `PI_TUI_REPAINT_EVERY=0` disables) — bounds how long any corruption can survive
+   regardless of what caused it.
+2. **An off-screen cursor-move guard** — a separate latent bug: relative CUU/CUD
+   moves *clamp* at the screen edges while pi records them as successful, so a
+   drift is inherited forever. Only reachable when content overflows the window.
+3. **The `PI_DEBUG_RENDER_LINES=1` dump**, inert unless set.
 
 ```bash
-npm run patch:tui              # applied automatically by install.sh
-npm run patch:tui -- --revert  # restore upstream (byte-identical)
+npm run patch:tui                      # applied automatically by install.sh
+npm run patch:tui -- --revert          # restore upstream (from a byte-exact backup)
 node scripts/verify-pi-tui-patch.mjs   # A/B proof against the installed package
 ```
 
 `pi update` replaces the package and wipes the patch, so re-run it after upgrading
-(same as `npm run patch:prune`). To confirm which widget content is actually being
-sent when a row looks wrong, `PI_WORKFLOW_DEBUG_WIDGET=1` dumps the exact array to
-`~/.pi/agent/pi-widget.log`.
+(same contract as `npm run patch:prune`).
+
+This is a **workaround**. The durable upstream fix is for pi-tui to own its live
+region absolutely (CUP positioning) rather than inferring it from relative moves.
 
 ## Quick start
 

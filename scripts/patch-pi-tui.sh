@@ -1,66 +1,68 @@
 #!/usr/bin/env bash
 #
-# patch-pi-tui.sh — stop pi-tui's differential renderer desyncing when content is
-# taller than the terminal, which strands rows on screen permanently.
+# patch-pi-tui.sh — stop the workflow dashboard accumulating stale rows.
 #
 # ── The symptom ─────────────────────────────────────────────────────────────────
-# The agent-workflow dashboard accumulates stale rows: an agent card grows a new
-# "running Ns" line every second instead of overwriting the old one, and the Todos
-# header appears twice. Two frames are visible at once.
+# An agent card grows a new "running Ns" row every second instead of overwriting
+# the old one, and the Todos header appears twice with DIFFERENT frame numbers
+# ("# Todos [frame 26]" above "# Todos [frame 29]"). Two frames on screen at once.
 #
-# That is NOT the widget duplicating content. Proven with PI_WORKFLOW_DEBUG_WIDGET=1,
-# which dumps the exact array handed to pi: it contains ONE "# Todos" per frame at a
-# constant 40 rows, while the screen shows two. Stamping the header with a frame
-# counter settled it — the screen showed `[frame 57]` and `[frame 59]` side by side,
-# so two different frames were on screen simultaneously.
+# ── What it is NOT ──────────────────────────────────────────────────────────────
+# Ruled out with instrumentation, not inference:
 #
-# ── Why it happens ──────────────────────────────────────────────────────────────
-# `doRender()` positions the cursor with RELATIVE moves — CUU/CUD (`\e[NA`/`\e[NB`)
-# — computed by `computeLineDiff()`:
+#   * Not the widget. PI_WORKFLOW_DEBUG_WIDGET=1 dumps the array we hand pi: ONE
+#     "# Todos" per frame, constant height.
+#   * Not pi's composition. PI_DEBUG_RENDER_LINES=1 dumps pi's fully composed
+#     frame: ONE "# Todos" per frame, at a stable index, frames 22..31.
+#   * Not off-screen cursor clamping. That is real (see the guard below) but needs
+#     content taller than the terminal; a normal session composes ~30 rows on a
+#     78-row screen, so prevViewportTop is 0 and nothing can go off screen.
+#   * Not ambiguous glyph width. iTerm2 here has `Ambiguous Double Width: false`,
+#     so the box-drawing rules are one column and do not wrap.
+#   * Not widget height churn. Pinning the widget to a constant height changed
+#     nothing (and cost a block of reserved blank rows), so it was reverted.
 #
-#     currentScreenRow = hardwareCursorRow - prevViewportTop
-#     targetScreenRow  = targetRow - viewportTop
-#     lineDiff         = targetScreenRow - currentScreenRow
+# ── What it is ──────────────────────────────────────────────────────────────────
+# pi renders only a LIVE REGION (widget + editor + footer, ~30 rows). Everything
+# above is terminal scrollback it does not re-render. When a previously drawn live
+# region is pushed up instead of overwritten in place, its rows stay on screen --
+# an old frame's header sits above the current one.
 #
-# Relative moves CLAMP at the screen edges. Ask to move up 5 rows from screen row 2
-# and the cursor lands on row 0, not row -3. pi then records the move as if it had
-# succeeded (`hardwareCursorRow = ...`), so every subsequent frame inherits the
-# error. The desync is permanent and cumulative, which is why rows pile up instead
-# of being overwritten, and why it never self-heals.
-#
-# There IS a guard for this, but it validates the wrong row:
-#
-#     if (firstChanged < prevViewportTop) { fullRender(true); return; }   // checks firstChanged
-#     ...
-#     const moveTargetRow = appendStart ? firstChanged - 1 : firstChanged; // moves to THIS
-#
-# `moveTargetRow` can be one row above `firstChanged`, and after the scroll branch
-# below it (`prevViewportTop += scroll; viewportTop += scroll`) the origins the
-# guard checked are no longer the origins the move uses. Nothing re-validates that
-# the final target — or the cursor's own current row — is actually on screen.
-#
-# Only reached when content EXCEEDS the terminal height, because `prevViewportTop`
-# is 0 otherwise and every row is trivially on screen. A workflow dashboard on a
-# 78-row terminal renders 131-143 lines, so it lives in that regime permanently.
+# `fullRender(true)` clears exactly this (`\e[2J\e[H\e[3J` wipes screen AND
+# scrollback), and it is reached via clearOnShrink -- but ONLY when the frame gets
+# shorter. A dashboard whose composed height is stable never shrinks, so the
+# absolute repaint never happens and the stale copies persist indefinitely.
 #
 # ── What this patch does ────────────────────────────────────────────────────────
-# Re-validates both endpoints of the relative move immediately before it is
-# emitted, after the scroll adjustment has had its chance. If either the current
-# cursor row or the target row is outside 0..height-1, the relative move cannot be
-# trusted, so fall back to `fullRender(true)` — an absolute repaint that cannot
-# desync.
+# 1. PERIODIC ABSOLUTE REPAINT (the fix). Force `fullRender(true)` every
+#    PI_TUI_REPAINT_EVERY frames (default 40). Whatever leaves rows behind -- a
+#    stray write from a subprocess, a scrolled live region, a cursor drift -- is
+#    wiped within a bounded number of frames instead of persisting for the whole
+#    run. Self-healing rather than a claim to have found every cause.
 #
-# Strictly conservative: it only ever converts an UNSAFE incremental render into a
-# correct full one. It cannot introduce a wrong frame, and in the common case
-# (content fits, or the target is on screen) it changes nothing at all. The cost is
-# an occasional extra full repaint in the overflow regime.
+# 2. OFF-SCREEN CURSOR-MOVE GUARD (a separate, latent bug). pi positions the
+#    cursor with RELATIVE moves (CUU/CUD), which terminals CLAMP at the screen
+#    edges; pi records the move as successful, so the error is inherited forever.
+#    The existing guard validates `firstChanged`, but the move targets
+#    `moveTargetRow`, and the scroll branch between them shifts both viewport
+#    origins after the check. Re-validating both endpoints costs nothing and
+#    matters whenever content DOES overflow the window. Demonstrated by
+#    scripts/verify-pi-tui-patch.mjs.
 #
-# This is a WORKAROUND for an upstream defect, not a redesign. The real fix is for
-# pi-tui to track the hardware cursor against the physical screen rather than an
-# inferred viewport, or to use absolute positioning (CUP) instead of relative moves.
+# 3. COMPOSED-FRAME DUMP (diagnostic, inert unless PI_DEBUG_RENDER_LINES=1) --
+#    writes pi's composed frame to ~/.pi/agent/pi-render.log. Pairs with
+#    PI_WORKFLOW_DEBUG_WIDGET=1 to separate "what we sent" from "what pi rendered".
+#
+# All three are conservative: they add absolute repaints and diagnostics, and never
+# change what a correct incremental frame draws.
+#
+# This is a WORKAROUND. The durable upstream fix is for pi-tui to own its live
+# region absolutely (CUP positioning, or tracking the hardware cursor against the
+# physical screen) rather than inferring it from relative moves.
 #
 # Idempotent: safe to re-run. `pi update` replaces the package and wipes this, so
-# re-run after upgrading. `--revert` restores the upstream source.
+# re-run after upgrading. `--revert` restores the pristine file from the backup
+# taken at first apply.
 #   npm run patch:tui
 #   npm run patch:tui -- --revert
 set -euo pipefail
@@ -77,7 +79,8 @@ if [[ -z "$PI_PKG_DIR" ]]; then
 fi
 
 FILE="$PI_PKG_DIR/node_modules/@earendil-works/pi-tui/dist/tui.js"
-MARKER="PATCH (agentic-pi): off-screen cursor-move guard"
+BACKUP="$FILE.agentic-pi.orig"
+MARKER="PATCH (agentic-pi)"
 
 [[ -f "$FILE" ]] || {
     echo "patch-pi-tui: $FILE not found — is pi installed?" >&2
@@ -85,44 +88,21 @@ MARKER="PATCH (agentic-pi): off-screen cursor-move guard"
     exit 1
 }
 
-ORIGINAL='        // Move cursor to first changed line (use hardwareCursorRow for actual position)
-        const lineDiff = computeLineDiff(moveTargetRow);'
-
 if [[ "${1:-}" == "--revert" || "${1:-}" == "--unpatch" ]]; then
     if ! grep -qF "$MARKER" "$FILE"; then
         echo "patch-pi-tui: not applied — nothing to revert."
         exit 0
     fi
-    ORIGINAL="$ORIGINAL" python3 - "$FILE" <<'PY'
-import os, re, sys
-
-path = sys.argv[1]
-src = open(path, encoding="utf-8").read()
-
-PATCHED = re.compile(
-    r"[ \t]*// PATCH \(agentic-pi\): off-screen cursor-move guard\.\n"
-    r"(?:[ \t]*//.*\n|[ \t]*\n)*?"
-    r"[ \t]*const __piGuardCur = hardwareCursorRow - prevViewportTop;\n"
-    r"(?:.*\n)*?"
-    r"[ \t]*\}\n"
-    r"[ \t]*// Move cursor to first changed line \(use hardwareCursorRow for actual position\)\n"
-    r"[ \t]*const lineDiff = computeLineDiff\(moveTargetRow\);\n"
-)
-
-if not PATCHED.search(src):
-    sys.exit(
-        "patch-pi-tui: marker present but the patched block does not match.\n"
-        "  Reinstall instead: npm i -g @earendil-works/pi-coding-agent"
-    )
-
-open(path, "w", encoding="utf-8").write(
-    PATCHED.sub(os.environ["ORIGINAL"] + "\n", src, count=1)
-)
-print(f"patch-pi-tui: reverted {path}")
-PY
+    [[ -f "$BACKUP" ]] || {
+        echo "patch-pi-tui: backup $BACKUP is missing — cannot revert safely." >&2
+        echo "  reinstall instead: npm i -g @earendil-works/pi-coding-agent" >&2
+        exit 1
+    }
+    cp "$BACKUP" "$FILE"
+    rm -f "$BACKUP"
     node --check "$FILE" >/dev/null 2>&1 &&
-        echo "patch-pi-tui: syntax OK" ||
-        { echo "patch-pi-tui: SYNTAX CHECK FAILED — reinstall pi" >&2; exit 1; }
+        echo "patch-pi-tui: reverted $FILE (restored from backup)" ||
+        { echo "patch-pi-tui: SYNTAX CHECK FAILED after revert — reinstall pi" >&2; exit 1; }
     exit 0
 fi
 
@@ -131,55 +111,142 @@ if grep -qF "$MARKER" "$FILE"; then
     exit 0
 fi
 
-grep -qF "$ORIGINAL" "$FILE" || {
-    echo "patch-pi-tui: anchor not found in $FILE — pi-tui's render path has changed." >&2
-    echo "  Re-check doRender() before forcing this patch." >&2
-    exit 1
-}
+# Keep a pristine copy so --revert is exact rather than a regex guess.
+cp "$FILE" "$BACKUP"
 
-ORIGINAL="$ORIGINAL" python3 - "$FILE" <<'PY'
-import os, sys
+python3 - "$FILE" <<'PY'
+import sys, pathlib
 
-path = sys.argv[1]
-src = open(path, encoding="utf-8").read()
-OLD = os.environ["ORIGINAL"]
+path = pathlib.Path(sys.argv[1])
+src = path.read_text(encoding="utf-8")
 
-NEW = '''        // PATCH (agentic-pi): off-screen cursor-move guard.
+
+def splice(src, anchor, addition, where="after", label=""):
+    if anchor not in src:
+        sys.exit(f"patch-pi-tui: anchor not found ({label}) — pi-tui's render path has changed.")
+    return src.replace(
+        anchor, (anchor + addition) if where == "after" else (addition + anchor), 1
+    )
+
+
+# ── 1. periodic absolute repaint ────────────────────────────────────────────────
+# Placed immediately before the incremental path's first early return, so it wins
+# over every incremental branch below it.
+src = splice(
+    src,
+    """        // Differential rendering can only touch what was actually visible.""",
+    "",
+    "after",
+    "repaint anchor",
+)
+src = src.replace(
+    """        // Differential rendering can only touch what was actually visible.""",
+    """        // PATCH (agentic-pi): periodic absolute repaint.
         //
-        // Everything below positions the cursor with RELATIVE moves (CUU/CUD).
-        // Terminals CLAMP those at the screen edges: asking to move up 5 from
-        // screen row 2 lands on row 0, not -3. pi then records the move as if it
-        // had succeeded, so the error is inherited by every later frame -- rows
-        // stop being overwritten and pile up instead, and it never self-heals.
+        // pi only re-renders a LIVE REGION; everything above it is terminal
+        // scrollback it does not own. When a previously drawn live region ends up
+        // pushed up rather than overwritten in place, its rows stay on screen --
+        // that is the duplicated dashboard header, with an OLDER frame number
+        // above the current one.
         //
-        // The guard above validates `firstChanged`, but the move uses
-        // `moveTargetRow` (which is `firstChanged - 1` when appendStart), and the
-        // scroll branch just above may have advanced both viewport origins since.
-        // So re-validate BOTH endpoints of the move against the real screen here.
+        // fullRender(true) clears exactly that (screen + scrollback), but it is
+        // only reached via clearOnShrink, i.e. when a frame gets SHORTER. A
+        // dashboard whose composed height is stable never shrinks, so the absolute
+        // repaint never runs and the stale copies persist for the whole session.
         //
-        // Only reachable when content exceeds the terminal height (otherwise
-        // prevViewportTop is 0 and every row is on screen). Falling back to an
-        // absolute repaint is always correct, just more expensive.
-        const __piGuardCur = hardwareCursorRow - prevViewportTop;
-        const __piGuardTarget = moveTargetRow - viewportTop;
-        if (__piGuardCur < 0 || __piGuardCur >= height ||
-            __piGuardTarget < 0 || __piGuardTarget >= height) {
-            logRedraw(`off-screen cursor move (cur=${__piGuardCur}, target=${__piGuardTarget}, height=${height})`);
+        // Forcing one every N frames bounds how long ANY corruption can survive,
+        // whatever produced it, instead of requiring us to have found every cause.
+        // 0 disables.
+        this.__piFramesSinceFull = (this.__piFramesSinceFull || 0) + 1;
+        const __piEvery = process.env.PI_TUI_REPAINT_EVERY === undefined
+            ? 40
+            : Number(process.env.PI_TUI_REPAINT_EVERY);
+        if (__piEvery > 0 && this.__piFramesSinceFull >= __piEvery) {
+            this.__piFramesSinceFull = 0;
+            logRedraw(`periodic repaint (every ${__piEvery} frames)`);
+            fullRender(true);
+            return;
+        }
+        // Differential rendering can only touch what was actually visible.""",
+    1,
+)
+
+# ── 2. off-screen cursor-move guard ─────────────────────────────────────────────
+src = splice(
+    src,
+    """        // Move cursor to first changed line (use hardwareCursorRow for actual position)
+        const lineDiff = computeLineDiff(moveTargetRow);""",
+    "",
+    "after",
+    "cursor-guard anchor",
+)
+src = src.replace(
+    """        // Move cursor to first changed line (use hardwareCursorRow for actual position)
+        const lineDiff = computeLineDiff(moveTargetRow);""",
+    """        // PATCH (agentic-pi): off-screen cursor-move guard.
+        //
+        // The moves below are RELATIVE (CUU/CUD) and terminals CLAMP them at the
+        // screen edges: move up 70 from screen row 8 and you land on 0, not -62.
+        // pi records the move as successful, so the error is inherited by every
+        // later frame and never self-heals. The guard above validates
+        // `firstChanged`, but the move targets `moveTargetRow`, and the scroll
+        // branch in between may have advanced both viewport origins since. So
+        // re-validate BOTH endpoints against the real screen here.
+        const __piCur = hardwareCursorRow - prevViewportTop;
+        const __piTarget = moveTargetRow - viewportTop;
+        if (__piCur < 0 || __piCur >= height || __piTarget < 0 || __piTarget >= height) {
+            logRedraw(`off-screen cursor move (cur=${__piCur}, target=${__piTarget}, height=${height})`);
             fullRender(true);
             return;
         }
         // Move cursor to first changed line (use hardwareCursorRow for actual position)
-        const lineDiff = computeLineDiff(moveTargetRow);'''
+        const lineDiff = computeLineDiff(moveTargetRow);""",
+    1,
+)
 
-if OLD not in src:
-    sys.exit("patch-pi-tui: anchor vanished between check and write — aborting.")
+# ── 3. composed-frame dump (diagnostic) ─────────────────────────────────────────
+src = splice(
+    src,
+    "        newLines = this.applyLineResets(newLines);",
+    """
+        // PATCH (agentic-pi): composed-frame dump (PI_DEBUG_RENDER_LINES=1).
+        // What pi actually renders, to compare against PI_WORKFLOW_DEBUG_WIDGET=1
+        // (what the extension hands pi). Inert unless the env var is set.
+        if (process.env.PI_DEBUG_RENDER_LINES === "1") {
+            try {
+                const __d = newLines.map((l, i) =>
+                    String(i).padStart(3) + "| " +
+                    String(l).replace(/\\x1b\\[[0-9;]*m/g, "").replace(/\\u200b/g, "<ZWSP>")
+                ).join("\\n");
+                fs.appendFileSync(path.join(this.logDirectory, "pi-render.log"),
+                    "\\n=== rows=" + newLines.length + " height=" + height + " width=" + width + " ===\\n" + __d + "\\n");
+            } catch (e) { }
+        }""",
+    "after",
+    "render-dump anchor",
+)
 
-open(path, "w", encoding="utf-8").write(src.replace(OLD, NEW, 1))
-print(f"patch-pi-tui: patched {path}")
+# Reset the frame counter whenever a full render happens for any other reason, so
+# the periodic repaint measures time since the LAST absolute repaint.
+src = splice(
+    src,
+    "            this.previousHeight = height;\n        };",
+    "",
+    "after",
+    "fullRender tail anchor",
+)
+src = src.replace(
+    "            this.previousHeight = height;\n        };",
+    "            this.previousHeight = height;\n            this.__piFramesSinceFull = 0; // PATCH (agentic-pi)\n        };",
+    1,
+)
+
+path.write_text(src, encoding="utf-8")
+print("patch-pi-tui: applied 3 insertions")
 PY
 
 node --check "$FILE" >/dev/null 2>&1 &&
     echo "patch-pi-tui: syntax OK" ||
-    { echo "patch-pi-tui: SYNTAX CHECK FAILED — reinstall pi" >&2; exit 1; }
+    { echo "patch-pi-tui: SYNTAX CHECK FAILED — restoring backup" >&2; cp "$BACKUP" "$FILE"; exit 1; }
 
-echo "patch-pi-tui: done. Restart pi for it to take effect."
+echo "patch-pi-tui: done (backup: $BACKUP). Restart pi for it to take effect."

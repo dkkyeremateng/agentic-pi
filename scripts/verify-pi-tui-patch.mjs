@@ -95,7 +95,36 @@ console.log(`\nframe 2: fullRender taken? ${tookFullRender}`);
 console.log(`  relative move emitted: ${move ? `\\x1b[${move[1]}${move[2]}` : "(none)"}`);
 console.log(`  absolute repaint emitted: ${buf.includes("\x1b[2J") ? "yes (\\x1b[2J)" : "no"}`);
 
-const ok = patched ? tookFullRender : true;
+// ---- Test 2: periodic absolute repaint on a CONSTANT-height frame ----------
+// The dashboard's real regime: height never changes, so clearOnShrink can never
+// fire. Unpatched that means pi NEVER issues an absolute clear, so anything left
+// on screen (a live region pushed up instead of overwritten, a stray write from a
+// subprocess) persists for the entire session. That is the duplicated header.
+console.log("\n--- periodic repaint on constant-height frames ---");
+const tui2 = new TUI(terminal, false, "/tmp");
+tui2.setClearOnShrink(true);
+const body2 = new Container();
+tui2.addChild(body2);
+const N = 30, FRAMES = 90;
+let clears = 0;
+for (let f = 0; f < FRAMES; f++) {
+    body2.clear();
+    for (let i = 0; i < N; i++) {
+        body2.addChild(new Text(i === 14 ? `# Todos [frame ${f}]` : `row-${i}`, 0, 0));
+    }
+    writes.length = 0;
+    tui2.doRender();
+    if (writes.join("").includes("\x1b[2J")) clears++;
+}
+console.log(`  ${FRAMES} frames of constant height, one line changing per frame`);
+console.log(`  absolute clears emitted: ${clears}`);
+console.log(
+    clears > 0
+        ? `  PASS - stale rows are wiped at least every ~${Math.round(FRAMES / clears)} frames`
+        : "  (unpatched) NO absolute clear ever - stale rows persist for the whole session",
+);
+
+const ok = patched ? tookFullRender && clears > 0 : true;
 console.log(
     `\n${patched ? "PATCHED" : "UNPATCHED"} expectation: ` +
         (patched
