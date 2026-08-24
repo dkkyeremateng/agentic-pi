@@ -44,7 +44,14 @@ import {
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { join, dirname } from "path";
 import { execFileSync } from "child_process";
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
+import {
+    writeFileSync,
+    mkdirSync,
+    readFileSync,
+    existsSync,
+    appendFileSync,
+} from "fs";
+import { homedir } from "os";
 import { secs } from "../utils/workflow/workflow-utils";
 import { emitNotification } from "../utils/shared/notify";
 import {
@@ -652,6 +659,13 @@ export default function (pi: ExtensionAPI) {
     // rows reserved for the editor + footer. A tall team grid or live-log panel
     // would otherwise push the input box and footer off-screen. Clip the overflow
     // with a notice so those always keep their rows.
+    //
+    // NOTE: this deliberately does NOT pad the widget to a stable height. That was
+    // tried against the duplicated "# Todos" header and disproved: with the widget
+    // pinned to a constant 40 rows, PI_WORKFLOW_DEBUG_WIDGET dumps showed exactly
+    // ONE header per frame while the screen still showed two. The extra row is
+    // manufactured inside pi-tui, below this layer, so height stability bought
+    // nothing and cost a block of reserved blank rows.
     function clampWidget(out: string[], theme: any): string[] {
         const rows = process.stdout.rows || 24;
         const max = Math.max(3, rows - LOG_PANEL_RESERVE);
@@ -786,10 +800,15 @@ export default function (pi: ExtensionAPI) {
         const workersRunning = st.phases.filter(
             (p) => p.agent === "phase-implementer" && p.status === "running",
         ).length;
+        // While a run is live, claim the block's rows before the ledger exists —
+        // the planner writes .agent/progress.md partway through, and letting the
+        // block appear then is the height jump that stranded a duplicate header.
+        // Once the run ends there is nothing to wait for, so it collapses again.
         const todos = renderTodos(readProgressItems(), theme, {
             running: st.running,
             width,
             inProgress: workersRunning,
+            placeholder: st.running ? "waiting for the plan…" : undefined,
         });
         if (todos.length) {
             lines.push("\u200b");
@@ -830,6 +849,25 @@ export default function (pi: ExtensionAPI) {
                 widgetMemo.theme = t;
                 widgetMemo.width = width;
                 widgetMemo.lines = buildWidgetLines(width, t);
+                // PI_WORKFLOW_DEBUG_WIDGET=1 dumps the array we hand pi, ANSI
+                // stripped, one row per line. Ground truth for "is a duplicated
+                // row ours or the renderer's?" — if the dump has one "# Todos"
+                // and the screen shows two, the strand is below us and no amount
+                // of widget-side work will fix it.
+                if (process.env.PI_WORKFLOW_DEBUG_WIDGET === "1") {
+                    try {
+                        const dump = widgetMemo.lines
+                            .map(
+                                (l, i) =>
+                                    `${String(i).padStart(3)}| ${l.replace(/\x1b\[[0-9;]*m/g, "").replace(/​/g, "<ZWSP>")}`,
+                            )
+                            .join("\n");
+                        appendFileSync(
+                            join(homedir(), ".pi", "agent", "pi-widget.log"),
+                            `\n=== ${new Date().toISOString()} rows=${widgetMemo.lines.length} cols=${width} ===\n${dump}\n`,
+                        );
+                    } catch {}
+                }
             }
             const container = new Container();
             for (const line of widgetMemo.lines)

@@ -74,6 +74,41 @@ describe("renderTodos", () => {
         assert.match(out[0], /# Review/);
         assert.ok(!out[0].includes("# Todos"));
     });
+
+    // The empty block used to contribute 0 rows and then jump to N+1 the instant
+    // the planner wrote the ledger. pi-tui only force-clears on SHRINK, so that
+    // growth is what stranded a second "# Todos" header on screen.
+    it("reserves the block with a placeholder instead of collapsing to nothing", () => {
+        const out = renderTodos([], theme, { placeholder: "waiting for the plan…" });
+        assert.equal(out.length, 2);
+        assert.match(out[0], /# Todos/);
+        assert.match(out[1], /waiting for the plan…/);
+    });
+
+    it("still returns [] with no placeholder, so # Review can splice blindly", () => {
+        assert.deepEqual(renderTodos([], theme, { title: " # Review" }), []);
+    });
+
+    it("emits exactly one header once the ledger arrives", () => {
+        const out = renderTodos(items, theme, {
+            running: true,
+            placeholder: "waiting for the plan…",
+        });
+        assert.equal(out.filter((l) => l.includes("# Todos")).length, 1);
+        assert.ok(!out.some((l) => l.includes("waiting for the plan")));
+    });
+
+    // The placeholder must not cost a row when the ledger lands: 1 header + 1
+    // placeholder, then 1 header + N items. Any run with >= 1 phase only ever
+    // grows, never shrinks, which is the direction pi-tui handles cleanly.
+    it("never shrinks when the placeholder is replaced by a one-phase ledger", () => {
+        const before = renderTodos([], theme, { placeholder: "waiting…" }).length;
+        const after = renderTodos([{ label: "Phase 1", done: false }], theme, {
+            placeholder: "waiting…",
+        }).length;
+        assert.equal(before, 2);
+        assert.equal(after, 2);
+    });
 });
 
 describe("renderRichCard per-agent cache hit rate", () => {

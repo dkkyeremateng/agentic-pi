@@ -341,9 +341,22 @@ export function renderTodos(
         // 0 while running also means 1, because the coordinator is between waves
         // and the next phase is what it is about to start.
         inProgress?: number;
+        // Text to show INSTEAD of returning nothing when there are no items yet.
+        // The Todos block otherwise pops into existence the instant the ledger is
+        // written, and that growth is what pi-tui's differential renderer can
+        // strand a row on (it only force-clears on shrink). Reserving the rows up
+        // front keeps the block's height steady. Omit it and the empty case still
+        // returns [] — the Review panel relies on that to splice unconditionally.
+        placeholder?: string;
     } = {},
 ): string[] {
-    if (!items || items.length === 0) return [];
+    if (!items || items.length === 0) {
+        if (!opts.placeholder) return [];
+        return [
+            theme.fg("accent", theme.bold(opts.title ?? " # Todos")),
+            ` ${theme.fg("muted", opts.placeholder)}`,
+        ];
+    }
     const max = Math.max(10, (opts.width ?? 80) - 6);
     const clip = (s: string) => {
         const t = phaseTitleOnly(s);
