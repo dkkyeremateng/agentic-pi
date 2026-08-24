@@ -18,7 +18,8 @@
     "obs:export": "tsx obs/obs-export.ts",
     "test:linear": "python3 -m unittest discover -s skills/linear -p 'test_*.py'",
     "test:atlassian": "python3 -m unittest discover -s skills/atlassian -p 'test_*.py'",
-    "patch:prune": "bash scripts/patch-context-prune.sh"
+    "patch:prune": "bash scripts/patch-context-prune.sh",
+    "patch:tui": "bash scripts/patch-pi-tui.sh"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

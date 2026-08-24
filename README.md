@@ -124,6 +124,36 @@ downstream agents, so it is never re-threaded through the context.
   the patch, so re-run `npm run patch:prune` after upgrading; `-- --revert` restores
   upstream.
 
+### Dashboard stale rows (`pi-tui` renderer patch)
+
+On a terminal where the rendered content is **taller than the window**, pi-tui's
+differential renderer can desync and stop overwriting rows: an agent card grows a
+new `running Ns` line every second instead of replacing the old one, and the
+`# Todos` header appears twice. Two frames end up on screen at once.
+
+The cause is upstream, not in the widget. pi positions the cursor with **relative**
+moves (`\e[NA` / `\e[NB`), which terminals **clamp** at the screen edges — ask to
+move up 70 rows from screen row 8 and you land on row 0, not −62. pi records the
+move as successful, so the error is inherited by every later frame and never
+self-heals. It is only reachable when content overflows the window, because
+otherwise every row is trivially on screen.
+
+`npm run patch:tui` re-validates both endpoints of the move immediately before it
+is emitted and falls back to an absolute repaint when either is off screen. It is
+strictly conservative — it only turns an *unsafe* incremental render into a correct
+full one — and it makes an existing desync **recover** instead of persisting.
+
+```bash
+npm run patch:tui              # applied automatically by install.sh
+npm run patch:tui -- --revert  # restore upstream (byte-identical)
+node scripts/verify-pi-tui-patch.mjs   # A/B proof against the installed package
+```
+
+`pi update` replaces the package and wipes the patch, so re-run it after upgrading
+(same as `npm run patch:prune`). To confirm which widget content is actually being
+sent when a row looks wrong, `PI_WORKFLOW_DEBUG_WIDGET=1` dumps the exact array to
+`~/.pi/agent/pi-widget.log`.
+
 ## Quick start
 
 ```bash

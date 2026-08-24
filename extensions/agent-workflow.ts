@@ -809,6 +809,15 @@ export default function (pi: ExtensionAPI) {
             width,
             inProgress: workersRunning,
             placeholder: st.running ? "waiting for the plan…" : undefined,
+            // Under PI_WORKFLOW_DEBUG_WIDGET the header carries the frame number.
+            // Two headers on screen then answer, with no log reading, WHICH bug
+            // this is: DIFFERENT numbers mean two different frames are visible at
+            // once (a stale row the renderer never erased), IDENTICAL numbers mean
+            // one frame's content was composed twice. Those need opposite fixes.
+            title:
+                process.env.PI_WORKFLOW_DEBUG_WIDGET === "1"
+                    ? ` # Todos [frame ${widgetGen}]`
+                    : undefined,
         });
         if (todos.length) {
             lines.push("\u200b");
