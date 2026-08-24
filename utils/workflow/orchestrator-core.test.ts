@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
     newOrchestratorState,
+    streamWorkflowActivity,
+    streamWorkflowEnabled,
     type OrchestratorState,
     type OrchestratorHost,
     runFullWorkflowCommand,
@@ -5534,5 +5536,57 @@ describe("maybeTickMilestone", () => {
         process.env.PI_ROADMAP_AUTOTICK = "0";
         assert.equal(maybeTickMilestone(cwd, pass), null);
         assert.match(readFileSync(join(cwd, "roadmap.md"), "utf-8"), /- \[ \] not started/);
+    });
+});
+
+// ── workflow activity streaming ─────────────────────────────────────────────
+// The sticky widget is a status line (<= 6 rows) and carries no log panel, so
+// this is the ONLY place a pipeline run's tool trail is visible. Losing it makes
+// a run silent between "Running workflow" and the final result.
+describe("streamWorkflowActivity", () => {
+    const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    it("is on by default and opts out with PI_WORKFLOW_STREAM=0", () => {
+        assert.equal(streamWorkflowEnabled({} as any), true);
+        assert.equal(streamWorkflowEnabled({ PI_WORKFLOW_STREAM: "0" } as any), false);
+        assert.equal(streamWorkflowEnabled({ PI_WORKFLOW_STREAM: "off" } as any), false);
+    });
+
+    it("re-reads the running phases each tick, so a pipeline's changing set is followed", async () => {
+        // The dispatch streamer takes a FIXED list because a dispatch has one
+        // phase. A pipeline starts and finishes phases as it goes, which is why
+        // this takes a getter.
+        let phases = [{ label: "Implement", log: "-> read plan.md" }];
+        const seen: string[] = [];
+        const stop = streamWorkflowActivity(
+            () => phases,
+            (u: any) => seen.push(u.content[0].text),
+            { intervalMs: 10 },
+        );
+        await tick(30);
+        phases = [{ label: "Review", log: "-> read diff" }];
+        await tick(30);
+        stop();
+        assert.ok(seen.some((s) => s.includes("Implement")), "saw the first phase");
+        assert.ok(seen.some((s) => s.includes("Review")), "followed to the next phase");
+    });
+
+    it("emits only when the rendered block changes, so it cannot flood", async () => {
+        const phases = [{ label: "Implement", log: "-> read plan.md" }];
+        const seen: string[] = [];
+        const stop = streamWorkflowActivity(
+            () => phases,
+            (u: any) => seen.push(u.content[0].text),
+            { intervalMs: 5 },
+        );
+        await tick(60); // many ticks, unchanging log
+        stop();
+        assert.equal(seen.length, 1, `expected one update, got ${seen.length}`);
+    });
+
+    it("is a no-op with no onUpdate to render into", () => {
+        const stop = streamWorkflowActivity(() => [{ label: "x", log: "y" }], undefined);
+        assert.equal(typeof stop, "function");
+        stop();
     });
 });

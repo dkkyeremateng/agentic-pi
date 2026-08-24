@@ -154,6 +154,11 @@ PI_WORKFLOW_REPAINT_MS=4000 ./run.sh  # force periodic repaints (only `full` nee
 PI_WORKFLOW_DEBUG_WIDGET=1 ./run.sh   # dump the widget array to ~/.pi/agent/pi-widget.log
 ```
 
+**Where the agent output went.** A pipeline run streams its live tool trail into the
+transcript, as the workflow tool's own updating result block — scrollable, with
+history, which a sticky region cannot have. That is now the only place a run's
+activity appears, so it is on by default; `PI_WORKFLOW_STREAM=0` turns it off.
+
 No pi package is modified. The card/grid builders are still there and still tested —
 `full` uses them, and they are what a future on-demand overlay would reuse.
 

@@ -122,6 +122,7 @@ import {
     runWorkflowCore,
     runFullWorkflowCommand,
     resolveAgent,
+    streamWorkflowActivity,
 } from "../utils/workflow/orchestrator-core";
 import {
     DISPATCH_UPDATE,
@@ -1564,6 +1565,16 @@ export default function (pi: ExtensionAPI) {
             pi.setSessionName?.(
                 sessionLabel("agent-workflow", st.activeTeamName, request),
             );
+            // Stream the pipeline's tool trail into the transcript. The sticky
+            // widget is a status line now, so without this a run is invisible
+            // between "Running workflow" and the final result.
+            const stopStream = streamWorkflowActivity(
+                () =>
+                    st.phases
+                        .filter((p) => p.status === "running")
+                        .map((p) => ({ label: p.label, log: p.log || "" })),
+                onUpdate,
+            );
             const result = await runWorkflowCore(
                 st,
                 host,
@@ -1571,6 +1582,7 @@ export default function (pi: ExtensionAPI) {
                 max_loops && max_loops > 0 ? max_loops : defaultMaxLoops,
                 ctx,
             ).finally(() => {
+                stopStream();
                 signal?.removeEventListener?.("abort", onAbort);
                 // Identity-guarded like runAbort: if the core refused this start
                 // (re-entry guard), host.signal belongs to the LIVE run and
