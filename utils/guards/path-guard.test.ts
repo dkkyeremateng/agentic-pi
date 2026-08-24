@@ -39,7 +39,7 @@ describe("isWithinAny", () => {
     });
 
     it("allows paths inside an extra trusted root (skills dir)", () => {
-        assert.equal(isWithinAny([cwd, skills], "/opt/pi/skills/bowser/SKILL.md"), true);
+        assert.equal(isWithinAny([cwd, skills], "/opt/pi/skills/playwright-cli/SKILL.md"), true);
     });
 
     it("blocks paths outside every root", () => {

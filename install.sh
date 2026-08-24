@@ -18,8 +18,11 @@
 #        - jq (JSON piping) and the gh CLI (github skill)
 #        - LSP servers: pyright, typescript-language-server, typescript,
 #          intelephense (npm), gopls (if Go is present)  [skip: --no-lsp-servers]
-#        - playwright-cli (@playwright/cli) + a chromium browser (bowser skill)
+#        - playwright-cli (@playwright/cli) + a chromium browser (playwright-cli
+#          skill)
 #          [skip: --no-playwright]
+#        - chrome-agent (PyPI, via uv/pipx/pip) — drives a SYSTEM Chrome over
+#          CDP (chrome-agent skill)  [skip: --no-chrome-agent]
 #   8. creates .env from example.env (if missing)
 #   9. a light smoke check
 #
@@ -31,7 +34,8 @@
 #   ./install.sh --no-context-prune
 #   ./install.sh --no-skills      # skip ALL skill dependencies (section 7)
 #   ./install.sh --no-lsp-servers # skip the language servers (lsp skill)
-#   ./install.sh --no-playwright  # skip playwright-cli + browser (bowser skill)
+#   ./install.sh --no-playwright  # skip playwright-cli + browser (playwright-cli skill)
+#   ./install.sh --no-chrome-agent # skip chrome-agent (chrome-agent skill)
 #   PI_PKG=@earendil-works/pi-coding-agent ./install.sh
 #
 set -euo pipefail
@@ -46,6 +50,7 @@ WITH_TMUX=1
 WITH_SKILLS=1
 WITH_LSP_SERVERS=1
 WITH_PLAYWRIGHT=1
+WITH_CHROME_AGENT=1
 RUN=0
 
 for arg in "$@"; do
@@ -57,6 +62,7 @@ for arg in "$@"; do
         --no-skills) WITH_SKILLS=0 ;;
         --no-lsp-servers) WITH_LSP_SERVERS=0 ;;
         --no-playwright) WITH_PLAYWRIGHT=0 ;;
+        --no-chrome-agent) WITH_CHROME_AGENT=0 ;;
         -h | --help)
             # print the leading comment header (skip the shebang; stop at code)
             awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"
@@ -129,6 +135,23 @@ install_gh() {
             ;;
         *) return 1 ;;
     esac
+}
+
+# A SYSTEM Chrome/Chromium, which is what the chrome-agent skill drives. These
+# are the exact paths chrome-agent's launcher probes (chrome_agent/launcher.py
+# _platform_candidates) — it does not consult $PATH, and it cannot see the
+# chromium playwright downloads into ~/.cache/ms-playwright for the
+# playwright-cli skill. So the two browser skills have genuinely separate browser needs.
+find_system_chrome() {
+    local p
+    for p in \
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+        "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+        /usr/bin/google-chrome /usr/bin/google-chrome-stable \
+        /usr/bin/chromium-browser /usr/bin/chromium /snap/bin/chromium; do
+        [ -x "$p" ] && printf '%s\n' "$p" && return 0
+    done
+    return 1
 }
 
 OS="$(uname -s)"
@@ -276,7 +299,7 @@ else
         fi
     fi
 
-    # 7e. playwright-cli (@playwright/cli) + a browser — the bowser skill. The
+    # 7e. playwright-cli (@playwright/cli) + a browser — the playwright-cli skill. The
     #     package bundles its own version-matched playwright, so install the
     #     chromium build through it (lands in the shared ~/.cache/ms-playwright).
     if [ "$WITH_PLAYWRIGHT" -eq 0 ]; then
@@ -286,7 +309,7 @@ else
             say "  playwright-cli present"
         else
             say "  installing playwright-cli (@playwright/cli)"
-            npm install -g @playwright/cli || warn "  @playwright/cli install failed — the bowser skill needs it"
+            npm install -g @playwright/cli || warn "  @playwright/cli install failed — the playwright-cli skill needs it"
         fi
         if have playwright-cli; then
             # Install the browser through the package's OWN bundled (version-matched)
@@ -313,6 +336,51 @@ else
             fi
         fi
     fi
+
+    # 7f. chrome-agent (PyPI) — the chrome-agent skill. Drives a system Chrome
+    #     over CDP. Needs Python >= 3.11; `uv tool install` is preferred because
+    #     it fetches a matching interpreter itself, so it works on hosts whose
+    #     system python3 is older (pip/pipx there would just fail the marker).
+    if [ "$WITH_CHROME_AGENT" -eq 0 ]; then
+        say "  skipping chrome-agent (--no-chrome-agent)"
+    elif have chrome-agent; then
+        say "  chrome-agent present ($(chrome-agent --version 2>/dev/null | head -1))"
+    else
+        say "  installing chrome-agent (PyPI)"
+        if have uv; then
+            uv tool install chrome-agent >/dev/null 2>&1 ||
+                warn "  'uv tool install chrome-agent' failed (chrome-agent skill)"
+        elif have pipx; then
+            pipx install chrome-agent >/dev/null 2>&1 ||
+                warn "  'pipx install chrome-agent' failed (chrome-agent skill)"
+        elif have python3 && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+            python3 -m pip install --user chrome-agent >/dev/null 2>&1 ||
+                warn "  'pip install --user chrome-agent' failed (chrome-agent skill)"
+        else
+            warn "  no installer for chrome-agent — it needs Python >= 3.11. Install uv (https://docs.astral.sh/uv/) then: uv tool install chrome-agent"
+        fi
+        # uv/pipx both land it in ~/.local/bin. 7a only warns about that
+        # directory being off PATH when python3 is present, and uv needs no
+        # system python — so re-check here or a uv-only host installs it
+        # successfully and never finds it.
+        if have chrome-agent; then
+            say "  chrome-agent → $(command -v chrome-agent)"
+        else
+            warn "  chrome-agent still not on PATH — it installs to ~/.local/bin; add that to your PATH"
+        fi
+    fi
+
+    # The browser it drives is a separate concern from playwright's chromium
+    # above: chrome-agent probes fixed system paths and never sees that download.
+    if [ "$WITH_CHROME_AGENT" -eq 1 ] && have chrome-agent; then
+        if CHROME_BIN="$(find_system_chrome)"; then
+            say "  chrome-agent will drive: $CHROME_BIN"
+        elif [ "$OS" = Darwin ]; then
+            warn "  no system Chrome/Chromium — the chrome-agent skill can't launch. Install one: brew install --cask google-chrome"
+        else
+            warn "  no system Chrome/Chromium — the chrome-agent skill can't launch. Install google-chrome or chromium with your package manager"
+        fi
+    fi
 fi
 
 # 8. .env
@@ -333,7 +401,7 @@ have tmux && say "  tmux ready (background sessions: ./run.sh --bg)" || warn "  
 if [ "$WITH_SKILLS" -eq 1 ]; then
     # one compact line: which skill tools resolved on PATH
     present=""; missing=""
-    for t in atlassian linear lsp jq gh playwright-cli pyright typescript-language-server intelephense gopls; do
+    for t in atlassian linear lsp jq gh playwright-cli chrome-agent pyright typescript-language-server intelephense gopls; do
         if have "$t"; then present="$present $t"; else missing="$missing $t"; fi
     done
     [ -n "$present" ] && say "  skills ready:$present"
@@ -363,11 +431,13 @@ Next steps:
 
 Skill deps installed above (best-effort): atlassian/linear/lsp CLIs, jq, gh,
 LSP servers (pyright/typescript-language-server/typescript/intelephense, +gopls
-if Go is present), and playwright-cli + chromium. Anything that failed is warned
-about above and can be re-run — the section is idempotent. Skip with --no-skills
-/ --no-lsp-servers / --no-playwright.
+if Go is present), playwright-cli + chromium, and chrome-agent. Anything that
+failed is warned about above and can be re-run — the section is idempotent. Skip
+with --no-skills / --no-lsp-servers / --no-playwright / --no-chrome-agent.
   • the atlassian/linear/lsp CLIs live in ~/.local/bin — put it on your PATH
   • gopls needs a Go toolchain; install Go then: go install golang.org/x/tools/gopls@latest
+  • chrome-agent drives a SYSTEM Chrome (not playwright's chromium) — install
+    Google Chrome or Chromium if the check above warned, then: chrome-agent status
 
 The obs dashboard (obs/ui) was built above into obs/ui/dist (untracked), and the
 obs server serves it at http://127.0.0.1:7616/. Rebuild it after changing its

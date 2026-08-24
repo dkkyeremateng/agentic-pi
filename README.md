@@ -31,7 +31,8 @@ only `.env` config — no code edits.
   (+ optional LLM-as-judge), a versioned prompt-config registry, and an
   OpenTelemetry export — spanning every pi instance you're running.
 - **Skills** — LSP diagnostics & navigation (Python/Go/TS/PHP), Playwright browser
-  automation, Linear and Jira CLIs, GitHub, and commit helpers.
+  automation, live-Chrome control over CDP, Linear and Jira CLIs, GitHub, and
+  commit helpers.
 - **Per-agent models** — point each agent at a different model via `.env`; mix a
   cheap model for recon with a strong one for review/validation.
 - **Config-only & portable** — everything resolves relative to itself; nothing to
@@ -70,7 +71,7 @@ downstream agents, so it is never re-threaded through the context.
   (`./run.sh --bg`); `install.sh` installs it best-effort.
 - Optional per-language tools you want the agents to use: language servers for
   `lsp` (pyright, gopls, typescript-language-server, intelephense), `gh` for
-  GitHub, Playwright browsers for `bowser`.
+  GitHub, Playwright browsers for `playwright-cli`.
 - **Context-pruning package (recommended)** — `pi-context-prune` powers the
   [context management](#context-management) below. Install once; it registers in
   pi's global config and loads automatically (including in sub-agents):
@@ -335,7 +336,7 @@ tools). See [`agents/README.md`](agents/README.md).
 | `reviewer` | Static review of the diff against the plan. |
 | `validator` | Independent gate — re-runs the build/tests/LSP; PASS/FAIL. |
 | `shipper` | Squash `wip` commits, stage docs, open a PR. |
-| `seeker` | Browser automation, web research, and UI/QA (via the `bowser` skill). |
+| `seeker` | Browser automation, web research, and UI/QA (via the `playwright-cli` and `chrome-agent` skills). |
 | `linear` | Linear issue tracking. |
 | `atlassian` | Jira tickets (read/update via the REST API). |
 
@@ -347,7 +348,8 @@ each is an optional one-time install that puts a command on your `PATH`.
 | Skill | What it gives the agents | Install |
 |-------|--------------------------|---------|
 | `lsp` | Type/compile **diagnostics** + **navigation** (def/refs/hover/symbols) for Python/Go/TS/PHP. The implementer and validator run `lsp diagnostics` as a required check. | `bash skills/lsp/install.sh` (then install the language servers you use) |
-| `bowser` | Playwright browser automation — headless browsing, scraping, screenshots, UI testing. | see `skills/bowser/SKILL.md` |
+| `playwright-cli` | Playwright browser automation — headless browsing, scraping, screenshots, UI testing. | see `skills/playwright-cli/SKILL.md` |
+| `chrome-agent` | Drive a **real Chrome over CDP** — any protocol command one-shot, any event streamed via `attach`. For live/observable browsers, network + console forensics, and human-agent sharing. | `uv tool install chrome-agent` (needs system Chrome) |
 | `linear` | Linear GraphQL CLI. | `bash skills/linear/install.sh` (`LINEAR_API_KEY`) |
 | `atlassian` | Jira Cloud REST CLI. | `bash skills/atlassian/install.sh` (`ATLASSIAN_*`) |
 | `github` / `commit` | GitHub (`gh`) recon helpers and commit conventions. | — |

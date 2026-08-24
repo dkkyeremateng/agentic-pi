@@ -1,14 +1,16 @@
 ---
-name: bowser
-description: Headless browser automation using Playwright CLI. Use when you need headless browsing, parallel browser sessions, UI testing, screenshots, web scraping, or browser automation that can run in the background. Keywords - playwright, headless, browser, test, screenshot, scrape, parallel.
+name: playwright-cli
+description: Headless browser automation using the Playwright CLI. Use when you need headless browsing, parallel browser sessions, UI testing, screenshots, web scraping, or browser automation that can run in the background. For driving or observing a live/shared Chrome over CDP instead, see the chrome-agent skill. Keywords - playwright, headless, browser, test, screenshot, scrape, parallel, session, snapshot.
 allowed-tools: Bash
 ---
 
-# Playwright Bowser
+# Playwright CLI
 
 ## Purpose
 
 Automate browsers using `playwright-cli` — a token-efficient CLI for Playwright. Runs headless by default, supports parallel sessions via named sessions (`-s=`), and doesn't load tool schemas into context.
+
+Reach for **`chrome-agent`** instead when you need a real, observable Chrome: streaming network/console events, sharing a browser with a human, or raw CDP. This skill is the better fit for scripted, headless, throwaway automation.
 
 ## Key Details
 
@@ -51,7 +53,7 @@ Mouse:      mousemove <x> <y>, mousedown, mouseup, mousewheel <dx> <dy>
 Tabs:       tab-list, tab-new [url], tab-close [index], tab-select <index>
 Save:       screenshot [ref], pdf, screenshot --filename=.playwright-cli/f  (prefix .playwright-cli/)
 Storage:    state-save, state-load, cookie-*, localstorage-*, sessionstorage-*
-Network:    route <pattern>, route-list, unroute, network
+Network:    requests, request <n>, request-body <n>, response-body <n>, route <pattern>, route-list, unroute
 DevTools:   console, run-code <code>, tracing-start/stop, video-start/stop
 Sessions:   -s=<name> <cmd>, list, close-all, kill-all
 Config:     open --headed, open --browser=chrome, resize <w> <h>
@@ -98,7 +100,7 @@ playwright-cli -s=<session-name> close
 
 ## Configuration & output location
 
-Keep all bowser output under `.playwright-cli/` in the working directory, never the
+Keep all output under `.playwright-cli/` in the working directory, never the
 project root. Two parts to this:
 
 1. **`outputDir`** governs **auto-named** outputs (a `screenshot` with no
@@ -131,5 +133,3 @@ directory it creates in the cwd. Point at a different config with
 ## Full Help
 
 Run `playwright-cli --help` or `playwright-cli --help <command>` for detailed command usage.
-
-See [README.md](README.md) for full documentation.

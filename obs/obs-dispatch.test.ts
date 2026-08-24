@@ -41,7 +41,7 @@ test("the bundled agents classify by their actual tools", () => {
     // scout/reviewer/validator have no write/edit tool -> read-only -> dispatchable.
     assert.equal(byName.get("scout")?.readOnly, true);
     assert.equal(byName.get("reviewer")?.readOnly, true);
-    // implementer edits code; seeker has the `write` tool (bowser screenshots) ->
+    // implementer edits code; seeker has the `write` tool (browser screenshots) ->
     // both are write-capable, so NOT dispatchable under the strict heuristic.
     if (byName.has("implementer")) assert.equal(byName.get("implementer")?.readOnly, false);
     assert.equal(byName.get("seeker")?.readOnly, false);

@@ -1490,7 +1490,7 @@ describe("loadSkills", () => {
     it("discovers the bundled SKILL.md skills with name + description", () => {
         const skills = loadSkills(process.cwd());
         const names = skills.map((s) => s.name).sort();
-        for (const n of ["atlassian", "bowser", "commit", "github", "linear"]) {
+        for (const n of ["atlassian", "chrome-agent", "commit", "github", "linear", "playwright-cli"]) {
             assert.ok(names.includes(n), `expected skill "${n}"`);
         }
         const github = skills.find((s) => s.name === "github");

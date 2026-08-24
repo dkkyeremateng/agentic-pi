@@ -5,7 +5,7 @@
 //
 // READ-ONLY tools (read/grep/find/ls) may ALSO reach the skill roots — the bundled
 // skills in this repo AND pi's global skills (getAgentDir()/skills) — which live
-// outside the user's cwd. Otherwise a skill-using agent (e.g. seeker + the bowser
+// outside the user's cwd. Otherwise a skill-using agent (e.g. seeker + the playwright-cli
 // skill) can't read its own skill files and falls back to guessing/exploring. The
 // parent passes these roots via PI_SKILLS_DIR (a path-delimited list). WRITE tools
 // (edit/write) stay confined to the cwd.
