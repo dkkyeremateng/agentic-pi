@@ -329,6 +329,42 @@ export function phaseTitleOnly(label: string): string {
     return label.replace(/\s+[—-]\s+tests:.*$/i, "").trim() || label.trim();
 }
 
+/** Mutable clock for {@link shouldRepaint}. */
+export interface RepaintPulseState {
+    last: number;
+}
+
+/**
+ * Should this widget build emit the short "pulse" frame?
+ *
+ * pi re-renders only a live region; rows a previous live region left behind are
+ * cleared ONLY by an absolute repaint, which pi reaches solely via
+ * `clearOnShrink` -- i.e. when the composed frame gets SHORTER. A dashboard of
+ * stable height never shrinks, so upstream emits zero absolute clears for an
+ * entire session and stale rows persist until restart.
+ *
+ * Returning true tells the caller to drop a trailing spacer row, making the frame
+ * one row shorter so pi's own clearOnShrink fires. Timed rather than every-N-builds
+ * so the repaint cadence does not depend on how busy the run is.
+ *
+ * The first call seeds the clock and never pulses: there is nothing stale to clear
+ * on the first frame, and repainting then is just a visible flash.
+ */
+export function shouldRepaint(
+    state: RepaintPulseState,
+    now: number,
+    intervalMs: number,
+): boolean {
+    if (intervalMs <= 0) return false;
+    if (state.last === 0) {
+        state.last = now;
+        return false;
+    }
+    if (now - state.last < intervalMs) return false;
+    state.last = now;
+    return true;
+}
+
 export function renderTodos(
     items: { label: string; done: boolean }[],
     theme: any,

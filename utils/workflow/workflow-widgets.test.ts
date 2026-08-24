@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
     renderLspServers,
     renderTodos,
+    shouldRepaint,
     phaseTitleOnly,
     renderRichCard,
     type LspServerInfo,
@@ -108,6 +109,47 @@ describe("renderTodos", () => {
         }).length;
         assert.equal(before, 2);
         assert.equal(after, 2);
+    });
+});
+
+// ── absolute-repaint pulse ──────────────────────────────────────────────────
+// pi clears stale rows only via clearOnShrink, i.e. when the composed frame gets
+// SHORTER. A dashboard of stable height never shrinks, so nothing is ever
+// cleared and rows left behind by a pushed-up live region persist for the whole
+// session. The pulse makes the frame shrink on purpose, on a clock.
+describe("shouldRepaint", () => {
+    it("never pulses on the first call — nothing is stale yet", () => {
+        const s = { last: 0 };
+        assert.equal(shouldRepaint(s, 1000, 4000), false);
+        assert.equal(s.last, 1000, "first call seeds the clock");
+    });
+
+    it("holds until the interval has elapsed, then pulses once", () => {
+        const s = { last: 0 };
+        shouldRepaint(s, 1000, 4000);
+        assert.equal(shouldRepaint(s, 4999, 4000), false);
+        assert.equal(shouldRepaint(s, 5000, 4000), true);
+        assert.equal(shouldRepaint(s, 5001, 4000), false, "does not pulse twice in a row");
+    });
+
+    it("is disabled by a non-positive interval", () => {
+        const s = { last: 0 };
+        for (const t of [1000, 99999, 1e9]) {
+            assert.equal(shouldRepaint(s, t, 0), false);
+        }
+    });
+
+    it("pulses at a steady rate regardless of how often it is called", () => {
+        // Busy run: called every 80ms. Idle run: every 500ms. Both should repaint
+        // on the same wall-clock cadence -- that is why this is timed, not a
+        // build counter.
+        const rate = (step: number) => {
+            const s = { last: 0 };
+            let n = 0;
+            for (let now = 0; now <= 20_000; now += step) if (shouldRepaint(s, now, 4000)) n++;
+            return n;
+        };
+        assert.equal(rate(80), rate(500));
     });
 });
 

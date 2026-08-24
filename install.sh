@@ -12,8 +12,7 @@
 #   3. installs the global `pi` CLI (@earendil-works/pi-coding-agent)
 #   4. `npm install` — the repo's dev deps (tsx/tsc) for the obs server + tests
 #   5. links pi's types into node_modules (npm run setup:types)
-#   6. installs pi-context-prune (recommended context manager) and patches
-#      pi-tui's renderer (stale-row fix; skip with --no-tui-patch)
+#   6. installs pi-context-prune (recommended context manager)
 #   7. installs the skill dependencies (all best-effort, never fatal):
 #        - links the atlassian / linear / lsp CLIs onto PATH (~/.local/bin)
 #        - jq (JSON piping) and the gh CLI (github skill)
@@ -33,7 +32,6 @@
 #   ./install.sh --no-pi          # don't (re)install the global pi CLI
 #   ./install.sh --no-tmux        # don't install tmux (background sessions need it)
 #   ./install.sh --no-context-prune
-#   ./install.sh --no-tui-patch     # don't patch pi-tui (dashboard stale-row fix)
 #   ./install.sh --no-skills      # skip ALL skill dependencies (section 7)
 #   ./install.sh --no-lsp-servers # skip the language servers (lsp skill)
 #   ./install.sh --no-playwright  # skip playwright-cli + browser (playwright-cli skill)
@@ -48,7 +46,6 @@ cd "$DIR"
 PI_PKG="${PI_PKG:-@earendil-works/pi-coding-agent}"
 INSTALL_PI=1
 WITH_PRUNE=1
-WITH_TUI_PATCH=1
 WITH_TMUX=1
 WITH_SKILLS=1
 WITH_LSP_SERVERS=1
@@ -62,7 +59,6 @@ for arg in "$@"; do
         --no-pi) INSTALL_PI=0 ;;
         --no-tmux) WITH_TMUX=0 ;;
         --no-context-prune) WITH_PRUNE=0 ;;
-        --no-tui-patch) WITH_TUI_PATCH=0 ;;
         --no-skills) WITH_SKILLS=0 ;;
         --no-lsp-servers) WITH_LSP_SERVERS=0 ;;
         --no-playwright) WITH_PLAYWRIGHT=0 ;;
@@ -241,21 +237,6 @@ if [ "$WITH_PRUNE" -eq 1 ]; then
         warn "could not install pi-context-prune — the workflow still runs on pi's built-in compaction."
 else
     say "skipping pi-context-prune (--no-context-prune)"
-fi
-
-# 6b. pi-tui renderer patch. Upstream positions the cursor with RELATIVE moves,
-#     which terminals clamp at the screen edges; once pi's idea of the cursor
-#     drifts off screen the error is inherited by every later frame, so rows stop
-#     being overwritten and pile up (duplicated dashboard rows). The patch falls
-#     back to an absolute repaint whenever a move would start or land off screen.
-#     Only reachable when content is taller than the terminal. `pi update` wipes
-#     it -- re-run `npm run patch:tui` after upgrading.
-if [ "$WITH_TUI_PATCH" -eq 1 ]; then
-    say "patching pi-tui (off-screen cursor-move guard)"
-    npm run -s patch:tui ||
-        warn "could not patch pi-tui — the dashboard may accumulate stale rows on a scrolled terminal."
-else
-    say "skipping the pi-tui patch (--no-tui-patch)"
 fi
 
 # 7. skill dependencies — everything the bundled skills/ need to run. All

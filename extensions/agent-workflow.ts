@@ -66,6 +66,8 @@ import {
     renderEmptyAgentMessage,
     renderRichCard,
     renderTodos,
+    shouldRepaint,
+    type RepaintPulseState,
     MAX_CARD_WIDTH,
 } from "../utils/workflow/workflow-widgets";
 import {
@@ -655,29 +657,70 @@ export default function (pi: ExtensionAPI) {
         }
     }
 
+    // Absolute-repaint pulse — the fix for the dashboard's stale rows.
+    //
+    // pi re-renders only a LIVE REGION (this widget + editor + footer). Everything
+    // above is terminal scrollback it does not own, so when a previously drawn live
+    // region ends up pushed up instead of overwritten in place, its rows stay on
+    // screen. That is the duplicated "# Todos" header, with an OLDER frame number
+    // above the current one, and the agent card growing a "running Ns" row a second.
+    //
+    // Only `fullRender(true)` clears that (it wipes screen AND scrollback), and pi
+    // reaches it solely via `clearOnShrink` — i.e. when the composed frame gets
+    // SHORTER. A dashboard whose height is stable never shrinks, so upstream emits
+    // ZERO absolute clears in a whole session (measured: 0 in 90 frames) and
+    // anything stale persists until you restart.
+    //
+    // So make it shrink on purpose. At most once every PULSE_MS we drop the
+    // trailing spacer row; the frame is one row shorter, pi's own clearOnShrink
+    // fires, and the screen is repainted absolutely. Verified against an
+    // UNMODIFIED pi-tui: 0 clears in 90 frames without the pulse, 2 with it.
+    //
+    // Timed, not every-N-builds: builds run at WIDGET_MIN_INTERVAL_MS (80ms) plus
+    // extra rebuilds on theme/width changes, so a build counter would make the
+    // repaint rate depend on how busy the run is. A clock gives the same cadence
+    // on an idle dashboard and a noisy one.
+    //
+    // Requires clearOnShrink to be on (run.sh exports PI_CLEAR_ON_SHRINK=1; pi's
+    // own `terminal.clearOnShrink` setting outranks it). Without it the pulse is
+    // harmless but does nothing. PI_WORKFLOW_REPAINT_MS=0 disables.
+    const PULSE_MS = (() => {
+        const raw = Number(process.env.PI_WORKFLOW_REPAINT_MS);
+        return Number.isFinite(raw) && raw >= 0 ? raw : 4000;
+    })();
+    const pulseState: RepaintPulseState = { last: 0 };
+
     // Hard safety net: never let the widget grow taller than the screen minus the
     // rows reserved for the editor + footer. A tall team grid or live-log panel
     // would otherwise push the input box and footer off-screen. Clip the overflow
     // with a notice so those always keep their rows.
     //
-    // NOTE: this deliberately does NOT pad the widget to a stable height. That was
-    // tried against the duplicated "# Todos" header and disproved: with the widget
-    // pinned to a constant 40 rows, PI_WORKFLOW_DEBUG_WIDGET dumps showed exactly
-    // ONE header per frame while the screen still showed two. The extra row is
-    // manufactured inside pi-tui, below this layer, so height stability bought
-    // nothing and cost a block of reserved blank rows.
+    // NOTE: deliberately does NOT pad to a stable height. That was tried against
+    // this same bug and disproved — pinned to a constant 40 rows, the dumps showed
+    // ONE header per frame while the screen still showed two. A stable height is in
+    // fact what SUPPRESSES pi's clearOnShrink, which is why the pulse below exists.
     function clampWidget(out: string[], theme: any): string[] {
         const rows = process.stdout.rows || 24;
+        // One row of headroom so the pulse frame is always strictly shorter than a
+        // normal frame, even when the widget is clipped at full height.
         const max = Math.max(3, rows - LOG_PANEL_RESERVE);
-        if (out.length <= max) return out;
-        const kept = out.slice(0, Math.max(1, max - 1));
-        kept.push(
-            theme.fg(
-                "dim",
-                `   … ${out.length - kept.length} more line(s) — clipped to fit`,
-            ),
-        );
-        return kept;
+        const cap = Math.max(2, max - 1);
+        let lines = out;
+        if (lines.length > cap) {
+            const kept = lines.slice(0, Math.max(1, cap - 1));
+            kept.push(
+                theme.fg(
+                    "dim",
+                    `   … ${lines.length - kept.length} more line(s) — clipped to fit`,
+                ),
+            );
+            lines = kept;
+        }
+        const pulse = shouldRepaint(pulseState, Date.now(), PULSE_MS);
+        // A zero-width space, not "": pi-tui's Text renders ZERO rows for a line
+        // whose .trim() is empty, so a plain "" would not occupy a row and the
+        // frame would not actually change height.
+        return pulse ? lines : lines.concat("\u200b");
     }
 
     // Live review-checklist progress (Option D): the reviewer is read-only, so it
@@ -846,7 +889,14 @@ export default function (pi: ExtensionAPI) {
         widgetGen++; // a state change → rebuild on the next factory call
         widgetCtx.ui.setWidget("agent-workflow", (_tui: any, theme?: any) => {
             const t = theme || widgetCtx.ui.theme;
-            const width = Math.max(20, (process.stdout.columns || 80) - 2);
+            // columns-4, not columns-2. pi wraps each line in Text(line, 1, 0),
+            // which adds a 1-column margin on BOTH sides, so columns-2 fits
+            // exactly and leaves nothing spare. A single line one column over
+            // wraps to a second physical row while pi counts one -- and every row
+            // below it is then drawn one place off, permanently. Two spare
+            // columns cost nothing visible across five cards and remove that
+            // whole failure mode.
+            const width = Math.max(20, (process.stdout.columns || 80) - 4);
             // Rebuild only when state, theme, or width changed; reuse the
             // cached lines on plain redraws so we don't re-read disk per frame.
             if (

@@ -124,48 +124,41 @@ downstream agents, so it is never re-threaded through the context.
   the patch, so re-run `npm run patch:prune` after upgrading; `-- --revert` restores
   upstream.
 
-### Dashboard stale rows (`pi-tui` renderer patch)
+### Dashboard stale rows (absolute-repaint pulse)
 
-The dashboard can accumulate stale rows: an agent card grows a new `running Ns`
-line every second instead of overwriting the old one, and the `# Todos` header
-appears twice — with **different frame numbers**, so two frames are on screen at
-once.
+The dashboard could accumulate stale rows: an agent card growing a new `running Ns`
+line every second instead of overwriting it, and the `# Todos` header appearing
+twice — with **different frame numbers**, so two frames were on screen at once.
 
-**The cause is below the widget.** Two dumps established that:
-`PI_WORKFLOW_DEBUG_WIDGET=1` shows the array we hand pi (one header per frame),
-and `PI_DEBUG_RENDER_LINES=1` shows pi's fully composed frame (also one header).
-Both are correct, so the extra rows are neither ours nor pi's composition.
+**Neither the widget nor pi's composition was wrong.** Two dumps established that:
+`PI_WORKFLOW_DEBUG_WIDGET=1` shows the array the extension hands pi (one header per
+frame), and pi's own composed frame also had exactly one. The extra rows were
+already on the terminal.
 
-pi re-renders only a **live region** (widget + editor + footer, ~30 rows);
-everything above is terminal scrollback it does not own. When a previously drawn
-live region is pushed up rather than overwritten in place, its rows stay visible.
-`fullRender(true)` clears exactly that (`\e[2J\e[H\e[3J` wipes screen *and*
-scrollback) — but it is only reached via `clearOnShrink`, i.e. when a frame gets
-**shorter**. A dashboard of stable height never shrinks, so on 90 constant-height
-frames upstream emits **zero** absolute clears and anything stale persists for the
-whole session.
+pi re-renders only a **live region** (widget + editor + footer). Everything above is
+terminal scrollback it does not own, so a live region pushed up rather than
+overwritten leaves its rows visible. Only an absolute repaint clears that (it wipes
+screen *and* scrollback), and pi reaches one solely through `clearOnShrink` — when
+the composed frame gets **shorter**. A dashboard of stable height never shrinks, so
+upstream emitted **zero** absolute clears in a whole session and stale rows survived
+until restart.
 
-`npm run patch:tui` adds:
+So the widget makes the frame shrink on purpose: every `PI_WORKFLOW_REPAINT_MS`
+(default 4000, `0` disables) it drops a trailing spacer row, pi's own
+`clearOnShrink` fires, and the screen is repainted. Measured against an
+**unmodified** pi-tui: 0 clears without the pulse, 11 with it over ~5s.
 
-1. **A periodic absolute repaint** (default every 40 frames,
-   `PI_TUI_REPAINT_EVERY=0` disables) — bounds how long any corruption can survive
-   regardless of what caused it.
-2. **An off-screen cursor-move guard** — a separate latent bug: relative CUU/CUD
-   moves *clamp* at the screen edges while pi records them as successful, so a
-   drift is inherited forever. Only reachable when content overflows the window.
-3. **The `PI_DEBUG_RENDER_LINES=1` dump**, inert unless set.
+This needs `clearOnShrink` on, which `run.sh` exports (`PI_CLEAR_ON_SHRINK=1`); pi's
+own `terminal.clearOnShrink` setting outranks the env var. Without it the pulse is
+harmless but does nothing.
+
+No pi package is modified.
 
 ```bash
-npm run patch:tui                      # applied automatically by install.sh
-npm run patch:tui -- --revert          # restore upstream (from a byte-exact backup)
-node scripts/verify-pi-tui-patch.mjs   # A/B proof against the installed package
+PI_WORKFLOW_REPAINT_MS=2000 ./run.sh   # repaint more often
+PI_WORKFLOW_REPAINT_MS=0    ./run.sh   # disable the pulse
+PI_WORKFLOW_DEBUG_WIDGET=1  ./run.sh   # dump the widget array to ~/.pi/agent/pi-widget.log
 ```
-
-`pi update` replaces the package and wipes the patch, so re-run it after upgrading
-(same contract as `npm run patch:prune`).
-
-This is a **workaround**. The durable upstream fix is for pi-tui to own its live
-region absolutely (CUP positioning) rather than inferring it from relative moves.
 
 ## Quick start
 
