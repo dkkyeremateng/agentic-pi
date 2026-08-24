@@ -53,7 +53,7 @@ Mouse:      mousemove <x> <y>, mousedown, mouseup, mousewheel <dx> <dy>
 Tabs:       tab-list, tab-new [url], tab-close [index], tab-select <index>
 Save:       screenshot [ref], pdf, screenshot --filename=.playwright-cli/f  (prefix .playwright-cli/)
 Storage:    state-save, state-load, cookie-*, localstorage-*, sessionstorage-*
-Network:    route <pattern>, route-list, unroute, network
+Network:    requests, request <n>, request-body <n>, response-body <n>, route <pattern>, route-list, unroute
 DevTools:   console, run-code <code>, tracing-start/stop, video-start/stop
 Sessions:   -s=<name> <cmd>, list, close-all, kill-all
 Config:     open --headed, open --browser=chrome, resize <w> <h>
