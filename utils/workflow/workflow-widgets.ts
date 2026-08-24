@@ -346,8 +346,8 @@ export interface StatusWidgetInput {
     cacheHitPct?: number;
     todos?: { done: number; total: number };
     review?: { done: number; total: number };
-    /** One line of "what is happening right now" (last tool, current step). */
-    activity?: string;
+    /** Recent activity, oldest first — the running agent's tool trail. */
+    activity?: string[];
     dispatchMode?: boolean;
     /** Agents known, for the idle line. */
     agentCount?: number;
@@ -355,9 +355,15 @@ export interface StatusWidgetInput {
     width: number;
 }
 
-/** Hard ceiling. pi budgets extension widgets at MAX_WIDGET_LINES = 10; staying
- *  well inside it is the entire point of this view. */
-export const STATUS_WIDGET_MAX_LINES = 6;
+/** Hard ceiling, matching pi's own MAX_WIDGET_LINES budget for extension widgets.
+ *  The old dashboard was ~40 rows, four times this; that size is what made the
+ *  renderer strand rows. Staying inside the budget is the point of this view. */
+export const STATUS_WIDGET_MAX_LINES = 10;
+
+/** How many trailing activity rows to show. The slash-command path has no way to
+ *  stream into the transcript (pi exposes only `notify` to a command), so this
+ *  bounded tail is the ONLY live view of a run there. */
+export const DEFAULT_ACTIVITY_LINES = 5;
 
 /**
  * The sticky dashboard, as a STATUS LINE rather than a dashboard.
@@ -458,7 +464,17 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     // ── the agent(s) actually working ───────────────────────────────────────
     // Parallel waves get one line each, capped so the widget cannot grow past
     // its budget; the overflow is counted rather than listed.
-    const ROOM = STATUS_WIDGET_MAX_LINES - 3; // header + summary + activity
+    const activity = (input.activity ?? []).filter(Boolean);
+    // Running agents and the activity tail compete for the same rows. Cap the
+    // agent list hard at MAX_AGENT_ROWS: a wide parallel wave would otherwise eat
+    // the whole budget and push out the tail, which is the more useful of the two
+    // (it says what is happening; the roster only says who). The remainder is
+    // counted rather than listed.
+    const MAX_AGENT_ROWS = 3;
+    const ROOM = Math.max(
+        1,
+        Math.min(MAX_AGENT_ROWS, STATUS_WIDGET_MAX_LINES - 2 - activity.length),
+    );
     const shown = active.slice(0, Math.max(1, ROOM));
     for (const p of shown) {
         const meta = statusMeta(p.status);
@@ -489,7 +505,8 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     if (summary.length) out.push(line([["   " + summary.join(" · "), "muted"]]));
 
     // ── what it is doing this second ────────────────────────────────────────
-    if (input.activity) out.push(line([["   " + input.activity.trim(), "dim"]]));
+    // The tail last, so the newest line sits closest to the prompt.
+    for (const a of activity) out.push(line([["   " + a.trim(), "dim"]]));
 
     return out.slice(0, STATUS_WIDGET_MAX_LINES);
 }

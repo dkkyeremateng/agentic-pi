@@ -67,6 +67,8 @@ import {
     renderRichCard,
     renderTodos,
     renderStatusWidget,
+    STATUS_WIDGET_MAX_LINES,
+    DEFAULT_ACTIVITY_LINES,
     shouldRepaint,
     type RepaintPulseState,
     MAX_CARD_WIDTH,
@@ -808,10 +810,21 @@ export default function (pi: ExtensionAPI) {
     // streamed tail. Streamed output carries ANSI and control characters -- a
     // stray \r or cursor-move makes the whole terminal jump -- so strip them the
     // same way the live-log panel does before putting the text on a sticky row.
-    function lastActivityLine(): string | undefined {
+    // How many trailing activity rows the status widget shows. The slash-command
+    // path cannot stream into the transcript -- pi exposes only `notify` to a
+    // command, which appends a message rather than updating a block -- so on that
+    // path this tail is the ONLY live view of a run. 0 shows just the status.
+    const ACTIVITY_LINES = (() => {
+        const raw = Number(process.env.PI_WORKFLOW_ACTIVITY_LINES);
+        return Number.isFinite(raw) && raw >= 0
+            ? Math.min(raw, STATUS_WIDGET_MAX_LINES - 2)
+            : DEFAULT_ACTIVITY_LINES;
+    })();
+
+    function recentActivity(): string[] {
         const live = st.phases.find((p) => p.status === "running");
         const log = live?.log;
-        if (!log) return undefined;
+        if (!log || ACTIVITY_LINES === 0) return [];
         const clean = log
             .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
             .replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, "")
@@ -822,12 +835,7 @@ export default function (pi: ExtensionAPI) {
             .split("\n")
             .map((l) => l.trim())
             .filter(Boolean);
-        // Prefer the newest tool invocation over prose: "-> read path=x" says more
-        // about progress than a half-streamed sentence.
-        for (let i = rows.length - 1; i >= 0; i--) {
-            if (/^[→>]/.test(rows[i]) || /^[✓✗]/.test(rows[i])) return rows[i];
-        }
-        return rows[rows.length - 1];
+        return rows.slice(-ACTIVITY_LINES);
     }
 
     function buildCompactLines(width: number, theme: any): string[] {
@@ -854,7 +862,7 @@ export default function (pi: ExtensionAPI) {
                     done: reviewItems.filter((i) => i.done).length,
                     total: reviewItems.length,
                 },
-                activity: lastActivityLine(),
+                activity: recentActivity(),
                 dispatchMode: st.dispatchMode,
                 agentCount: st.agents.size,
                 teamCount: Object.keys(st.teams).length,

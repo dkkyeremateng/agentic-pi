@@ -137,7 +137,7 @@ describe("renderStatusWidget", () => {
                 phase({ agent: `a${i}`, label: `P${i}`, status: "running", elapsed: 1000 })),
             todos: { done: 2, total: 3 },
             review: { done: 4, total: 7 },
-            activity: "→ read styles.css",
+            activity: ["→ read styles.css"],
         } as any, theme);
         assert.ok(out.length <= STATUS_WIDGET_MAX_LINES, `${out.length} lines`);
     });
@@ -151,7 +151,7 @@ describe("renderStatusWidget", () => {
             phases: [phase({ status: "running", elapsed: 21000, toolCount: 5,
                 activeModel: "some/extremely/long/model/identifier/that/will/not/fit" })],
             todos: { done: 2, total: 3 },
-            activity: "→ " + "x".repeat(300),
+            activity: ["→ " + "x".repeat(300)],
         } as any, theme);
         for (const l of out) assert.ok(l.length <= 40, `line ${l.length} > 40: ${l}`);
     });
@@ -183,6 +183,30 @@ describe("renderStatusWidget", () => {
         } as any, theme);
         assert.ok(!out.some((l) => l.includes("todos")));
         assert.ok(!out.some((l) => l.includes("review")));
+    });
+
+    it("shows an activity tail, newest closest to the prompt", () => {
+        const out = renderStatusWidget({
+            ...base,
+            phases: [phase({ status: "running" })],
+            activity: ["first", "second", "third"],
+        } as any, theme);
+        const idx = ["first", "second", "third"].map((s) => out.findIndex((l) => l.includes(s)));
+        assert.ok(idx.every((i) => i >= 0), "all activity rows present");
+        assert.deepEqual([...idx].sort((a, b) => a - b), idx, "oldest first, newest last");
+    });
+
+    it("keeps the budget when the tail is long AND many agents run", () => {
+        // The tail and the running-agent list compete for the same rows; neither
+        // may push the widget past pi's MAX_WIDGET_LINES.
+        const out = renderStatusWidget({
+            ...base,
+            phases: Array.from({ length: 6 }, (_, i) =>
+                phase({ agent: `a${i}`, status: "running", elapsed: 1000 })),
+            activity: Array.from({ length: 12 }, (_, i) => `line ${i}`),
+            todos: { done: 1, total: 3 },
+        } as any, theme);
+        assert.ok(out.length <= STATUS_WIDGET_MAX_LINES, `${out.length} lines`);
     });
 
     it("surfaces the retry attempt when the validator has looped", () => {
