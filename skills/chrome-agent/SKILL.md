@@ -24,7 +24,7 @@ This repo has three browser paths. They are not interchangeable:
 | Use | When |
 |-----|------|
 | **`chrome-agent`** (this skill) | You need a **real, observable Chrome**: watching a live page, streaming network/console events, sharing a browser with a human, or reaching protocol surface a wrapper doesn't expose. |
-| **`bowser`** (Playwright CLI) | Scripted, headless-first automation: scraping, UI test flows, ref-based `snapshot`/`click`/`fill`, throwaway parallel sessions. Higher level, less to hand-write. |
+| **`playwright-cli`** | Scripted, headless-first automation: scraping, UI test flows, ref-based `snapshot`/`click`/`fill`, throwaway parallel sessions. Higher level, less to hand-write. |
 | **chrome-devtools MCP skills** | You specifically want the MCP tool surface loaded into context. Costs schema tokens; `chrome-agent` does not. |
 
 ## Prerequisite

@@ -18,7 +18,8 @@
 #        - jq (JSON piping) and the gh CLI (github skill)
 #        - LSP servers: pyright, typescript-language-server, typescript,
 #          intelephense (npm), gopls (if Go is present)  [skip: --no-lsp-servers]
-#        - playwright-cli (@playwright/cli) + a chromium browser (bowser skill)
+#        - playwright-cli (@playwright/cli) + a chromium browser (playwright-cli
+#          skill)
 #          [skip: --no-playwright]
 #        - chrome-agent (PyPI, via uv/pipx/pip) — drives a SYSTEM Chrome over
 #          CDP (chrome-agent skill)  [skip: --no-chrome-agent]
@@ -33,7 +34,7 @@
 #   ./install.sh --no-context-prune
 #   ./install.sh --no-skills      # skip ALL skill dependencies (section 7)
 #   ./install.sh --no-lsp-servers # skip the language servers (lsp skill)
-#   ./install.sh --no-playwright  # skip playwright-cli + browser (bowser skill)
+#   ./install.sh --no-playwright  # skip playwright-cli + browser (playwright-cli skill)
 #   ./install.sh --no-chrome-agent # skip chrome-agent (chrome-agent skill)
 #   PI_PKG=@earendil-works/pi-coding-agent ./install.sh
 #
@@ -139,8 +140,8 @@ install_gh() {
 # A SYSTEM Chrome/Chromium, which is what the chrome-agent skill drives. These
 # are the exact paths chrome-agent's launcher probes (chrome_agent/launcher.py
 # _platform_candidates) — it does not consult $PATH, and it cannot see the
-# chromium playwright downloads into ~/.cache/ms-playwright for the bowser
-# skill. So the two browser skills have genuinely separate browser needs.
+# chromium playwright downloads into ~/.cache/ms-playwright for the
+# playwright-cli skill. So the two browser skills have genuinely separate browser needs.
 find_system_chrome() {
     local p
     for p in \
@@ -298,7 +299,7 @@ else
         fi
     fi
 
-    # 7e. playwright-cli (@playwright/cli) + a browser — the bowser skill. The
+    # 7e. playwright-cli (@playwright/cli) + a browser — the playwright-cli skill. The
     #     package bundles its own version-matched playwright, so install the
     #     chromium build through it (lands in the shared ~/.cache/ms-playwright).
     if [ "$WITH_PLAYWRIGHT" -eq 0 ]; then
@@ -308,7 +309,7 @@ else
             say "  playwright-cli present"
         else
             say "  installing playwright-cli (@playwright/cli)"
-            npm install -g @playwright/cli || warn "  @playwright/cli install failed — the bowser skill needs it"
+            npm install -g @playwright/cli || warn "  @playwright/cli install failed — the playwright-cli skill needs it"
         fi
         if have playwright-cli; then
             # Install the browser through the package's OWN bundled (version-matched)
