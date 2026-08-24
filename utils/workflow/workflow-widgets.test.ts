@@ -6,6 +6,7 @@ import {
     renderStatusWidget,
     STATUS_WIDGET_MAX_LINES,
     shouldRepaint,
+    repaintIntervalFor,
     phaseTitleOnly,
     renderRichCard,
     type LspServerInfo,
@@ -209,6 +210,20 @@ describe("renderStatusWidget", () => {
         assert.ok(out.length <= STATUS_WIDGET_MAX_LINES, `${out.length} lines`);
     });
 
+    it("grows the tail to fill a taller budget", () => {
+        const trail = Array.from({ length: 60 }, (_, i) => `step ${i}`);
+        const small = renderStatusWidget({
+            ...base, phases: [phase({ status: "running" })], activity: trail.slice(-5),
+        } as any, theme);
+        const tall = renderStatusWidget({
+            ...base, phases: [phase({ status: "running" })], activity: trail.slice(-40),
+            maxLines: 44,
+        } as any, theme);
+        assert.ok(small.length <= STATUS_WIDGET_MAX_LINES, "default stays in budget");
+        assert.ok(tall.length > STATUS_WIDGET_MAX_LINES, "grows when given room");
+        assert.ok(tall.length <= 44, "never exceeds the budget it was given");
+    });
+
     it("surfaces the retry attempt when the validator has looped", () => {
         const out = renderStatusWidget({
             ...base, iteration: 2, phases: [phase({ status: "running" })],
@@ -222,6 +237,27 @@ describe("renderStatusWidget", () => {
 // SHORTER. A dashboard of stable height never shrinks, so nothing is ever
 // cleared and rows left behind by a pushed-up live region persist for the whole
 // session. The pulse makes the frame shrink on purpose, on a clock.
+describe("repaintIntervalFor", () => {
+    it("stays silent while the widget is inside pi's budget", () => {
+        // A repaint here would be flicker for nothing: the renderer does not
+        // strand rows at this size.
+        assert.equal(repaintIntervalFor(4), 0);
+        assert.equal(repaintIntervalFor(STATUS_WIDGET_MAX_LINES), 0);
+    });
+
+    it("arms itself the moment the widget grows past the budget", () => {
+        // Growing to fill a tall terminal re-enters the regime where a displaced
+        // live region leaves rows behind; only an absolute repaint clears them.
+        assert.ok(repaintIntervalFor(STATUS_WIDGET_MAX_LINES + 1) > 0);
+        assert.ok(repaintIntervalFor(60) > 0);
+    });
+
+    it("lets an explicit setting win in both directions", () => {
+        assert.equal(repaintIntervalFor(60, 0), 0, "suppress on a large widget");
+        assert.equal(repaintIntervalFor(4, 1500), 1500, "force on a small one");
+    });
+});
+
 describe("shouldRepaint", () => {
     it("never pulses on the first call — nothing is stale yet", () => {
         const s = { last: 0 };

@@ -353,11 +353,27 @@ export interface StatusWidgetInput {
     agentCount?: number;
     teamCount?: number;
     width: number;
+    /**
+     * Row budget. Defaults to STATUS_WIDGET_MAX_LINES (pi's own budget for an
+     * extension widget). The caller may raise it to fill a tall terminal -- but
+     * see the note on STATUS_WIDGET_MAX_LINES: past that budget the renderer can
+     * strand rows, and the caller must arm the repaint pulse to compensate.
+     */
+    maxLines?: number;
 }
 
-/** Hard ceiling, matching pi's own MAX_WIDGET_LINES budget for extension widgets.
- *  The old dashboard was ~40 rows, four times this; that size is what made the
- *  renderer strand rows. Staying inside the budget is the point of this view. */
+/**
+ * pi's own MAX_WIDGET_LINES budget for an extension widget, and the default here.
+ *
+ * This is a real threshold, not a style preference. The old dashboard was ~40 rows
+ * -- four times this -- and at that size pi's renderer leaves rows behind when the
+ * live region is displaced (duplicated headers, cards growing a row per second).
+ * A widget that stays inside the budget does not hit that.
+ *
+ * A caller may pass a larger `maxLines` to fill a tall terminal. If it does, it
+ * MUST also arm the absolute-repaint pulse, which forces pi to clear the screen
+ * periodically -- otherwise the stale rows come back.
+ */
 export const STATUS_WIDGET_MAX_LINES = 10;
 
 /** How many trailing activity rows to show. The slash-command path has no way to
@@ -387,6 +403,7 @@ const modelRaw = (p: PhaseState): string => (p.activeModel ? `  ◆ ${p.activeMo
 
 export function renderStatusWidget(input: StatusWidgetInput, theme: any): string[] {
     const w = Math.max(20, input.width);
+    const cap = Math.max(2, input.maxLines ?? STATUS_WIDGET_MAX_LINES);
     const out: string[] = [];
 
     // Assemble each line from RAW segments and style only what fits. Truncating a
@@ -471,10 +488,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     // (it says what is happening; the roster only says who). The remainder is
     // counted rather than listed.
     const MAX_AGENT_ROWS = 3;
-    const ROOM = Math.max(
-        1,
-        Math.min(MAX_AGENT_ROWS, STATUS_WIDGET_MAX_LINES - 2 - activity.length),
-    );
+    const ROOM = Math.max(1, Math.min(MAX_AGENT_ROWS, cap - 2 - activity.length));
     const shown = active.slice(0, Math.max(1, ROOM));
     for (const p of shown) {
         const meta = statusMeta(p.status);
@@ -508,7 +522,30 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     // The tail last, so the newest line sits closest to the prompt.
     for (const a of activity) out.push(line([["   " + a.trim(), "dim"]]));
 
-    return out.slice(0, STATUS_WIDGET_MAX_LINES);
+    return out.slice(0, cap);
+}
+
+/**
+ * How often this widget must force an absolute repaint, in ms (0 = never).
+ *
+ * The coupling is the safety rule for growing the widget. Inside pi's
+ * MAX_WIDGET_LINES budget the renderer does not strand rows, and a periodic full
+ * repaint would be pure flicker for no benefit. Past the budget -- which is what a
+ * tall terminal invites, since the tool trail grows to fill the space -- a
+ * displaced live region leaves rows behind, and only an absolute repaint clears
+ * them. So the pulse is armed by exactly the condition that makes it necessary,
+ * rather than by a flag someone has to remember to set.
+ *
+ * An explicit PI_WORKFLOW_REPAINT_MS overrides in both directions: force repaints
+ * on a small widget, or suppress them on a large one.
+ */
+export function repaintIntervalFor(
+    lineCount: number,
+    explicitMs?: number,
+    budget: number = STATUS_WIDGET_MAX_LINES,
+): number {
+    if (explicitMs !== undefined) return explicitMs;
+    return lineCount > budget ? 4000 : 0;
 }
 
 /** Mutable clock for {@link shouldRepaint}. */

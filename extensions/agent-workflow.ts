@@ -70,6 +70,7 @@ import {
     STATUS_WIDGET_MAX_LINES,
     DEFAULT_ACTIVITY_LINES,
     shouldRepaint,
+    repaintIntervalFor,
     type RepaintPulseState,
     MAX_CARD_WIDTH,
 } from "../utils/workflow/workflow-widgets";
@@ -694,14 +695,9 @@ export default function (pi: ExtensionAPI) {
     // Requires clearOnShrink to be on (run.sh exports PI_CLEAR_ON_SHRINK=1; pi's
     // own `terminal.clearOnShrink` setting outranks it). Without it the pulse is
     // harmless but does nothing. PI_WORKFLOW_REPAINT_MS=0 disables.
-    const PULSE_MS = (() => {
-        // Default OFF. The pulse existed to force pi's absolute repaint because a
-        // ~40-row sticky widget left rows behind; a <= 6-row status line does not
-        // push the live region around in the first place. Kept as an escape hatch
-        // (PI_WORKFLOW_REPAINT_MS=4000) and still used by PI_WORKFLOW_WIDGET=full.
+    const PULSE_MS_EXPLICIT = (() => {
         const raw = Number(process.env.PI_WORKFLOW_REPAINT_MS);
-        if (Number.isFinite(raw) && raw >= 0) return raw;
-        return WIDGET_STYLE === "full" ? 4000 : 0;
+        return Number.isFinite(raw) && raw >= 0 ? raw : undefined;
     })();
     const pulseState: RepaintPulseState = { last: 0 };
 
@@ -731,7 +727,13 @@ export default function (pi: ExtensionAPI) {
             );
             lines = kept;
         }
-        const pulse = shouldRepaint(pulseState, Date.now(), PULSE_MS);
+        // Arm the pulse only when the widget is over pi's MAX_WIDGET_LINES budget.
+        // Inside the budget the renderer does not strand rows and a periodic
+        // full repaint would be pure flicker; past it, the pulse is what clears
+        // the rows a displaced live region leaves behind. An explicit
+        // PI_WORKFLOW_REPAINT_MS overrides the coupling in both directions.
+        const interval = repaintIntervalFor(lines.length, PULSE_MS_EXPLICIT);
+        const pulse = shouldRepaint(pulseState, Date.now(), interval);
         // A zero-width space, not "": pi-tui's Text renders ZERO rows for a line
         // whose .trim() is empty, so a plain "" would not occupy a row and the
         // frame would not actually change height.
@@ -814,17 +816,37 @@ export default function (pi: ExtensionAPI) {
     // path cannot stream into the transcript -- pi exposes only `notify` to a
     // command, which appends a message rather than updating a block -- so on that
     // path this tail is the ONLY live view of a run. 0 shows just the status.
-    const ACTIVITY_LINES = (() => {
+    // Rows the transcript keeps for itself. The widget grows into the space below
+    // it, but not all of it -- the conversation above still has to be readable.
+    const TRANSCRIPT_MIN_ROWS = 6;
+
+    // The widget's row budget for THIS terminal. Defaults to filling the space
+    // below the transcript rather than pi's 10-row budget, because a tall window
+    // otherwise leaves most of the screen empty while the tool trail is truncated
+    // to five lines. Growing past STATUS_WIDGET_MAX_LINES re-enters the regime
+    // where the renderer strands rows, so clampWidget arms the repaint pulse
+    // whenever the budget is exceeded -- the two are deliberately coupled.
+    function widgetBudget(): number {
+        const rows = process.stdout.rows || 24;
+        return Math.max(
+            STATUS_WIDGET_MAX_LINES,
+            rows - LOG_PANEL_RESERVE - TRANSCRIPT_MIN_ROWS,
+        );
+    }
+
+    // Explicit setting wins; otherwise fill whatever the budget leaves after the
+    // header, the running-agent row(s) and the ledger summary.
+    function activityLineCount(): number {
         const raw = Number(process.env.PI_WORKFLOW_ACTIVITY_LINES);
-        return Number.isFinite(raw) && raw >= 0
-            ? Math.min(raw, STATUS_WIDGET_MAX_LINES - 2)
-            : DEFAULT_ACTIVITY_LINES;
-    })();
+        if (Number.isFinite(raw) && raw >= 0) return raw;
+        return Math.max(DEFAULT_ACTIVITY_LINES, widgetBudget() - 4);
+    }
 
     function recentActivity(): string[] {
         const live = st.phases.find((p) => p.status === "running");
         const log = live?.log;
-        if (!log || ACTIVITY_LINES === 0) return [];
+        const want = activityLineCount();
+        if (!log || want === 0) return [];
         const clean = log
             .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
             .replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, "")
@@ -835,7 +857,7 @@ export default function (pi: ExtensionAPI) {
             .split("\n")
             .map((l) => l.trim())
             .filter(Boolean);
-        return rows.slice(-ACTIVITY_LINES);
+        return rows.slice(-want);
     }
 
     function buildCompactLines(width: number, theme: any): string[] {
@@ -867,6 +889,7 @@ export default function (pi: ExtensionAPI) {
                 agentCount: st.agents.size,
                 teamCount: Object.keys(st.teams).length,
                 width,
+                maxLines: widgetBudget(),
             },
             theme,
         );

@@ -154,10 +154,17 @@ PI_WORKFLOW_REPAINT_MS=4000 ./run.sh  # force periodic repaints (only `full` nee
 PI_WORKFLOW_DEBUG_WIDGET=1 ./run.sh   # dump the widget array to ~/.pi/agent/pi-widget.log
 ```
 
-**The agent's tool trail** shows as the last few rows, newest closest to the prompt
-(`PI_WORKFLOW_ACTIVITY_LINES`, default 5, `0` for status only). It is bounded rather
-than a scrolling panel: the widget stays inside pi's 10-row budget, which is the
-whole point.
+**The agent's tool trail** fills the space below the status lines, newest closest to
+the prompt — a tall window shows a long trail, a short one shows a few rows. It
+reserves 6 rows for the transcript and whatever the editor and footer need; pin it
+with `PI_WORKFLOW_ACTIVITY_LINES` (`0` for status only).
+
+**Growing past pi's 10-row budget re-arms the repaint pulse automatically.** Inside
+the budget the renderer does not strand rows and a periodic repaint would be pure
+flicker; past it, a displaced live region leaves rows behind and only an absolute
+repaint clears them. The two are coupled in code (`repaintIntervalFor`) so the
+mitigation is armed by the condition that makes it necessary, rather than by a flag
+someone has to remember. `PI_WORKFLOW_REPAINT_MS` overrides either way.
 
 When the workflow runs as a **tool call** (the agent invoking `run_agent_workflow`)
 the same trail also streams into the transcript as an updating result block —
