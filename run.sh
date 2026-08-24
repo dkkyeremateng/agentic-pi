@@ -324,6 +324,18 @@ export PI_DISPATCH_MAX_DEPTH="${PI_DISPATCH_MAX_DEPTH:-2}"
 # just its final result). Opt out with PI_DISPATCH_STREAM=0.
 export PI_DISPATCH_STREAM="${PI_DISPATCH_STREAM:-1}"
 
+# Erase stale rows when the sticky widgets shrink. pi-tui's differential renderer
+# tracks a high-water mark and only clears below it when this is on; it defaults
+# off, and the workflow dashboard changes height constantly, so every downward
+# swing otherwise leaves ghost rows behind.
+#
+# It MUST be exported here, before pi starts: pi-tui reads it in a class-field
+# initializer at TUI construction. Putting it in `.env` does nothing — run.sh does
+# not source `.env`, and the extension that does load it runs after the TUI exists.
+# A `terminal.clearOnShrink` in pi's settings.json outranks this and is the better
+# per-machine home; this line is what makes a fresh clone behave on any machine.
+export PI_CLEAR_ON_SHRINK="${PI_CLEAR_ON_SHRINK:-1}"
+
 # dispatch.ts first (the workflow depends on it for dispatch_agent/select_agents).
 # interactive.ts adds the ask_user tool for the primary session.
 # footer.ts renders the status bar from the state agent-workflow.ts publishes, so
