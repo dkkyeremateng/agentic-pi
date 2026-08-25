@@ -599,7 +599,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     const todoItems = input.todos?.items ?? [];
     const reviewSummary =
         input.review && input.review.total > 0
-            ? `review ${input.review.done}/${input.review.total}`
+            ? `Review ${input.review.done}/${input.review.total}`
             : "";
     const spentSoFar = out.length;
     const roomForTodos = cap - spentSoFar - (reviewSummary ? 1 : 0) - TRAIL_FLOOR;
@@ -623,10 +623,13 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         // between the roster and the trail, with nothing saying what ledger they
         // belong to. The count rides along so the heading answers "how far" too,
         // and matches the wording of the collapsed fallback below.
+        // Outdented to the widget's left margin, where the header and the roster
+        // markers sit, with the items indented under it. That makes it read as a
+        // section heading rather than another entry in the list.
         out.push(
             line([
-                ["   "],
-                [`todos ${input.todos?.done ?? 0}/${input.todos?.total ?? 0}`, "accent"],
+                [" "],
+                [`Todos ${input.todos?.done ?? 0}/${input.todos?.total ?? 0}`, "accent"],
             ]),
         );
         todoItems.forEach((it, i) => {
@@ -642,10 +645,13 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         });
     } else if (input.todos && input.todos.total > 0) {
         out.push(
-            line([["   " + `todos ${input.todos.done}/${input.todos.total}`, "muted"]]),
+            line([
+                [" "],
+                [`Todos ${input.todos.done}/${input.todos.total}`, "accent"],
+            ]),
         );
     }
-    if (reviewSummary) out.push(line([["   " + reviewSummary, "muted"]]));
+    if (reviewSummary) out.push(line([[" "], [reviewSummary, "accent"]]));
 
     // ── what it is doing this second ────────────────────────────────────────
     // The tail last, so the newest line sits closest to the prompt.

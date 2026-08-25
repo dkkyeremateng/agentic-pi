@@ -267,9 +267,14 @@ describe("renderStatusWidget", () => {
             todos: { done: 1, total: 3, items, inProgress: 1 },
             activity: ["→ read"],
         } as any, theme);
+        const heading = out.find((l) => /Todos 1\/3/.test(l))!;
+        assert.ok(heading, "the block is labelled, not just bracketed rows");
+        // The heading sits at the widget's left margin and the items are indented
+        // under it, so it reads as a section rather than another list entry.
+        const item = out.find((l) => l.includes("[x] Phase 1"))!;
         assert.ok(
-            out.some((l) => /todos 1\/3/.test(l)),
-            "the block is labelled, not just bracketed rows",
+            heading.search(/\S/) < item.search(/\S/),
+            `heading (${heading.search(/\S/)}) must outdent items (${item.search(/\S/)})`,
         );
         assert.ok(out.some((l) => l.includes("[x] Phase 1")), "done item");
         assert.ok(out.some((l) => l.includes("[•] Phase 2")), "the one in flight");
@@ -331,7 +336,7 @@ describe("renderStatusWidget", () => {
             todos: { done: 0, total: 20, items, inProgress: 1 },
             activity: ["a", "b", "c"],
         } as any, theme);
-        assert.ok(out.some((l) => l.includes("todos 0/20")), "fell back to the count");
+        assert.ok(out.some((l) => l.includes("Todos 0/20")), "fell back to the count");
         assert.ok(!out.some((l) => l.includes("[ ] Phase 19")), "no partial ledger");
     });
 
@@ -342,8 +347,8 @@ describe("renderStatusWidget", () => {
             todos: { done: 0, total: 0 },
             review: { done: 0, total: 0 },
         } as any, theme);
-        assert.ok(!out.some((l) => l.includes("todos")));
-        assert.ok(!out.some((l) => l.includes("review")));
+        assert.ok(!out.some((l) => l.toLowerCase().includes("todos")));
+        assert.ok(!out.some((l) => l.toLowerCase().includes("review")));
     });
 
     it("shows an activity tail, newest closest to the prompt", () => {
