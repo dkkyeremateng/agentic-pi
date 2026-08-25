@@ -141,8 +141,11 @@ The terminal widget shows **at most 6 rows**:
    ✓ read
 ```
 
-The todo ledger is listed in full when it fits, with `[•]` on the phase being worked
-on (one per worker, so a parallel wave marks each phase it is on). When the rows are
+The todo ledger is styled to read as its own block rather than more log: done in the
+success colour, the phase in flight in the accent colour **and bold** (the only bold
+text in the widget, so it is what your eye lands on), everything else muted — all
+distinct from the trail's dim. It is listed in full when it fits, with `[•]` on the
+phase being worked on (one per worker, so a parallel wave marks each phase it is on). When the rows are
 not there it collapses to `todos 2/3` rather than showing a partial list — a
 truncated ledger reads as the whole list, which is worse than a count.
 

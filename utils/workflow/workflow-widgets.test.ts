@@ -274,6 +274,36 @@ describe("renderStatusWidget", () => {
         assert.ok(!out.some((l) => l.includes("grep audit")), "evidence stripped");
     });
 
+    it("styles the ledger apart from the tool trail", () => {
+        // The trail is "dim". If a ledger state renders dim too it reads as more
+        // log, which is the thing this block exists NOT to be.
+        const tagged = {
+            fg: (c: string, s: string) => `<${c}>${s}</${c}>`,
+            bold: (s: string) => `*${s}*`,
+        };
+        const out = renderStatusWidget({
+            ...base, phases: [phase({ status: "running" })], maxLines: 20,
+            todos: {
+                done: 1, total: 3, inProgress: 1,
+                items: [
+                    { label: "Phase 1", done: true },
+                    { label: "Phase 2", done: false },
+                    { label: "Phase 3", done: false },
+                ],
+            },
+            activity: ["→ read plan.md"],
+        } as any, tagged);
+        const row = (s: string) => out.find((l) => l.includes(s))!;
+        assert.match(row("Phase 1"), /<success>/, "done stands apart");
+        assert.match(row("Phase 2"), /<accent>/, "in flight is the accent colour");
+        assert.match(row("Phase 2"), /\*/, "in flight is the only bold text");
+        assert.match(row("Phase 3"), /<muted>/, "not started is muted");
+        for (const p of ["Phase 1", "Phase 2", "Phase 3"]) {
+            assert.ok(!row(p).includes("<dim>"), `${p} must not read as trail`);
+        }
+        assert.match(row("read plan.md"), /<dim>/, "the trail itself stays dim");
+    });
+
     it("marks every phase a parallel wave is on", () => {
         const items = [
             { label: "Phase 1", done: false },

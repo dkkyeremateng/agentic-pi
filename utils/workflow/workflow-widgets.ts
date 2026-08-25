@@ -614,11 +614,21 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
                 .filter((i) => i >= 0)
                 .slice(0, active),
         );
+        // The ledger has to read as a distinct block, not more log. The tool trail
+        // below it is "dim", so every ledger state is deliberately something else:
+        // done in `success`, the phase in flight in `accent` AND bold, the rest in
+        // `muted`. The in-flight row is the one you scan for, so it gets the only
+        // bold text in the widget.
         todoItems.forEach((it, i) => {
             const running = input.running && !it.done && inFlight.has(i);
             const mark = it.done ? "[x]" : running ? "[•]" : "[ ]";
-            const color = it.done ? "dim" : running ? "accent" : "muted";
-            out.push(line([["   "], [`${mark} ${phaseTitleOnly(it.label)}`, color]]));
+            const color = it.done ? "success" : running ? "accent" : "muted";
+            out.push(
+                line([
+                    ["   "],
+                    [`${mark} ${phaseTitleOnly(it.label)}`, color, running],
+                ]),
+            );
         });
     } else if (input.todos && input.todos.total > 0) {
         out.push(
