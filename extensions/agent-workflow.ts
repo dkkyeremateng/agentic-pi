@@ -864,6 +864,9 @@ export default function (pi: ExtensionAPI) {
     function buildCompactLines(width: number, theme: any): string[] {
         const items = readProgressItems();
         const reviewItems = buildReviewChecklist(st.phases, reviewMarks);
+        // One clock for the whole frame, so the elapsed figures and the quiet
+        // timer cannot disagree by the width of a repaint.
+        const now = Date.now();
         return renderStatusWidget(
             {
                 team: st.activeTeamName,
@@ -879,7 +882,8 @@ export default function (pi: ExtensionAPI) {
                 // boundary instead of a clock. Once the run ends the recorded
                 // total is authoritative (it is what the report quotes), so fall
                 // back to it rather than keeping to count.
-                elapsedMs: displayElapsedMs(st, Date.now()),
+                elapsedMs: displayElapsedMs(st, now),
+                now,
                 todos: {
                     done: items.filter((i) => i.done).length,
                     total: items.length,
