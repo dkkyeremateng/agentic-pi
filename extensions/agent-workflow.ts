@@ -67,6 +67,7 @@ import {
     renderRichCard,
     renderTodos,
     renderStatusWidget,
+    displayElapsedMs,
     STATUS_WIDGET_MAX_LINES,
     DEFAULT_ACTIVITY_LINES,
     shouldRepaint,
@@ -871,7 +872,14 @@ export default function (pi: ExtensionAPI) {
                 lastStatus: st.lastStatus,
                 iteration: st.iteration,
                 maxLoops: st.maxLoopsRef,
-                elapsedMs: st.dispatchMode ? st.dispatchElapsedMs : st.runElapsedMs,
+                // Derive the duration from the START timestamp while the run is
+                // live. st.runElapsedMs is only assigned at terminal points --
+                // completion, abort, error -- plus once per turn, so reading it
+                // during a run shows 0 or a value frozen at the last turn
+                // boundary instead of a clock. Once the run ends the recorded
+                // total is authoritative (it is what the report quotes), so fall
+                // back to it rather than keeping to count.
+                elapsedMs: displayElapsedMs(st, Date.now()),
                 todos: {
                     done: items.filter((i) => i.done).length,
                     total: items.length,

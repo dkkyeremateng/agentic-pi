@@ -6,6 +6,7 @@ import {
     renderStatusWidget,
     STATUS_WIDGET_MAX_LINES,
     shouldRepaint,
+    displayElapsedMs,
     repaintIntervalFor,
     phaseTitleOnly,
     renderRichCard,
@@ -560,6 +561,54 @@ describe("renderStatusWidget", () => {
 // SHORTER. A dashboard of stable height never shrinks, so nothing is ever
 // cleared and rows left behind by a pushed-up live region persist for the whole
 // session. The pulse makes the frame shrink on purpose, on a clock.
+// ── run duration ────────────────────────────────────────────────────────────
+// runElapsedMs is assigned only at terminal points (completion, abort, error)
+// plus once per turn -- it is a RECORD, not a clock. Reading it mid-run is why
+// the header duration sat at 0 or froze at the last turn boundary.
+describe("displayElapsedMs", () => {
+    const NOW = 1_000_000;
+
+    it("ticks from the start timestamp while a run is live", () => {
+        const ms = displayElapsedMs(
+            { running: true, runStartedAt: NOW - 52_000, runElapsedMs: 0 },
+            NOW,
+        );
+        assert.equal(ms, 52_000, "must not read the not-yet-assigned total");
+    });
+
+    it("uses the recorded total once the run has ended", () => {
+        // The report and the completion notice quote runElapsedMs; a widget that
+        // kept counting past the end would disagree with both.
+        const ms = displayElapsedMs(
+            { running: false, runStartedAt: NOW - 999_000, runElapsedMs: 126_000 },
+            NOW,
+        );
+        assert.equal(ms, 126_000);
+    });
+
+    it("follows the dispatch clock in dispatch mode", () => {
+        assert.equal(
+            displayElapsedMs(
+                {
+                    running: true, dispatchMode: true, runStartedAt: NOW - 999_000,
+                    runElapsedMs: 0, dispatchStartedAt: NOW - 9_000, dispatchElapsedMs: 0,
+                },
+                NOW,
+            ),
+            9_000,
+        );
+    });
+
+    it("reports zero rather than epoch-since when no run has started", () => {
+        // runStartedAt is 0 on a fresh state; subtracting it would render the
+        // milliseconds since 1970 as a duration.
+        assert.equal(
+            displayElapsedMs({ running: true, runStartedAt: 0, runElapsedMs: 0 }, NOW),
+            0,
+        );
+    });
+});
+
 describe("repaintIntervalFor", () => {
     it("stays silent while the widget is inside pi's budget", () => {
         // A repaint here would be flicker for nothing: the renderer does not

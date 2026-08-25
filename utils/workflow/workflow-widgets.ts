@@ -722,6 +722,40 @@ export function repaintIntervalFor(
     return lineCount > budget ? 4000 : 0;
 }
 
+/**
+ * Wall-clock to show for the run currently on screen.
+ *
+ * `runElapsedMs` is NOT a clock: the orchestrator assigns it only at terminal
+ * points (completion, abort, error) plus once per turn, so reading it mid-run
+ * yields 0 or a value frozen at the last turn boundary -- which is why the header
+ * duration stopped ticking. While a run is live the figure has to be derived from
+ * the START timestamp instead.
+ *
+ * Once it ends the recorded total wins: that is the number the run report and the
+ * completion notice quote, and a widget that kept counting past the end would
+ * disagree with both.
+ */
+export function displayElapsedMs(
+    s: {
+        running: boolean;
+        dispatchMode?: boolean;
+        runStartedAt: number;
+        runElapsedMs: number;
+        dispatchStartedAt?: number;
+        dispatchElapsedMs?: number;
+    },
+    now: number,
+): number {
+    if (s.dispatchMode) {
+        return s.running && (s.dispatchStartedAt ?? 0) > 0
+            ? now - (s.dispatchStartedAt as number)
+            : (s.dispatchElapsedMs ?? 0);
+    }
+    return s.running && s.runStartedAt > 0
+        ? now - s.runStartedAt
+        : s.runElapsedMs;
+}
+
 /** Mutable clock for {@link shouldRepaint}. */
 export interface RepaintPulseState {
     last: number;

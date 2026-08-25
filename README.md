@@ -141,6 +141,9 @@ build ▸ Implement 1/4 · 1m 7s
 ✓ read
 ```
 
+The header's duration is the whole workflow's wall-clock, distinct from the
+per-agent times on the roster rows below it — it keeps counting across every phase.
+
 Three levels: the header at the margin, sections indented under it, their entries
 under those. The tool trail runs **flush at the margin**, outdented from the whole
 status block — it is the agent's raw output, not another field of the dashboard, and
