@@ -562,29 +562,68 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         16,
         roster.reduce((m, p) => Math.max(m, displayName(p.agent).length), 0),
     );
-    for (const p of roster) {
-        const running = p.status === "running";
-        // A phase in the pipeline that has not started is "queued", not
-        // "pending" -- same wording and marker the cards used, since every phase
-        // here is by definition selected.
-        const queued = p.status === "pending";
-        const meta = queued
-            ? { icon: "◌", color: "accent" }
-            : statusMeta(p.status);
-        const word = queued ? "queued" : p.status;
+
+    // Per-agent spend and context usage. The header totals answer "what has this
+    // run cost"; these answer "which agent spent it, and which one is close to
+    // its window" -- the question the cards existed for.
+    //
+    // Nothing is shown for an agent that has not run: "$0.00 · 0.0%/256K" on a
+    // queued row is four columns saying "hasn't started", which is what made the
+    // old cards mostly zeros. No usage bar either -- it duplicates the percentage
+    // sitting next to it and costs a dozen columns the tool trail can use.
+    const statusText = (p: PhaseState, word: string, icon: string): string => {
+        const timing = p.elapsed > 0 ? ` ${secs(p.elapsed)}` : "";
         const tools =
-            running && p.toolCount > 0
+            p.status === "running" && p.toolCount > 0
                 ? ` · ${p.toolCount} tool${p.toolCount === 1 ? "" : "s"}`
                 : "";
-        const timing = p.elapsed > 0 ? ` ${secs(p.elapsed)}` : "";
+        return `${icon} ${word}${timing}${tools}`;
+    };
+    const costOf = (p: PhaseState): string => {
+        const c = p.tokens?.costUsd;
+        return c && c > 0 ? formatCostUsd(c) : "";
+    };
+    const ctxOf = (p: PhaseState): string => {
+        if (!p.contextPct || p.contextPct <= 0) return "";
+        const win = p.tokens?.contextWindow;
+        return `${p.contextPct.toFixed(1)}%${win ? `/${formatContextWindow(win)}` : ""}`;
+    };
+
+    // Pad each field to the widest in the roster so the columns line up and can be
+    // scanned down. Ragged, they are just trailing text.
+    const meta = roster.map((p) => {
+        const queued = p.status === "pending";
+        const m = queued ? { icon: "◌", color: "accent" } : statusMeta(p.status);
+        return {
+            p,
+            color: m.color,
+            status: statusText(p, queued ? "queued" : p.status, m.icon),
+            cost: costOf(p),
+            ctx: ctxOf(p),
+        };
+    });
+    const statusCol = meta.reduce((m, r) => Math.max(m, r.status.length), 0);
+    const costCol = meta.reduce((m, r) => Math.max(m, r.cost.length), 0);
+
+    for (const r of meta) {
+        const running = r.p.status === "running";
         out.push(
             line([
                 [running ? " ▸ " : "   "],
-                [displayName(p.agent).padEnd(nameCol), running ? "accent" : "muted"],
-                [`  ${meta.icon} ${word}${timing}${tools}`, meta.color],
+                [displayName(r.p.agent).padEnd(nameCol), running ? "accent" : "muted"],
+                // Only pad the status when something follows it -- otherwise a
+                // queued row trails a dozen spaces for no reason.
+                [`  ${r.cost || r.ctx ? r.status.padEnd(statusCol) : r.status}`, r.color],
+                // padEnd, not padStart: formatCostUsd emits a variable number of
+                // decimals ($0.0031 vs $0.129), so right-aligning moves the "$"
+                // between rows and nothing lines up. Left-aligned, the "$" column
+                // is straight and the eye can run down it.
+                [r.cost || r.ctx ? `  ${r.cost.padEnd(costCol)}` : "", "dim"],
+                [r.ctx ? `  ${r.ctx}` : "", "muted"],
                 // The model only earns a column on the agent actually running --
-                // it is identical across the roster in the common case.
-                [running ? modelRaw(p) : "", "dim"],
+                // it is identical across the roster in the common case, and the
+                // idle screen lists it per agent already.
+                [running ? modelRaw(r.p) : "", "dim"],
             ]),
         );
     }

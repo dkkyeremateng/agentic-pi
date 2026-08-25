@@ -131,7 +131,7 @@ The terminal widget shows **at most 6 rows**:
 ```
  build ▸ Implement 1/4 · 1m 7s · $0.020 · 4.0%/256K
    Scout        ✓ done 53s
- ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark
+ ▸ Implementer  ● running 14s · 3 tools  $0.0088  6.0%/256K  ◆ gfr_local/gateframe_ionix/dspark
    Reviewer     ◌ queued
    Shipper      ◌ queued
  Todos 1/3
@@ -149,6 +149,11 @@ distinct from the trail's dim. It is listed in full when it fits, with `[•]` o
 phase being worked on (one per worker, so a parallel wave marks each phase it is on). When the rows are
 not there it collapses to `todos 2/3` rather than showing a partial list — a
 truncated ledger reads as the whole list, which is worse than a count.
+
+Each agent carries its own spend and context usage, in aligned columns so they can
+be scanned down the roster. Agents that have not run show neither — `$0.00 · 0.0%`
+on a queued row is just noise — and there is no usage bar, since it duplicates the
+percentage beside it.
 
 The whole selected team is listed, one row each — what is done, what is in flight
 (marked `▸`), what is still queued — because during a run the question is where the

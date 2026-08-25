@@ -157,6 +157,43 @@ describe("renderStatusWidget", () => {
         for (const l of out) assert.ok(l.length <= 40, `line ${l.length} > 40: ${l}`);
     });
 
+    it("puts each agent's own cost and context on its row, aligned", () => {
+        const tok = (cost: number) => ({
+            input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
+            costUsd: cost, contextWindow: 256_000,
+        });
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [
+                phase({ agent: "scout", label: "Scout", status: "done", elapsed: 53000,
+                    contextPct: 8.2, tokens: tok(0.0031) }),
+                phase({ status: "running", elapsed: 9000, contextPct: 41.5, tokens: tok(0.1288) }),
+            ],
+        } as any, theme);
+        const scout = out.find((l) => l.includes("Scout"))!;
+        const impl = out.find((l) => l.includes("Implementer"))!;
+        assert.match(scout, /8\.2%\/256K/);
+        assert.match(impl, /41\.5%\/256K/);
+        // The "$" column is straight so it can be scanned down the roster, and
+        // so is the context that follows it -- costs have different decimal
+        // counts, so alignment has to come from padding, not from the values.
+        assert.equal(scout.indexOf("$"), impl.indexOf("$"), "cost column");
+        assert.equal(scout.indexOf("8.2%"), impl.indexOf("41.5%"), "context column");
+    });
+
+    it("leaves a queued agent's cost and context blank, not zeroed", () => {
+        // "$0.00 · 0.0%/256K" on a queued row is columns of "hasn't started",
+        // which is what made the old cards mostly zeros.
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [phase({ status: "running" }), phase({ agent: "shipper", label: "Ship" })],
+        } as any, theme);
+        const ship = out.find((l) => l.includes("Shipper"))!;
+        assert.ok(!ship.includes("$"), ship);
+        assert.ok(!ship.includes("%"), ship);
+        assert.equal(ship, ship.trimEnd(), "no trailing padding either");
+    });
+
     it("lists the whole selected team, not just the running agent", () => {
         // During a run the question is "where is the pipeline up to", which needs
         // the whole chain: what is done, what is in flight, what is still queued.
