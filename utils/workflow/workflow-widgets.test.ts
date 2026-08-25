@@ -181,6 +181,32 @@ describe("renderStatusWidget", () => {
         assert.equal(scout.indexOf("8.2%"), impl.indexOf("41.5%"), "context column");
     });
 
+    it("keeps the model an agent ran on after it finishes", () => {
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [
+                phase({ agent: "scout", label: "Scout", status: "done", elapsed: 5000,
+                    activeModel: "prov/small" }),
+                phase({ status: "running", activeModel: "prov/big" }),
+            ],
+        } as any, theme);
+        assert.match(out.find((l) => l.includes("Scout"))!, /◆ prov\/small/);
+        assert.match(out.find((l) => l.includes("Implementer"))!, /◆ prov\/big/);
+    });
+
+    it("flags a model that was fallen back to, rather than chosen", () => {
+        // The column earns its width exactly when the model is NOT the one you
+        // configured, so a fallback must not look like a normal run.
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [phase({ status: "done", elapsed: 5000, activeModel: "prov/other",
+                modelFallback: "prov/other" })],
+        } as any, theme);
+        const row = out.find((l) => l.includes("Implementer"))!;
+        assert.match(row, /⚠ prov\/other/, row);
+        assert.ok(!row.includes("◆"), "not the ordinary marker");
+    });
+
     it("leaves a queued agent's cost and context blank, not zeroed", () => {
         // "$0.00 · 0.0%/256K" on a queued row is columns of "hasn't started",
         // which is what made the old cards mostly zeros.

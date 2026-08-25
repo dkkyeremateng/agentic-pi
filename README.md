@@ -131,7 +131,7 @@ The terminal widget shows **at most 6 rows**:
 ```
  build ▸ Implement 1/4 · 1m 7s
    Scout        ✓ done 53s
- ▸ Implementer  ● running 14s · 3 tools  $0.0088  6.0%/256K  ◆ gfr_local/gateframe_ionix/dspark
+ ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark  $0.0088  6.0%/256K
    Reviewer     ◌ queued
    Shipper      ◌ queued
  Todos 1/3
@@ -151,8 +151,10 @@ not there it collapses to `todos 2/3` rather than showing a partial list — a
 truncated ledger reads as the whole list, which is worse than a count.
 
 Each agent carries its own spend and context usage, in aligned columns so they can
-be scanned down the roster. The header row deliberately does not repeat them — per
-agent is the useful cut, and the footer already reports the session totals. Agents that have not run show neither — `$0.00 · 0.0%`
+be scanned down the roster. The model an agent ran on stays on its row after it finishes, marked `⚠` instead of
+`◆` when it is a fallback rather than the configured choice. The header row
+deliberately repeats none of this — per agent is the useful cut, and the footer
+already reports the session totals. Agents that have not run show neither — `$0.00 · 0.0%`
 on a queued row is just noise — and there is no usage bar, since it duplicates the
 percentage beside it.
 

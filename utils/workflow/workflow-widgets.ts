@@ -414,8 +414,6 @@ export const DEFAULT_ACTIVITY_LINES = 5;
  *
  * Every line is truncated to `width`; nothing here can wrap.
  */
-const modelRaw = (p: PhaseState): string => (p.activeModel ? `  ◆ ${p.activeModel}` : "");
-
 export function renderStatusWidget(input: StatusWidgetInput, theme: any): string[] {
     const w = Math.max(20, input.width);
     const cap = Math.max(2, input.maxLines ?? STATUS_WIDGET_MAX_LINES);
@@ -588,32 +586,52 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
             p,
             color: m.color,
             status: statusText(p, queued ? "queued" : p.status, m.icon),
+            // The model an agent RAN on, kept after it finishes: it is the record
+            // of what actually served the phase, which matters most exactly when
+            // it is not what you expected (a fallback after a load failure).
+            // Absent on a queued row, which has not resolved one yet.
+            // "⚠" instead of "◆" when this is NOT the model the agent was
+            // configured for -- it fell back after the first choice failed to
+            // load. That is precisely the case this column exists to surface, so
+            // it should not look like a normal run. Same marker the cards used.
+            model: p.activeModel
+                ? `${p.modelFallback ? "⚠" : "◆"} ${p.activeModel}`
+                : "",
             cost: costOf(p),
             ctx: ctxOf(p),
         };
     });
-    const statusCol = meta.reduce((m, r) => Math.max(m, r.status.length), 0);
-    const costCol = meta.reduce((m, r) => Math.max(m, r.cost.length), 0);
+    const widest = (pick: (r: (typeof meta)[number]) => string) =>
+        meta.reduce((m, r) => Math.max(m, pick(r).length), 0);
+    const statusCol = widest((r) => r.status);
+    const modelCol = widest((r) => r.model);
+    const costCol = widest((r) => r.cost);
 
     for (const r of meta) {
         const running = r.p.status === "running";
+        // Pad a field only while something still follows it, so a queued row --
+        // which has none of them -- does not trail a screenful of spaces.
+        const after = (...rest: string[]) => rest.some(Boolean);
+        const pad = (s: string, col: number, more: boolean) =>
+            more ? s.padEnd(col) : s;
         out.push(
             line([
                 [running ? " ▸ " : "   "],
                 [displayName(r.p.agent).padEnd(nameCol), running ? "accent" : "muted"],
-                // Only pad the status when something follows it -- otherwise a
-                // queued row trails a dozen spaces for no reason.
-                [`  ${r.cost || r.ctx ? r.status.padEnd(statusCol) : r.status}`, r.color],
+                [
+                    `  ${pad(r.status, statusCol, after(r.model, r.cost, r.ctx))}`,
+                    r.color,
+                ],
+                [
+                    r.model ? `  ${pad(r.model, modelCol, after(r.cost, r.ctx))}` : "",
+                    "dim",
+                ],
                 // padEnd, not padStart: formatCostUsd emits a variable number of
                 // decimals ($0.0031 vs $0.129), so right-aligning moves the "$"
                 // between rows and nothing lines up. Left-aligned, the "$" column
                 // is straight and the eye can run down it.
-                [r.cost || r.ctx ? `  ${r.cost.padEnd(costCol)}` : "", "dim"],
+                [r.cost ? `  ${pad(r.cost, costCol, after(r.ctx))}` : "", "dim"],
                 [r.ctx ? `  ${r.ctx}` : "", "muted"],
-                // The model only earns a column on the agent actually running --
-                // it is identical across the roster in the common case, and the
-                // idle screen lists it per agent already.
-                [running ? modelRaw(r.p) : "", "dim"],
             ]),
         );
     }
