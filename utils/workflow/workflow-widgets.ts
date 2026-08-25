@@ -330,6 +330,18 @@ export function phaseTitleOnly(label: string): string {
     return label.replace(/\s+[—-]\s+tests:.*$/i, "").trim() || label.trim();
 }
 
+/** A checklist the widget can show: listed when it fits, counted when it does not. */
+export interface LedgerInput {
+    done: number;
+    total: number;
+    /** The entries themselves. Omit to always show just the count. */
+    items?: { label: string; done: boolean }[];
+    /** How many unfinished entries are in flight, so a parallel wave marks each. */
+    inProgress?: number;
+    /** Whether this ledger's owner is running right now; gates the [•] marker. */
+    active?: boolean;
+}
+
 export interface StatusWidgetInput {
     /** Active team, or "" when idle. */
     team: string;
@@ -345,15 +357,8 @@ export interface StatusWidgetInput {
     contextWindow?: number;
     /** Prompt-cache hit rate, 0-100. Omitted when nothing has been cached. */
     cacheHitPct?: number;
-    todos?: {
-        done: number;
-        total: number;
-        /** The ledger itself. Listed when it fits; collapsed to a count when not. */
-        items?: { label: string; done: boolean }[];
-        /** Phase workers in flight, so a parallel wave marks every one it is on. */
-        inProgress?: number;
-    };
-    review?: { done: number; total: number };
+    todos?: LedgerInput;
+    review?: LedgerInput;
     /** Recent activity, oldest first — the running agent's tool trail. */
     activity?: string[];
     dispatchMode?: boolean;
@@ -542,13 +547,9 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     const TRAIL_FLOOR = Math.min(activity.length, 3);
     // Rows the ledger will want below the roster: the todo list if it will fit,
     // else one summary row, plus one for the review count.
-    const todoRows = input.todos?.items?.length
-        ? input.todos.items.length + 1 // + the "todos n/m" heading
-        : input.todos && input.todos.total > 0
-          ? 1
-          : 0;
-    const summaryRows =
-        todoRows + (input.review && input.review.total > 0 ? 1 : 0);
+    const ledgerHeight = (led?: LedgerInput): number =>
+        !led || led.total <= 0 ? 0 : led.items?.length ? led.items.length + 1 : 1;
+    const summaryRows = ledgerHeight(input.todos) + ledgerHeight(input.review);
     const available = Math.max(1, cap - 1 - summaryRows - TRAIL_FLOOR);
     // The "+N more" marker costs a row of its own, so it has to come out of the
     // roster's allowance -- otherwise it pushes the trail past the budget and the
@@ -591,67 +592,54 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         out.push(line([[`   +${input.phases.length - roster.length} more`, "dim"]]));
     }
 
-    // ── the todo ledger ─────────────────────────────────────────────────────
-    // Listed in full when it fits, because "which phase is it on" is the thing
-    // the ledger answers and a count does not. Collapses to "todos 2/3" when the
-    // rows are not there -- a truncated ledger is worse than a count, since it
-    // reads as the whole list.
-    const todoItems = input.todos?.items ?? [];
-    const reviewSummary =
-        input.review && input.review.total > 0
-            ? `Review ${input.review.done}/${input.review.total}`
-            : "";
-    const spentSoFar = out.length;
-    const roomForTodos = cap - spentSoFar - (reviewSummary ? 1 : 0) - TRAIL_FLOOR;
+    // ── the ledgers ─────────────────────────────────────────────────────────
+    // Todos and Review render identically: a heading at the widget's left margin
+    // and the entries indented under it, listed when the rows are there and
+    // collapsed to the heading's count when they are not. A truncated checklist
+    // reads as the whole checklist, which is worse than an honest count.
+    const ledgerRows = (
+        title: string,
+        led: LedgerInput | undefined,
+        room: number,
+    ): string[] => {
+        if (!led || led.total <= 0) return [];
+        const heading = line([[" "], [`${title} ${led.done}/${led.total}`, "accent"]]);
+        const items = led.items ?? [];
+        if (items.length === 0 || room < items.length + 1) return [heading];
 
-    if (todoItems.length > 0 && roomForTodos >= todoItems.length + 1) {
-        // The [•] rows are the first `inProgress` UNFINISHED items: a finished
-        // phase never carries the mark, and a wave never marks more than remain.
-        const active = Math.max(1, input.todos?.inProgress ?? 1);
+        // The [•] rows are the first `inProgress` UNFINISHED entries: a finished
+        // one never carries the mark, and a wave never marks more than remain.
+        const active = Math.max(1, led.inProgress ?? 1);
         const inFlight = new Set(
-            todoItems
+            items
                 .map((it, i) => (it.done ? -1 : i))
                 .filter((i) => i >= 0)
                 .slice(0, active),
         );
-        // The ledger has to read as a distinct block, not more log. The tool trail
-        // below it is "dim", so every ledger state is deliberately something else:
-        // done in `success`, the phase in flight in `accent` AND bold, the rest in
-        // `muted`. The in-flight row is the one you scan for, so it gets the only
-        // bold text in the widget.
-        // Label the block. Without it the [x]/[ ] rows are just bracketed text
-        // between the roster and the trail, with nothing saying what ledger they
-        // belong to. The count rides along so the heading answers "how far" too,
-        // and matches the wording of the collapsed fallback below.
-        // Outdented to the widget's left margin, where the header and the roster
-        // markers sit, with the items indented under it. That makes it read as a
-        // section heading rather than another entry in the list.
-        out.push(
-            line([
-                [" "],
-                [`Todos ${input.todos?.done ?? 0}/${input.todos?.total ?? 0}`, "accent"],
-            ]),
-        );
-        todoItems.forEach((it, i) => {
-            const running = input.running && !it.done && inFlight.has(i);
-            const mark = it.done ? "[x]" : running ? "[•]" : "[ ]";
-            const color = it.done ? "success" : running ? "accent" : "muted";
-            out.push(
-                line([
+        const isRunning = led.active ?? input.running;
+        return [
+            heading,
+            ...items.map((it, i) => {
+                const running = isRunning && !it.done && inFlight.has(i);
+                const mark = it.done ? "[x]" : running ? "[•]" : "[ ]";
+                // Deliberately none of these is "dim": that is the tool trail's
+                // colour, and a ledger that reads as log defeats the point.
+                const color = it.done ? "success" : running ? "accent" : "muted";
+                return line([
                     ["   "],
                     [`${mark} ${phaseTitleOnly(it.label)}`, color, running],
-                ]),
-            );
-        });
-    } else if (input.todos && input.todos.total > 0) {
-        out.push(
-            line([
-                [" "],
-                [`Todos ${input.todos.done}/${input.todos.total}`, "accent"],
-            ]),
-        );
-    }
-    if (reviewSummary) out.push(line([[" "], [reviewSummary, "accent"]]));
+                ]);
+            }),
+        ];
+    };
+
+    // Todos first, then Review with whatever is left, so a long review checklist
+    // cannot push the todo ledger out of the widget.
+    let ledgerRoom = cap - out.length - TRAIL_FLOOR;
+    const todoBlock = ledgerRows("Todos", input.todos, ledgerRoom);
+    out.push(...todoBlock);
+    ledgerRoom -= todoBlock.length;
+    out.push(...ledgerRows("Review", input.review, ledgerRoom));
 
     // ── what it is doing this second ────────────────────────────────────────
     // The tail last, so the newest line sits closest to the prompt.

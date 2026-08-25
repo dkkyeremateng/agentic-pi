@@ -142,7 +142,7 @@ The terminal widget shows **at most 6 rows**:
    ✓ read
 ```
 
-The todo ledger is styled to read as its own block rather than more log: done in the
+Both ledgers — Todos and Review — render the same way, and are styled to read as their own block rather than more log: done in the
 success colour, the phase in flight in the accent colour **and bold** (the only bold
 text in the widget, so it is what your eye lands on), everything else muted — all
 distinct from the trail's dim. It is listed in full when it fits, with `[•]` on the

@@ -892,6 +892,13 @@ export default function (pi: ExtensionAPI) {
                 review: {
                     done: reviewItems.filter((i) => i.done).length,
                     total: reviewItems.length,
+                    items: reviewItems,
+                    // The reviewer ticks items as it scans, so mark the first
+                    // unchecked one only while it is actually running -- the same
+                    // rule the old "# Review" panel used.
+                    active:
+                        st.phases.find((p) => p.agent === "reviewer")?.status ===
+                        "running",
                 },
                 activity: recentActivity(),
                 dispatchMode: st.dispatchMode,

@@ -313,6 +313,53 @@ describe("renderStatusWidget", () => {
         assert.match(row("read plan.md"), /<dim>/, "the trail itself stays dim");
     });
 
+    it("lists the review checklist the same way as the todos", () => {
+        const out = renderStatusWidget({
+            ...base, phases: [phase({ agent: "reviewer", status: "running" })],
+            maxLines: 24,
+            todos: {
+                done: 1, total: 2, inProgress: 1,
+                items: [{ label: "Phase 1", done: true }, { label: "Phase 2", done: false }],
+            },
+            review: {
+                done: 1, total: 3, inProgress: 1, active: true,
+                items: [
+                    { label: "Matches the plan", done: true },
+                    { label: "No debug leftovers", done: false },
+                    { label: "Docs updated", done: false },
+                ],
+            },
+        } as any, theme);
+        assert.ok(out.some((l) => /Todos 1\/2/.test(l)), "todos heading");
+        assert.ok(out.some((l) => /Review 1\/3/.test(l)), "review heading");
+        assert.ok(out.some((l) => l.includes("[x] Matches the plan")), "checked item");
+        assert.ok(out.some((l) => l.includes("[•] No debug leftovers")), "item in flight");
+        assert.ok(out.some((l) => l.includes("[ ] Docs updated")), "unchecked item");
+    });
+
+    it("gives the todos the rows first when both ledgers cannot fit", () => {
+        // A long review checklist must not push the todo ledger out; todos are
+        // the run's own plan, review is commentary on it.
+        const out = renderStatusWidget({
+            ...base, phases: [phase({ status: "running" })], maxLines: 12,
+            todos: {
+                done: 0, total: 2, inProgress: 1,
+                items: [{ label: "Phase 1", done: false }, { label: "Phase 2", done: false }],
+            },
+            review: {
+                done: 0, total: 15, inProgress: 1,
+                items: Array.from({ length: 15 }, (_, i) => ({ label: `Check ${i}`, done: false })),
+            },
+            activity: ["a", "b", "c"],
+        } as any, theme);
+        // Phase 1 is the first unfinished entry, so it carries [•] not [ ].
+        assert.ok(out.some((l) => l.includes("Phase 1")), "todos still listed");
+        assert.ok(out.some((l) => l.includes("Phase 2")), "the whole todo ledger survives");
+        assert.ok(out.some((l) => /Review 0\/15/.test(l)), "review keeps its heading");
+        assert.ok(!out.some((l) => l.includes("Check 14")), "review collapsed, not truncated");
+        assert.ok(out.length <= 12);
+    });
+
     it("marks every phase a parallel wave is on", () => {
         const items = [
             { label: "Phase 1", done: false },
