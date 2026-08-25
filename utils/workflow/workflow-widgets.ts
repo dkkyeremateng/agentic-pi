@@ -543,7 +543,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     // Rows the ledger will want below the roster: the todo list if it will fit,
     // else one summary row, plus one for the review count.
     const todoRows = input.todos?.items?.length
-        ? input.todos.items.length
+        ? input.todos.items.length + 1 // + the "todos n/m" heading
         : input.todos && input.todos.total > 0
           ? 1
           : 0;
@@ -604,7 +604,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     const spentSoFar = out.length;
     const roomForTodos = cap - spentSoFar - (reviewSummary ? 1 : 0) - TRAIL_FLOOR;
 
-    if (todoItems.length > 0 && roomForTodos >= todoItems.length) {
+    if (todoItems.length > 0 && roomForTodos >= todoItems.length + 1) {
         // The [•] rows are the first `inProgress` UNFINISHED items: a finished
         // phase never carries the mark, and a wave never marks more than remain.
         const active = Math.max(1, input.todos?.inProgress ?? 1);
@@ -619,6 +619,16 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         // done in `success`, the phase in flight in `accent` AND bold, the rest in
         // `muted`. The in-flight row is the one you scan for, so it gets the only
         // bold text in the widget.
+        // Label the block. Without it the [x]/[ ] rows are just bracketed text
+        // between the roster and the trail, with nothing saying what ledger they
+        // belong to. The count rides along so the heading answers "how far" too,
+        // and matches the wording of the collapsed fallback below.
+        out.push(
+            line([
+                ["   "],
+                [`todos ${input.todos?.done ?? 0}/${input.todos?.total ?? 0}`, "accent"],
+            ]),
+        );
         todoItems.forEach((it, i) => {
             const running = input.running && !it.done && inFlight.has(i);
             const mark = it.done ? "[x]" : running ? "[•]" : "[ ]";

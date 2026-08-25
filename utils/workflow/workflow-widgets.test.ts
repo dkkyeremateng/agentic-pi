@@ -267,6 +267,10 @@ describe("renderStatusWidget", () => {
             todos: { done: 1, total: 3, items, inProgress: 1 },
             activity: ["→ read"],
         } as any, theme);
+        assert.ok(
+            out.some((l) => /todos 1\/3/.test(l)),
+            "the block is labelled, not just bracketed rows",
+        );
         assert.ok(out.some((l) => l.includes("[x] Phase 1")), "done item");
         assert.ok(out.some((l) => l.includes("[•] Phase 2")), "the one in flight");
         assert.ok(out.some((l) => l.includes("[ ] Phase 3")), "not started");

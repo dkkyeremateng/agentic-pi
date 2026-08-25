@@ -134,6 +134,7 @@ The terminal widget shows **at most 6 rows**:
  ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark
    Reviewer     ◌ queued
    Shipper      ◌ queued
+   todos 1/3
    [x] Phase 1: Add the `:root` design-token block
    [•] Phase 2: Rewrite component rules to reference the tokens
    [ ] Phase 3: Automated literal audit (regression gate)
