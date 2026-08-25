@@ -129,18 +129,22 @@ downstream agents, so it is never re-threaded through the context.
 The terminal widget shows **at most 6 rows**:
 
 ```
- build ▸ Implement 1/4 · 1m 7s
-   Scout        ✓ done 53s
- ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark  $0.0088  6.0%/256K
-   Reviewer     ◌ queued
-   Shipper      ◌ queued
- Todos 1/3
-   [x] Phase 1: Add the `:root` design-token block
-   [•] Phase 2: Rewrite component rules to reference the tokens
-   [ ] Phase 3: Automated literal audit (regression gate)
-   → read path=.agent/plan.md
-   ✓ read
+build ▸ Implement 1/4 · 1m 7s
+  ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark  $0.0088  6.0%/256K
+    Reviewer     ◌ queued
+    Shipper      ◌ queued
+  Todos 1/3
+    [x] Phase 1: Add the `:root` design-token block
+    [•] Phase 2: Rewrite component rules to reference the tokens
+    [ ] Phase 3: Automated literal audit (regression gate)
+→ read path=.agent/plan.md
+✓ read
 ```
+
+Three levels: the header at the margin, sections indented under it, their entries
+under those. The tool trail runs **flush at the margin**, outdented from the whole
+status block — it is the agent's raw output, not another field of the dashboard, and
+at the ledger's indent the two read as one undifferentiated block.
 
 Both ledgers — Todos and Review — render the same way, and are styled to read as their own block rather than more log: done in the
 success colour, the phase in flight in the accent colour **and bold** (the only bold

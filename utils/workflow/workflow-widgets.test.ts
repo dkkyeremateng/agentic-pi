@@ -423,6 +423,34 @@ describe("renderStatusWidget", () => {
         assert.ok(out.length <= 12);
     });
 
+    it("runs the tool trail flush, outdented from the status block", () => {
+        // The trail is the agent's raw output, not another field of the dashboard.
+        // At the ledger's indent the two read as one block, which is what this
+        // outdent exists to undo -- so a future reindent must not pull it back in.
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [phase({ status: "running" })],
+            todos: {
+                done: 1, total: 2, inProgress: 1,
+                items: [{ label: "Phase 1", done: true }, { label: "Phase 2", done: false }],
+            },
+            activity: ["→ read path=.agent/plan.md", "✓ read"],
+        } as any, theme);
+        const indent = (s: string) => s.search(/\S/);
+        const trail = out.find((l) => l.includes("read path="))!;
+        const entry = out.find((l) => l.includes("[x] Phase 1"))!;
+        const heading = out.find((l) => /Todos 1\/2/.test(l))!;
+        assert.ok(
+            indent(trail) < indent(heading),
+            `trail (${indent(trail)}) must outdent the heading (${indent(heading)})`,
+        );
+        assert.ok(
+            indent(heading) < indent(entry),
+            `heading (${indent(heading)}) must outdent its entries (${indent(entry)})`,
+        );
+        assert.equal(indent(trail), indent(out[0]), "trail sits at the header's margin");
+    });
+
     it("marks every phase a parallel wave is on", () => {
         const items = [
             { label: "Phase 1", done: false },

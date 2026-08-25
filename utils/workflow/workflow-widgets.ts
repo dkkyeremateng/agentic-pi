@@ -444,7 +444,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         const teams = input.teamCount ?? 0;
         out.push(
             line([
-                [" "],
+                [""],
                 ["agent-workflow", "accent", true],
                 [
                     ` · ${agents} agent${agents === 1 ? "" : "s"}` +
@@ -453,7 +453,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
                 ],
             ]),
         );
-        out.push(line([["   /agent-workflow <request>   ·   dashboard: PI_OBS=1", "muted"]]));
+        out.push(line([["  /agent-workflow <request>   ·   dashboard: PI_OBS=1", "muted"]]));
 
         // The roster, one agent per row. This is the "what can this thing do"
         // view, and startup is when it is worth reading -- during a run the
@@ -478,7 +478,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
             for (const r of shown) {
                 out.push(
                     line([
-                        ["   "],
+                        ["    "],
                         [r.name.padEnd(nameCol), "accent"],
                         [r.model ? `  ◆ ${r.model.padEnd(modelCol)}` : "", "dim"],
                         [
@@ -516,7 +516,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     // reader which one to trust.
     out.push(
         line([
-            [" "],
+            [""],
             [label, "accent", true],
             [here ? ` ▸ ${here}${pos}` : pos, "muted"],
             [bits.length ? ` · ${bits.join(" · ")}` : "", "dim"],
@@ -616,7 +616,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
             more ? s.padEnd(col) : s;
         out.push(
             line([
-                [running ? " ▸ " : "   "],
+                [running ? "  ▸ " : "    "],
                 [displayName(r.p.agent).padEnd(nameCol), running ? "accent" : "muted"],
                 [
                     `  ${pad(r.status, statusCol, after(r.model, r.cost, r.ctx))}`,
@@ -650,7 +650,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         room: number,
     ): string[] => {
         if (!led || led.total <= 0) return [];
-        const heading = line([[" "], [`${title} ${led.done}/${led.total}`, "accent"]]);
+        const heading = line([["  "], [`${title} ${led.done}/${led.total}`, "accent"]]);
         const items = led.items ?? [];
         if (items.length === 0 || room < items.length + 1) return [heading];
 
@@ -673,7 +673,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
                 // colour, and a ledger that reads as log defeats the point.
                 const color = it.done ? "success" : running ? "accent" : "muted";
                 return line([
-                    ["   "],
+                    ["    "],
                     [`${mark} ${phaseTitleOnly(it.label)}`, color, running],
                 ]);
             }),
@@ -690,7 +690,11 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
 
     // ── what it is doing this second ────────────────────────────────────────
     // The tail last, so the newest line sits closest to the prompt.
-    for (const a of activity) out.push(line([["   " + a.trim(), "dim"]]));
+    // Flush at the margin, outdented from the status block above. The trail is
+    // the agent's raw output, not another field of the dashboard, and running it
+    // at the same indent as the ledger made the two read as one block. Dropping
+    // the prefix also hands each line 3 more columns before line() truncates it.
+    for (const a of activity) out.push(line([[a.trim(), "dim"]]));
 
     return out.slice(0, cap);
 }
