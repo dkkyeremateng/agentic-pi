@@ -128,7 +128,7 @@ describe("renderStatusWidget", () => {
     });
     const base = {
         team: "plan-build", running: true, lastStatus: "", iteration: 1, maxLoops: 3,
-        elapsedMs: 134000, costUsd: 0.41, contextPct: 12.4, width: 100,
+        elapsedMs: 134000, width: 100,
     };
 
     it("stays within the line budget even with everything to show", () => {
@@ -471,6 +471,26 @@ describe("renderStatusWidget", () => {
         assert.ok(small.length <= STATUS_WIDGET_MAX_LINES, "default stays in budget");
         assert.ok(tall.length > STATUS_WIDGET_MAX_LINES, "grows when given room");
         assert.ok(tall.length <= 44, "never exceeds the budget it was given");
+    });
+
+    it("keeps cost and context off the header row", () => {
+        // They live on the roster rows (per agent, the useful cut) and in the
+        // footer (session totals). A third copy on the header is noise.
+        const tok = (c: number) => ({
+            input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
+            costUsd: c, contextWindow: 256_000,
+        });
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [phase({ status: "running", elapsed: 9000, contextPct: 41.5, tokens: tok(0.13) })],
+        } as any, theme);
+        assert.ok(!out[0].includes("$"), `header carries cost: ${out[0]}`);
+        assert.ok(!out[0].includes("%"), `header carries context: ${out[0]}`);
+        assert.match(out[0], /2m 14s/, "elapsed stays");
+        // ...and the roster row still has both.
+        const row = out.find((l) => l.includes("Implementer"))!;
+        assert.match(row, /\$0\.13/);
+        assert.match(row, /41\.5%/);
     });
 
     it("surfaces the retry attempt when the validator has looped", () => {

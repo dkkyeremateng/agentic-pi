@@ -863,9 +863,6 @@ export default function (pi: ExtensionAPI) {
     function buildCompactLines(width: number, theme: any): string[] {
         const items = readProgressItems();
         const reviewItems = buildReviewChecklist(st.phases, reviewMarks);
-        const live = st.phases.find((p) => p.status === "running");
-        const tokens = live?.tokens;
-        const chDen = (tokens?.cacheRead || 0) + (tokens?.input || 0);
         return renderStatusWidget(
             {
                 team: st.activeTeamName,
@@ -875,10 +872,6 @@ export default function (pi: ExtensionAPI) {
                 iteration: st.iteration,
                 maxLoops: st.maxLoopsRef,
                 elapsedMs: st.dispatchMode ? st.dispatchElapsedMs : st.runElapsedMs,
-                costUsd: st.totalCostUsd,
-                contextPct: live?.contextPct ?? 0,
-                contextWindow: tokens?.contextWindow,
-                cacheHitPct: chDen > 0 ? ((tokens?.cacheRead || 0) / chDen) * 100 : 0,
                 todos: {
                     done: items.filter((i) => i.done).length,
                     total: items.length,

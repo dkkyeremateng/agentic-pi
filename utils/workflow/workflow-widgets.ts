@@ -351,12 +351,6 @@ export interface StatusWidgetInput {
     iteration: number;
     maxLoops: number;
     elapsedMs: number;
-    costUsd: number;
-    /** 0-100, the run's context usage. */
-    contextPct: number;
-    contextWindow?: number;
-    /** Prompt-cache hit rate, 0-100. Omitted when nothing has been cached. */
-    cacheHitPct?: number;
     todos?: LedgerInput;
     review?: LedgerInput;
     /** Recent activity, oldest first — the running agent's tool trail. */
@@ -510,16 +504,12 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     const label = input.dispatchMode ? "dispatch" : input.team || "agent-workflow";
     const pos = input.dispatchMode ? "" : ` ${done}/${input.phases.length}`;
 
+    // Elapsed only. Cost and context used to live here too, but the roster rows
+    // below now carry them PER AGENT -- which is the more useful cut -- and the
+    // footer already reports the session totals. Three places for the same two
+    // numbers is two too many.
     const bits: string[] = [];
     if (input.elapsedMs > 0) bits.push(secs(input.elapsedMs));
-    bits.push(formatCostUsd(input.costUsd));
-    if (input.contextPct > 0) {
-        const win = input.contextWindow
-            ? `/${Math.round(input.contextWindow / 1000)}K`
-            : "";
-        bits.push(`${input.contextPct.toFixed(1)}%${win}`);
-    }
-    if (input.cacheHitPct && input.cacheHitPct > 0) bits.push(`CH ${Math.round(input.cacheHitPct)}%`);
 
     const attemptRaw =
         input.iteration > 1 ? ` · attempt ${input.iteration}/${input.maxLoops}` : "";

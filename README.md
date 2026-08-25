@@ -129,7 +129,7 @@ downstream agents, so it is never re-threaded through the context.
 The terminal widget shows **at most 6 rows**:
 
 ```
- build ▸ Implement 1/4 · 1m 7s · $0.020 · 4.0%/256K
+ build ▸ Implement 1/4 · 1m 7s
    Scout        ✓ done 53s
  ▸ Implementer  ● running 14s · 3 tools  $0.0088  6.0%/256K  ◆ gfr_local/gateframe_ionix/dspark
    Reviewer     ◌ queued
@@ -151,7 +151,8 @@ not there it collapses to `todos 2/3` rather than showing a partial list — a
 truncated ledger reads as the whole list, which is worse than a count.
 
 Each agent carries its own spend and context usage, in aligned columns so they can
-be scanned down the roster. Agents that have not run show neither — `$0.00 · 0.0%`
+be scanned down the roster. The header row deliberately does not repeat them — per
+agent is the useful cut, and the footer already reports the session totals. Agents that have not run show neither — `$0.00 · 0.0%`
 on a queued row is just noise — and there is no usage bar, since it duplicates the
 percentage beside it.
 
