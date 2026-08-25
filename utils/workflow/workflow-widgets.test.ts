@@ -157,13 +157,41 @@ describe("renderStatusWidget", () => {
         for (const l of out) assert.ok(l.length <= 40, `line ${l.length} > 40: ${l}`);
     });
 
-    it("counts extra parallel agents instead of listing them", () => {
+    it("lists the whole selected team, not just the running agent", () => {
+        // During a run the question is "where is the pipeline up to", which needs
+        // the whole chain: what is done, what is in flight, what is still queued.
         const out = renderStatusWidget({
             ...base,
-            phases: Array.from({ length: 6 }, (_, i) =>
-                phase({ agent: `seeker${i}`, status: "running", elapsed: 5000 })),
+            phases: [
+                phase({ agent: "scout", label: "Scout", status: "done", elapsed: 53000 }),
+                phase({ status: "running", elapsed: 14000 }),
+                phase({ agent: "reviewer", label: "Review" }),
+                phase({ agent: "shipper", label: "Ship" }),
+            ],
+            activity: ["→ read plan.md"],
+            maxLines: 20,
         } as any, theme);
-        assert.ok(out.some((l) => /\+\d+ more running/.test(l)));
+        for (const name of ["Scout", "Implementer", "Reviewer", "Shipper"]) {
+            assert.ok(out.some((l) => l.includes(name)), `missing ${name}`);
+        }
+        assert.ok(out.some((l) => l.includes("done")), "finished phase shows done");
+        assert.ok(out.some((l) => l.includes("queued")), "unstarted phases read queued");
+        assert.ok(out.some((l) => l.includes("▸")), "the running one is marked");
+    });
+
+    it("yields roster rows to the trail when the budget is tight", () => {
+        // Knowing WHAT is happening beats knowing who is queued, so the roster
+        // gives up rows first and counts what it dropped.
+        const out = renderStatusWidget({
+            ...base,
+            phases: Array.from({ length: 12 }, (_, i) =>
+                phase({ agent: `a${i}`, label: `P${i}`, status: i === 0 ? "running" : "pending" })),
+            activity: ["one", "two", "three"],
+            maxLines: 10,
+        } as any, theme);
+        assert.ok(out.length <= 10);
+        assert.ok(out.some((l) => /\+\d+ more/.test(l)), "overflow counted");
+        assert.ok(out.some((l) => l.includes("three")), "trail keeps its floor");
     });
 
     it("shows an idle line with no run in flight", () => {

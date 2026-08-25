@@ -129,11 +129,21 @@ downstream agents, so it is never re-threaded through the context.
 The terminal widget shows **at most 6 rows**:
 
 ```
- plan-build ▸ Implement 3/5 · 2m 14s · $0.41 · 12.4%/256K · CH 88% ●
- ▸ Implementer  ● running 21s · 5 tools  ◆ gfr_local/gateframe_ionix/dspark
-   todos 2/3 · review 4/7
-   → read path=styles.css
+ build ▸ Implement 1/4 · 1m 7s · $0.020 · 4.0%/256K ●
+   Scout        ✓ done 53s
+ ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark
+   Reviewer     ◌ queued
+   Shipper      ◌ queued
+   todos 1/3
+   → read path=.agent/plan.md
+   ✓ read
 ```
+
+The whole selected team is listed, one row each — what is done, what is in flight
+(marked `▸`), what is still queued — because during a run the question is where the
+pipeline is up to. Below it, the running agent's tool trail fills the remaining
+space. When rows are scarce the roster gives them up first and counts what it
+dropped (`+7 more`): knowing *what* is happening beats knowing who is queued.
 
 On startup, before a run, it lists the whole roster — every agent and the model it
 will run on — filling the space and counting any overflow:

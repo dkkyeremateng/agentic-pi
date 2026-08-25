@@ -508,34 +508,59 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         ]),
     );
 
-    // ── the agent(s) actually working ───────────────────────────────────────
-    // Parallel waves get one line each, capped so the widget cannot grow past
-    // its budget; the overflow is counted rather than listed.
+    // ── the selected team's roster, with each agent's state ─────────────────
+    // Every phase, not just the running one: during a run the question is "where
+    // is the pipeline up to", which needs the whole chain -- what is done, what is
+    // in flight, what is still queued. The old card grid answered this in ~7 rows
+    // per agent; one row each says the same thing.
     const activity = (input.activity ?? []).filter(Boolean);
-    // Running agents and the activity tail compete for the same rows. Cap the
-    // agent list hard at MAX_AGENT_ROWS: a wide parallel wave would otherwise eat
-    // the whole budget and push out the tail, which is the more useful of the two
-    // (it says what is happening; the roster only says who). The remainder is
-    // counted rather than listed.
-    const MAX_AGENT_ROWS = 3;
-    const ROOM = Math.max(1, Math.min(MAX_AGENT_ROWS, cap - 2 - activity.length));
-    const shown = active.slice(0, Math.max(1, ROOM));
-    for (const p of shown) {
-        const meta = statusMeta(p.status);
-        const tools = p.toolCount > 0 ? ` · ${p.toolCount} tool${p.toolCount === 1 ? "" : "s"}` : "";
+    // Guarantee the trail a few rows before the roster takes the rest: knowing
+    // WHAT is happening beats knowing who is queued, so the roster yields first.
+    const TRAIL_FLOOR = Math.min(activity.length, 3);
+    const summaryRows =
+        (input.todos && input.todos.total > 0) || (input.review && input.review.total > 0)
+            ? 1
+            : 0;
+    const available = Math.max(1, cap - 1 - summaryRows - TRAIL_FLOOR);
+    // The "+N more" marker costs a row of its own, so it has to come out of the
+    // roster's allowance -- otherwise it pushes the trail past the budget and the
+    // final slice eats the newest line, which is the one worth reading.
+    const roomForRoster =
+        input.phases.length > available ? Math.max(1, available - 1) : available;
+    const roster = input.phases.slice(0, roomForRoster);
 
+    const nameCol = Math.min(
+        16,
+        roster.reduce((m, p) => Math.max(m, displayName(p.agent).length), 0),
+    );
+    for (const p of roster) {
+        const running = p.status === "running";
+        // A phase in the pipeline that has not started is "queued", not
+        // "pending" -- same wording and marker the cards used, since every phase
+        // here is by definition selected.
+        const queued = p.status === "pending";
+        const meta = queued
+            ? { icon: "◌", color: "accent" }
+            : statusMeta(p.status);
+        const word = queued ? "queued" : p.status;
+        const tools =
+            running && p.toolCount > 0
+                ? ` · ${p.toolCount} tool${p.toolCount === 1 ? "" : "s"}`
+                : "";
+        const timing = p.elapsed > 0 ? ` ${secs(p.elapsed)}` : "";
         out.push(
             line([
-                [" "],
-                ["▸ ", meta.color],
-                [displayName(p.agent), "accent"],
-                [`  ${meta.icon} ${p.status} ${secs(p.elapsed)}${tools}`, meta.color],
-                [modelRaw(p), "dim"],
+                [running ? " ▸ " : "   "],
+                [displayName(p.agent).padEnd(nameCol), running ? "accent" : "muted"],
+                [`  ${meta.icon} ${word}${timing}${tools}`, meta.color],
+                // The model only earns a column on the agent actually running --
+                // it is identical across the roster in the common case.
+                [running ? modelRaw(p) : "", "dim"],
             ]),
         );
     }
-    if (active.length > shown.length) {
-        out.push(line([[`   +${active.length - shown.length} more running`, "dim"]]));
+    if (input.phases.length > roster.length) {
+        out.push(line([[`   +${input.phases.length - roster.length} more`, "dim"]]));
     }
 
     // ── ledger summary: counts, not the ledgers themselves ──────────────────
