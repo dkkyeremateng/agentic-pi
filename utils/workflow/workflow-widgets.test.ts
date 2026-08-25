@@ -528,7 +528,34 @@ describe("renderStatusWidget", () => {
         assert.ok(tall.length <= 44, "never exceeds the budget it was given");
     });
 
-    it("keeps cost and context off the header row", () => {
+    it("totals the agents' spend on the header, including the one still running", () => {
+        // Summed from the phases, not from the run accumulator: that only takes a
+        // phase's cost once the phase FINISHES, so it would omit whatever the
+        // running agent has already spent and disagree with the column below.
+        const tok = (c: number) => ({
+            input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
+            costUsd: c, contextWindow: 256_000,
+        });
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [
+                phase({ agent: "scout", label: "Scout", status: "done", elapsed: 5000, tokens: tok(0.25) }),
+                phase({ status: "running", elapsed: 9000, tokens: tok(0.75) }),
+                phase({ agent: "shipper", label: "Ship" }),
+            ],
+        } as any, theme);
+        assert.match(out[0], /\$1\.00/, `header total: ${out[0]}`);
+    });
+
+    it("omits the total before any agent has spent anything", () => {
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [phase({ status: "running" }), phase({ agent: "shipper", label: "Ship" })],
+        } as any, theme);
+        assert.ok(!out[0].includes("$"), `header: ${out[0]}`);
+    });
+
+    it("keeps context off the header row", () => {
         // They live on the roster rows (per agent, the useful cut) and in the
         // footer (session totals). A third copy on the header is noise.
         const tok = (c: number) => ({
@@ -539,7 +566,8 @@ describe("renderStatusWidget", () => {
             ...base, maxLines: 20,
             phases: [phase({ status: "running", elapsed: 9000, contextPct: 41.5, tokens: tok(0.13) })],
         } as any, theme);
-        assert.ok(!out[0].includes("$"), `header carries cost: ${out[0]}`);
+        // Context is per-agent by nature -- each has its own window -- so a single
+        // figure here would answer a question nobody asked. The rows carry it.
         assert.ok(!out[0].includes("%"), `header carries context: ${out[0]}`);
         assert.match(out[0], /2m 14s/, "elapsed stays");
         // ...and the roster row still has both.

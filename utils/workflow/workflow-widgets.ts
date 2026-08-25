@@ -502,12 +502,20 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     const label = input.dispatchMode ? "dispatch" : input.team || "agent-workflow";
     const pos = input.dispatchMode ? "" : ` ${done}/${input.phases.length}`;
 
-    // Elapsed only. Cost and context used to live here too, but the roster rows
-    // below now carry them PER AGENT -- which is the more useful cut -- and the
-    // footer already reports the session totals. Three places for the same two
-    // numbers is two too many.
+    // Elapsed, and what the agents have cost between them.
+    //
+    // Context deliberately stays off this row: it is per-agent by nature (each has
+    // its own window) and the roster rows carry it, so a single figure here would
+    // be answering a question nobody asked.
+    //
+    // The total is summed from the PHASES rather than read from the run's
+    // accumulator, which only takes a phase's cost once that phase finishes and so
+    // omits whatever the agent currently running has already spent. Summing what is
+    // on screen means the header can never disagree with the column beneath it.
     const bits: string[] = [];
     if (input.elapsedMs > 0) bits.push(secs(input.elapsedMs));
+    const spend = input.phases.reduce((sum, p) => sum + (p.tokens?.costUsd ?? 0), 0);
+    if (spend > 0) bits.push(formatCostUsd(spend));
 
     const attemptRaw =
         input.iteration > 1 ? ` · attempt ${input.iteration}/${input.maxLoops}` : "";

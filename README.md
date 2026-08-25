@@ -129,7 +129,7 @@ downstream agents, so it is never re-threaded through the context.
 The terminal widget shows **at most 6 rows**:
 
 ```
-build ▸ Implement 1/4 · 1m 7s
+build ▸ Implement 1/4 · 1m 7s · $0.141
   ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark  $0.0088  6.0%/256K
     Reviewer     ◌ queued
     Shipper      ◌ queued
@@ -141,8 +141,11 @@ build ▸ Implement 1/4 · 1m 7s
 ✓ read
 ```
 
-The header's duration is the whole workflow's wall-clock, distinct from the
-per-agent times on the roster rows below it — it keeps counting across every phase.
+The header carries the whole workflow's wall-clock and what the agents have cost
+between them — both distinct from the per-agent figures on the rows below. The total
+is summed from the phases on screen, including the agent still running, so it can
+never disagree with the column beneath it. Context stays off the header: each agent
+has its own window, so one figure there would answer a question nobody asked.
 
 Three levels: the header at the margin, sections indented under it, their entries
 under those. The tool trail runs **flush at the margin**, outdented from the whole
