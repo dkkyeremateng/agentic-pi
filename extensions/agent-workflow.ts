@@ -888,6 +888,12 @@ export default function (pi: ExtensionAPI) {
                 dispatchMode: st.dispatchMode,
                 agentCount: st.agents.size,
                 teamCount: Object.keys(st.teams).length,
+                // Every agent across all teams that actually has a loaded .md def,
+                // with the model it will run on -- the same resolution the cards
+                // used to show (frontmatter -> env/team override -> fallback).
+                roster: allTeamAgents(st.teams)
+                    .filter((m) => st.agents.has(m.toLowerCase()))
+                    .map((m) => ({ name: displayName(m), model: modelFor(m.toLowerCase()) })),
                 width,
                 maxLines: widgetBudget(),
             },

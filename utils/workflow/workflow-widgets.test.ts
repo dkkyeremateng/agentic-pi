@@ -170,9 +170,34 @@ describe("renderStatusWidget", () => {
         const out = renderStatusWidget({
             ...base, team: "", phases: [], running: false, agentCount: 12, teamCount: 4,
         } as any, theme);
-        assert.equal(out.length, 2);
+        assert.equal(out.length, 2, "no roster passed -> just the header and hint");
         assert.match(out[0], /agent-workflow/);
         assert.match(out[0], /12 agents/);
+    });
+
+    it("lists the whole roster on startup when there is room", () => {
+        const roster = Array.from({ length: 13 }, (_, i) => ({
+            name: `agent${i}`, model: "prov/model",
+        }));
+        const out = renderStatusWidget({
+            ...base, team: "", phases: [], running: false,
+            agentCount: 13, teamCount: 6, roster, maxLines: 30,
+        } as any, theme);
+        for (const r of roster) {
+            assert.ok(out.some((l) => l.includes(r.name)), `missing ${r.name}`);
+        }
+    });
+
+    it("counts the roster overflow rather than dropping it silently", () => {
+        const roster = Array.from({ length: 13 }, (_, i) => ({
+            name: `agent${i}`, model: "prov/model",
+        }));
+        const out = renderStatusWidget({
+            ...base, team: "", phases: [], running: false,
+            agentCount: 13, teamCount: 6, roster, maxLines: 10,
+        } as any, theme);
+        assert.ok(out.length <= 10);
+        assert.ok(out.some((l) => /\+\d+ more/.test(l)), "overflow is counted");
     });
 
     it("omits ledger counts that have nothing in them", () => {

@@ -135,6 +135,19 @@ The terminal widget shows **at most 6 rows**:
    → read path=styles.css
 ```
 
+On startup, before a run, it lists the whole roster — every agent and the model it
+will run on — filling the space and counting any overflow:
+
+```
+ agent-workflow · 13 agents · 6 teams
+   /agent-workflow <request>   ·   dashboard: PI_OBS=1
+
+   Scout              ◆ gfr_local/gateframe_ionix/dspark
+   Planner            ◆ gfr_local/gateframe_ionix/dspark
+   Implementer        ◆ gfr_local/gateframe_ionix/dspark
+   …
+```
+
 It used to render a five-card grid, per-agent context bars, a todo ledger, a review
 checklist and a live log — about **40 rows**, four times pi's `MAX_WIDGET_LINES`
 budget of 10. A sticky region that large competes with the renderer for the screen:

@@ -352,6 +352,8 @@ export interface StatusWidgetInput {
     /** Agents known, for the idle line. */
     agentCount?: number;
     teamCount?: number;
+    /** The roster to list while idle: every agent and the model it will run on. */
+    roster?: { name: string; model: string; team?: string }[];
     width: number;
     /**
      * Row budget. Defaults to STATUS_WIDGET_MAX_LINES (pi's own budget for an
@@ -441,7 +443,35 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
             ]),
         );
         out.push(line([["   /agent-workflow <request>   ·   dashboard: PI_OBS=1", "muted"]]));
-        return out;
+
+        // The roster, one agent per row. This is the "what can this thing do"
+        // view, and startup is when it is worth reading -- during a run the
+        // status line is about what is happening instead. Bounded by the same
+        // budget as everything else; the remainder is counted, not dropped
+        // silently.
+        const roster = input.roster ?? [];
+        if (roster.length) {
+            out.push(line([[""]]));
+            const room = cap - out.length;
+            const shown = roster.length > room ? roster.slice(0, Math.max(1, room - 1)) : roster;
+            const nameCol = Math.min(
+                18,
+                shown.reduce((m, r) => Math.max(m, r.name.length), 0),
+            );
+            for (const r of shown) {
+                out.push(
+                    line([
+                        ["   "],
+                        [r.name.padEnd(nameCol), "accent"],
+                        [r.model ? `  ◆ ${r.model}` : "", "dim"],
+                    ]),
+                );
+            }
+            if (shown.length < roster.length) {
+                out.push(line([[`   +${roster.length - shown.length} more`, "dim"]]));
+            }
+        }
+        return out.slice(0, cap);
     }
 
     // ── header: where the run is, and what it has cost ──────────────────────
