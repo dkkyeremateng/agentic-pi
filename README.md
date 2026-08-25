@@ -124,6 +124,116 @@ downstream agents, so it is never re-threaded through the context.
   the patch, so re-run `npm run patch:prune` after upgrading; `-- --revert` restores
   upstream.
 
+### The sticky widget is a status line, not a dashboard
+
+The terminal widget shows **at most 6 rows**:
+
+```
+build ▸ Implement 1/4 · 1m 7s · $0.141
+  ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark  $0.0088  6.0%/256K
+    Reviewer     ◌ queued
+    Shipper      ◌ queued
+  Todos 1/3
+    [x] Phase 1: Add the `:root` design-token block
+    [•] Phase 2: Rewrite component rules to reference the tokens
+    [ ] Phase 3: Automated literal audit (regression gate)
+→ read path=.agent/plan.md
+✓ read
+```
+
+The header carries the whole workflow's wall-clock and what the agents have cost
+between them — both distinct from the per-agent figures on the rows below. The total
+is summed from the phases on screen, including the agent still running, so it can
+never disagree with the column beneath it. Context stays off the header: each agent
+has its own window, so one figure there would answer a question nobody asked.
+
+Three levels: the header at the margin, sections indented under it, their entries
+under those. The tool trail runs **flush at the margin**, outdented from the whole
+status block — it is the agent's raw output, not another field of the dashboard, and
+at the ledger's indent the two read as one undifferentiated block.
+
+Both ledgers — Todos and Review — render the same way, and are styled to read as their own block rather than more log: done in the
+success colour, the phase in flight in the accent colour **and bold** (the only bold
+text in the widget, so it is what your eye lands on), everything else muted — all
+distinct from the trail's dim. It is listed in full when it fits, with `[•]` on the
+phase being worked on (one per worker, so a parallel wave marks each phase it is on). When the rows are
+not there it collapses to `todos 2/3` rather than showing a partial list — a
+truncated ledger reads as the whole list, which is worse than a count.
+
+Each agent carries its own spend and context usage, in aligned columns so they can
+be scanned down the roster. The model an agent ran on stays on its row after it finishes, marked `⚠` instead of
+`◆` when it is a fallback rather than the configured choice. The header row
+deliberately repeats none of this — per agent is the useful cut, and the footer
+already reports the session totals. Agents that have not run show neither — `$0.00 · 0.0%`
+on a queued row is just noise — and there is no usage bar, since it duplicates the
+percentage beside it.
+
+The whole selected team is listed, one row each — what is done, what is in flight
+(marked `▸`), what is still queued — because during a run the question is where the
+pipeline is up to. Below it, the running agent's tool trail fills the remaining
+space. When rows are scarce the roster gives them up first and counts what it
+dropped (`+7 more`): knowing *what* is happening beats knowing who is queued.
+
+On startup, before a run, it lists the whole roster — every agent and the model it
+will run on — filling the space and counting any overflow:
+
+```
+ agent-workflow · 13 agents · 6 teams
+   /agent-workflow <request>   ·   dashboard: PI_OBS=1
+
+   Scout        ◆ gfr_local/gateframe_ionix/dspark  256K
+   Planner      ◆ gfr_local/gateframe_ionix/dspark  256K
+   Implementer  ◆ anthropic/claude-opus-5           1.0M
+   …
+```
+
+Each row carries the model that agent will run on and its context window, resolved
+the way the cards did (the agent's frontmatter wins, else the registry's window for
+the model it resolved to). The columns are padded so an agent pointed at a different
+model — the usual reason to look at this screen — stands out instead of being buried
+mid-line.
+
+It used to render a five-card grid, per-agent context bars, a todo ledger, a review
+checklist and a live log — about **40 rows**, four times pi's `MAX_WIDGET_LINES`
+budget of 10. A sticky region that large competes with the renderer for the screen:
+it has to be height-managed, it pushes the transcript around, and rows a previous
+frame left behind stay visible (the duplicated `# Todos` header and the agent card
+that grew a `running Ns` line every second). Every rendering problem the dashboard
+had came from its size.
+
+None of that detail needed to be in a non-scrolling region. [`obs/ui`](obs/ui)
+already shows runs, live agents, analytics and full history, and pi already streams
+each sub-agent's tool trail into the transcript — both of which scroll. What a
+terminal status line is for is "is it moving, where is it, what is it costing".
+
+```bash
+PI_WORKFLOW_WIDGET=full ./run.sh    # restore the old five-card dashboard
+PI_WORKFLOW_REPAINT_MS=4000 ./run.sh  # force periodic repaints (only `full` needs this)
+PI_WORKFLOW_DEBUG_WIDGET=1 ./run.sh   # dump the widget array to ~/.pi/agent/pi-widget.log
+```
+
+**The agent's tool trail** fills the space below the status lines, newest closest to
+the prompt — a tall window shows a long trail, a short one shows a few rows. It
+reserves 6 rows for the transcript and whatever the editor and footer need; pin it
+with `PI_WORKFLOW_ACTIVITY_LINES` (`0` for status only).
+
+**Growing past pi's 10-row budget re-arms the repaint pulse automatically.** Inside
+the budget the renderer does not strand rows and a periodic repaint would be pure
+flicker; past it, a displaced live region leaves rows behind and only an absolute
+repaint clears them. The two are coupled in code (`repaintIntervalFor`) so the
+mitigation is armed by the condition that makes it necessary, rather than by a flag
+someone has to remember. `PI_WORKFLOW_REPAINT_MS` overrides either way.
+
+When the workflow runs as a **tool call** (the agent invoking `run_agent_workflow`)
+the same trail also streams into the transcript as an updating result block —
+scrollable, with history. The `/agent-workflow` **command** path cannot do that: pi
+exposes only `notify` to a command, which appends a message rather than updating a
+block, so there the widget tail is the live view. `PI_WORKFLOW_STREAM=0` disables
+the transcript stream.
+
+No pi package is modified. The card/grid builders are still there and still tested —
+`full` uses them, and they are what a future on-demand overlay would reuse.
+
 ## Quick start
 
 ```bash

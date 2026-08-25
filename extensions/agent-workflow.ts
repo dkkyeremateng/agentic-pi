@@ -44,7 +44,14 @@ import {
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { join, dirname } from "path";
 import { execFileSync } from "child_process";
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
+import {
+    writeFileSync,
+    mkdirSync,
+    readFileSync,
+    existsSync,
+    appendFileSync,
+} from "fs";
+import { homedir } from "os";
 import { secs } from "../utils/workflow/workflow-utils";
 import { emitNotification } from "../utils/shared/notify";
 import {
@@ -59,6 +66,13 @@ import {
     renderEmptyAgentMessage,
     renderRichCard,
     renderTodos,
+    renderStatusWidget,
+    displayElapsedMs,
+    STATUS_WIDGET_MAX_LINES,
+    DEFAULT_ACTIVITY_LINES,
+    shouldRepaint,
+    repaintIntervalFor,
+    type RepaintPulseState,
     MAX_CARD_WIDTH,
 } from "../utils/workflow/workflow-widgets";
 import {
@@ -112,6 +126,7 @@ import {
     runWorkflowCore,
     runFullWorkflowCommand,
     resolveAgent,
+    streamWorkflowActivity,
 } from "../utils/workflow/orchestrator-core";
 import {
     DISPATCH_UPDATE,
@@ -648,22 +663,82 @@ export default function (pi: ExtensionAPI) {
         }
     }
 
+    // The sticky widget is a STATUS LINE by default (<= 6 rows). The old five-card
+    // dashboard is ~40 rows -- four times pi's MAX_WIDGET_LINES budget -- and a
+    // sticky region that size competes with the renderer for the screen.
+    // PI_WORKFLOW_WIDGET=full restores it.
+    const WIDGET_STYLE = process.env.PI_WORKFLOW_WIDGET === "full" ? "full" : "compact";
+
+    // Absolute-repaint pulse — the fix for the dashboard's stale rows.
+    //
+    // pi re-renders only a LIVE REGION (this widget + editor + footer). Everything
+    // above is terminal scrollback it does not own, so when a previously drawn live
+    // region ends up pushed up instead of overwritten in place, its rows stay on
+    // screen. That is the duplicated "# Todos" header, with an OLDER frame number
+    // above the current one, and the agent card growing a "running Ns" row a second.
+    //
+    // Only `fullRender(true)` clears that (it wipes screen AND scrollback), and pi
+    // reaches it solely via `clearOnShrink` — i.e. when the composed frame gets
+    // SHORTER. A dashboard whose height is stable never shrinks, so upstream emits
+    // ZERO absolute clears in a whole session (measured: 0 in 90 frames) and
+    // anything stale persists until you restart.
+    //
+    // So make it shrink on purpose. At most once every PULSE_MS we drop the
+    // trailing spacer row; the frame is one row shorter, pi's own clearOnShrink
+    // fires, and the screen is repainted absolutely. Verified against an
+    // UNMODIFIED pi-tui: 0 clears in 90 frames without the pulse, 2 with it.
+    //
+    // Timed, not every-N-builds: builds run at WIDGET_MIN_INTERVAL_MS (80ms) plus
+    // extra rebuilds on theme/width changes, so a build counter would make the
+    // repaint rate depend on how busy the run is. A clock gives the same cadence
+    // on an idle dashboard and a noisy one.
+    //
+    // Requires clearOnShrink to be on (run.sh exports PI_CLEAR_ON_SHRINK=1; pi's
+    // own `terminal.clearOnShrink` setting outranks it). Without it the pulse is
+    // harmless but does nothing. PI_WORKFLOW_REPAINT_MS=0 disables.
+    const PULSE_MS_EXPLICIT = (() => {
+        const raw = Number(process.env.PI_WORKFLOW_REPAINT_MS);
+        return Number.isFinite(raw) && raw >= 0 ? raw : undefined;
+    })();
+    const pulseState: RepaintPulseState = { last: 0 };
+
     // Hard safety net: never let the widget grow taller than the screen minus the
     // rows reserved for the editor + footer. A tall team grid or live-log panel
     // would otherwise push the input box and footer off-screen. Clip the overflow
     // with a notice so those always keep their rows.
+    //
+    // NOTE: deliberately does NOT pad to a stable height. That was tried against
+    // this same bug and disproved — pinned to a constant 40 rows, the dumps showed
+    // ONE header per frame while the screen still showed two. A stable height is in
+    // fact what SUPPRESSES pi's clearOnShrink, which is why the pulse below exists.
     function clampWidget(out: string[], theme: any): string[] {
         const rows = process.stdout.rows || 24;
+        // One row of headroom so the pulse frame is always strictly shorter than a
+        // normal frame, even when the widget is clipped at full height.
         const max = Math.max(3, rows - LOG_PANEL_RESERVE);
-        if (out.length <= max) return out;
-        const kept = out.slice(0, Math.max(1, max - 1));
-        kept.push(
-            theme.fg(
-                "dim",
-                `   … ${out.length - kept.length} more line(s) — clipped to fit`,
-            ),
-        );
-        return kept;
+        const cap = Math.max(2, max - 1);
+        let lines = out;
+        if (lines.length > cap) {
+            const kept = lines.slice(0, Math.max(1, cap - 1));
+            kept.push(
+                theme.fg(
+                    "dim",
+                    `   … ${lines.length - kept.length} more line(s) — clipped to fit`,
+                ),
+            );
+            lines = kept;
+        }
+        // Arm the pulse only when the widget is over pi's MAX_WIDGET_LINES budget.
+        // Inside the budget the renderer does not strand rows and a periodic
+        // full repaint would be pure flicker; past it, the pulse is what clears
+        // the rows a displaced live region leaves behind. An explicit
+        // PI_WORKFLOW_REPAINT_MS overrides the coupling in both directions.
+        const interval = repaintIntervalFor(lines.length, PULSE_MS_EXPLICIT);
+        const pulse = shouldRepaint(pulseState, Date.now(), interval);
+        // A zero-width space, not "": pi-tui's Text renders ZERO rows for a line
+        // whose .trim() is empty, so a plain "" would not occupy a row and the
+        // frame would not actually change height.
+        return pulse ? lines : lines.concat("\u200b");
     }
 
     // Live review-checklist progress (Option D): the reviewer is read-only, so it
@@ -727,7 +802,141 @@ export default function (pi: ExtensionAPI) {
     // setWidget overload (below) so pi owns the diffing/redraw — re-issuing a
     // custom component each tick made the sticky widget redraw incorrectly
     // (status lines ghosted frame-over-frame).
+    // The sticky widget is a STATUS LINE by default (<= 6 rows). The old
+    // five-card dashboard is ~40 rows -- four times pi's MAX_WIDGET_LINES budget
+    // -- and a sticky region that size competes with the renderer for the screen;
+    // every rendering problem this dashboard had came from its size. The detail it
+    // showed lives in obs/ui (runs, live agents, analytics, history) and in the
+    // transcript, both of which can scroll. PI_WORKFLOW_WIDGET=full restores it.
+
+    // One line of "what is it doing right now", taken from the running phase's
+    // streamed tail. Streamed output carries ANSI and control characters -- a
+    // stray \r or cursor-move makes the whole terminal jump -- so strip them the
+    // same way the live-log panel does before putting the text on a sticky row.
+    // How many trailing activity rows the status widget shows. The slash-command
+    // path cannot stream into the transcript -- pi exposes only `notify` to a
+    // command, which appends a message rather than updating a block -- so on that
+    // path this tail is the ONLY live view of a run. 0 shows just the status.
+    // Rows the transcript keeps for itself. The widget grows into the space below
+    // it, but not all of it -- the conversation above still has to be readable.
+    const TRANSCRIPT_MIN_ROWS = 6;
+
+    // The widget's row budget for THIS terminal. Defaults to filling the space
+    // below the transcript rather than pi's 10-row budget, because a tall window
+    // otherwise leaves most of the screen empty while the tool trail is truncated
+    // to five lines. Growing past STATUS_WIDGET_MAX_LINES re-enters the regime
+    // where the renderer strands rows, so clampWidget arms the repaint pulse
+    // whenever the budget is exceeded -- the two are deliberately coupled.
+    function widgetBudget(): number {
+        const rows = process.stdout.rows || 24;
+        return Math.max(
+            STATUS_WIDGET_MAX_LINES,
+            rows - LOG_PANEL_RESERVE - TRANSCRIPT_MIN_ROWS,
+        );
+    }
+
+    // Explicit setting wins; otherwise fill whatever the budget leaves after the
+    // header, the running-agent row(s) and the ledger summary.
+    function activityLineCount(): number {
+        const raw = Number(process.env.PI_WORKFLOW_ACTIVITY_LINES);
+        if (Number.isFinite(raw) && raw >= 0) return raw;
+        return Math.max(DEFAULT_ACTIVITY_LINES, widgetBudget() - 4);
+    }
+
+    function recentActivity(): string[] {
+        const live = st.phases.find((p) => p.status === "running");
+        const log = live?.log;
+        const want = activityLineCount();
+        if (!log || want === 0) return [];
+        const clean = log
+            .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+            .replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, "")
+            .replace(/\x1b[@-Z\\-_]/g, "")
+            .replace(/\t/g, "  ")
+            .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+        const rows = clean
+            .split("\n")
+            .map((l) => l.trim())
+            .filter(Boolean);
+        return rows.slice(-want);
+    }
+
+    function buildCompactLines(width: number, theme: any): string[] {
+        const items = readProgressItems();
+        const reviewItems = buildReviewChecklist(st.phases, reviewMarks);
+        return renderStatusWidget(
+            {
+                team: st.activeTeamName,
+                phases: st.phases,
+                running: st.running,
+                lastStatus: st.lastStatus,
+                iteration: st.iteration,
+                maxLoops: st.maxLoopsRef,
+                // Derive the duration from the START timestamp while the run is
+                // live. st.runElapsedMs is only assigned at terminal points --
+                // completion, abort, error -- plus once per turn, so reading it
+                // during a run shows 0 or a value frozen at the last turn
+                // boundary instead of a clock. Once the run ends the recorded
+                // total is authoritative (it is what the report quotes), so fall
+                // back to it rather than keeping to count.
+                elapsedMs: displayElapsedMs(st, Date.now()),
+                todos: {
+                    done: items.filter((i) => i.done).length,
+                    total: items.length,
+                    items,
+                    // One [•] per phase worker actually in flight, so a parallel
+                    // wave marks every phase it is on rather than just the first.
+                    inProgress: st.phases.filter(
+                        (p) => p.agent === "phase-implementer" && p.status === "running",
+                    ).length,
+                },
+                review: {
+                    done: reviewItems.filter((i) => i.done).length,
+                    total: reviewItems.length,
+                    items: reviewItems,
+                    // The reviewer ticks items as it scans, so mark the first
+                    // unchecked one only while it is actually running -- the same
+                    // rule the old "# Review" panel used.
+                    active:
+                        st.phases.find((p) => p.agent === "reviewer")?.status ===
+                        "running",
+                },
+                activity: recentActivity(),
+                dispatchMode: st.dispatchMode,
+                agentCount: st.agents.size,
+                teamCount: Object.keys(st.teams).length,
+                // Every agent across all teams that actually has a loaded .md def,
+                // with the model it will run on -- the same resolution the cards
+                // used to show (frontmatter -> env/team override -> fallback).
+                roster: allTeamAgents(st.teams)
+                    .filter((m) => st.agents.has(m.toLowerCase()))
+                    .map((m) => {
+                        const key = m.toLowerCase();
+                        const model = modelFor(key);
+                        return {
+                            name: displayName(m),
+                            model,
+                            // Same resolution the cards used: the agent's own
+                            // frontmatter wins, else the registry's window for
+                            // whatever model it resolved to.
+                            contextWindow:
+                                st.agents.get(key)?.contextWindow ||
+                                contextWindowForModel(modelRegistry?.getAll?.(), model),
+                        };
+                    }),
+                width,
+                maxLines: widgetBudget(),
+            },
+            theme,
+        );
+    }
+
     function buildWidgetLines(width: number, theme: any): string[] {
+        if (WIDGET_STYLE === "compact") return buildCompactLines(width, theme);
+        return buildFullWidgetLines(width, theme);
+    }
+
+    function buildFullWidgetLines(width: number, theme: any): string[] {
         if (st.phases.length === 0 || st.dispatchMode) {
             // Idle or ad-hoc dispatch: the team grid (selected cards marked once
             // the orchestrator dispatches), with the running agent's live log below.
@@ -786,10 +995,24 @@ export default function (pi: ExtensionAPI) {
         const workersRunning = st.phases.filter(
             (p) => p.agent === "phase-implementer" && p.status === "running",
         ).length;
+        // While a run is live, claim the block's rows before the ledger exists —
+        // the planner writes .agent/progress.md partway through, and letting the
+        // block appear then is the height jump that stranded a duplicate header.
+        // Once the run ends there is nothing to wait for, so it collapses again.
         const todos = renderTodos(readProgressItems(), theme, {
             running: st.running,
             width,
             inProgress: workersRunning,
+            placeholder: st.running ? "waiting for the plan…" : undefined,
+            // Under PI_WORKFLOW_DEBUG_WIDGET the header carries the frame number.
+            // Two headers on screen then answer, with no log reading, WHICH bug
+            // this is: DIFFERENT numbers mean two different frames are visible at
+            // once (a stale row the renderer never erased), IDENTICAL numbers mean
+            // one frame's content was composed twice. Those need opposite fixes.
+            title:
+                process.env.PI_WORKFLOW_DEBUG_WIDGET === "1"
+                    ? ` # Todos [frame ${widgetGen}]`
+                    : undefined,
         });
         if (todos.length) {
             lines.push("\u200b");
@@ -818,7 +1041,14 @@ export default function (pi: ExtensionAPI) {
         widgetGen++; // a state change → rebuild on the next factory call
         widgetCtx.ui.setWidget("agent-workflow", (_tui: any, theme?: any) => {
             const t = theme || widgetCtx.ui.theme;
-            const width = Math.max(20, (process.stdout.columns || 80) - 2);
+            // columns-4, not columns-2. pi wraps each line in Text(line, 1, 0),
+            // which adds a 1-column margin on BOTH sides, so columns-2 fits
+            // exactly and leaves nothing spare. A single line one column over
+            // wraps to a second physical row while pi counts one -- and every row
+            // below it is then drawn one place off, permanently. Two spare
+            // columns cost nothing visible across five cards and remove that
+            // whole failure mode.
+            const width = Math.max(20, (process.stdout.columns || 80) - 4);
             // Rebuild only when state, theme, or width changed; reuse the
             // cached lines on plain redraws so we don't re-read disk per frame.
             if (
@@ -830,6 +1060,25 @@ export default function (pi: ExtensionAPI) {
                 widgetMemo.theme = t;
                 widgetMemo.width = width;
                 widgetMemo.lines = buildWidgetLines(width, t);
+                // PI_WORKFLOW_DEBUG_WIDGET=1 dumps the array we hand pi, ANSI
+                // stripped, one row per line. Ground truth for "is a duplicated
+                // row ours or the renderer's?" — if the dump has one "# Todos"
+                // and the screen shows two, the strand is below us and no amount
+                // of widget-side work will fix it.
+                if (process.env.PI_WORKFLOW_DEBUG_WIDGET === "1") {
+                    try {
+                        const dump = widgetMemo.lines
+                            .map(
+                                (l, i) =>
+                                    `${String(i).padStart(3)}| ${l.replace(/\x1b\[[0-9;]*m/g, "").replace(/​/g, "<ZWSP>")}`,
+                            )
+                            .join("\n");
+                        appendFileSync(
+                            join(homedir(), ".pi", "agent", "pi-widget.log"),
+                            `\n=== ${new Date().toISOString()} rows=${widgetMemo.lines.length} cols=${width} ===\n${dump}\n`,
+                        );
+                    } catch {}
+                }
             }
             const container = new Container();
             for (const line of widgetMemo.lines)
@@ -1383,6 +1632,16 @@ export default function (pi: ExtensionAPI) {
             pi.setSessionName?.(
                 sessionLabel("agent-workflow", st.activeTeamName, request),
             );
+            // Stream the pipeline's tool trail into the transcript. The sticky
+            // widget is a status line now, so without this a run is invisible
+            // between "Running workflow" and the final result.
+            const stopStream = streamWorkflowActivity(
+                () =>
+                    st.phases
+                        .filter((p) => p.status === "running")
+                        .map((p) => ({ label: p.label, log: p.log || "" })),
+                onUpdate,
+            );
             const result = await runWorkflowCore(
                 st,
                 host,
@@ -1390,6 +1649,7 @@ export default function (pi: ExtensionAPI) {
                 max_loops && max_loops > 0 ? max_loops : defaultMaxLoops,
                 ctx,
             ).finally(() => {
+                stopStream();
                 signal?.removeEventListener?.("abort", onAbort);
                 // Identity-guarded like runAbort: if the core refused this start
                 // (re-entry guard), host.signal belongs to the LIVE run and

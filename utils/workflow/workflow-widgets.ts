@@ -9,6 +9,7 @@ import {
     agentPhaseStatus,
     formatContextUsage,
     formatCostUsd,
+    formatContextWindow,
     totalTokens,
 } from "./workflow-core";
 import { secs } from "./workflow-utils";
@@ -329,6 +330,476 @@ export function phaseTitleOnly(label: string): string {
     return label.replace(/\s+[—-]\s+tests:.*$/i, "").trim() || label.trim();
 }
 
+/** A checklist the widget can show: listed when it fits, counted when it does not. */
+export interface LedgerInput {
+    done: number;
+    total: number;
+    /** The entries themselves. Omit to always show just the count. */
+    items?: { label: string; done: boolean }[];
+    /** How many unfinished entries are in flight, so a parallel wave marks each. */
+    inProgress?: number;
+    /** Whether this ledger's owner is running right now; gates the [•] marker. */
+    active?: boolean;
+}
+
+export interface StatusWidgetInput {
+    /** Active team, or "" when idle. */
+    team: string;
+    phases: PhaseState[];
+    running: boolean;
+    lastStatus: string;
+    iteration: number;
+    maxLoops: number;
+    elapsedMs: number;
+    todos?: LedgerInput;
+    review?: LedgerInput;
+    /** Recent activity, oldest first — the running agent's tool trail. */
+    activity?: string[];
+    dispatchMode?: boolean;
+    /** Agents known, for the idle line. */
+    agentCount?: number;
+    teamCount?: number;
+    /** The roster to list while idle: every agent and the model it will run on. */
+    roster?: {
+        name: string;
+        model: string;
+        /** Resolved context window, for the idle roster. */
+        contextWindow?: number;
+        team?: string;
+    }[];
+    width: number;
+    /**
+     * Row budget. Defaults to STATUS_WIDGET_MAX_LINES (pi's own budget for an
+     * extension widget). The caller may raise it to fill a tall terminal -- but
+     * see the note on STATUS_WIDGET_MAX_LINES: past that budget the renderer can
+     * strand rows, and the caller must arm the repaint pulse to compensate.
+     */
+    maxLines?: number;
+}
+
+/**
+ * pi's own MAX_WIDGET_LINES budget for an extension widget, and the default here.
+ *
+ * This is a real threshold, not a style preference. The old dashboard was ~40 rows
+ * -- four times this -- and at that size pi's renderer leaves rows behind when the
+ * live region is displaced (duplicated headers, cards growing a row per second).
+ * A widget that stays inside the budget does not hit that.
+ *
+ * A caller may pass a larger `maxLines` to fill a tall terminal. If it does, it
+ * MUST also arm the absolute-repaint pulse, which forces pi to clear the screen
+ * periodically -- otherwise the stale rows come back.
+ */
+export const STATUS_WIDGET_MAX_LINES = 10;
+
+/** How many trailing activity rows to show. The slash-command path has no way to
+ *  stream into the transcript (pi exposes only `notify` to a command), so this
+ *  bounded tail is the ONLY live view of a run there. */
+export const DEFAULT_ACTIVITY_LINES = 5;
+
+/**
+ * The sticky dashboard, as a STATUS LINE rather than a dashboard.
+ *
+ * The previous widget rendered a five-card grid, per-agent context bars, a todo
+ * ledger, a review checklist and a live log -- about 40 rows, four times pi's
+ * budget for an extension widget. A sticky region that large competes with the
+ * renderer for the screen: it has to be height-managed, it pushes the transcript
+ * around, and rows a previous frame left behind stay visible. Every rendering
+ * problem this dashboard has had came from that size.
+ *
+ * The detail did not need to be here. `obs/ui` already shows runs, live agents,
+ * analytics and history, with scrolling and history a sticky region cannot have,
+ * and pi already streams each sub-agent's tool trail into the transcript. What a
+ * terminal status line is for is answering "is it moving, where is it, what is it
+ * costing" at a glance -- which fits in four lines.
+ *
+ * Every line is truncated to `width`; nothing here can wrap.
+ */
+export function renderStatusWidget(input: StatusWidgetInput, theme: any): string[] {
+    const w = Math.max(20, input.width);
+    const cap = Math.max(2, input.maxLines ?? STATUS_WIDGET_MAX_LINES);
+    const out: string[] = [];
+
+    // Assemble each line from RAW segments and style only what fits. Truncating a
+    // styled string means slicing through ANSI escapes; budgeting the raw text
+    // first and colouring after cannot produce a broken sequence, and cannot
+    // produce a line wider than `w` -- which is what wraps and drifts the render.
+    type Seg = [text: string, color?: string, bold?: boolean];
+    const line = (segs: Seg[]): string => {
+        let used = 0;
+        let s = "";
+        for (const [text, color, bold] of segs) {
+            if (used >= w) break;
+            const room = w - used;
+            const raw = text.length > room ? text.slice(0, Math.max(0, room - 1)) + "…" : text;
+            used += raw.length;
+            const styled = bold ? theme.bold(raw) : raw;
+            s += color ? theme.fg(color, styled) : styled;
+        }
+        return s;
+    };
+
+    // ── idle ────────────────────────────────────────────────────────────────
+    if (input.phases.length === 0 && !input.dispatchMode) {
+        const agents = input.agentCount ?? 0;
+        const teams = input.teamCount ?? 0;
+        out.push(
+            line([
+                [""],
+                ["agent-workflow", "accent", true],
+                [
+                    ` · ${agents} agent${agents === 1 ? "" : "s"}` +
+                        (teams ? ` · ${teams} team${teams === 1 ? "" : "s"}` : ""),
+                    "dim",
+                ],
+            ]),
+        );
+        out.push(line([["  /agent-workflow <request>   ·   dashboard: PI_OBS=1", "muted"]]));
+
+        // The roster, one agent per row. This is the "what can this thing do"
+        // view, and startup is when it is worth reading -- during a run the
+        // status line is about what is happening instead. Bounded by the same
+        // budget as everything else; the remainder is counted, not dropped
+        // silently.
+        const roster = input.roster ?? [];
+        if (roster.length) {
+            out.push(line([[""]]));
+            const room = cap - out.length;
+            const shown = roster.length > room ? roster.slice(0, Math.max(1, room - 1)) : roster;
+            const nameCol = Math.min(
+                18,
+                shown.reduce((m, r) => Math.max(m, r.name.length), 0),
+            );
+            // Pad the model column too, so the context windows line up and an
+            // agent pointed at a different model is obvious at a glance.
+            const modelCol = Math.min(
+                40,
+                shown.reduce((m, r) => Math.max(m, (r.model || "").length), 0),
+            );
+            for (const r of shown) {
+                out.push(
+                    line([
+                        ["    "],
+                        [r.name.padEnd(nameCol), "accent"],
+                        [r.model ? `  ◆ ${r.model.padEnd(modelCol)}` : "", "dim"],
+                        [
+                            r.contextWindow ? `  ${formatContextWindow(r.contextWindow)}` : "",
+                            "muted",
+                        ],
+                    ]),
+                );
+            }
+            if (shown.length < roster.length) {
+                out.push(line([[`   +${roster.length - shown.length} more`, "dim"]]));
+            }
+        }
+        return out.slice(0, cap);
+    }
+
+    // ── header: where the run is, and what it has cost ──────────────────────
+    const done = input.phases.filter((p) => p.status === "done").length;
+    const active = input.phases.filter((p) => p.status === "running");
+    const here = active[0]?.label ?? input.phases[done]?.label ?? "";
+    const label = input.dispatchMode ? "dispatch" : input.team || "agent-workflow";
+    const pos = input.dispatchMode ? "" : ` ${done}/${input.phases.length}`;
+
+    // Elapsed, and what the agents have cost between them.
+    //
+    // Context deliberately stays off this row: it is per-agent by nature (each has
+    // its own window) and the roster rows carry it, so a single figure here would
+    // be answering a question nobody asked.
+    //
+    // The total is summed from the PHASES rather than read from the run's
+    // accumulator, which only takes a phase's cost once that phase finishes and so
+    // omits whatever the agent currently running has already spent. Summing what is
+    // on screen means the header can never disagree with the column beneath it.
+    const bits: string[] = [];
+    if (input.elapsedMs > 0) bits.push(secs(input.elapsedMs));
+    const spend = input.phases.reduce((sum, p) => sum + (p.tokens?.costUsd ?? 0), 0);
+    if (spend > 0) bits.push(formatCostUsd(spend));
+
+    const attemptRaw =
+        input.iteration > 1 ? ` · attempt ${input.iteration}/${input.maxLoops}` : "";
+    // No status glyph here: the roster row right below already carries the live
+    // state ("● running 51s"), and a second marker on the header only asks the
+    // reader which one to trust.
+    out.push(
+        line([
+            [""],
+            [label, "accent", true],
+            [here ? ` ▸ ${here}${pos}` : pos, "muted"],
+            [bits.length ? ` · ${bits.join(" · ")}` : "", "dim"],
+            [attemptRaw, "dim"],
+        ]),
+    );
+
+    // ── the selected team's roster, with each agent's state ─────────────────
+    // Every phase, not just the running one: during a run the question is "where
+    // is the pipeline up to", which needs the whole chain -- what is done, what is
+    // in flight, what is still queued. The old card grid answered this in ~7 rows
+    // per agent; one row each says the same thing.
+    const activity = (input.activity ?? []).filter(Boolean);
+    // Guarantee the trail a few rows before the roster takes the rest: knowing
+    // WHAT is happening beats knowing who is queued, so the roster yields first.
+    const TRAIL_FLOOR = Math.min(activity.length, 3);
+    // Rows the ledger will want below the roster: the todo list if it will fit,
+    // else one summary row, plus one for the review count.
+    const ledgerHeight = (led?: LedgerInput): number =>
+        !led || led.total <= 0 ? 0 : led.items?.length ? led.items.length + 1 : 1;
+    const summaryRows = ledgerHeight(input.todos) + ledgerHeight(input.review);
+    const available = Math.max(1, cap - 1 - summaryRows - TRAIL_FLOOR);
+    // The "+N more" marker costs a row of its own, so it has to come out of the
+    // roster's allowance -- otherwise it pushes the trail past the budget and the
+    // final slice eats the newest line, which is the one worth reading.
+    const roomForRoster =
+        input.phases.length > available ? Math.max(1, available - 1) : available;
+    const roster = input.phases.slice(0, roomForRoster);
+
+    const nameCol = Math.min(
+        16,
+        roster.reduce((m, p) => Math.max(m, displayName(p.agent).length), 0),
+    );
+
+    // Per-agent spend and context usage. The header totals answer "what has this
+    // run cost"; these answer "which agent spent it, and which one is close to
+    // its window" -- the question the cards existed for.
+    //
+    // Nothing is shown for an agent that has not run: "$0.00 · 0.0%/256K" on a
+    // queued row is four columns saying "hasn't started", which is what made the
+    // old cards mostly zeros. No usage bar either -- it duplicates the percentage
+    // sitting next to it and costs a dozen columns the tool trail can use.
+    const statusText = (p: PhaseState, word: string, icon: string): string => {
+        const timing = p.elapsed > 0 ? ` ${secs(p.elapsed)}` : "";
+        const tools =
+            p.status === "running" && p.toolCount > 0
+                ? ` · ${p.toolCount} tool${p.toolCount === 1 ? "" : "s"}`
+                : "";
+        return `${icon} ${word}${timing}${tools}`;
+    };
+    const costOf = (p: PhaseState): string => {
+        const c = p.tokens?.costUsd;
+        return c && c > 0 ? formatCostUsd(c) : "";
+    };
+    const ctxOf = (p: PhaseState): string => {
+        if (!p.contextPct || p.contextPct <= 0) return "";
+        const win = p.tokens?.contextWindow;
+        return `${p.contextPct.toFixed(1)}%${win ? `/${formatContextWindow(win)}` : ""}`;
+    };
+
+    // Pad each field to the widest in the roster so the columns line up and can be
+    // scanned down. Ragged, they are just trailing text.
+    const meta = roster.map((p) => {
+        const queued = p.status === "pending";
+        const m = queued ? { icon: "◌", color: "accent" } : statusMeta(p.status);
+        return {
+            p,
+            color: m.color,
+            status: statusText(p, queued ? "queued" : p.status, m.icon),
+            // The model an agent RAN on, kept after it finishes: it is the record
+            // of what actually served the phase, which matters most exactly when
+            // it is not what you expected (a fallback after a load failure).
+            // Absent on a queued row, which has not resolved one yet.
+            // "⚠" instead of "◆" when this is NOT the model the agent was
+            // configured for -- it fell back after the first choice failed to
+            // load. That is precisely the case this column exists to surface, so
+            // it should not look like a normal run. Same marker the cards used.
+            model: p.activeModel
+                ? `${p.modelFallback ? "⚠" : "◆"} ${p.activeModel}`
+                : "",
+            cost: costOf(p),
+            ctx: ctxOf(p),
+        };
+    });
+    const widest = (pick: (r: (typeof meta)[number]) => string) =>
+        meta.reduce((m, r) => Math.max(m, pick(r).length), 0);
+    const statusCol = widest((r) => r.status);
+    const modelCol = widest((r) => r.model);
+    const costCol = widest((r) => r.cost);
+
+    for (const r of meta) {
+        const running = r.p.status === "running";
+        // Pad a field only while something still follows it, so a queued row --
+        // which has none of them -- does not trail a screenful of spaces.
+        const after = (...rest: string[]) => rest.some(Boolean);
+        const pad = (s: string, col: number, more: boolean) =>
+            more ? s.padEnd(col) : s;
+        out.push(
+            line([
+                [running ? "  ▸ " : "    "],
+                [displayName(r.p.agent).padEnd(nameCol), running ? "accent" : "muted"],
+                [
+                    `  ${pad(r.status, statusCol, after(r.model, r.cost, r.ctx))}`,
+                    r.color,
+                ],
+                [
+                    r.model ? `  ${pad(r.model, modelCol, after(r.cost, r.ctx))}` : "",
+                    "dim",
+                ],
+                // padEnd, not padStart: formatCostUsd emits a variable number of
+                // decimals ($0.0031 vs $0.129), so right-aligning moves the "$"
+                // between rows and nothing lines up. Left-aligned, the "$" column
+                // is straight and the eye can run down it.
+                [r.cost ? `  ${pad(r.cost, costCol, after(r.ctx))}` : "", "dim"],
+                [r.ctx ? `  ${r.ctx}` : "", "muted"],
+            ]),
+        );
+    }
+    if (input.phases.length > roster.length) {
+        out.push(line([[`   +${input.phases.length - roster.length} more`, "dim"]]));
+    }
+
+    // ── the ledgers ─────────────────────────────────────────────────────────
+    // Todos and Review render identically: a heading at the widget's left margin
+    // and the entries indented under it, listed when the rows are there and
+    // collapsed to the heading's count when they are not. A truncated checklist
+    // reads as the whole checklist, which is worse than an honest count.
+    const ledgerRows = (
+        title: string,
+        led: LedgerInput | undefined,
+        room: number,
+    ): string[] => {
+        if (!led || led.total <= 0) return [];
+        const heading = line([["  "], [`${title} ${led.done}/${led.total}`, "accent"]]);
+        const items = led.items ?? [];
+        if (items.length === 0 || room < items.length + 1) return [heading];
+
+        // The [•] rows are the first `inProgress` UNFINISHED entries: a finished
+        // one never carries the mark, and a wave never marks more than remain.
+        const active = Math.max(1, led.inProgress ?? 1);
+        const inFlight = new Set(
+            items
+                .map((it, i) => (it.done ? -1 : i))
+                .filter((i) => i >= 0)
+                .slice(0, active),
+        );
+        const isRunning = led.active ?? input.running;
+        return [
+            heading,
+            ...items.map((it, i) => {
+                const running = isRunning && !it.done && inFlight.has(i);
+                const mark = it.done ? "[x]" : running ? "[•]" : "[ ]";
+                // Deliberately none of these is "dim": that is the tool trail's
+                // colour, and a ledger that reads as log defeats the point.
+                const color = it.done ? "success" : running ? "accent" : "muted";
+                return line([
+                    ["    "],
+                    [`${mark} ${phaseTitleOnly(it.label)}`, color, running],
+                ]);
+            }),
+        ];
+    };
+
+    // Todos first, then Review with whatever is left, so a long review checklist
+    // cannot push the todo ledger out of the widget.
+    let ledgerRoom = cap - out.length - TRAIL_FLOOR;
+    const todoBlock = ledgerRows("Todos", input.todos, ledgerRoom);
+    out.push(...todoBlock);
+    ledgerRoom -= todoBlock.length;
+    out.push(...ledgerRows("Review", input.review, ledgerRoom));
+
+    // ── what it is doing this second ────────────────────────────────────────
+    // The tail last, so the newest line sits closest to the prompt.
+    // Flush at the margin, outdented from the status block above. The trail is
+    // the agent's raw output, not another field of the dashboard, and running it
+    // at the same indent as the ledger made the two read as one block. Dropping
+    // the prefix also hands each line 3 more columns before line() truncates it.
+    for (const a of activity) out.push(line([[a.trim(), "dim"]]));
+
+    return out.slice(0, cap);
+}
+
+/**
+ * How often this widget must force an absolute repaint, in ms (0 = never).
+ *
+ * The coupling is the safety rule for growing the widget. Inside pi's
+ * MAX_WIDGET_LINES budget the renderer does not strand rows, and a periodic full
+ * repaint would be pure flicker for no benefit. Past the budget -- which is what a
+ * tall terminal invites, since the tool trail grows to fill the space -- a
+ * displaced live region leaves rows behind, and only an absolute repaint clears
+ * them. So the pulse is armed by exactly the condition that makes it necessary,
+ * rather than by a flag someone has to remember to set.
+ *
+ * An explicit PI_WORKFLOW_REPAINT_MS overrides in both directions: force repaints
+ * on a small widget, or suppress them on a large one.
+ */
+export function repaintIntervalFor(
+    lineCount: number,
+    explicitMs?: number,
+    budget: number = STATUS_WIDGET_MAX_LINES,
+): number {
+    if (explicitMs !== undefined) return explicitMs;
+    return lineCount > budget ? 4000 : 0;
+}
+
+/**
+ * Wall-clock to show for the run currently on screen.
+ *
+ * `runElapsedMs` is NOT a clock: the orchestrator assigns it only at terminal
+ * points (completion, abort, error) plus once per turn, so reading it mid-run
+ * yields 0 or a value frozen at the last turn boundary -- which is why the header
+ * duration stopped ticking. While a run is live the figure has to be derived from
+ * the START timestamp instead.
+ *
+ * Once it ends the recorded total wins: that is the number the run report and the
+ * completion notice quote, and a widget that kept counting past the end would
+ * disagree with both.
+ */
+export function displayElapsedMs(
+    s: {
+        running: boolean;
+        dispatchMode?: boolean;
+        runStartedAt: number;
+        runElapsedMs: number;
+        dispatchStartedAt?: number;
+        dispatchElapsedMs?: number;
+    },
+    now: number,
+): number {
+    if (s.dispatchMode) {
+        return s.running && (s.dispatchStartedAt ?? 0) > 0
+            ? now - (s.dispatchStartedAt as number)
+            : (s.dispatchElapsedMs ?? 0);
+    }
+    return s.running && s.runStartedAt > 0
+        ? now - s.runStartedAt
+        : s.runElapsedMs;
+}
+
+/** Mutable clock for {@link shouldRepaint}. */
+export interface RepaintPulseState {
+    last: number;
+}
+
+/**
+ * Should this widget build emit the short "pulse" frame?
+ *
+ * pi re-renders only a live region; rows a previous live region left behind are
+ * cleared ONLY by an absolute repaint, which pi reaches solely via
+ * `clearOnShrink` -- i.e. when the composed frame gets SHORTER. A dashboard of
+ * stable height never shrinks, so upstream emits zero absolute clears for an
+ * entire session and stale rows persist until restart.
+ *
+ * Returning true tells the caller to drop a trailing spacer row, making the frame
+ * one row shorter so pi's own clearOnShrink fires. Timed rather than every-N-builds
+ * so the repaint cadence does not depend on how busy the run is.
+ *
+ * The first call seeds the clock and never pulses: there is nothing stale to clear
+ * on the first frame, and repainting then is just a visible flash.
+ */
+export function shouldRepaint(
+    state: RepaintPulseState,
+    now: number,
+    intervalMs: number,
+): boolean {
+    if (intervalMs <= 0) return false;
+    if (state.last === 0) {
+        state.last = now;
+        return false;
+    }
+    if (now - state.last < intervalMs) return false;
+    state.last = now;
+    return true;
+}
+
 export function renderTodos(
     items: { label: string; done: boolean }[],
     theme: any,
@@ -341,9 +812,22 @@ export function renderTodos(
         // 0 while running also means 1, because the coordinator is between waves
         // and the next phase is what it is about to start.
         inProgress?: number;
+        // Text to show INSTEAD of returning nothing when there are no items yet.
+        // The Todos block otherwise pops into existence the instant the ledger is
+        // written, and that growth is what pi-tui's differential renderer can
+        // strand a row on (it only force-clears on shrink). Reserving the rows up
+        // front keeps the block's height steady. Omit it and the empty case still
+        // returns [] — the Review panel relies on that to splice unconditionally.
+        placeholder?: string;
     } = {},
 ): string[] {
-    if (!items || items.length === 0) return [];
+    if (!items || items.length === 0) {
+        if (!opts.placeholder) return [];
+        return [
+            theme.fg("accent", theme.bold(opts.title ?? " # Todos")),
+            ` ${theme.fg("muted", opts.placeholder)}`,
+        ];
+    }
     const max = Math.max(10, (opts.width ?? 80) - 6);
     const clip = (s: string) => {
         const t = phaseTitleOnly(s);

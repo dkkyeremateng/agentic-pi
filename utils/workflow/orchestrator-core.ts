@@ -1464,6 +1464,48 @@ export function renderDispatchActivity(
         .join("\n");
 }
 
+/**
+ * Live-stream a WORKFLOW run's activity into the parent transcript.
+ *
+ * `streamDispatchActivity` below serves `dispatch_agent`, and takes a fixed list
+ * of phases because a dispatch has one. A pipeline run does not: phases start and
+ * finish over its lifetime, so this re-reads the running set on every tick.
+ *
+ * This is the ONLY place a pipeline run's tool trail is visible. The sticky widget
+ * is a status line (<= 6 rows) and deliberately does not carry a log panel -- a
+ * non-scrolling region is the wrong home for streaming output. The tool's live
+ * result block IS scrollable and keeps its history, which is what you want when a
+ * phase does something surprising twenty tool calls ago.
+ *
+ * `onUpdate` replaces the block rather than appending, so this updates in place
+ * instead of flooding the transcript. Opt out with PI_WORKFLOW_STREAM=0.
+ */
+export const streamWorkflowEnabled = (
+    env: NodeJS.ProcessEnv = process.env,
+): boolean => !/^(0|false|off)$/i.test((env.PI_WORKFLOW_STREAM || "").trim());
+
+export function streamWorkflowActivity(
+    getItems: () => { label: string; log: string }[],
+    onUpdate: ((u: ToolResult) => void) | undefined,
+    opts: { intervalMs?: number; env?: NodeJS.ProcessEnv } = {},
+): () => void {
+    if (!onUpdate || !streamWorkflowEnabled(opts.env)) return () => {};
+    let last = "";
+    const tick = (): void => {
+        const items = getItems();
+        if (!items.length) return;
+        const snap = renderDispatchActivity(items);
+        if (snap && snap !== last) {
+            last = snap;
+            onUpdate(textResult(snap));
+        }
+    };
+    const iv = setInterval(tick, opts.intervalMs ?? 400);
+    // Don't let the poller keep the event loop alive on its own.
+    (iv as any).unref?.();
+    return () => clearInterval(iv);
+}
+
 function streamDispatchActivity(
     items: { label: string; phase: PhaseState }[],
     onUpdate: ((u: ToolResult) => void) | undefined,
