@@ -152,11 +152,17 @@ will run on — filling the space and counting any overflow:
  agent-workflow · 13 agents · 6 teams
    /agent-workflow <request>   ·   dashboard: PI_OBS=1
 
-   Scout              ◆ gfr_local/gateframe_ionix/dspark
-   Planner            ◆ gfr_local/gateframe_ionix/dspark
-   Implementer        ◆ gfr_local/gateframe_ionix/dspark
+   Scout        ◆ gfr_local/gateframe_ionix/dspark  256K
+   Planner      ◆ gfr_local/gateframe_ionix/dspark  256K
+   Implementer  ◆ anthropic/claude-opus-5           1.0M
    …
 ```
+
+Each row carries the model that agent will run on and its context window, resolved
+the way the cards did (the agent's frontmatter wins, else the registry's window for
+the model it resolved to). The columns are padded so an agent pointed at a different
+model — the usual reason to look at this screen — stands out instead of being buried
+mid-line.
 
 It used to render a five-card grid, per-agent context bars, a todo ledger, a review
 checklist and a live log — about **40 rows**, four times pi's `MAX_WIDGET_LINES`

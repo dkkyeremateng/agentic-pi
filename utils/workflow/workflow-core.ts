@@ -1864,6 +1864,14 @@ export function stickyContextUsage(last: any, current: any): any {
 
 // Format context usage for display in cards and footers.
 // Returns the progress bar and display string (percentage + token count + context window).
+/** A context window as a short human label: 256000 -> "256K", 1000000 -> "1.0M".
+ *  Shared so the idle roster and the live usage bar agree on the same shape. */
+export function formatContextWindow(n: number): string {
+    return n >= 1_000_000
+        ? `${(n / 1_000_000).toFixed(1)}M`
+        : `${Math.round(n / 1000)}K`;
+}
+
 export function formatContextUsage(opts: {
     contextPct: number | null | undefined;
     tokenCount?: number | undefined;
@@ -1894,10 +1902,7 @@ export function formatContextUsage(opts: {
                 ? `${(n / 1000).toFixed(1)}K`
                 : `${n}`;
 
-    const fmtCtxWindow = (n: number) =>
-        n >= 1_000_000
-            ? `${(n / 1_000_000).toFixed(1)}M`
-            : `${Math.round(n / 1000)}K`;
+    const fmtCtxWindow = formatContextWindow;
 
     const ctxSuffix = ctxKnown ? `/${fmtCtxWindow(contextWindow!)}` : "";
 

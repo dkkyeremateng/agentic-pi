@@ -9,6 +9,7 @@ import {
     agentPhaseStatus,
     formatContextUsage,
     formatCostUsd,
+    formatContextWindow,
     totalTokens,
 } from "./workflow-core";
 import { secs } from "./workflow-utils";
@@ -353,7 +354,13 @@ export interface StatusWidgetInput {
     agentCount?: number;
     teamCount?: number;
     /** The roster to list while idle: every agent and the model it will run on. */
-    roster?: { name: string; model: string; team?: string }[];
+    roster?: {
+        name: string;
+        model: string;
+        /** Resolved context window, for the idle roster. */
+        contextWindow?: number;
+        team?: string;
+    }[];
     width: number;
     /**
      * Row budget. Defaults to STATUS_WIDGET_MAX_LINES (pi's own budget for an
@@ -458,12 +465,22 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
                 18,
                 shown.reduce((m, r) => Math.max(m, r.name.length), 0),
             );
+            // Pad the model column too, so the context windows line up and an
+            // agent pointed at a different model is obvious at a glance.
+            const modelCol = Math.min(
+                40,
+                shown.reduce((m, r) => Math.max(m, (r.model || "").length), 0),
+            );
             for (const r of shown) {
                 out.push(
                     line([
                         ["   "],
                         [r.name.padEnd(nameCol), "accent"],
-                        [r.model ? `  ◆ ${r.model}` : "", "dim"],
+                        [r.model ? `  ◆ ${r.model.padEnd(modelCol)}` : "", "dim"],
+                        [
+                            r.contextWindow ? `  ${formatContextWindow(r.contextWindow)}` : "",
+                            "muted",
+                        ],
                     ]),
                 );
             }

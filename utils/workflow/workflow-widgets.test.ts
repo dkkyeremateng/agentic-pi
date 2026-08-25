@@ -216,6 +216,34 @@ describe("renderStatusWidget", () => {
         }
     });
 
+    it("shows each agent's model and context window, aligned", () => {
+        const out = renderStatusWidget({
+            ...base, team: "", phases: [], running: false, maxLines: 20,
+            roster: [
+                { name: "Scout", model: "prov/small", contextWindow: 256_000 },
+                { name: "Implementer", model: "anthropic/claude-opus-5", contextWindow: 1_000_000 },
+            ],
+        } as any, theme);
+        const scout = out.find((l) => l.includes("Scout"))!;
+        const impl = out.find((l) => l.includes("Implementer"))!;
+        assert.match(scout, /prov\/small/);
+        assert.match(scout, /256K/);
+        assert.match(impl, /1\.0M/, "a megatoken window reads as 1.0M, not 1000K");
+        // The window column starts at the same offset on both rows, so a
+        // differently-modelled agent is obvious rather than buried.
+        assert.equal(scout.indexOf("256K"), impl.indexOf("1.0M"));
+    });
+
+    it("omits the window when none is known, without leaving a gap", () => {
+        const out = renderStatusWidget({
+            ...base, team: "", phases: [], running: false, maxLines: 20,
+            roster: [{ name: "Scout", model: "prov/small" }],
+        } as any, theme);
+        const row = out.find((l) => l.includes("Scout"))!;
+        assert.match(row, /prov\/small/);
+        assert.ok(!/\d+K|\d\.\dM/.test(row), row);
+    });
+
     it("counts the roster overflow rather than dropping it silently", () => {
         const roster = Array.from({ length: 13 }, (_, i) => ({
             name: `agent${i}`, model: "prov/model",

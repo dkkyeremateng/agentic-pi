@@ -893,7 +893,20 @@ export default function (pi: ExtensionAPI) {
                 // used to show (frontmatter -> env/team override -> fallback).
                 roster: allTeamAgents(st.teams)
                     .filter((m) => st.agents.has(m.toLowerCase()))
-                    .map((m) => ({ name: displayName(m), model: modelFor(m.toLowerCase()) })),
+                    .map((m) => {
+                        const key = m.toLowerCase();
+                        const model = modelFor(key);
+                        return {
+                            name: displayName(m),
+                            model,
+                            // Same resolution the cards used: the agent's own
+                            // frontmatter wins, else the registry's window for
+                            // whatever model it resolved to.
+                            contextWindow:
+                                st.agents.get(key)?.contextWindow ||
+                                contextWindowForModel(modelRegistry?.getAll?.(), model),
+                        };
+                    }),
                 width,
                 maxLines: widgetBudget(),
             },
