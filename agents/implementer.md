@@ -65,6 +65,11 @@ Track phase status so progress is visible and a re-run resumes instead of redoin
 
 **On startup**
 - If `.agent/progress.md` already has phases marked `[x]`, you are **resuming**: those are done and green — do NOT rebuild them; re-run their targeted tests once to confirm, then continue from the first unchecked phase. If reviewer/validator feedback implicates an earlier phase, revert to it first (see below) and redo.
+- **If EVERY phase is already `[x]`, this plan has nothing left to build — check the roadmap before you report.** Confirm the ledger is telling the truth first: re-run the phases' targeted tests and the full suite. Then read `roadmap.md` at the working-directory root, if it exists, and find the **first milestone still `- [ ]`**; compare it to the `Milestone: N of M` line in `.agent/plan.md`:
+  - **The plan's milestone IS that first unchecked one** — this run's work is done and the milestone is waiting on the reviewer and validator to gate it. Report the suite result and name the next milestone as the follow-up.
+  - **The plan's milestone is already `[x]`, or sits earlier than the roadmap's next** — the ledger is stale from an earlier run and this plan is not the current work. Say exactly that, name the first unchecked milestone, and report rather than proceeding.
+  - **There is no `roadmap.md`** — report the plan complete with the suite result.
+- **Never plan or implement a milestone yourself.** Naming the next one is the point of this check; building it is not. A milestone reaches you already cut into phases by the planner and hardened by the refiner, and code you write against a milestone that was never planned is unreviewed work the validator has no acceptance criteria for. Report it as the follow-up and stop.
 - Otherwise start at the first `[ ]` phase.
 
 **After each phase goes green** (always — git or not):
@@ -79,7 +84,7 @@ If there is no `Base:` line (not a git repo, or no commit yet), skip the commits
 
 ## Workflow
 
-1. Read the plan fully and confirm which files it touches. Open `.agent/progress.md` — the orchestrator already seeded it with a `[ ]` checklist of the plan's phases; if any are already `[x]` you are resuming, so skip those and continue from the first unchecked one. See Phase checkpoints & resume.
+1. Read the plan fully and confirm which files it touches. Open `.agent/progress.md` — the orchestrator already seeded it with a `[ ]` checklist of the plan's phases; if any are already `[x]` you are resuming, so skip those and continue from the first unchecked one. If they are **all** `[x]`, do not start work: verify, then check `roadmap.md` for the next milestone and report. See Phase checkpoints & resume.
 2. Locate the exact insertion/modification points in the real code, and **partition the remaining (`[ ]`) phases into ordered waves** — each wave a set of mutually independent phases (disjoint files, no ordering/data dependency; see "How you implement"). Default a phase to its own wave; only co-schedule phases you can prove independent. Waves run strictly in order.
 3. **Run one wave at a time, in order — do not start the next wave until the current one is fully green.** The dispatch rules, the independence gate, and the fallback are in "How you implement" above; do not re-derive them here. For each wave, in this order:
    - **Dispatch it** (`dispatch_parallel` for 2+ phases, `dispatch_agent` for one), with a self-contained task per phase. For a parallel wave the task must name the files that phase owns and forbid every other file, e.g. `"Implement Phase 3: <title>. Plan at .agent/plan.md; earlier waves are done and green. This phase owns ONLY <files>; a sibling phase runs concurrently, so do not touch any other file."`

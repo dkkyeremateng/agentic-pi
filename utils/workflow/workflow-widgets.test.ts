@@ -479,6 +479,87 @@ describe("renderStatusWidget", () => {
         assert.ok(!out.some((l) => l.includes("[ ] Phase 19")), "no partial ledger");
     });
 
+    it("collapses a finished ledger to its count and gives the rows away", () => {
+        // Every box ticked is settled history. The heading already says 3/3, so
+        // listing three [x] rows under it spends the trail's space to repeat
+        // itself -- and the trail is the part that is still changing.
+        const items = [
+            { label: "Phase 1: tokens", done: true },
+            { label: "Phase 2: rules", done: true },
+            { label: "Phase 3: audit", done: true },
+        ];
+        const out = renderStatusWidget({
+            ...base, phases: [phase({ status: "running" })], maxLines: 10,
+            todos: { done: 3, total: 3, items, inProgress: 1 },
+            activity: ["a", "b", "c", "d", "e"],
+        } as any, theme);
+        assert.ok(out.some((l) => /Todos 3\/3/.test(l)), "the count survives");
+        assert.ok(!out.some((l) => l.includes("[x]")), "no rows repeating it");
+        // The reclaimed rows go to the trail, not to whitespace.
+        for (const a of ["a", "b", "c", "d", "e"]) {
+            assert.ok(out.some((l) => l.trim() === a), `trail kept ${a}`);
+        }
+    });
+
+    it("still lists a ledger with one box left", () => {
+        const out = renderStatusWidget({
+            ...base, phases: [phase({ status: "running" })], maxLines: 20,
+            todos: {
+                done: 1, total: 2, inProgress: 1,
+                items: [{ label: "Phase 1", done: true }, { label: "Phase 2", done: false }],
+            },
+        } as any, theme);
+        assert.ok(out.some((l) => l.includes("[x] Phase 1")), "listed, not collapsed");
+        assert.ok(out.some((l) => l.includes("[•] Phase 2")));
+    });
+
+    it("aligns the cost column on its decimal point, not just its $", () => {
+        // formatCostUsd varies the decimals with the magnitude, so padding one
+        // end leaves the digits staggered and the column unscannable.
+        const tok = (cost: number) => ({
+            input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
+            costUsd: cost, contextWindow: 256_000,
+        });
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [
+                phase({ agent: "scout", label: "Scout", status: "done", elapsed: 5000,
+                    contextPct: 9, tokens: tok(0.009) }),
+                phase({ status: "running", contextPct: 17, tokens: tok(0.098) }),
+            ],
+        } as any, theme);
+        const scout = out.find((l) => l.includes("Scout"))!;
+        const impl = out.find((l) => l.includes("Implementer"))!;
+        assert.match(scout, /\$0\.0090/);
+        assert.match(impl, /\$0\.098/);
+        assert.equal(scout.indexOf("$"), impl.indexOf("$"), "$ column");
+        assert.equal(
+            scout.indexOf("."), impl.indexOf("."),
+            `decimal point: ${JSON.stringify(scout)} vs ${JSON.stringify(impl)}`,
+        );
+        // The column START, not the "%": the values have different digit counts.
+        assert.equal(
+            scout.indexOf("9.0%"), impl.indexOf("17.0%"), "context still follows",
+        );
+    });
+
+    it("colours a context percentage that is close to the window", () => {
+        // At one flat colour an agent about to overflow reads exactly like an
+        // idle one, which is the failure this column exists to catch.
+        const tagged = { fg: (c: string, s: string) => `<${c}>${s}</${c}>`, bold: (s: string) => s };
+        const tok = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 0.01, contextWindow: 256_000 };
+        const row = (contextPct: number) => {
+            const out = renderStatusWidget({
+                ...base, maxLines: 20,
+                phases: [phase({ status: "running", contextPct, tokens: tok })],
+            } as any, tagged);
+            return out.find((l) => l.includes("Implementer"))!;
+        };
+        assert.match(row(41.5), /<muted>\s*41\.5%/);
+        assert.match(row(78), /<warning>\s*78\.0%/);
+        assert.match(row(93.2), /<error>\s*93\.2%/);
+    });
+
     it("omits ledger counts that have nothing in them", () => {
         const out = renderStatusWidget({
             ...base,

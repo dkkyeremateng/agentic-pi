@@ -544,7 +544,11 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     // Rows the ledger will want below the roster: the todo list if it will fit,
     // else one summary row, plus one for the review count.
     const ledgerHeight = (led?: LedgerInput): number =>
-        !led || led.total <= 0 ? 0 : led.items?.length ? led.items.length + 1 : 1;
+        !led || led.total <= 0
+            ? 0
+            : led.done >= led.total || !led.items?.length
+              ? 1
+              : led.items.length + 1;
     const summaryRows = ledgerHeight(input.todos) + ledgerHeight(input.review);
     const available = Math.max(1, cap - 1 - summaryRows - TRAIL_FLOOR);
     // The "+N more" marker costs a row of its own, so it has to come out of the
@@ -607,12 +611,40 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
                 : "",
             cost: costOf(p),
             ctx: ctxOf(p),
+            // An agent near the end of its window is what kills a run, and at
+            // one flat colour it reads exactly like an idle one. The threshold
+            // is the whole point of showing a percentage rather than a count.
+            ctxColor:
+                (p.contextPct ?? 0) >= 90
+                    ? "error"
+                    : (p.contextPct ?? 0) >= 75
+                      ? "warning"
+                      : "muted",
         };
     });
     const widest = (pick: (r: (typeof meta)[number]) => string) =>
         meta.reduce((m, r) => Math.max(m, pick(r).length), 0);
     const statusCol = widest((r) => r.status);
     const modelCol = widest((r) => r.model);
+
+    // Align the cost column on its decimal point. formatCostUsd varies the
+    // decimals with the magnitude ($0.0090 sitting next to $0.098), so padding
+    // one end straightens only that end and the digits still stagger -- the
+    // column cannot be scanned for the agent that spent the money. Padding each
+    // side of the "." independently puts the "$" AND the digits in line.
+    const splitCost = (c: string): [string, string] => {
+        const i = c.indexOf(".");
+        return i < 0 ? [c, ""] : [c.slice(0, i), c.slice(i)];
+    };
+    const costPart = (n: 0 | 1) =>
+        meta.reduce((m, r) => (r.cost ? Math.max(m, splitCost(r.cost)[n].length) : m), 0);
+    const intCol = costPart(0);
+    const fracCol = costPart(1);
+    for (const r of meta) {
+        if (!r.cost) continue;
+        const [whole, frac] = splitCost(r.cost);
+        r.cost = whole.padStart(intCol) + frac.padEnd(fracCol);
+    }
     const costCol = widest((r) => r.cost);
 
     for (const r of meta) {
@@ -621,7 +653,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         // which has none of them -- does not trail a screenful of spaces.
         const after = (...rest: string[]) => rest.some(Boolean);
         const pad = (s: string, col: number, more: boolean) =>
-            more ? s.padEnd(col) : s;
+            more ? s.padEnd(col) : s.trimEnd();
         out.push(
             line([
                 [running ? "  ▸ " : "    "],
@@ -639,7 +671,7 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
                 // between rows and nothing lines up. Left-aligned, the "$" column
                 // is straight and the eye can run down it.
                 [r.cost ? `  ${pad(r.cost, costCol, after(r.ctx))}` : "", "dim"],
-                [r.ctx ? `  ${r.ctx}` : "", "muted"],
+                [r.ctx ? `  ${r.ctx}` : "", r.ctxColor],
             ]),
         );
     }
@@ -660,6 +692,11 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         if (!led || led.total <= 0) return [];
         const heading = line([["  "], [`${title} ${led.done}/${led.total}`, "accent"]]);
         const items = led.items ?? [];
+        // A finished ledger collapses to its count. Every box ticked is settled
+        // history: the heading already says "3/3", and listing the rows again
+        // spends the trail's space to repeat it. Keep the count, hand the rows
+        // to what is happening now.
+        if (led.done >= led.total) return [heading];
         if (items.length === 0 || room < items.length + 1) return [heading];
 
         // The [•] rows are the first `inProgress` UNFINISHED entries: a finished
