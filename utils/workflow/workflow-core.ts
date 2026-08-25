@@ -176,6 +176,12 @@ export interface PhaseState {
     attempt: number; // how many times this phase has been run (incremented on retry loops)
     modelFallback: boolean; // true if the phase retried with the fallback model after the primary model failed
     activeModel?: string; // the model the agent is actually running on (set at spawn; reflects fallback)
+    // Epoch ms of the last byte this agent's process emitted. The stall killer
+    // already tracks silence to tell "blocked" from "working slowly"; stamping it
+    // on the phase lets the widget show the same signal whether or not the killer
+    // is armed (it is off by default), so a wedged agent is visible rather than
+    // just eventually killed.
+    lastOutputAt?: number;
     tokens?: TokenUsage; // per-phase token usage captured from the agent's message_end event
     lastStopReason?: string; // stopReason of the last assistant message ("length" = output-token truncation)
     paneActive?: boolean; // a multiplexer viewer pane is live-tailing this agent — the
@@ -3968,6 +3974,7 @@ export function spawnAgentWithModel(
         // PI_WORKFLOW_AGENT_STALL (minutes).
         let stalled = false;
         let lastOutputAt = Date.now();
+        phase.lastOutputAt = lastOutputAt;
         const stallMs = config.agentStallMs ?? 0;
         const stallTimer =
             stallMs > 0
@@ -3980,6 +3987,7 @@ export function spawnAgentWithModel(
                 : null;
         const markOutput = () => {
             lastOutputAt = Date.now();
+            phase.lastOutputAt = lastOutputAt;
         };
 
         let lastPaint = 0;

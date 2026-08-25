@@ -356,6 +356,8 @@ export interface StatusWidgetInput {
     /** Recent activity, oldest first — the running agent's tool trail. */
     activity?: string[];
     dispatchMode?: boolean;
+    /** Now, in epoch ms — injectable so the quiet timer is testable. */
+    now?: number;
     /** Agents known, for the idle line. */
     agentCount?: number;
     teamCount?: number;
@@ -390,6 +392,20 @@ export interface StatusWidgetInput {
  * periodically -- otherwise the stale rows come back.
  */
 export const STATUS_WIDGET_MAX_LINES = 10;
+
+/**
+ * How long a running agent must emit NOTHING before its row says so, in ms.
+ *
+ * Silence is the only signal that separates a wedged agent from a slow one: a
+ * healthy child emits deltas and tool events continuously, so a long gap with
+ * zero output means it is blocked, not thinking. (The stall killer in
+ * handleSpawn reasons from the same signal; it is off by default, so this is
+ * usually the only place the silence surfaces.)
+ *
+ * 90s, because ordinary tool calls and turn boundaries are silent for tens of
+ * seconds and a row that flags those is a row nobody reads.
+ */
+export const QUIET_THRESHOLD_MS = 90_000;
 
 /** How many trailing activity rows to show. The slash-command path has no way to
  *  stream into the transcript (pi exposes only `notify` to a command), so this
@@ -517,6 +533,22 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     const spend = input.phases.reduce((sum, p) => sum + (p.tokens?.costUsd ?? 0), 0);
     if (spend > 0) bits.push(formatCostUsd(spend));
 
+    // When every agent that has resolved a model resolved the SAME one, the
+    // column is one identifier repeated down the roster -- thirty-odd columns per
+    // row saying what the header could say once. Hoist it and hand the width to
+    // the tool trail. It drops straight back to per-row the moment two agents
+    // differ, or any phase fell back, which is the case the column exists for.
+    // Computed over ALL phases, not the visible roster: a model that differs
+    // below the fold must not be collapsed away.
+    const resolved = new Set(
+        input.phases.filter((p) => p.activeModel).map((p) => p.activeModel!),
+    );
+    const sharedModel =
+        resolved.size === 1 && !input.phases.some((p) => p.modelFallback)
+            ? [...resolved][0]
+            : "";
+    if (sharedModel) bits.push(`◆ ${sharedModel}`);
+
     const attemptRaw =
         input.iteration > 1 ? ` · attempt ${input.iteration}/${input.maxLoops}` : "";
     // No status glyph here: the roster row right below already carries the live
@@ -571,13 +603,31 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     // queued row is four columns saying "hasn't started", which is what made the
     // old cards mostly zeros. No usage bar either -- it duplicates the percentage
     // sitting next to it and costs a dozen columns the tool trail can use.
+    // How long a running agent has emitted NOTHING. "running 21m · 3 tools" reads
+    // the same whether the agent is working or wedged on a tool call that will
+    // never return, and silence is what separates them (the same signal the stall
+    // killer uses -- see handleSpawn). Below the threshold this stays empty:
+    // ordinary tool calls and thinking pauses are silent too, and a row that
+    // cries wolf is a row nobody reads.
+    const now = input.now ?? Date.now();
+    const quietMs = (p: PhaseState): number => {
+        if (p.status !== "running" || !p.lastOutputAt) return 0;
+        const gap = now - p.lastOutputAt;
+        return gap >= QUIET_THRESHOLD_MS ? gap : 0;
+    };
     const statusText = (p: PhaseState, word: string, icon: string): string => {
         const timing = p.elapsed > 0 ? ` ${secs(p.elapsed)}` : "";
         const tools =
             p.status === "running" && p.toolCount > 0
                 ? ` · ${p.toolCount} tool${p.toolCount === 1 ? "" : "s"}`
                 : "";
-        return `${icon} ${word}${timing}${tools}`;
+        // "quiet", not "idle" or "stalled": it states what was observed (no
+        // output for N) rather than inferring why, which the widget cannot know.
+        // Whole minutes: five-second precision on a stall is noise, and every
+        // character here widens the padded status column for the whole roster.
+        const quiet = quietMs(p);
+        const quietNote = quiet ? ` · quiet ${Math.floor(quiet / 60_000)}m` : "";
+        return `${icon} ${word}${timing}${tools}${quietNote}`;
     };
     const costOf = (p: PhaseState): string => {
         const c = p.tokens?.costUsd;
@@ -596,7 +646,9 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         const m = queued ? { icon: "◌", color: "accent" } : statusMeta(p.status);
         return {
             p,
-            color: m.color,
+            // Amber while quiet: the point is that this row stops looking like
+            // the healthy running row it is otherwise identical to.
+            color: quietMs(p) ? "warning" : m.color,
             status: statusText(p, queued ? "queued" : p.status, m.icon),
             // The model an agent RAN on, kept after it finishes: it is the record
             // of what actually served the phase, which matters most exactly when
@@ -606,9 +658,10 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
             // configured for -- it fell back after the first choice failed to
             // load. That is precisely the case this column exists to surface, so
             // it should not look like a normal run. Same marker the cards used.
-            model: p.activeModel
-                ? `${p.modelFallback ? "⚠" : "◆"} ${p.activeModel}`
-                : "",
+            model:
+                p.activeModel && !sharedModel
+                    ? `${p.modelFallback ? "⚠" : "◆"} ${p.activeModel}`
+                    : "",
             cost: costOf(p),
             ctx: ctxOf(p),
             // An agent near the end of its window is what kills a run, and at

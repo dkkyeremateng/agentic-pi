@@ -5,6 +5,7 @@ import {
     renderTodos,
     renderStatusWidget,
     STATUS_WIDGET_MAX_LINES,
+    QUIET_THRESHOLD_MS,
     shouldRepaint,
     displayElapsedMs,
     repaintIntervalFor,
@@ -541,6 +542,115 @@ describe("renderStatusWidget", () => {
         assert.equal(
             scout.indexOf("9.0%"), impl.indexOf("17.0%"), "context still follows",
         );
+    });
+
+    it("hoists the model to the header when every agent resolved the same one", () => {
+        // One identifier repeated down the roster is thirty-odd columns per row
+        // saying what the header can say once.
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [
+                phase({ agent: "scout", label: "Scout", status: "done", elapsed: 5000,
+                    activeModel: "prov/big" }),
+                phase({ status: "running", activeModel: "prov/big" }),
+            ],
+        } as any, theme);
+        assert.match(out[0], /◆ prov\/big/, "header carries it");
+        assert.ok(!out.find((l) => l.includes("Scout"))!.includes("prov/big"));
+        assert.ok(!out.find((l) => l.includes("Implementer"))!.includes("prov/big"));
+    });
+
+    it("keeps the model per row the moment two agents differ", () => {
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [
+                phase({ agent: "scout", label: "Scout", status: "done", elapsed: 5000,
+                    activeModel: "prov/small" }),
+                phase({ status: "running", activeModel: "prov/big" }),
+            ],
+        } as any, theme);
+        assert.ok(!out[0].includes("◆"), "nothing hoisted");
+        assert.match(out.find((l) => l.includes("Scout"))!, /◆ prov\/small/);
+        assert.match(out.find((l) => l.includes("Implementer"))!, /◆ prov\/big/);
+    });
+
+    it("keeps the model per row when one agent fell back, even if all agree", () => {
+        // The fallback marker is the whole reason this column exists; hoisting a
+        // single "◆ prov/other" to the header would erase it.
+        const out = renderStatusWidget({
+            ...base, maxLines: 20,
+            phases: [
+                phase({ agent: "scout", label: "Scout", status: "done", elapsed: 5000,
+                    activeModel: "prov/other", modelFallback: true }),
+                phase({ status: "running", activeModel: "prov/other" }),
+            ],
+        } as any, theme);
+        assert.ok(!out[0].includes("◆"), "nothing hoisted");
+        assert.match(out.find((l) => l.includes("Scout"))!, /⚠ prov\/other/);
+    });
+
+    it("does not hoist a model that differs below the visible roster", () => {
+        // The roster is a prefix when it overflows; collapsing on what is on
+        // screen would hide the disagreement that made the column worth showing.
+        const out = renderStatusWidget({
+            ...base, maxLines: 8,
+            phases: [
+                ...Array.from({ length: 8 }, (_, i) =>
+                    phase({ agent: `a${i}`, label: `A${i}`, status: "done", elapsed: 1000,
+                        activeModel: "prov/big" })),
+                phase({ agent: "zz", label: "Zz", activeModel: "prov/other" }),
+            ],
+        } as any, theme);
+        assert.ok(!out[0].includes("◆ prov/big"), "not hoisted");
+    });
+
+    it("says how long a running agent has been silent", () => {
+        // "running 21m · 3 tools" reads identically whether the agent is working
+        // or wedged on a tool call that will never return.
+        const out = renderStatusWidget({
+            ...base, maxLines: 20, now: 600_000,
+            phases: [phase({ status: "running", elapsed: 300_000, toolCount: 3,
+                lastOutputAt: 600_000 - 240_000 })],
+        } as any, theme);
+        assert.match(out.find((l) => l.includes("Implementer"))!, /quiet 4m/);
+    });
+
+    it("stays silent about silence below the threshold", () => {
+        // Ordinary tool calls and turn boundaries are quiet for tens of seconds;
+        // a row that flags those is a row nobody reads.
+        const out = renderStatusWidget({
+            ...base, maxLines: 20, now: 600_000,
+            phases: [phase({ status: "running", elapsed: 300_000, toolCount: 3,
+                lastOutputAt: 600_000 - (QUIET_THRESHOLD_MS - 1000) })],
+        } as any, theme);
+        assert.ok(!out.find((l) => l.includes("Implementer"))!.includes("quiet"));
+    });
+
+    it("colours a quiet row so it stops looking like a healthy one", () => {
+        const tagged = { fg: (c: string, s: string) => `<${c}>${s}</${c}>`, bold: (s: string) => s };
+        const row = (lastOutputAt: number) => {
+            const out = renderStatusWidget({
+                ...base, maxLines: 20, now: 600_000,
+                phases: [phase({ status: "running", elapsed: 300_000, lastOutputAt })],
+            } as any, tagged);
+            return out.find((l) => l.includes("Implementer"))!;
+        };
+        assert.match(row(599_000), /<accent>\s*● running/, "working reads normal");
+        assert.match(row(300_000), /<warning>\s*● running/, "quiet stands out");
+    });
+
+    it("never calls a finished or queued agent quiet", () => {
+        // Only a RUNNING agent can be silent; a done one is supposed to be.
+        const out = renderStatusWidget({
+            ...base, maxLines: 20, now: 600_000,
+            phases: [
+                phase({ agent: "scout", label: "Scout", status: "done", elapsed: 5000,
+                    lastOutputAt: 100_000 }),
+                phase({ agent: "shipper", label: "Ship", lastOutputAt: 100_000 }),
+                phase({ status: "running", elapsed: 1000 }),
+            ],
+        } as any, theme);
+        assert.ok(!out.some((l) => l.includes("quiet")), out.join("\n"));
     });
 
     it("colours a context percentage that is close to the window", () => {
