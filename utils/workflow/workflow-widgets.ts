@@ -518,9 +518,9 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
 
     const attemptRaw =
         input.iteration > 1 ? ` · attempt ${input.iteration}/${input.maxLoops}` : "";
-    const { icon, color } = statusMeta(
-        input.running ? "running" : input.phases.every((p) => p.status === "done") ? "done" : "pending",
-    );
+    // No status glyph here: the roster row right below already carries the live
+    // state ("● running 51s"), and a second marker on the header only asks the
+    // reader which one to trust.
     out.push(
         line([
             [" "],
@@ -528,7 +528,6 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
             [here ? ` ▸ ${here}${pos}` : pos, "muted"],
             [bits.length ? ` · ${bits.join(" · ")}` : "", "dim"],
             [attemptRaw, "dim"],
-            [` ${icon}`, color],
         ]),
     );
 

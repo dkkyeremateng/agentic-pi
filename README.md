@@ -129,7 +129,7 @@ downstream agents, so it is never re-threaded through the context.
 The terminal widget shows **at most 6 rows**:
 
 ```
- build ▸ Implement 1/4 · 1m 7s · $0.020 · 4.0%/256K ●
+ build ▸ Implement 1/4 · 1m 7s · $0.020 · 4.0%/256K
    Scout        ✓ done 53s
  ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark
    Reviewer     ◌ queued
