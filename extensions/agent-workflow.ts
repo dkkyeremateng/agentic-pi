@@ -879,7 +879,16 @@ export default function (pi: ExtensionAPI) {
                 contextPct: live?.contextPct ?? 0,
                 contextWindow: tokens?.contextWindow,
                 cacheHitPct: chDen > 0 ? ((tokens?.cacheRead || 0) / chDen) * 100 : 0,
-                todos: { done: items.filter((i) => i.done).length, total: items.length },
+                todos: {
+                    done: items.filter((i) => i.done).length,
+                    total: items.length,
+                    items,
+                    // One [•] per phase worker actually in flight, so a parallel
+                    // wave marks every phase it is on rather than just the first.
+                    inProgress: st.phases.filter(
+                        (p) => p.agent === "phase-implementer" && p.status === "running",
+                    ).length,
+                },
                 review: {
                     done: reviewItems.filter((i) => i.done).length,
                     total: reviewItems.length,

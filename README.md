@@ -134,10 +134,17 @@ The terminal widget shows **at most 6 rows**:
  ▸ Implementer  ● running 14s · 3 tools  ◆ gfr_local/gateframe_ionix/dspark
    Reviewer     ◌ queued
    Shipper      ◌ queued
-   todos 1/3
+   [x] Phase 1: Add the `:root` design-token block
+   [•] Phase 2: Rewrite component rules to reference the tokens
+   [ ] Phase 3: Automated literal audit (regression gate)
    → read path=.agent/plan.md
    ✓ read
 ```
+
+The todo ledger is listed in full when it fits, with `[•]` on the phase being worked
+on (one per worker, so a parallel wave marks each phase it is on). When the rows are
+not there it collapses to `todos 2/3` rather than showing a partial list — a
+truncated ledger reads as the whole list, which is worse than a count.
 
 The whole selected team is listed, one row each — what is done, what is in flight
 (marked `▸`), what is still queued — because during a run the question is where the

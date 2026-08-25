@@ -345,7 +345,14 @@ export interface StatusWidgetInput {
     contextWindow?: number;
     /** Prompt-cache hit rate, 0-100. Omitted when nothing has been cached. */
     cacheHitPct?: number;
-    todos?: { done: number; total: number };
+    todos?: {
+        done: number;
+        total: number;
+        /** The ledger itself. Listed when it fits; collapsed to a count when not. */
+        items?: { label: string; done: boolean }[];
+        /** Phase workers in flight, so a parallel wave marks every one it is on. */
+        inProgress?: number;
+    };
     review?: { done: number; total: number };
     /** Recent activity, oldest first — the running agent's tool trail. */
     activity?: string[];
@@ -534,10 +541,15 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
     // Guarantee the trail a few rows before the roster takes the rest: knowing
     // WHAT is happening beats knowing who is queued, so the roster yields first.
     const TRAIL_FLOOR = Math.min(activity.length, 3);
+    // Rows the ledger will want below the roster: the todo list if it will fit,
+    // else one summary row, plus one for the review count.
+    const todoRows = input.todos?.items?.length
+        ? input.todos.items.length
+        : input.todos && input.todos.total > 0
+          ? 1
+          : 0;
     const summaryRows =
-        (input.todos && input.todos.total > 0) || (input.review && input.review.total > 0)
-            ? 1
-            : 0;
+        todoRows + (input.review && input.review.total > 0 ? 1 : 0);
     const available = Math.max(1, cap - 1 - summaryRows - TRAIL_FLOOR);
     // The "+N more" marker costs a row of its own, so it has to come out of the
     // roster's allowance -- otherwise it pushes the trail past the budget and the
@@ -580,15 +592,41 @@ export function renderStatusWidget(input: StatusWidgetInput, theme: any): string
         out.push(line([[`   +${input.phases.length - roster.length} more`, "dim"]]));
     }
 
-    // ── ledger summary: counts, not the ledgers themselves ──────────────────
-    const summary: string[] = [];
-    if (input.todos && input.todos.total > 0) {
-        summary.push(`todos ${input.todos.done}/${input.todos.total}`);
+    // ── the todo ledger ─────────────────────────────────────────────────────
+    // Listed in full when it fits, because "which phase is it on" is the thing
+    // the ledger answers and a count does not. Collapses to "todos 2/3" when the
+    // rows are not there -- a truncated ledger is worse than a count, since it
+    // reads as the whole list.
+    const todoItems = input.todos?.items ?? [];
+    const reviewSummary =
+        input.review && input.review.total > 0
+            ? `review ${input.review.done}/${input.review.total}`
+            : "";
+    const spentSoFar = out.length;
+    const roomForTodos = cap - spentSoFar - (reviewSummary ? 1 : 0) - TRAIL_FLOOR;
+
+    if (todoItems.length > 0 && roomForTodos >= todoItems.length) {
+        // The [•] rows are the first `inProgress` UNFINISHED items: a finished
+        // phase never carries the mark, and a wave never marks more than remain.
+        const active = Math.max(1, input.todos?.inProgress ?? 1);
+        const inFlight = new Set(
+            todoItems
+                .map((it, i) => (it.done ? -1 : i))
+                .filter((i) => i >= 0)
+                .slice(0, active),
+        );
+        todoItems.forEach((it, i) => {
+            const running = input.running && !it.done && inFlight.has(i);
+            const mark = it.done ? "[x]" : running ? "[•]" : "[ ]";
+            const color = it.done ? "dim" : running ? "accent" : "muted";
+            out.push(line([["   "], [`${mark} ${phaseTitleOnly(it.label)}`, color]]));
+        });
+    } else if (input.todos && input.todos.total > 0) {
+        out.push(
+            line([["   " + `todos ${input.todos.done}/${input.todos.total}`, "muted"]]),
+        );
     }
-    if (input.review && input.review.total > 0) {
-        summary.push(`review ${input.review.done}/${input.review.total}`);
-    }
-    if (summary.length) out.push(line([["   " + summary.join(" · "), "muted"]]));
+    if (reviewSummary) out.push(line([["   " + reviewSummary, "muted"]]));
 
     // ── what it is doing this second ────────────────────────────────────────
     // The tail last, so the newest line sits closest to the prompt.

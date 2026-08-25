@@ -256,6 +256,51 @@ describe("renderStatusWidget", () => {
         assert.ok(out.some((l) => /\+\d+ more/.test(l)), "overflow is counted");
     });
 
+    it("lists the todo ledger and marks the phase being worked on", () => {
+        const items = [
+            { label: "Phase 1: tokens — tests: grep audit", done: true },
+            { label: "Phase 2: component rules", done: false },
+            { label: "Phase 3: literal audit", done: false },
+        ];
+        const out = renderStatusWidget({
+            ...base, phases: [phase({ status: "running" })], maxLines: 20,
+            todos: { done: 1, total: 3, items, inProgress: 1 },
+            activity: ["→ read"],
+        } as any, theme);
+        assert.ok(out.some((l) => l.includes("[x] Phase 1")), "done item");
+        assert.ok(out.some((l) => l.includes("[•] Phase 2")), "the one in flight");
+        assert.ok(out.some((l) => l.includes("[ ] Phase 3")), "not started");
+        // The ledger carries its test evidence; the widget shows the title only.
+        assert.ok(!out.some((l) => l.includes("grep audit")), "evidence stripped");
+    });
+
+    it("marks every phase a parallel wave is on", () => {
+        const items = [
+            { label: "Phase 1", done: false },
+            { label: "Phase 2", done: false },
+            { label: "Phase 3", done: false },
+        ];
+        const out = renderStatusWidget({
+            ...base, phases: [phase({ status: "running" })], maxLines: 20,
+            todos: { done: 0, total: 3, items, inProgress: 2 },
+        } as any, theme);
+        assert.equal(out.filter((l) => l.includes("[•]")).length, 2);
+    });
+
+    it("collapses the ledger to a count when the rows are not there", () => {
+        // A truncated ledger reads as the whole list, which is worse than a count.
+        const items = Array.from({ length: 20 }, (_, i) => ({
+            label: `Phase ${i}`, done: false,
+        }));
+        const out = renderStatusWidget({
+            ...base, phases: [phase({ status: "running" })], maxLines: 10,
+            todos: { done: 0, total: 20, items, inProgress: 1 },
+            activity: ["a", "b", "c"],
+        } as any, theme);
+        assert.ok(out.some((l) => l.includes("todos 0/20")), "fell back to the count");
+        assert.ok(!out.some((l) => l.includes("[ ] Phase 19")), "no partial ledger");
+    });
+
     it("omits ledger counts that have nothing in them", () => {
         const out = renderStatusWidget({
             ...base,
