@@ -1352,6 +1352,15 @@ describe("subagentExtArgs", () => {
             else process.env.PI_AGENT_MEMORY = saved;
         }
     });
+    it("passes -e edit-repair.ts to any agent that can edit", () => {
+        // The 41% edit-rejection rate is not specific to one role, so the hook
+        // follows the TOOL rather than the agent: whoever can edit, gets it.
+        const has = (t: string) =>
+            subagentExtArgs(t).some((a) => a.endsWith("edit-repair.ts"));
+        assert.ok(has("read,edit,bash"), "an editing agent");
+        assert.ok(!has("read,grep,find,ls"), "a read-only agent has nothing to hook");
+        assert.ok(!has("read,write,ls"), "write without edit is not the edit tool");
+    });
     it("passes -e dispatch.ts when tools include a dispatch tool", () => {
         const a = subagentExtArgs("read,dispatch_agent,ls");
         assert.equal(a[0], "-e");

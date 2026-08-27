@@ -3454,6 +3454,15 @@ export function subagentExtArgs(tools: string, readOnlyBash = false, opts?: { ob
     // add`. repo-guard covers exactly that gap; read-only agents already have those
     // three blocked by readonly-policy, so it would be redundant for them.
     else if (hasBash) add("repo-guard.ts");
+    // edit-repair.ts makes the `edit` tool survive whitespace the model cannot
+    // see. Measured over the obs sink: 991 edit calls, 408 rejected (41%), and
+    // the biggest classifiable cause was `oldText` reproducing aligned text with
+    // its padding flattened. Loaded for every agent that HAS `edit` -- the rate
+    // is not specific to one role (phase-implementer 44.6%, implementer 32.4%,
+    // orchestrator 34.8%), which is also why run.sh loads it for the main
+    // session. Agents without `edit` have nothing for it to hook.
+    if (/\bedit\b/.test(t)) add("edit-repair.ts");
+
     // Live observability: when PI_OBS=1, every sub-agent emits ObsEvents to the
     // shared sink so the dashboard shows the whole pipeline. PI_OBS_AGENT (set on
     // the spawn env) labels which agent's lane the events land in. opts.obs forces
