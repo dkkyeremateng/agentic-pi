@@ -3979,8 +3979,9 @@ export function spawnAgentWithModel(
         // ZERO output means the child is blocked, not thinking. Kill on that
         // instead, and slow-but-working agents are never touched.
         //
-        // Off by default (0) so no existing run changes behaviour; opt in with
-        // PI_WORKFLOW_AGENT_STALL (minutes).
+        // The caller sets this; agent-workflow defaults it to 20 minutes after a
+        // run in which a foreground mock server held one bash call for 2h13m
+        // while this watchdog sat disabled. 0 still means off.
         let stalled = false;
         let lastOutputAt = Date.now();
         phase.lastOutputAt = lastOutputAt;

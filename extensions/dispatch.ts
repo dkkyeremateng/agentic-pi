@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { coerceJsonArrayArg } from "../utils/workflow/tool-args";
 import { Text, Markdown } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { appendFileSync } from "fs";
@@ -326,6 +327,13 @@ export default function (pi: ExtensionAPI) {
                 },
             ),
         }),
+        // Some models send `agents` as a JSON-encoded string rather than an
+        // array. pi validates against the schema BEFORE any extension hook can
+        // see the call, so this is the only place it can be fixed -- and the
+        // only reason it needs fixing here is that pi's equivalent fix lives
+        // inside its own edit tool. 2 of 6 dispatch_parallel calls in a month
+        // died on it, each one a whole parallel wave that never started.
+        prepareArguments: (args: unknown) => coerceJsonArrayArg(args, "agents") as any,
         // See dispatch_agent — never overlap a pipeline run in the same batch.
         executionMode: "sequential",
         async execute(_id, params, signal, onUpdate, ctx) {
@@ -391,6 +399,9 @@ export default function (pi: ExtensionAPI) {
                     "Agent names (case-insensitive), in dispatch order. Must be loaded agents from .pi/agents/.",
             }),
         }),
+        // Same JSON-string-for-array coercion as dispatch_parallel; the shape
+        // error does not care what the array holds.
+        prepareArguments: (args: unknown) => coerceJsonArrayArg(args, "agents") as any,
         async execute(_id, params, _signal, _onUpdate, ctx) {
             const names = (params as { agents: string[] }).agents || [];
             widgetCtx = ctx;
