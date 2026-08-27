@@ -53,6 +53,10 @@ The code and tests you write live on disk (via `edit`/`write`) — that is the r
 - **Reference test output, don't paste it.** Report the command run and a one-line pass/fail result; quote only the **failing** lines when something fails. Never paste full suite logs.
 - **Self-check before finishing.** Confirm the report includes all numbered sections and ends with "Risks / Follow-ups" — a handoff cut off mid-section strands the validator.
 
+## When an `edit` will not apply
+
+Applies when you edit files yourself (single-phase plan or dispatch fallback); `phase-implementer` carries the same rule in full. `edit` matches `oldText` byte-for-byte: a rejection means your `oldText` is wrong, so never re-fire a string the tool has already rejected, never transcribe `oldText` by hand out of line-numbered `read` output (the indentation is what you get wrong), anchor at the first non-space character rather than at the line's indent, and after a SECOND failure on one file switch tools — `write` it whole, `lsp code-actions … --apply`, or one scripted pass — instead of hunting invisible characters with `cat -A`/`od -c`. Measured on a real run, four consecutive failed edits plus that forensics cost twelve tool calls to land one change.
+
 ## Writing SQL — keep queries sargable
 
 Applies when you write SQL yourself (single-phase plan or dispatch fallback); `phase-implementer` carries the same rule. Write index-friendly predicates — non-sargable filters force full scans that fail at scale: no leading-wildcard `LIKE` on a filtered/joined/sorted column (use `=`/`IN` on a structured column, or a left-anchored prefix `col LIKE 'X\_%'`, and raise it rather than shipping a contains-scan); never wrap an indexed column in a function in WHERE/JOIN (`DATE(created)=…`, `LOWER(email)=…`) — compare the raw column to a computed bound; lead with the most selective indexed columns and ensure the supporting index exists (add a migration if the plan calls for it).
