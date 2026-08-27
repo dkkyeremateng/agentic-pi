@@ -34,13 +34,17 @@ Leave the tree green.
 
 ## When an `edit` will not apply
 
-`edit` matches `oldText` byte-for-byte, including leading whitespace, so "Could not find the exact text" means your `oldText` is wrong — not that the file is strange. Retrying it cannot make it right, and the loop is expensive: measured on a real run, four consecutive failed edits on one file plus the byte-forensics they triggered cost **twelve tool calls to land a single change**, and that run's worker spent 95 turns on a two-phase plan.
+`edit` matches `oldText` byte-for-byte. "Could not find the exact text" means the string you sent is not in the file — retrying it cannot make it true, and the loop is expensive: measured on a real run, four consecutive failed edits on one file plus the byte-forensics they triggered cost **twelve tool calls to land a single change**, and that worker spent 95 turns on a two-phase plan.
 
-- **Never send the same `oldText` twice.** A second identical failure carries no information the first did not. If you are about to re-fire a string the tool has already rejected, stop and change the approach instead.
-- **Do not transcribe `oldText` by hand from a `read`.** Read output carries line numbers and a separator, and rebuilding the indentation from it is exactly what fails — a tab becomes a space and the match dies silently. In the measured run the agent DID re-read between attempts and still mistranscribed the indent, so re-reading alone is not the fix.
-- **Anchor where there is no leading whitespace.** Start `oldText` at the first non-space character of a distinctive line and extend it until it is unique, rather than starting at the line's indentation. Indentation is what you get wrong; leave it out of the match.
-- **After the SECOND failure on a file, stop editing it and switch tools.** `write` the whole file when it is small, `lsp code-actions … --apply` for an import or quick-fix, or make the change in one scripted pass. Do NOT open a forensics loop (`cat -A`, `od -c`, repeated `python3` heredocs) hunting an invisible character — that is a symptom of retrying a broken approach, not a way out of it, and it is where the turns go.
-- **`edits` is an array of objects**, not a JSON-encoded string. Passing the string fails validation before the file is even read.
+**The usual cause is a collapsed run of whitespace.** In that run the file held column-aligned help text — `fmt.Fprintln(stdout, " --version         print the version and exit")` — and every failed attempt sent `" --version print the version and exit"`, the nine spaces flattened to one. The leading tab was correct; the run inside the line was not. Aligned columns, padded tables and ASCII art are where this bites, because the extra spaces carry no meaning to you and all of it to the matcher.
+
+- **Copy `oldText` out of the `read` output — never retype it.** `read` hands you the file's exact bytes, tabs and all. The failure is in reproducing them, not in getting them.
+- **Prefer the shortest unique span, and keep whitespace runs out of it.** Anchor on a fragment to one side of an aligned column rather than spanning the padding.
+- **Never send the same `oldText` twice.** A second identical failure carries no information the first did not.
+- **When the failing line has alignment or padding, suspect a collapsed run first** — re-read that line and copy it. Do NOT open a forensics loop (`cat -A`, `od -c`, repeated `python3` heredocs): in the measured run five such calls found nothing, because there was nothing invisible to find.
+- **After the second failure on one file, switch tools** — `write` it whole when it is small, `lsp code-actions … --apply` for an import or quick-fix, or one scripted pass.
+- **Send one edit per call when a match is uncertain.** A multi-edit call fails as a unit, so one bad `oldText` discards the edits beside it that would have applied.
+- **`edits` is an array of objects**, not a JSON-encoded string. One call failed validation before the file was even read.
 
 If this phase genuinely only integrates with a later one and cannot stand alone, say so plainly in your report rather than faking a green intermediate.
 
