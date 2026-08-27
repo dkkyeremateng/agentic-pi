@@ -346,6 +346,7 @@ EXT=(
     -e "$DIR/extensions/agent-workflow.ts"
     -e "$DIR/extensions/footer.ts"
     -e "$DIR/extensions/revert.ts"
+    -e "$DIR/extensions/edit-repair.ts"
 )
 
 # Live observability (Phase 2): the orchestrator and every sub-agent emit
