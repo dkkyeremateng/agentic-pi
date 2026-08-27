@@ -3750,6 +3750,31 @@ export function projectSessionHash(cwd: string): string {
     return `${safe.slice(0, 40)}-${hash}`;
 }
 
+// Silence-based stall kill, in ms, from PI_WORKFLOW_AGENT_STALL (minutes).
+//
+// Shared so the two spawn paths cannot disagree. They already did: agent-workflow
+// armed the watchdog while dispatch.ts never passed one, which left every
+// DISPATCHED agent unguarded -- and dispatched agents are where the damage was.
+// The 2h13m hang that motivated turning this on was a `phase-implementer`, which
+// only ever runs via dispatch, so the watchdog would have missed the exact case
+// it was armed for.
+//
+// 20 minutes by default. Measured over 2026-07-27 -> 08-27, the longest bash call
+// that was not hung ran 9 minutes and the median ran 4.4 seconds, so this leaves
+// better than 2x headroom over the slowest real work. An explicit 0 disables it.
+export const AGENT_STALL_DEFAULT_MIN = 20;
+
+export function agentStallMsFromEnv(
+    env: { PI_WORKFLOW_AGENT_STALL?: string } = process.env,
+): number {
+    const raw = env.PI_WORKFLOW_AGENT_STALL;
+    const min =
+        raw === undefined || raw.trim() === ""
+            ? AGENT_STALL_DEFAULT_MIN
+            : parseFloat(raw) || 0;
+    return Math.max(0, min) * 60_000;
+}
+
 export function spawnAgentWithModel(
     agentDef: AgentDef,
     task: string,

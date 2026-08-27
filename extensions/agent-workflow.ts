@@ -119,6 +119,7 @@ import {
     parseProgressLedger,
     buildReviewChecklist,
     REVIEW_CHECKLIST,
+    agentStallMsFromEnv,
 } from "../utils/workflow/workflow-core";
 import {
     newOrchestratorState,
@@ -166,29 +167,10 @@ const WORKER_MODEL = process.env.PI_WORKFLOW_MODEL || "";
 const AGENT_TIMEOUT_MS =
     Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_TIMEOUT || "0") || 0) *
     60_000;
-// Stall watchdog (PI_WORKFLOW_AGENT_STALL, in minutes). Kills a child that has
-// emitted NOTHING for this long — see the rationale at the stall timer in
-// workflow-core: silence separates "blocked" from "slow", which a wall-clock
-// limit cannot.
-//
-// ON by default at 20 minutes, which it was not. Measured over a month of runs
-// (2026-07-27 -> 08-27): a phase-implementer started an HTTP mock server in the
-// FOREGROUND and that one bash call ran **2h13m**, emitting nothing, until the
-// run was abandoned. Off by default, the watchdog written for exactly that case
-// never fired. Nothing legitimate came close in the same window -- the longest
-// non-hung call was 9 minutes, and the median bash call 4.4 seconds -- so 20
-// leaves better than 2x headroom over the slowest real work.
-//
-// PI_WORKFLOW_AGENT_STALL overrides it; an explicit 0 turns it off.
-const STALL_DEFAULT_MIN = 20;
-const rawStall = process.env.PI_WORKFLOW_AGENT_STALL;
-const AGENT_STALL_MS =
-    Math.max(
-        0,
-        rawStall === undefined || rawStall.trim() === ""
-            ? STALL_DEFAULT_MIN
-            : parseFloat(rawStall) || 0,
-    ) * 60_000;
+// Stall watchdog: kills a child that has emitted NOTHING for this long. Default
+// and rationale live in workflow-core.agentStallMsFromEnv, shared with
+// dispatch.ts so the two spawn paths cannot arm it differently.
+const AGENT_STALL_MS = agentStallMsFromEnv();
 // Opt-in curated cross-agent context bundle (on by default). When enabled, each
 // later phase receives a "Shared run context" block containing the durable artifacts
 // earlier agents produced (recon, review, etc.) that the task builders do not

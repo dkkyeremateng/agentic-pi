@@ -36,6 +36,7 @@ import {
     renderSelectAgentsResult,
     type AgentDef,
     type PhaseState,
+    agentStallMsFromEnv,
 } from "../utils/workflow/workflow-core";
 import {
     newOrchestratorState,
@@ -166,6 +167,10 @@ export default function (pi: ExtensionAPI) {
         state: st,
         sessionDir: () => sessionDir,
         agentTimeoutMs: AGENT_TIMEOUT_MS,
+        // Dispatched agents were spawned with NO stall watchdog, which is where
+        // it was needed most: the 2h13m foreground-server hang that armed this
+        // by default was a `phase-implementer`, and those only run via dispatch.
+        agentStallMs: agentStallMsFromEnv(),
         updateWidget: () => emitUpdate(),
         liveProcs,
         ctx: () => widgetCtx,
