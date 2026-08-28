@@ -9,6 +9,7 @@ import {
     reviewTask,
     projectSessionHash,
     parsePlanPhases,
+    agentsWithNoPinnedModel,
     planChangedFiles,
     isSmallPlan,
     parseProgressLedger,
@@ -2999,5 +3000,60 @@ describe("planChangedFiles / isSmallPlan", () => {
         assert.equal(isSmallPlan(phases(2)), false);
         assert.equal(isSmallPlan(""), false, "empty plan");
         assert.equal(isSmallPlan(phases(1) + "\n## Critical Files\nsome prose, no paths\n"), true);
+    });
+});
+
+describe("agentsWithNoPinnedModel", () => {
+    const defs = (spec: Record<string, string | undefined>) => {
+        const m = new Map<string, AgentDef>();
+        for (const [k, model] of Object.entries(spec))
+            m.set(k, { name: k, model: model ?? "" } as AgentDef);
+        return m;
+    };
+
+    it("names every agent left to the session default", () => {
+        // The condition is invisible at run time and expensive only afterwards:
+        // unpinned runs landed on `auto` at 11-15x per turn for no better pass
+        // rate, and ~46% of the sink's spend went to those turns.
+        const out = agentsWithNoPinnedModel(
+            ["scout", "planner"],
+            defs({ scout: undefined, planner: undefined }),
+            "",
+        );
+        assert.deepEqual(out, ["scout", "planner"]);
+    });
+
+    it("says nothing when PI_WORKFLOW_MODEL pins them all at once", () => {
+        const out = agentsWithNoPinnedModel(
+            ["scout", "planner"],
+            defs({ scout: undefined, planner: undefined }),
+            "prov/pinned",
+        );
+        assert.deepEqual(out, []);
+    });
+
+    it("respects a frontmatter pin per agent", () => {
+        const out = agentsWithNoPinnedModel(
+            ["scout", "planner"],
+            defs({ scout: "prov/small", planner: undefined }),
+            "",
+        );
+        assert.deepEqual(out, ["planner"]);
+    });
+
+    it("respects PI_AGENT_<NAME>_MODEL", () => {
+        const saved = process.env.PI_AGENT_SCOUT_MODEL;
+        try {
+            process.env.PI_AGENT_SCOUT_MODEL = "prov/small";
+            const out = agentsWithNoPinnedModel(
+                ["scout", "planner"],
+                defs({ scout: undefined, planner: undefined }),
+                "",
+            );
+            assert.deepEqual(out, ["planner"]);
+        } finally {
+            if (saved === undefined) delete process.env.PI_AGENT_SCOUT_MODEL;
+            else process.env.PI_AGENT_SCOUT_MODEL = saved;
+        }
     });
 });
