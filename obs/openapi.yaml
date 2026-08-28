@@ -756,7 +756,9 @@ components:
           description: >
             Type-specific. Highlights — turn_end: turnIndex, tokens{input,
             output,cacheRead,cacheWrite,total}, costUsd, durationMs, tps,
-            prefillMs, context{tokens,window,percent}, model, stopReason;
+            prefillMs, context{tokens,window,percent}, model, resolvedModel
+            ("provider/id" the configured `model` resolved to; absent on older
+            events and when the runtime exposes none), stopReason;
             tool_start/end: toolCallId, toolName, arg/argsText, durationMs,
             isError, result/resultText; boot: tools[], skills[],
             contextFiles[{path,bytes,hash}], promptChars, promptHash;

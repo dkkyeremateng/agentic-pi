@@ -243,7 +243,10 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
         switch (ev.type) {
             case "session_start":
                 if (p.model) {
-                    models.add(String(p.model));
+                    // Prefer what the configured name resolved to: a session on pi's
+                    // router reports `model: "auto"` on every turn, which tells the
+                    // reader nothing about what actually served it.
+                    models.add(String(p.resolvedModel ?? p.model));
                     a.model = String(p.model);
                 }
                 break;
@@ -289,7 +292,10 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
                         Number(p.context.percent) || 0,
                     );
                 if (p.model) {
-                    models.add(String(p.model));
+                    // Prefer what the configured name resolved to: a session on pi's
+                    // router reports `model: "auto"` on every turn, which tells the
+                    // reader nothing about what actually served it.
+                    models.add(String(p.resolvedModel ?? p.model));
                     a.model = String(p.model);
                 }
                 turnRecs.push({
@@ -392,7 +398,10 @@ export function buildRunDigest(events: ObsEvent[]): RunDigest {
                 });
                 break;
             case "model_change":
-                if (p.model) models.add(String(p.model));
+                // Prefer what the configured name resolved to: a session on pi's
+                // router reports `model: "auto"` on every turn, which tells the
+                // reader nothing about what actually served it.
+                if (p.model || p.resolvedModel) models.add(String(p.resolvedModel ?? p.model));
                 break;
         }
     }
