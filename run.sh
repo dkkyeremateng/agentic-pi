@@ -336,6 +336,22 @@ export PI_DISPATCH_STREAM="${PI_DISPATCH_STREAM:-1}"
 # per-machine home; this line is what makes a fresh clone behave on any machine.
 export PI_CLEAR_ON_SHRINK="${PI_CLEAR_ON_SHRINK:-1}"
 
+# Vendor-patch preflight. `pi update` replaces globally-installed packages and
+# silently drops every hand-applied patch; install.sh applies them but an upgrade
+# never re-runs install.sh, so this is the only place that notices. Warn, never
+# block — a missing patch degrades the run, it does not break it.
+#
+# This is not hypothetical: the 0.84.3 upgrade wiped the pruner patch, and without
+# it a headless sub-agent flushes only on its final assistant message, i.e. once,
+# after the work is done. Measured unpatched: 252,289 of a 256,000-token window
+# and a turn truncated with stopReason "length".
+PRUNE_INDEX="${PI_CONTEXT_PRUNE_DIR:-$HOME/.pi/agent/npm/node_modules/pi-context-prune}/index.ts"
+if [ -f "$PRUNE_INDEX" ] &&
+    ! grep -qF "PATCH (agentic-pi): headless pressure-triggered pruning" "$PRUNE_INDEX"; then
+    printf '\033[33mwarning:\033[0m pi-context-prune is unpatched — sub-agents will only prune at the END of a run.\n' >&2
+    printf '         A pi upgrade wipes it. Restore with: \033[1mnpm run patch:prune\033[0m\n' >&2
+fi
+
 # dispatch.ts first (the workflow depends on it for dispatch_agent/select_agents).
 # interactive.ts adds the ask_user tool for the primary session.
 # footer.ts renders the status bar from the state agent-workflow.ts publishes, so

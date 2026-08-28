@@ -21,8 +21,31 @@ PI_BIN="$(command -v pi || true)"
     exit 1
 }
 
-# Resolve the pi package root from its bin (following symlinks): <pkg>/dist/cli.js
-PI_PKG="$(node -e 'const fs=require("fs"),p=require("path");console.log(p.resolve(fs.realpathSync(process.argv[1]),"..",".."));' "$PI_BIN")"
+# Resolve the pi package root by walking UP from the bin until a package.json
+# with pi's own name appears. Do not assume how deep the entry point sits: pi
+# 0.84.3 moved it from <pkg>/dist/cli.js to <pkg>/dist/bundle/cli.js, and the
+# old fixed `../..` silently resolved to <pkg>/dist — breaking `npm test` and
+# `npm run typecheck` on upgrade, with an error that pointed at the types being
+# missing rather than at the path being wrong.
+PI_PKG="$(node -e '
+const fs = require("fs"), p = require("path");
+let dir = p.dirname(fs.realpathSync(process.argv[1]));
+for (let i = 0; i < 10; i++) {
+    const pkg = p.join(dir, "package.json");
+    if (fs.existsSync(pkg)) {
+        try {
+            if (JSON.parse(fs.readFileSync(pkg, "utf8")).name === "@earendil-works/pi-coding-agent") {
+                console.log(dir);
+                process.exit(0);
+            }
+        } catch {}
+    }
+    const up = p.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+}
+process.exit(1);
+' "$PI_BIN")"
 [[ -f "$PI_PKG/dist/index.d.ts" ]] || {
     echo "link-pi-types: could not locate pi types at '$PI_PKG'" >&2
     exit 1

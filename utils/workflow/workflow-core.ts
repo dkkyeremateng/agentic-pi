@@ -1316,6 +1316,37 @@ export function resolveAgentModel(
     if (def?.model) return def.model;
     return workflowModel || fallback;
 }
+// Agents for which NOTHING pins a model — no runtime override, no
+// PI_AGENT_<NAME>_MODEL, no frontmatter `model:`, no PI_WORKFLOW_MODEL — so they
+// fall through to whatever the session happens to be on.
+//
+// This is worth naming because of what it cost. Across the obs sink that
+// fallthrough landed on the gateway's `auto`, and `auto` is not a cheaper
+// average of the alternatives -- it is 11 to 15 times the per-turn cost of the
+// pinned model, for **no better outcome**:
+//
+//     dominant model   runs  pass  fail   $/turn
+//     dspark            129   125     3   0.0072
+//     auto               39    37     2   0.0814   11x, and a LOWER pass rate
+//
+// Roughly $109 of the sink's ~$235 -- 46% of everything spent -- went to turns
+// on `auto`, nearly all of them from runs where nothing was pinned. Hence a
+// notice rather than silence: the condition is invisible at run time and
+// expensive only in hindsight.
+export function agentsWithNoPinnedModel(
+    agentKeys: string[],
+    agents: Map<string, AgentDef>,
+    workflowModel: string,
+): string[] {
+    if (workflowModel) return []; // PI_WORKFLOW_MODEL pins every agent at once
+    return agentKeys.filter((key) => {
+        const k = key.toLowerCase();
+        if (runtimeModelOverrides.get(k)) return false;
+        if (process.env[agentModelEnvVar(k)]) return false;
+        return !agents.get(k)?.model;
+    });
+}
+
 // Project agents in `.pi/agents/` take precedence; extension agents serve as fallback.
 export function loadAgents(cwd: string): Map<string, AgentDef> {
     const agents = new Map<string, AgentDef>();

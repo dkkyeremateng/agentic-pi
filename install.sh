@@ -231,10 +231,45 @@ say "linking pi types into node_modules"
 npm run -s setup:types || warn "type linking failed — typecheck/tests may not resolve pi types."
 
 # 6. context pruner (recommended; registers in pi's global config)
+#
+#    The install is only half of it. `pi install` lays down UPSTREAM
+#    pi-context-prune, whose `agent-message` mode flushes on the final assistant
+#    message only — sensible interactively, useless in a `pi -p` sub-agent, which
+#    has exactly one final message, at the end. Unpatched, a phase-implementer was
+#    measured at 252,289 of a 256,000-token window and truncated with stopReason
+#    "length". So the patch is part of installing the pruner, not an optional
+#    extra, and it runs here rather than being left to a command nobody remembers.
+#
+#    `pi update` replaces the package and wipes it again — see the marker check in
+#    run.sh, which is what actually catches that, since an upgrade never re-runs
+#    this installer.
 if [ "$WITH_PRUNE" -eq 1 ]; then
     say "installing pi-context-prune (recommended context manager)"
-    pi install npm:pi-context-prune ||
+    if pi install npm:pi-context-prune; then
+        say "patching pi-context-prune for headless sub-agents"
+        npm run -s patch:prune ||
+            warn "could not patch pi-context-prune — sub-agents will flush only at the end of a run. Re-run: npm run patch:prune"
+        # The "pruner loaded" banner is a real setting now (it was a source edit
+        # before). Written only when unset, so an explicit choice is never
+        # overwritten.
+        PRUNE_SETTINGS="$HOME/.pi/agent/context-prune/settings.json"
+        mkdir -p "$(dirname "$PRUNE_SETTINGS")" 2>/dev/null || true
+        python3 - "$PRUNE_SETTINGS" <<'PYEOF' 2>/dev/null || true
+import json, os, sys
+path = sys.argv[1]
+try:
+    cfg = json.load(open(path)) if os.path.exists(path) else {}
+except Exception:
+    sys.exit(0)  # unreadable/hand-edited: leave it entirely alone
+if not isinstance(cfg, dict) or "showStartupNotice" in cfg:
+    sys.exit(0)
+cfg["showStartupNotice"] = False
+json.dump(cfg, open(path, "w"), indent=2)
+print("  set showStartupNotice=false (suppresses the per-session 'pruner loaded' banner)")
+PYEOF
+    else
         warn "could not install pi-context-prune — the workflow still runs on pi's built-in compaction."
+    fi
 else
     say "skipping pi-context-prune (--no-context-prune)"
 fi

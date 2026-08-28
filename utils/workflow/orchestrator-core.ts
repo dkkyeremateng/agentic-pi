@@ -22,6 +22,7 @@ import {
     failPhase,
     validatePlan,
     parsePlanPhases,
+    agentsWithNoPinnedModel,
     isSmallPlan,
     clampOutput,
     contextBundleForPhase,
@@ -631,6 +632,26 @@ async function runWorkflowCoreImpl(
             h.setup.hasCommits ? h.setup.hasCommits(cwd) : true,
         );
         if (note) h.ui.notify(note, "warning");
+    }
+
+    // Preflight: say up front when nothing pins a model, because the fallthrough
+    // is invisible at run time and expensive only in hindsight. Measured across
+    // the obs sink, unpinned runs landed on the gateway's `auto` at 11-15x the
+    // per-turn cost of the pinned model for no better outcome (dspark: 125/128
+    // pass at $0.0072/turn; auto: 37/39 pass at $0.0814), and ~46% of everything
+    // spent went to those turns.
+    const unpinned = agentsWithNoPinnedModel(
+        s.phases.map((p) => p.agent),
+        s.agents,
+        // The same value agent-workflow passes as the workflow model
+        // (`PI_WORKFLOW_MODEL || ""`); set, it pins every agent at once.
+        process.env.PI_WORKFLOW_MODEL || "",
+    );
+    if (unpinned.length) {
+        h.ui.notify(
+            `No model is pinned for ${unpinned.length === s.phases.length ? "any agent" : unpinned.join(", ")} — they will run on whatever this session is on. Measured over past runs, that fallthrough cost 11-15x per turn with no better pass rate. Pin one with PI_WORKFLOW_MODEL, PI_AGENT_<NAME>_MODEL, or a \`model:\` line in the agent's frontmatter.`,
+            "warning",
+        );
     }
     if (hasImplementer && !hasPlanner && !hasExistingPlan) {
         // Nothing to build from: no planner to produce a plan, and none on disk.
