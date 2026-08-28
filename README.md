@@ -120,9 +120,33 @@ downstream agents, so it is never re-threaded through the context.
   | files re-read | none | none |
 
   Interactive sessions are untouched (`every-turn` keeps its upstream branch;
-  `agent-message` with a UI still flushes on the final message). `pi update` wipes
-  the patch, so re-run `npm run patch:prune` after upgrading; `-- --revert` restores
-  upstream.
+  `agent-message` with a UI still flushes on the final message). `-- --revert`
+  restores upstream.
+
+  **`install.sh` applies this patch for you**, right after it installs the pruner —
+  it is part of installing it, not an optional extra. But `pi update` replaces the
+  package and wipes the patch, and an upgrade never re-runs the installer, so
+  **`run.sh` checks for the patch marker at startup and warns when it is gone**.
+  That check is the thing that actually catches an upgrade; it warns rather than
+  blocking, because an unpatched pruner degrades a run without breaking it. Restore
+  with `npm run patch:prune`.
+
+  The installer also sets `showStartupNotice: false` in
+  `~/.pi/agent/context-prune/settings.json` to suppress the per-session "pruner
+  loaded" banner — and only when the key is absent, so an explicit choice is never
+  overwritten. This used to require editing the package source; upstream now has a
+  real setting for it.
+
+  **Suppress pi's `Model:` status line — `npm run patch:statusline`.** Optional and
+  separate: every model switch pushes a `Model: <id>` line into the transcript,
+  where it stacks up in scrollback, while the footer already shows the active
+  model. This one edits pi's own package, so **neither `install.sh` nor `run.sh`
+  runs it** — it is opt-in, idempotent, and `-- --revert` puts it back.
+
+  It finds its target by content rather than by path, because pi moves files:
+  0.84.3 relocated `dist/core/interactive-mode.js` to
+  `dist/modes/interactive/interactive-mode.js`, which silently invalidated the
+  hand-edit this script replaced.
 
 ### The sticky widget is a status line, not a dashboard
 
