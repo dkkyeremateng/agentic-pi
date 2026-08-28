@@ -119,6 +119,7 @@ import {
     parseProgressLedger,
     buildReviewChecklist,
     REVIEW_CHECKLIST,
+    agentStallMsFromEnv,
 } from "../utils/workflow/workflow-core";
 import {
     newOrchestratorState,
@@ -166,14 +167,10 @@ const WORKER_MODEL = process.env.PI_WORKFLOW_MODEL || "";
 const AGENT_TIMEOUT_MS =
     Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_TIMEOUT || "0") || 0) *
     60_000;
-// Stall watchdog (PI_WORKFLOW_AGENT_STALL, in minutes). 0 / unset = off. Kills a
-// child that has emitted NOTHING for this long — see the rationale at the stall
-// timer in workflow-core: silence separates "blocked" from "slow", which a
-// wall-clock limit cannot. 20 is a sane opt-in value; a healthy agent streams
-// events every few seconds, so even a long model call stays far under it.
-const AGENT_STALL_MS =
-    Math.max(0, parseFloat(process.env.PI_WORKFLOW_AGENT_STALL || "0") || 0) *
-    60_000;
+// Stall watchdog: kills a child that has emitted NOTHING for this long. Default
+// and rationale live in workflow-core.agentStallMsFromEnv, shared with
+// dispatch.ts so the two spawn paths cannot arm it differently.
+const AGENT_STALL_MS = agentStallMsFromEnv();
 // Opt-in curated cross-agent context bundle (on by default). When enabled, each
 // later phase receives a "Shared run context" block containing the durable artifacts
 // earlier agents produced (recon, review, etc.) that the task builders do not

@@ -6,6 +6,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { coerceJsonArrayArg } from "../utils/workflow/tool-args";
 import { emitNotification } from "../utils/shared/notify";
 
 const OTHER = "Other (type my own answer)";
@@ -33,6 +34,10 @@ export default function (pi: ExtensionAPI) {
                 }),
             ),
         }),
+        // `options` is optional, so a JSON-string value fails the schema rather
+        // than degrading to a free-text prompt. Same coercion as the dispatch
+        // tools -- see utils/workflow/tool-args.
+        prepareArguments: (args: unknown) => coerceJsonArrayArg(args, "options") as any,
         async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
             const { question, options, allow_other } = params as {
                 question: string;

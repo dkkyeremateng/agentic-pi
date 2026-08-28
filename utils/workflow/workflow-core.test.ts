@@ -47,6 +47,7 @@ import {
     stickyContextUsage,
     parseAgentFile,
     subagentExtArgs,
+    agentStallMsFromEnv,
     shouldApproveProjectForSpawn,
     spawnSessionName,
     loadSkills,
@@ -1315,6 +1316,34 @@ describe("parseAgentFile aliases", () => {
         );
         assert.equal(def?.model, "");
         assert.equal(def?.contextWindow, 0);
+    });
+});
+
+describe("agentStallMsFromEnv", () => {
+    // The watchdog is only useful if BOTH spawn paths arm it identically. They
+    // did not: agent-workflow armed it, dispatch.ts passed nothing, and the
+    // 2h13m hang that motivated turning it on was a dispatched phase-implementer.
+    it("defaults to 20 minutes when unset or blank", () => {
+        assert.equal(agentStallMsFromEnv({}), 20 * 60_000);
+        assert.equal(agentStallMsFromEnv({ PI_WORKFLOW_AGENT_STALL: "" }), 20 * 60_000);
+        assert.equal(agentStallMsFromEnv({ PI_WORKFLOW_AGENT_STALL: "   " }), 20 * 60_000);
+    });
+
+    it("honours an explicit override", () => {
+        assert.equal(agentStallMsFromEnv({ PI_WORKFLOW_AGENT_STALL: "5" }), 5 * 60_000);
+        assert.equal(agentStallMsFromEnv({ PI_WORKFLOW_AGENT_STALL: "1.5" }), 90_000);
+    });
+
+    it("treats an explicit 0 as off, not as the default", () => {
+        // The escape hatch has to keep working, or the default becomes a trap.
+        assert.equal(agentStallMsFromEnv({ PI_WORKFLOW_AGENT_STALL: "0" }), 0);
+    });
+
+    it("falls back to off on junk rather than to the default", () => {
+        // Someone who set the variable meant to control it; silently arming a
+        // 20-minute killer on a typo would be the wrong surprise.
+        assert.equal(agentStallMsFromEnv({ PI_WORKFLOW_AGENT_STALL: "abc" }), 0);
+        assert.equal(agentStallMsFromEnv({ PI_WORKFLOW_AGENT_STALL: "-5" }), 0);
     });
 });
 

@@ -322,3 +322,38 @@ function commandTokens(seg: string): string[] {
     }
     return toks;
 }
+
+// Searches rooted at the filesystem root. `find / …` walks every mounted volume,
+// every node_modules and every permission-denied branch, and in an agent run it
+// is always the wrong instrument: the thing being looked for is in the working
+// directory, in a known package path, or nowhere.
+//
+// Measured over a month of runs (2026-07-27 -> 08-27): 24 such calls burned
+// **4347 seconds** — 1.2 hours — at 5 to 9 minutes each, hunting things like a
+// SKILL.md and a vendored .go file. Every one of them was a `find /`.
+//
+// Deliberately narrow: the root must be EXACTLY `/`. `find /Users/me/project`
+// and `find .` are ordinary and pass untouched, so this cannot block a scoped
+// search that merely happens to be absolute.
+export function blockedRootSearch(cmd: string): string[] {
+    if (typeof cmd !== "string" || !/\bfind\b/.test(cmd)) return [];
+    const bad: string[] = [];
+    for (const seg of segments(cmd)) {
+        const toks = commandTokens(seg);
+        const head = toks[0] || "";
+        const base = head.includes("/")
+            ? head.slice(head.lastIndexOf("/") + 1)
+            : head;
+        if (base !== "find") continue;
+        // The search roots are the leading non-flag operands, before the first
+        // predicate (`-name`, `-path`, …). Any one of them being "/" is enough.
+        for (const t of toks.slice(1)) {
+            if (t.startsWith("-")) break;
+            if (t === "/") {
+                bad.push("find /");
+                break;
+            }
+        }
+    }
+    return bad;
+}

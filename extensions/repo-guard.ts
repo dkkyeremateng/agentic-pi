@@ -17,13 +17,29 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
-import { blockedRepoCreation } from "../utils/guards/readonly-policy";
+import {
+    blockedRepoCreation,
+    blockedRootSearch,
+} from "../utils/guards/readonly-policy";
 
 export default function (pi: ExtensionAPI) {
     pi.on("tool_call", (event) => {
         if (!isToolCallEventType("bash", event)) return undefined;
         const input = event.input as { command?: string; cmd?: string };
-        const bad = blockedRepoCreation(input.command ?? input.cmd ?? "");
+        const cmd = input.command ?? input.cmd ?? "";
+        if (blockedRootSearch(cmd).length > 0) {
+            return {
+                block: true,
+                reason:
+                    "Blocked: `find /` searches every mounted volume and every " +
+                    "permission-denied branch, and takes minutes to return " +
+                    "nothing useful. Scope the search: use the `find`/`grep` " +
+                    "tools (confined to the working directory), or give `find` a " +
+                    "real starting directory. If the file is genuinely outside " +
+                    "the project, name the package or install path directly.",
+            };
+        }
+        const bad = blockedRepoCreation(cmd);
         if (bad.length === 0) return undefined;
         return {
             block: true,

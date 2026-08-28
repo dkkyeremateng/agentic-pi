@@ -6,6 +6,7 @@ import {
     blockedRepoCreation,
     ghArgsReadOnly,
     gitArgsReadOnly,
+    blockedRootSearch,
 } from "./readonly-policy";
 
 describe("ghArgsReadOnly", () => {
@@ -281,5 +282,46 @@ describe("blockedRepoCreation", () => {
             "gh pr create --draft",
         ];
         for (const c of shipper) assert.deepEqual(blockedRepoCreation(c), [], c);
+    });
+});
+
+describe("blockedRootSearch", () => {
+    // 24 calls in a month burned 4347s -- 5 to 9 minutes each -- and every one
+    // was literally `find /`.
+    it("blocks the exact shapes seen in the logs", () => {
+        assert.deepEqual(
+            blockedRootSearch('find / -path "*/encore.dev/request*" -name "*.go" 2>/dev/null | head'),
+            ["find /"],
+        );
+        assert.deepEqual(blockedRootSearch('find / -name "SKILL.md" -path "*lsp*"'), ["find /"]);
+    });
+
+    it("finds it inside a compound command", () => {
+        const cmd = 'cd /Users/me/proj && grep -rn "river" go.mod | head && find / -path "*river*" | head -3';
+        assert.deepEqual(blockedRootSearch(cmd), ["find /"]);
+        const many = 'echo "searching"; find / -name "stats.test.ts"; find / -name "stats.ts"';
+        assert.equal(blockedRootSearch(many).length, 2);
+    });
+
+    it("leaves a scoped search alone, however absolute", () => {
+        // The narrowness is the point: only the filesystem ROOT is refused.
+        assert.deepEqual(blockedRootSearch("find /Users/me/project -name x"), []);
+        assert.deepEqual(blockedRootSearch("find . -name x"), []);
+        assert.deepEqual(blockedRootSearch("find src -name x"), []);
+        assert.deepEqual(blockedRootSearch('find "$PWD" -name x'), []);
+        assert.deepEqual(blockedRootSearch("find ./ -name x"), []);
+    });
+
+    it("does not fire on other commands that mention a root path", () => {
+        assert.deepEqual(blockedRootSearch("ls / | head"), []);
+        assert.deepEqual(blockedRootSearch("df -h /"), []);
+        assert.deepEqual(blockedRootSearch('grep -rn "x" /'), []);
+        assert.deepEqual(blockedRootSearch("echo find /"), []);
+    });
+
+    it("handles junk without throwing", () => {
+        assert.deepEqual(blockedRootSearch(""), []);
+        assert.deepEqual(blockedRootSearch(undefined as any), []);
+        assert.deepEqual(blockedRootSearch("find"), []);
     });
 });

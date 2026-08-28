@@ -24,6 +24,7 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import {
     blockedCommands,
     blockedFileWrites,
+    blockedRootSearch,
 } from "../utils/guards/readonly-policy";
 
 export default function (pi: ExtensionAPI) {
@@ -31,6 +32,19 @@ export default function (pi: ExtensionAPI) {
         if (!isToolCallEventType("bash", event)) return undefined;
         const input = event.input as { command?: string; cmd?: string };
         const cmd = input.command ?? input.cmd ?? "";
+
+        if (blockedRootSearch(cmd).length > 0) {
+            return {
+                block: true,
+                reason:
+                    "Blocked: `find /` searches every mounted volume and every " +
+                    "permission-denied branch, and takes minutes to return " +
+                    "nothing useful. Scope the search: use the `find`/`grep` " +
+                    "tools (confined to the working directory), or give `find` a " +
+                    "real starting directory. If the file is genuinely outside " +
+                    "the project, name the package or install path directly.",
+            };
+        }
 
         // File writes through the shell are reported separately from mutating
         // gh/git, because the fix differs: the agent should use its `write` tool
