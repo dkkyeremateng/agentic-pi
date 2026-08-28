@@ -2397,6 +2397,81 @@ export function parsePlanPhases(plan: string): string[] {
     return out;
 }
 
+// A plan small enough that per-phase workers cost more than they save.
+//
+// The dispatch design exists to keep each phase in a fresh context: on a long
+// plan the coordinator's window fills with earlier phases' file reads and test
+// output, quality drops, and the handoff truncates. None of that threatens a
+// two-file change, and the machinery is not free -- measured on a Go CLI flag
+// (`run-mtc1zz7l-p0ngf`), two dispatched phases cost **$7.22 of the run's
+// $9.49** across 95 turns, plus two 18k-char worker prompts and a prompt-cache
+// re-bill on the coordinator for each wait.
+//
+// Both signals are required. Phase count alone would inline a two-phase plan
+// spanning twenty files, which is exactly the context bloat workers prevent;
+// file count is what actually predicts it.
+export const INLINE_MAX_PHASES = 2;
+export const INLINE_MAX_FILES = 3;
+
+// Files a plan will CHANGE, from its `## Critical Files` section. Reference-only
+// rows do not count -- a plan that reads ten files to modify two is a small
+// change, and counting reads would defeat the floor on exactly the careful plans
+// that list their context.
+//
+// Handles both shapes the planner emits: the documented table (`| \`path\` |
+// Modify |`) and the bare bullet list that older plans and the tests use
+// (`- \`path\``). Returns null when there is no Critical Files section at all,
+// which the caller must treat as "unknown", never as "zero".
+export function planChangedFiles(plan: string): string[] | null {
+    const lines = (plan || "").split(/\r?\n/);
+    const start = lines.findIndex((l) => /^#{1,6}\s+Critical Files\b/i.test(l));
+    if (start === -1) return null;
+    const out: string[] = [];
+    for (const raw of lines.slice(start + 1)) {
+        if (/^#{1,6}\s+/.test(raw)) break; // next section ends it
+        const line = raw.trim();
+        if (!line || /^\|?\s*-{3,}/.test(line)) continue; // table rule
+        let path = "";
+        let action = "";
+        if (line.startsWith("|")) {
+            const cells = line.split("|").map((c) => c.trim());
+            // ["", path, action, ""] for a well-formed row
+            path = cells[1] || "";
+            action = cells[2] || "";
+            if (/^file$/i.test(path)) continue; // header row
+        } else if (line.startsWith("-")) {
+            path = line.replace(/^-\s*/, "");
+        } else continue;
+        path = path.replace(/`/g, "").trim();
+        // A bullet may carry its action inline ("- `a.ts` — Reference").
+        if (!action) {
+            const m = /[—-]\s*(reference|new|modify)\b/i.exec(path);
+            if (m) {
+                action = m[1];
+                path = path.slice(0, m.index).trim();
+            }
+        }
+        if (!path || path.includes(" ")) continue; // prose, not a path
+        if (/^reference\b/i.test(action.trim())) continue;
+        if (!out.includes(path)) out.push(path);
+    }
+    return out;
+}
+
+// Whether this plan should be implemented inline rather than dispatched.
+//
+// Conservative on missing information: a plan whose Critical Files section
+// cannot be parsed is NOT small, because the floor's failure mode matters --
+// wrongly inlining a large plan reintroduces the context bloat workers exist to
+// prevent, while wrongly dispatching a small one only costs a little.
+export function isSmallPlan(plan: string): boolean {
+    const phases = parsePlanPhases(plan).length;
+    if (phases === 0 || phases > INLINE_MAX_PHASES) return false;
+    const files = planChangedFiles(plan);
+    if (files === null) return false;
+    return files.length <= INLINE_MAX_FILES;
+}
+
 // One entry of the implementer's progress ledger (.agent/progress.md). Feeds the
 // dashboard's live Todos panel as the implementer flips phases [ ] -> [x].
 export interface ProgressItem {

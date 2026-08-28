@@ -102,6 +102,15 @@ function sinkPath(_cwd: string): string {
 // every event. The flag lives on the module instance (shared across calls).
 let registered = false;
 
+// "provider/id" for the model a turn actually ran on, or undefined when the
+// runtime does not expose one. Kept separate from the configured `model` name
+// so a router alias ("auto") and its resolution are both on the record.
+function resolvedModelOf(ctx: any): string | undefined {
+    const m = ctx?.model;
+    if (!m?.id) return undefined;
+    return m.provider ? `${m.provider}/${m.id}` : m.id;
+}
+
 export default function obsLive(pi: any): void {
     if (!enabled() || registered) return;
     registered = true;
@@ -493,6 +502,13 @@ export default function obsLive(pi: any): void {
             prefillMs: prefillMs || undefined,
             context,
             model: e?.message?.model ?? e?.message?.responseModel,
+            // What the configured name actually RESOLVED to. `model` above is
+            // whatever was configured, which for a session on pi's router is the
+            // literal string "auto" -- every run in the sink reports that, so
+            // there is currently no way to tell what auto chose, whether it
+            // switched mid-session, or which agents are on an expensive model.
+            // ctx.model is the resolved Model ({id, provider}).
+            resolvedModel: resolvedModelOf(ctx),
             stopReason: e?.message?.stopReason,
             toolResults: Array.isArray(e?.toolResults)
                 ? e.toolResults.length

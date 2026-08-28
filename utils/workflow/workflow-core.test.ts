@@ -9,6 +9,8 @@ import {
     reviewTask,
     projectSessionHash,
     parsePlanPhases,
+    planChangedFiles,
+    isSmallPlan,
     parseProgressLedger,
     buildReviewChecklist,
     REVIEW_CHECKLIST,
@@ -2935,5 +2937,67 @@ describe("the documenter appears in the report", () => {
         );
         assert.ok(full.includes(long));
         assert.ok(!/output truncated/.test(full));
+    });
+});
+
+describe("planChangedFiles / isSmallPlan", () => {
+    const phases = (n: number) =>
+        Array.from({ length: n }, (_, i) => `## Phase ${i + 1}: Step ${i + 1}\nwork\n`).join("\n");
+
+    it("counts a Critical Files table, ignoring Reference rows", () => {
+        // A plan that reads ten files to change two is a small change; counting
+        // reads would defeat the floor on exactly the plans careful enough to
+        // list their context.
+        const plan = phases(2) + `
+## Critical Files
+
+| File | Action |
+|------|--------|
+| \`src/a.ts\` | New |
+| \`src/b.ts\` | Modify (rename the export) |
+| \`src/c.ts\` | Reference |
+| \`src/d.ts\` | Reference |
+`;
+        assert.deepEqual(planChangedFiles(plan), ["src/a.ts", "src/b.ts"]);
+        assert.equal(isSmallPlan(plan), true);
+    });
+
+    it("handles the bare bullet list older plans use", () => {
+        const plan = phases(1) + "\n## Critical Files\n- `a.ts`\n- `b.ts` — Reference\n";
+        assert.deepEqual(planChangedFiles(plan), ["a.ts"]);
+        assert.equal(isSmallPlan(plan), true);
+    });
+
+    it("stops at the next section", () => {
+        const plan = phases(1) + `
+## Critical Files
+- \`a.ts\`
+
+## Reusable Components (no changes needed)
+- \`big-untouched.ts\`
+`;
+        assert.deepEqual(planChangedFiles(plan), ["a.ts"]);
+    });
+
+    it("is NOT small once either signal trips", () => {
+        const table = (n: number) =>
+            "\n## Critical Files\n\n| File | Action |\n|---|---|\n" +
+            Array.from({ length: n }, (_, i) => `| \`f${i}.ts\` | Modify |`).join("\n") + "\n";
+        // too many files, few phases -- the case phase-count-alone would miss
+        assert.equal(isSmallPlan(phases(2) + table(4)), false);
+        assert.equal(isSmallPlan(phases(2) + table(3)), true);
+        // too many phases, few files
+        assert.equal(isSmallPlan(phases(3) + table(1)), false);
+        assert.equal(isSmallPlan(phases(2) + table(1)), true);
+    });
+
+    it("treats an unparseable plan as NOT small", () => {
+        // The failure modes are asymmetric: wrongly inlining a large plan brings
+        // back the context bloat workers exist to prevent; wrongly dispatching a
+        // small one costs a little time.
+        assert.equal(planChangedFiles(phases(2)), null, "no Critical Files section");
+        assert.equal(isSmallPlan(phases(2)), false);
+        assert.equal(isSmallPlan(""), false, "empty plan");
+        assert.equal(isSmallPlan(phases(1) + "\n## Critical Files\nsome prose, no paths\n"), true);
     });
 });

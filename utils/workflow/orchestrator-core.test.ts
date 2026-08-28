@@ -4494,6 +4494,31 @@ describe("fresh-context audit", () => {
         assert.equal(freshContextViolated(SINGLE, 0, dir), false);
     });
 
+    it("never flags a plan under the inline floor — inlining it is compliance", () => {
+        // The audit and agents/implementer.md must agree exactly. If this fired,
+        // the implementer would be re-run for obeying its own instructions,
+        // costing more than the dispatch the floor exists to save.
+        const dir = histDir();
+        const SMALL = [
+            "## Phase 1: First",
+            "Edit `src/a.ts`.",
+            "",
+            "## Phase 2: Second",
+            "Edit `src/b.ts`.",
+            "",
+            "## Acceptance Criteria",
+            "- it works",
+            "",
+            "## Critical Files",
+            "- `src/a.ts`",
+            "- `src/b.ts`",
+        ].join("\n");
+        assert.equal(freshContextViolated(SMALL, 0, dir), false);
+        // ... and still flags the same plan once it grows past the floor.
+        const BIG = SMALL + "\n- `src/c.ts`\n- `src/d.ts`\n";
+        assert.equal(freshContextViolated(BIG, 0, dir), true);
+    });
+
     it("retries the implementer once, with the violation named in the task", async () => {
         const agents = new Map<string, AgentDef>();
         for (const n of ["implementer", "reviewer"]) agents.set(n, mkAgent(n));
@@ -4597,7 +4622,14 @@ describe("fresh-context audit — retry only when it can achieve something", () 
         "- it works",
         "",
         "## Critical Files",
+        // Four changed files puts this ABOVE the inline floor (<=2 phases AND
+        // <=3 files), so the audit still applies and this suite keeps testing
+        // the path it means to. At one file it would be a legitimate inline
+        // plan and no violation could be raised.
         "- src/a.ts",
+        "- src/b.ts",
+        "- src/c.ts",
+        "- src/d.ts",
     ].join("\n");
 
     it("skips the pointless retry when every phase is already checked off, but still flags it", async () => {

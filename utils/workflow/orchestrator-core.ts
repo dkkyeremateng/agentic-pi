@@ -22,6 +22,7 @@ import {
     failPhase,
     validatePlan,
     parsePlanPhases,
+    isSmallPlan,
     clampOutput,
     contextBundleForPhase,
     buildWorkflowReport,
@@ -1678,6 +1679,12 @@ export function freshContextViolated(
     phasesCompleted = 0,
 ): boolean {
     if (parsePlanPhases(plan).length < 2) return false;
+    // A plan under the inline floor is ALLOWED to run in one context, so not
+    // dispatching it is compliance, not a violation. This has to agree with
+    // agents/implementer.md exactly: if the audit still fired here, the
+    // implementer would be re-run for following its own instructions -- which
+    // costs more than the dispatch the floor was meant to save.
+    if (isSmallPlan(plan)) return false;
     const sessions = countDispatchesSince(sinceMs, "phase-implementer", dir);
     if (sessions === 0) return true;
     // Reuse is judged over ALL dispatches: an errored one still had a session, and
@@ -1703,7 +1710,7 @@ export function freshContextRetryNote(phaseCount: number): string {
         `PROCESS VIOLATION — retry required. This plan has ${phaseCount} phases, but they did not each run in a FRESH \`phase-implementer\` context: either nothing was dispatched, or separate phases shared one worker session and so inherited each other's transcript. That is exactly what this role exists to prevent — by the later phases the window is full of earlier phases' file reads and test output, which is where quality drops and the handoff truncates.`,
         "",
         "Redo this run as the coordinator you are:",
-        "- Partition the plan's phases into ordered waves, then dispatch EVERY phase to a `phase-implementer` (`dispatch_parallel` for a 2+-phase wave, `dispatch_agent` for a single-phase wave). No exceptions for phases that look small.",
+        "- Partition the plan's phases into ordered waves, then dispatch EVERY phase to a `phase-implementer` (`dispatch_parallel` for a 2+-phase wave, `dispatch_agent` for a single-phase wave). This plan is above the inline floor (3 or fewer changed files across 2 or fewer phases), so no phase is exempt for looking small.",
         "- Give each worker a self-contained task: the exact phase number and title, the plan path, that earlier waves are green, and — in a parallel wave — the files it owns and a ban on every other file.",
         "- Keep the bookkeeping yours: verify each phase's targeted tests yourself, flip its `[x]`, commit its checkpoint.",
         "- Phases already marked `[x]` in `.agent/progress.md` are done and green: do NOT redo them, continue from the first unchecked phase.",
