@@ -2806,6 +2806,7 @@ export function reviewTask(
     original: string,
     implSummary: string,
     priorReview = "",
+    diffAudit = "",
 ): string {
     const lines = [
         "Review the implementation the implementer just produced against the plan.",
@@ -2826,6 +2827,7 @@ export function reviewTask(
             clampOutput(priorReview, 3000),
         );
     }
+    if (diffAudit.trim()) lines.push(diffAudit);
     return lines.join("\n");
 }
 
@@ -2893,7 +2895,11 @@ export function fixTask(
     ].join("\n");
 }
 
-export function validateTask(original: string, implSummary: string): string {
+export function validateTask(
+    original: string,
+    implSummary: string,
+    diffAudit = "",
+): string {
     return [
         "Validate the completed work as the independent gate. RUN the full test suite",
         "yourself (including the tests the implementer wrote) and confirm EVERY",
@@ -2906,6 +2912,10 @@ export function validateTask(original: string, implSummary: string): string {
         "",
         "Implementer's change summary (lists the code AND tests it wrote):",
         implSummary,
+        // A green suite is necessary and not sufficient: it cannot see an
+        // expectation that was edited to agree with regressed output. When the
+        // audit found that shape, running the tests is the WEAKER evidence.
+        diffAudit,
     ].join("\n");
 }
 
