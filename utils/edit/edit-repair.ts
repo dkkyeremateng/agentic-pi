@@ -501,9 +501,9 @@ export function partialReason(path: string, outcomes: EditOutcome[]): string {
     const done = list("satisfied");
     const bad = list("missing");
     const lines = [
-        `This ${outcomes.length}-edit call was not run: pi applies a multi-edit ` +
-            "call as a UNIT, so one bad oldText would discard the rest. Here is " +
-            `exactly where each edit stands in ${path}:`,
+        `That ${outcomes.length}-edit call failed as a UNIT: pi applies a ` +
+            "multi-edit call all-or-nothing, so one bad oldText discarded the " +
+            `rest. Here is exactly where each edit stands in ${path}:`,
         "",
     ];
     if (fine.length)
@@ -523,11 +523,44 @@ export function partialReason(path: string, outcomes: EditOutcome[]): string {
     }
     lines.push(
         "",
-        "Re-send them as SEPARATE single-edit calls, not one batch. A single edit " +
-            "that misses costs you one call; a batch that misses costs you all of " +
-            "them, which is why this one was stopped.",
+        "Re-send them as SEPARATE single-edit calls, not one batch. A single " +
+            "edit that misses costs you one call; a batch that misses costs you " +
+            "all of them.",
     );
     return lines.join("\n");
+}
+
+/**
+ * The guidance to APPEND to pi's own error, for a decision that is not a repair.
+ *
+ * Why appended rather than substituted for the call. Every non-repair decision
+ * used to return `block: true`, which stops pi's edit from running at all. That
+ * looked harmless -- the edit was going to fail anyway -- but a blocked tool
+ * reads to the agent as a tool that does not work, and the measurements say it
+ * responded by leaving: python3-heredoc calls per edit call went 1.5, 1.1, 1.9,
+ * 1.7 across four runs and then **3.5** in the run with the most blocking. Once
+ * the agent is manipulating files with shell scripts, this module sees nothing,
+ * the diff audit does not run until review, and whitespace damage lands silently
+ * -- which is exactly the class of bug we have been chasing all along.
+ *
+ * So the call now goes through, pi reports its own failure in its own words, and
+ * this rides along underneath. Same information, without teaching the agent that
+ * `edit` is unreliable.
+ */
+export function guidanceFor(
+    path: string,
+    decision: EditDecision,
+): string | null {
+    switch (decision.kind) {
+        case "satisfied":
+            return satisfiedReason(path, decision.index);
+        case "explain":
+            return explainReason(path, decision.index, decision.actual);
+        case "partial":
+            return partialReason(path, decision.outcomes);
+        default:
+            return null;
+    }
 }
 
 /** A one-line audit record. Whitespace is escaped so a run is visible as a run. */

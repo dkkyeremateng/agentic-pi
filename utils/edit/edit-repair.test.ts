@@ -403,6 +403,9 @@ describe("classifyBatch / partial", () => {
         assert.match(r, /edits\[0, 2\] — FINE/);
         assert.match(r, /edits\[1\] — NOT FOUND/);
         assert.match(r, /SEPARATE single-edit calls/);
+        // The wording must describe what pi DID (failed the call), not what the
+        // hook used to do (block it) -- the hook no longer blocks anything.
+        assert.ok(!/was not run|was stopped/.test(r), "no stale blocking language");
     });
 
     it("leaves a batch alone when every edit will apply", () => {

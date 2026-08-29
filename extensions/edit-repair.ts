@@ -33,9 +33,7 @@ import { isAbsolute, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import {
     decideEdit,
-    explainReason,
-    satisfiedReason,
-    partialReason,
+    guidanceFor,
     formatRepair,
     type EditPair,
 } from "../utils/edit/edit-repair";
@@ -60,6 +58,15 @@ export default function (pi: ExtensionAPI) {
     pi.on("session_start", async (_event, ctx) => {
         cwd = ctx?.cwd || process.cwd();
     });
+
+    // Guidance computed at tool_call time, waiting for its tool_result. Keyed by
+    // toolCallId and deleted on use. Bounded so a result that never arrives (an
+    // aborted turn) cannot grow it without limit.
+    const pending = new Map<string, string>();
+    const remember = (id: string, text: string) => {
+        if (pending.size > 64) pending.clear();
+        pending.set(id, text);
+    };
 
     pi.on("tool_call", (event) => {
         if (!isToolCallEventType("edit", event)) return undefined;
@@ -86,39 +93,40 @@ export default function (pi: ExtensionAPI) {
 
         const decision = decideEdit(body, input.edits as EditPair[]);
 
-        if (decision.kind === "partial") {
-            const bad = decision.outcomes.filter((o) => o.state === "missing").length;
-            audit(`PARTIAL ${path} ${decision.outcomes.length} edits, ${bad} unmatched`);
-            return {
-                block: true,
-                reason: partialReason(path, decision.outcomes),
-            };
-        }
-
-        if (decision.kind === "satisfied") {
-            audit(`SATISFIED ${path} edits[${decision.index}]`);
-            return {
-                block: true,
-                reason: satisfiedReason(path, decision.index),
-            };
-        }
-
-        if (decision.kind === "explain") {
-            audit(`EXPLAIN ${path} edits[${decision.index}]`);
-            return {
-                block: true,
-                reason: explainReason(path, decision.index, decision.actual),
-            };
-        }
-
         if (decision.kind === "repair") {
             // Mutating `event.input` in place is how pi's hook contract says to
             // change arguments ("To modify arguments, mutate `event.input` in
             // place instead"), so the edit proceeds with the corrected oldText.
             input.edits = decision.edits;
             for (const r of decision.repairs) audit(`REPAIR ${formatRepair(path, r)}`);
+            return undefined;
         }
 
+        const guidance = guidanceFor(path, decision);
+        if (guidance) {
+            audit(`${decision.kind.toUpperCase()} ${path} (advisory)`);
+            remember(event.toolCallId, guidance);
+        }
+        // Never block -- see the note at the top of this file.
         return undefined;
+    });
+
+    pi.on("tool_result", (event) => {
+        // isToolCallEventType narrows tool_call events only; a result event
+        // carries the same toolName, so compare it directly.
+        if (event.toolName !== "edit") return undefined;
+        const guidance = pending.get(event.toolCallId);
+        if (!guidance) return undefined;
+        pending.delete(event.toolCallId);
+        // Only speak up about a call that actually failed. If pi applied the
+        // edit despite our reading of the file, our diagnosis was wrong and
+        // saying it anyway would be worse than saying nothing.
+        if (!event.isError) return undefined;
+        return {
+            content: [
+                ...(event.content ?? []),
+                { type: "text" as const, text: `\n\n${guidance}` },
+            ],
+        };
     });
 }
