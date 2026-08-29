@@ -35,6 +35,7 @@ import {
     decideEdit,
     explainReason,
     satisfiedReason,
+    partialReason,
     formatRepair,
     type EditPair,
 } from "../utils/edit/edit-repair";
@@ -84,6 +85,15 @@ export default function (pi: ExtensionAPI) {
         }
 
         const decision = decideEdit(body, input.edits as EditPair[]);
+
+        if (decision.kind === "partial") {
+            const bad = decision.outcomes.filter((o) => o.state === "missing").length;
+            audit(`PARTIAL ${path} ${decision.outcomes.length} edits, ${bad} unmatched`);
+            return {
+                block: true,
+                reason: partialReason(path, decision.outcomes),
+            };
+        }
 
         if (decision.kind === "satisfied") {
             audit(`SATISFIED ${path} edits[${decision.index}]`);

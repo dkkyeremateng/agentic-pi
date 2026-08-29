@@ -9,6 +9,8 @@ import {
     decideEdit,
     explainReason,
     satisfiedReason,
+    partialReason,
+    classifyBatch,
     MAX_OLD_TEXT_CHARS,
 } from "./edit-repair";
 
@@ -261,7 +263,7 @@ describe("decideEdit", () => {
         assert.equal(d.actual, "def f():\n    return 1");
     });
 
-    it("explains before repairing, because a call fails as a unit", () => {
+    it("routes a mixed BATCH to partial, which supersedes explain-first", () => {
         // Repairing edits[1] would be wasted work: edits[0] cannot land, so the
         // call was always going to be rejected. The useful answer is why.
         const body = GO + "\ndef f():\n    return 1\n";
@@ -269,9 +271,12 @@ describe("decideEdit", () => {
             { oldText: "def f():\n return 1", newText: "y" },
             repairable,
         ]);
-        assert.equal(d.kind, "explain");
-        if (d.kind !== "explain") return;
-        assert.equal(d.index, 0);
+        // Was "explain" (name the first blocker). For a batch the partial
+        // breakdown says everything explain did AND which siblings were fine,
+        // which is the whole point of the batch path.
+        assert.equal(d.kind, "partial");
+        if (d.kind !== "partial") return;
+        assert.equal(d.outcomes[0].state, "missing");
     });
 
     it("passes when the mismatch is not about whitespace", () => {
@@ -326,6 +331,69 @@ describe("decideEdit reports an already-applied change", () => {
         assert.match(r, /run this phase's tests/);
         // The failure mode was handing back bytes to copy. It must not do that.
         assert.ok(!r.includes("Copy that exactly"), "no copy-these-bytes advice");
+    });
+});
+
+describe("classifyBatch / partial", () => {
+    // The strongest signal in the run data, and the one I spent five PRs missing:
+    // pi applies a multi-edit call as a UNIT, so failure climbs with batch size
+    // (1 edit 36%, 2 edits 56%, 3 edits 64%, 4+ 67%) and the agent then re-derives
+    // the WHOLE batch, including the edits that were already correct.
+    const body = 'func a() { println("alpha") }\nfunc c() { println("gamma") }\n';
+
+    it("names which edits are fine and which are not", () => {
+        const d = decideEdit(body, [
+            { oldText: 'println("alpha")', newText: 'println("ALPHA")' },
+            { oldText: 'println("nope")', newText: 'println("X")' },
+            { oldText: 'println("gamma")', newText: 'println("GAMMA")' },
+        ]);
+        assert.equal(d.kind, "partial");
+        if (d.kind !== "partial") return;
+        assert.deepEqual(
+            d.outcomes.map((o) => o.state),
+            ["applies", "missing", "applies"],
+        );
+        const r = partialReason("x.go", d.outcomes);
+        assert.match(r, /edits\[0, 2\] — FINE/);
+        assert.match(r, /edits\[1\] — NOT FOUND/);
+        assert.match(r, /SEPARATE single-edit calls/);
+    });
+
+    it("leaves a batch alone when every edit will apply", () => {
+        // Intervening on a batch that would have worked would be pure cost.
+        const d = decideEdit(body, [
+            { oldText: 'println("alpha")', newText: 'println("ALPHA")' },
+            { oldText: 'println("gamma")', newText: 'println("GAMMA")' },
+        ]);
+        assert.notEqual(d.kind, "partial");
+    });
+
+    it("flags an already-applied edit inside a batch, so it is dropped not redone", () => {
+        // The satisfied case needs a FLATTENED run: widening stretches a run the
+        // model wrote, it cannot delete spaces the file does not have.
+        const aligned = 'func a() { println("alpha") }\nvar x = 1;    var y = 2;\n';
+        const d = decideEdit(aligned, [
+            { oldText: 'println("alpha")', newText: 'println("ALPHA")' },
+            // oldText's single space widens to the file's four, which equals
+            // newText -> the change is already in the file.
+            { oldText: "var x = 1; var y = 2;", newText: "var x = 1;    var y = 2;" },
+        ]);
+        assert.equal(d.kind, "partial");
+        if (d.kind !== "partial") return;
+        assert.ok(d.outcomes.some((o) => o.state === "satisfied"));
+        assert.match(partialReason("x.go", d.outcomes), /ALREADY APPLIED/);
+    });
+
+    it("does not change what a single-edit call does", () => {
+        // Every earlier path stays exactly as it was; there is no batch to salvage.
+        assert.equal(
+            decideEdit(body, [{ oldText: 'println("alpha")', newText: "x" }]).kind,
+            "pass",
+        );
+        assert.equal(
+            decideEdit(body, [{ oldText: 'println("nope")', newText: "x" }]).kind,
+            "pass",
+        );
     });
 });
 
