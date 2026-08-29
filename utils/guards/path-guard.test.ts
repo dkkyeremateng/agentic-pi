@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isOutsideCwd, isWithinAny } from "./path-guard";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { isOutsideCwd, isWithinAny, defaultSkillRoots } from "./path-guard";
 
 describe("isOutsideCwd", () => {
     const cwd = "/home/user/project";
@@ -50,5 +52,35 @@ describe("isWithinAny", () => {
     it("ignores falsy roots", () => {
         assert.equal(isWithinAny([cwd, undefined], "src/app.ts"), true);
         assert.equal(isWithinAny([undefined], "/anything"), false);
+    });
+});
+
+describe("defaultSkillRoots covers package-provided skills", () => {
+    // The root that was missing. `pi install npm:<pkg>` puts skills at
+    // <agentDir>/npm/node_modules/<pkg>/skills/<name>/SKILL.md, and pi advertises
+    // them to every agent WITH that path -- so without this root an agent follows
+    // the instruction it was given and we block it. Seen live on
+    // run-mte9oayl-nlqlm: three refused reads of pi-context's context-management.
+    const agentDir = join(homedir(), ".pi", "agent");
+    const roots = () => defaultSkillRoots("/repo/skills");
+
+    it("admits a skill inside an installed package", () => {
+        const p = join(agentDir, "npm", "node_modules", "pi-context", "skills",
+            "context-management", "SKILL.md");
+        assert.equal(isWithinAny(roots(), p), true);
+    });
+
+    it("still admits the bundled and global skill dirs", () => {
+        assert.equal(isWithinAny(roots(), "/repo/skills/lsp/SKILL.md"), true);
+        assert.equal(
+            isWithinAny(roots(), join(agentDir, "skills", "ai-agent-builder", "SKILL.md")),
+            true,
+        );
+    });
+
+    it("still refuses paths outside every root", () => {
+        // The guard's actual job is unchanged: another project stays off limits.
+        assert.equal(isWithinAny(roots(), join(homedir(), "Documents", "other", "x.ts")), false);
+        assert.equal(isWithinAny(roots(), "/etc/passwd"), false);
     });
 });
