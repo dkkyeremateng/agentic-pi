@@ -135,6 +135,42 @@ describe("repairEdits", () => {
         assert.equal((out[0] as any).someFutureFlag, true);
     });
 
+    it("refuses to repair an edit into a no-op", () => {
+        // The production failure this guard exists for (run-mte7ns9m-z8377): the
+        // model is REALIGNING a padded column, so the whitespace this module
+        // normalises away is the very change it is making. The file already holds
+        // the aligned form, so repairing oldText makes oldText === newText and pi
+        // answers "No changes made ... identical content" -- strictly worse than
+        // the truthful "Could not find the exact text", which says the oldText is
+        // stale because the change already landed.
+        const body = 'fmt.Fprintln(w, " --style string    greeting style")\n';
+        const edits = [
+            {
+                oldText: 'fmt.Fprintln(w, " --style string greeting style")',
+                newText: 'fmt.Fprintln(w, " --style string    greeting style")',
+            },
+        ];
+        const { edits: out, repairs } = repairEdits(body, edits);
+        assert.equal(repairs.length, 0, "no repair");
+        assert.equal(out[0].oldText, edits[0].oldText, "left exactly as sent");
+    });
+
+    it("still repairs when newText is a genuine change", () => {
+        // The guard must be narrow: only a repair that lands ON newText is
+        // refused. A real edit whose oldText merely has flattened padding still
+        // gets fixed.
+        const body = 'fmt.Fprintln(w, " --style string    greeting style")\n';
+        const edits = [
+            {
+                oldText: 'fmt.Fprintln(w, " --style string greeting style")',
+                newText: 'fmt.Fprintln(w, " --style string    SOMETHING ELSE")',
+            },
+        ];
+        const { edits: out, repairs } = repairEdits(body, edits);
+        assert.equal(repairs.length, 1);
+        assert.match(out[0].oldText, /string {4}greeting/);
+    });
+
     it("survives malformed input rather than throwing", () => {
         assert.deepEqual(repairEdits(GO, undefined as any).repairs, []);
         assert.deepEqual(repairEdits(GO, [null as any]).repairs, []);

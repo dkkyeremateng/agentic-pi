@@ -151,6 +151,18 @@ export function repairEdits(body: string, edits: EditPair[]): RepairResult {
         if (!edit || typeof edit.oldText !== "string") return edit;
         const found = findFlexMatch(body, edit.oldText);
         if (found === null) return edit;
+        // Never repair an edit into a no-op. When the repaired `oldText` equals
+        // `newText`, the whitespace this module normalises away IS the change the
+        // model is making -- it is realigning a padded column, and the file
+        // already holds the aligned form. Rewriting `oldText` there turns a
+        // truthful "Could not find the exact text" (your oldText is stale, the
+        // change already landed) into "No changes made ... identical content",
+        // which is strictly less informative.
+        //
+        // Observed in production on run-mte7ns9m-z8377: three edits realigning a
+        // `--style` help row were repaired into no-ops, and the agent answered
+        // each one with another round of python3 forensics.
+        if (typeof edit.newText === "string" && found === edit.newText) return edit;
         repairs.push({ index, from: edit.oldText, to: found });
         return { ...edit, oldText: found };
     });
