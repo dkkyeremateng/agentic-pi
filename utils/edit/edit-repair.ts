@@ -267,7 +267,17 @@ export function repairIndent(
     // and the mid-line repair already covers it.
     if (oldLines.length < 2) return null;
 
-    const trim = (l: string) => l.trim();
+    // Compare lines with their INTERNAL whitespace runs collapsed as well as
+    // their indentation stripped. Matching on trim() alone misses the commonest
+    // real shape, where the model flattened both at once:
+    //
+    //   saw:  '\t"hello":    greet.Hello,'
+    //   sent: ' "hello": greet.Hello,'
+    //
+    // trim() leaves the interior padding intact, so those two never matched and
+    // the repair declined. Nine of the ten edit misses in run-mtevhlm5-v6271
+    // were this.
+    const key = (l: string) => l.trim().replace(/[ \t]+/g, " ");
     const indentOf = (l: string) => (/^[ \t]*/.exec(l) || [""])[0];
 
     // Find the run of consecutive file lines whose TRIMMED content equals the
@@ -275,12 +285,12 @@ export function repairIndent(
     // one and we cannot know which the model meant, which is the same
     // uniqueness rule the mid-line repair uses.
     const bodyLines = body.split("\n");
-    const want = oldLines.map(trim);
+    const want = oldLines.map(key);
     const hits: number[] = [];
     for (let i = 0; i + want.length <= bodyLines.length; i++) {
         let ok = true;
         for (let j = 0; j < want.length; j++)
-            if (trim(bodyLines[i + j]) !== want[j]) {
+            if (key(bodyLines[i + j]) !== want[j]) {
                 ok = false;
                 break;
             }
@@ -295,18 +305,22 @@ export function repairIndent(
     // guessing would be speculation.
     const changed = fileLines.some((l, j) => l !== oldLines[j]);
     if (!changed) return null;
-    const onlyIndent = fileLines.every((l, j) => trim(l) === trim(oldLines[j]));
-    if (!onlyIndent) return null;
+    const onlyWhitespace = fileLines.every((l, j) => key(l) === key(oldLines[j]));
+    if (!onlyWhitespace) return null;
 
     // Map trimmed content -> the file's real indentation. Ambiguous content
     // (the same trimmed line twice with DIFFERENT indents) is refused rather
     // than guessed.
-    const indentFor = new Map<string, string>();
+    // Key -> the file's WHOLE line, not merely its indentation. A newText line
+    // the model only mangled can then be restored verbatim, interior alignment
+    // included; without that, rebuilding it as indent + the model's trimmed text
+    // would keep the flattened padding and silently de-align the file -- the
+    // regression #118's audit exists to catch.
+    const lineFor = new Map<string, string>();
     for (const l of fileLines) {
-        const k = trim(l);
-        const ind = indentOf(l);
-        if (indentFor.has(k) && indentFor.get(k) !== ind) return null;
-        indentFor.set(k, ind);
+        const k = key(l);
+        if (lineFor.has(k) && lineFor.get(k) !== l) return null;
+        lineFor.set(k, l);
     }
 
     // Re-indent newText with the same mapping, in three fallbacks. The order
@@ -325,19 +339,24 @@ export function repairIndent(
     const sameShape = newLines.length === fileLines.length;
     let lastKnown = indentOf(fileLines[0]);
     const rebuilt = newLines.map((l, i) => {
-        const k = trim(l);
+        const k = key(l);
         if (!k) return l; // blank lines keep whatever they had
-        const known = indentFor.get(k);
-        if (known !== undefined) {
-            lastKnown = known;
-            return known + k;
+        const exact = lineFor.get(k);
+        if (exact !== undefined) {
+            // The model changed nothing here but the whitespace: put the file's
+            // own line back, byte for byte.
+            lastKnown = indentOf(exact);
+            return exact;
         }
+        // A line whose CONTENT the model really changed: keep its text, give it
+        // the file's indentation.
+        const text = l.trim();
         if (sameShape) {
             const ind = indentOf(fileLines[i]);
             lastKnown = ind;
-            return ind + k;
+            return ind + text;
         }
-        return lastKnown + k;
+        return lastKnown + text;
     });
 
     return { oldText: fileLines.join("\n"), newText: rebuilt.join("\n") };
