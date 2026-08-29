@@ -150,7 +150,17 @@ export function repairEdits(body: string, edits: EditPair[]): RepairResult {
     const out = edits.map((edit, index) => {
         if (!edit || typeof edit.oldText !== "string") return edit;
         const found = findFlexMatch(body, edit.oldText);
-        if (found === null) return edit;
+        if (found === null) {
+            // The mid-line repair declined. Try the indentation repair, which
+            // corrects oldText AND newText together -- the case #115 refused
+            // when only oldText was being rewritten. It is the largest single
+            // category of failure (see repairIndent).
+            const ind = repairIndent(body, edit);
+            if (!ind) return edit;
+            if (ind.oldText === ind.newText) return edit; // no-op, see below
+            repairs.push({ index, from: edit.oldText, to: ind.oldText });
+            return { ...edit, oldText: ind.oldText, newText: ind.newText };
+        }
         // Never repair an edit into a no-op. When the repaired `oldText` equals
         // `newText`, the whitespace this module normalises away IS the change the
         // model is making -- it is realigning a padded column, and the file
@@ -218,6 +228,121 @@ export function diagnoseMismatch(body: string, oldText: string): string | null {
     return matches[0] === oldText ? null : matches[0];
 }
 
+/**
+ * Repair an edit whose LEADING whitespace was flattened, correcting `oldText`
+ * and `newText` together.
+ *
+ * This is the biggest single cause of edit failure, and until now the one case
+ * the module deliberately refused. Measured across four runs, 80% of failed
+ * edits differ from the text the agent had just READ only in whitespace, and the
+ * dominant shape is every line's indentation collapsed to one space:
+ *
+ *   saw:  "\n\t\twantCode         int\n\t\twantStdout       string"
+ *   sent: " wantCode int\n wantStdout string"
+ *
+ * #115 refused indentation repairs for a real reason: rewriting `oldText` alone
+ * makes the edit apply and then replaces the file's indentation with the model's
+ * flattened version, silently reindenting the block. That objection only holds
+ * while `newText` is left alone. Correct BOTH and the intent is preserved.
+ *
+ * The mapping is by line content, not position, so an inserted line is handled:
+ * a `newText` line whose trimmed form appears in `oldText` inherits that line's
+ * real indentation from the file; a genuinely new line inherits the indentation
+ * of the nearest preceding line that did match.
+ *
+ * Returns null unless every safety condition holds — see the guards inline.
+ */
+export function repairIndent(
+    body: string,
+    edit: EditPair,
+): { oldText: string; newText: string } | null {
+    const old = edit?.oldText;
+    const next = edit?.newText;
+    if (typeof old !== "string" || typeof next !== "string") return null;
+    if (!old || body.includes(old)) return null;
+    if (old.length > MAX_OLD_TEXT_CHARS) return null;
+
+    const oldLines = old.split("\n");
+    // Multi-line only. A single line has no indentation structure to restore,
+    // and the mid-line repair already covers it.
+    if (oldLines.length < 2) return null;
+
+    const trim = (l: string) => l.trim();
+    const indentOf = (l: string) => (/^[ \t]*/.exec(l) || [""])[0];
+
+    // Find the run of consecutive file lines whose TRIMMED content equals the
+    // trimmed oldText lines, in order. Require exactly one such run: more than
+    // one and we cannot know which the model meant, which is the same
+    // uniqueness rule the mid-line repair uses.
+    const bodyLines = body.split("\n");
+    const want = oldLines.map(trim);
+    const hits: number[] = [];
+    for (let i = 0; i + want.length <= bodyLines.length; i++) {
+        let ok = true;
+        for (let j = 0; j < want.length; j++)
+            if (trim(bodyLines[i + j]) !== want[j]) {
+                ok = false;
+                break;
+            }
+        if (ok) hits.push(i);
+    }
+    if (hits.length !== 1) return null;
+    const at = hits[0];
+    const fileLines = bodyLines.slice(at, at + want.length);
+
+    // Refuse if this is not actually an indentation problem: when the trimmed
+    // lines already sit at the same indentation, something else differs and
+    // guessing would be speculation.
+    const changed = fileLines.some((l, j) => l !== oldLines[j]);
+    if (!changed) return null;
+    const onlyIndent = fileLines.every((l, j) => trim(l) === trim(oldLines[j]));
+    if (!onlyIndent) return null;
+
+    // Map trimmed content -> the file's real indentation. Ambiguous content
+    // (the same trimmed line twice with DIFFERENT indents) is refused rather
+    // than guessed.
+    const indentFor = new Map<string, string>();
+    for (const l of fileLines) {
+        const k = trim(l);
+        const ind = indentOf(l);
+        if (indentFor.has(k) && indentFor.get(k) !== ind) return null;
+        indentFor.set(k, ind);
+    }
+
+    // Re-indent newText with the same mapping, in three fallbacks. The order
+    // matters and each step earns its place:
+    //
+    //  1. the line's own content is one we recognised -> use ITS indent.
+    //  2. newText has the same line count as oldText -> the line is a
+    //     modification in place, so take the file line at that position. This
+    //     is what a preceding-line heuristic gets wrong: `def f():` sits at
+    //     column 0 while its body does not, so "nearest preceding" would
+    //     dedent the body of every block it rewrote.
+    //  3. otherwise a line is being INSERTED -> the nearest preceding line we
+    //     did recognise is the best available guide (an import added among
+    //     imports, a case added among cases).
+    const newLines = next.split("\n");
+    const sameShape = newLines.length === fileLines.length;
+    let lastKnown = indentOf(fileLines[0]);
+    const rebuilt = newLines.map((l, i) => {
+        const k = trim(l);
+        if (!k) return l; // blank lines keep whatever they had
+        const known = indentFor.get(k);
+        if (known !== undefined) {
+            lastKnown = known;
+            return known + k;
+        }
+        if (sameShape) {
+            const ind = indentOf(fileLines[i]);
+            lastKnown = ind;
+            return ind + k;
+        }
+        return lastKnown + k;
+    });
+
+    return { oldText: fileLines.join("\n"), newText: rebuilt.join("\n") };
+}
+
 /** What will happen to one edit in a batch, decided before the call runs. */
 export interface EditOutcome {
     index: number;
@@ -257,6 +382,7 @@ export function classifyBatch(body: string, edits: EditPair[]): EditOutcome[] {
         if (target !== null && target === edit.newText)
             return { index, state: "satisfied" as const };
         if (target !== null) return { index, state: "repairable" as const };
+        if (repairIndent(body, edit)) return { index, state: "repairable" as const };
         const actual = diagnoseMismatch(body, old);
         return { index, state: "missing" as const, ...(actual ? { actual } : {}) };
     });
