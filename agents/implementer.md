@@ -45,6 +45,8 @@ Everything below — the principles, constraints, checkpoints, and report format
 - Preserve existing behavior unless the task explicitly changes it
 - Make changes only in the target codebase you were asked to modify
 - **Do NOT include any emojis. Emojis are banned.**
+- **Use a skill's SKILL.md path EXACTLY as given to you.** The available-skills list carries each one's real path, and they do not all live in the same directory — a package-provided skill sits under `.../npm/node_modules/<pkg>/skills/<name>/`, not beside the rest. Constructing a path by copying the pattern of its neighbours is what fails: observed live, an agent rewrote a package skill's path to `~/.pi/agent/skills/<name>/SKILL.md` and got ENOENT for a file that existed all along.
+
 
 ## Keep your handoff report bounded (avoid truncation)
 
@@ -69,6 +71,7 @@ Track phase status so progress is visible and a re-run resumes instead of redoin
 **Mark every phase as you finish it — this is mandatory, not optional.** The ledger already lists the phases; you do not create it.
 
 **On startup**
+- **The ledger may not exist — check before you read it.** The orchestrator seeds `.agent/progress.md` on the *pipeline* path, before the implementer phase runs. It does NOT when you are started by an ad-hoc `dispatch_agent`, which skips that setup entirely. Observed live (run-mte90vbr-3v8kp): the read failed with ENOENT because the run had reached you by dispatch. If the file is absent you are running ad-hoc: create it yourself from the plan's phases (`- [ ] Phase N: <title>`, no `Base:` line) and carry on. Do not treat its absence as an error, and do not re-read it hoping it appears.
 - If `.agent/progress.md` already has phases marked `[x]`, you are **resuming**: those are done and green — do NOT rebuild them; re-run their targeted tests once to confirm, then continue from the first unchecked phase. If reviewer/validator feedback implicates an earlier phase, revert to it first (see below) and redo.
 - **If EVERY phase is already `[x]`, this plan has nothing left to build — check the roadmap before you report.** Confirm the ledger is telling the truth first: re-run the phases' targeted tests and the full suite. Then read `roadmap.md` at the working-directory root, if it exists, and find the **first milestone still `- [ ]`**; compare it to the `Milestone: N of M` line in `.agent/plan.md`:
   - **The plan's milestone IS that first unchecked one** — this run's work is done and the milestone is waiting on the reviewer and validator to gate it. Report the suite result and name the next milestone as the follow-up.

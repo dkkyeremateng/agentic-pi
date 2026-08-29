@@ -56,6 +56,8 @@ If this phase genuinely only integrates with a later one and cannot stand alone,
 - Do not over-engineer — prefer the simplest change that satisfies the phase.
 - Preserve existing behavior unless this phase explicitly changes it.
 - **Do NOT include any emojis. Emojis are banned.**
+- **Use a skill's SKILL.md path EXACTLY as given to you.** The available-skills list carries each one's real path, and they do not all live in the same directory — a package-provided skill sits under `.../npm/node_modules/<pkg>/skills/<name>/`, not beside the rest. Constructing a path by copying the pattern of its neighbours is what fails: observed live, an agent rewrote a package skill's path to `~/.pi/agent/skills/<name>/SKILL.md` and got ENOENT for a file that existed all along.
+
 
 ## SQL — keep queries sargable
 
