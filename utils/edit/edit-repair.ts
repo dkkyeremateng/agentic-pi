@@ -218,6 +218,50 @@ export function diagnoseMismatch(body: string, oldText: string): string | null {
     return matches[0] === oldText ? null : matches[0];
 }
 
+/** What will happen to one edit in a batch, decided before the call runs. */
+export interface EditOutcome {
+    index: number;
+    /** applies: matches as sent. repairable: matches once whitespace is widened.
+     *  satisfied: the target already holds newText. missing: no match at all. */
+    state: "applies" | "repairable" | "satisfied" | "missing";
+    /** For `missing`, the file text it evidently meant, when that is knowable. */
+    actual?: string;
+}
+
+/**
+ * Classify every edit in a call BEFORE any of them runs.
+ *
+ * This exists because of the strongest signal in the run data, which is not
+ * about whitespace at all -- it is about batching. pi applies a multi-edit call
+ * as a UNIT, so one bad `oldText` discards the good edits beside it, and the
+ * failure rate climbs with the batch:
+ *
+ *     edits per call   calls   failed   rate
+ *              1         823      294    36%
+ *              2         165       92    56%
+ *              3          44       28    64%
+ *             4+          39       26    67%
+ *
+ * Close to what independent per-edit failure predicts when any single miss kills
+ * the batch. The agent then re-derives the WHOLE batch from scratch, including
+ * the edits that were already correct -- which is the loop, and why fixing the
+ * wording of a single-edit rejection never touched it.
+ */
+export function classifyBatch(body: string, edits: EditPair[]): EditOutcome[] {
+    if (!Array.isArray(edits)) return [];
+    return edits.map((edit, index) => {
+        const old = edit?.oldText;
+        if (typeof old !== "string") return { index, state: "missing" as const };
+        if (body.includes(old)) return { index, state: "applies" as const };
+        const target = findFlexMatch(body, old);
+        if (target !== null && target === edit.newText)
+            return { index, state: "satisfied" as const };
+        if (target !== null) return { index, state: "repairable" as const };
+        const actual = diagnoseMismatch(body, old);
+        return { index, state: "missing" as const, ...(actual ? { actual } : {}) };
+    });
+}
+
 /**
  * What the hook should do about one `edit` call. Kept here rather than in the
  * extension so it is testable: an extension module imports pi's runtime, which
@@ -231,10 +275,26 @@ export type EditDecision =
     | { kind: "pass" }
     | { kind: "repair"; edits: EditPair[]; repairs: Repair[] }
     | { kind: "explain"; index: number; actual: string }
-    | { kind: "satisfied"; index: number };
+    | { kind: "satisfied"; index: number }
+    | { kind: "partial"; outcomes: EditOutcome[] };
 
 export function decideEdit(body: string, edits: EditPair[]): EditDecision {
     if (!Array.isArray(edits) || edits.length === 0) return { kind: "pass" };
+
+    // A BATCH that is going to fail is worth intervening on before pi discards
+    // it whole. Reporting which indices are fine turns a total loss into partial
+    // progress: the agent re-sends only the broken one, as a single edit, where
+    // the measured failure rate is 36% rather than the batch's 56-67%.
+    //
+    // Single-edit calls fall through to the paths below unchanged -- there is no
+    // batch to salvage, and their messages are already specific.
+    if (edits.length > 1) {
+        const outcomes = classifyBatch(body, edits);
+        const doomed = outcomes.some(
+            (o) => o.state === "missing" || o.state === "satisfied",
+        );
+        if (doomed) return { kind: "partial", outcomes };
+    }
 
     for (let i = 0; i < edits.length; i++) {
         const old = edits[i]?.oldText;
@@ -297,6 +357,51 @@ export function explainReason(
         "looking for invisible characters: the difference is the spacing shown " +
         "here."
     );
+}
+
+/**
+ * The rejection text for a `partial` decision.
+ *
+ * Its whole job is to stop the agent re-deriving edits that were already right.
+ * pi's own rejection names one failing index and says the text must match
+ * exactly, which leaves the agent to work out for itself whether the other edits
+ * in the batch were good -- and in the runs it usually assumed they were not and
+ * rewrote everything.
+ */
+export function partialReason(path: string, outcomes: EditOutcome[]): string {
+    const list = (state: EditOutcome["state"]) =>
+        outcomes.filter((o) => o.state === state).map((o) => o.index);
+    const fine = [...list("applies"), ...list("repairable")].sort((a, b) => a - b);
+    const done = list("satisfied");
+    const bad = list("missing");
+    const lines = [
+        `This ${outcomes.length}-edit call was not run: pi applies a multi-edit ` +
+            "call as a UNIT, so one bad oldText would discard the rest. Here is " +
+            `exactly where each edit stands in ${path}:`,
+        "",
+    ];
+    if (fine.length)
+        lines.push(
+            `- edits[${fine.join(", ")}] — FINE. Send these again unchanged; do not rewrite them.`,
+        );
+    if (done.length)
+        lines.push(
+            `- edits[${done.join(", ")}] — ALREADY APPLIED. The file already contains this change. Drop them.`,
+        );
+    for (const o of outcomes.filter((x) => x.state === "missing")) {
+        lines.push(
+            o.actual
+                ? `- edits[${o.index}] — NOT FOUND, and differs from the file only in whitespace. The file has:\n\n${o.actual}\n`
+                : `- edits[${o.index}] — NOT FOUND. Re-read the file around this point; your oldText is stale or wrong.`,
+        );
+    }
+    lines.push(
+        "",
+        "Re-send them as SEPARATE single-edit calls, not one batch. A single edit " +
+            "that misses costs you one call; a batch that misses costs you all of " +
+            "them, which is why this one was stopped.",
+    );
+    return lines.join("\n");
 }
 
 /** A one-line audit record. Whitespace is escaped so a run is visible as a run. */
