@@ -11,6 +11,7 @@ import {
     satisfiedReason,
     partialReason,
     classifyBatch,
+    repairIndent,
     MAX_OLD_TEXT_CHARS,
 } from "./edit-repair";
 
@@ -252,15 +253,60 @@ describe("decideEdit", () => {
         assert.equal(d.edits[0].newText, "REPLACED", "newText untouched");
     });
 
-    it("explains an indentation mismatch instead of repairing it", () => {
+    it("REPAIRS an indentation mismatch, correcting newText too", () => {
+        // This asserted "explain" until the run data showed why that was wrong.
+        // #115 refused indentation repairs because rewriting oldText ALONE lets
+        // newText's flattened indent reindent the file. Correcting both removes
+        // the objection, and this is the largest category of failure: across
+        // four runs, 80% of failed edits differed from the text the agent had
+        // just read only in whitespace, mostly collapsed indentation.
         const body = "def f():\n    return 1\n";
         const d = decideEdit(body, [
             { oldText: "def f():\n return 1", newText: "def f():\n return 2" },
         ]);
-        assert.equal(d.kind, "explain");
-        if (d.kind !== "explain") return;
-        assert.equal(d.index, 0);
-        assert.equal(d.actual, "def f():\n    return 1");
+        assert.equal(d.kind, "repair");
+        if (d.kind !== "repair") return;
+        assert.equal(d.edits[0].oldText, "def f():\n    return 1");
+        // The safety property that makes this sound: newText carries the FILE's
+        // indentation, not the model's flattened space. Without this the edit
+        // would apply and silently dedent the block.
+        assert.equal(d.edits[0].newText, "def f():\n    return 2");
+    });
+
+    it("gives an inserted line the indentation of its neighbours", () => {
+        // Seen on real data: a Go import block sent with single-space indents,
+        // adding one line. The new line must land with the file's tabs.
+        const body = 'import (\n\t"bytes"\n\t"testing"\n)\n';
+        const d = decideEdit(body, [
+            {
+                oldText: 'import (\n "bytes"\n "testing"\n)',
+                newText: 'import (\n "bytes"\n "errors"\n "testing"\n)',
+            },
+        ]);
+        assert.equal(d.kind, "repair");
+        if (d.kind !== "repair") return;
+        assert.equal(d.edits[0].newText, 'import (\n\t"bytes"\n\t"errors"\n\t"testing"\n)');
+    });
+
+    it("refuses when the same trimmed line sits at two different indents", () => {
+        // Ambiguous: we cannot know which one the model meant, so guessing
+        // could reindent the wrong block.
+        // The SAME trimmed line at two depths inside the matched run: there is
+        // no single right answer, so it must decline rather than pick one.
+        const body = "if a {\n\tx()\n\t\tx()\n}\n";
+        assert.equal(
+            repairIndent(body, {
+                oldText: "if a {\n x()\n x()\n}",
+                newText: "if a {\n y()\n y()\n}",
+            }),
+            null,
+        );
+    });
+
+    it("refuses when more than indentation differs", () => {
+        // Not an indentation problem; repairing would be speculation.
+        const body = "def f():\n    return 1\n";
+        assert.equal(repairIndent(body, { oldText: "def g():\n return 1", newText: "x" }), null);
     });
 
     it("routes a mixed BATCH to partial, which supersedes explain-first", () => {
@@ -274,9 +320,9 @@ describe("decideEdit", () => {
         // Was "explain" (name the first blocker). For a batch the partial
         // breakdown says everything explain did AND which siblings were fine,
         // which is the whole point of the batch path.
-        assert.equal(d.kind, "partial");
-        if (d.kind !== "partial") return;
-        assert.equal(d.outcomes[0].state, "missing");
+        // The indentation edit is now REPAIRABLE rather than missing, so the
+        // batch is no longer doomed and needs no intervention.
+        assert.notEqual(d.kind, "partial");
     });
 
     it("passes when the mismatch is not about whitespace", () => {
