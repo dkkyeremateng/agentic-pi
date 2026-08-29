@@ -34,6 +34,7 @@ import { homedir } from "node:os";
 import {
     decideEdit,
     explainReason,
+    satisfiedReason,
     formatRepair,
     type EditPair,
 } from "../utils/edit/edit-repair";
@@ -83,6 +84,14 @@ export default function (pi: ExtensionAPI) {
         }
 
         const decision = decideEdit(body, input.edits as EditPair[]);
+
+        if (decision.kind === "satisfied") {
+            audit(`SATISFIED ${path} edits[${decision.index}]`);
+            return {
+                block: true,
+                reason: satisfiedReason(path, decision.index),
+            };
+        }
 
         if (decision.kind === "explain") {
             audit(`EXPLAIN ${path} edits[${decision.index}]`);

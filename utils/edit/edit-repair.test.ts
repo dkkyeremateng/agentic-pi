@@ -8,6 +8,7 @@ import {
     formatRepair,
     decideEdit,
     explainReason,
+    satisfiedReason,
     MAX_OLD_TEXT_CHARS,
 } from "./edit-repair";
 
@@ -282,6 +283,49 @@ describe("decideEdit", () => {
         assert.equal(decideEdit(GO, [] as any).kind, "pass");
         assert.equal(decideEdit(GO, undefined as any).kind, "pass");
         assert.equal(decideEdit(GO, [{ newText: "x" } as any]).kind, "pass");
+    });
+});
+
+describe("decideEdit reports an already-applied change", () => {
+    // The loop this exists to break (run-mte9oayl-nlqlm): the model's newText was
+    // already in the file, #115 correctly refused to repair the edit into a
+    // no-op, and EXPLAIN then told it to "copy these bytes" -- advice for a
+    // problem it did not have. It answered three times, twice with a
+    // byte-identical oldText, because reproducing the whitespace is exactly what
+    // it cannot do.
+    const body = '\t\t\t\t" --style string    greeting style (a, b)"\n';
+
+    it("says satisfied when the target region already holds newText", () => {
+        const d = decideEdit(body, [
+            {
+                oldText: '\t\t\t\t" --style string greeting style (a, b)"',
+                newText: '\t\t\t\t" --style string    greeting style (a, b)"',
+            },
+        ]);
+        assert.equal(d.kind, "satisfied");
+        if (d.kind === "satisfied") assert.equal(d.index, 0);
+    });
+
+    it("still explains when newText is a genuine, different change", () => {
+        // Narrowness check: only an edit whose newText the file ALREADY holds is
+        // reported satisfied. A real pending change must not be waved through.
+        const d = decideEdit(body, [
+            {
+                oldText: '\t\t\t\t" --style string greeting style (a, b)"',
+                newText: '\t\t\t\t" --style string    SOMETHING NEW"',
+            },
+        ]);
+        assert.notEqual(d.kind, "satisfied");
+    });
+
+    it("tells the agent to verify, not to reproduce another string", () => {
+        const r = satisfiedReason("main_test.go", 0);
+        assert.match(r, /ALREADY APPLIED/);
+        assert.match(r, /Do NOT retry/);
+        assert.match(r, /invisible characters/);
+        assert.match(r, /run this phase's tests/);
+        // The failure mode was handing back bytes to copy. It must not do that.
+        assert.ok(!r.includes("Copy that exactly"), "no copy-these-bytes advice");
     });
 });
 

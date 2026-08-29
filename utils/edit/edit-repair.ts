@@ -230,7 +230,8 @@ export function diagnoseMismatch(body: string, oldText: string): string | null {
 export type EditDecision =
     | { kind: "pass" }
     | { kind: "repair"; edits: EditPair[]; repairs: Repair[] }
-    | { kind: "explain"; index: number; actual: string };
+    | { kind: "explain"; index: number; actual: string }
+    | { kind: "satisfied"; index: number };
 
 export function decideEdit(body: string, edits: EditPair[]): EditDecision {
     if (!Array.isArray(edits) || edits.length === 0) return { kind: "pass" };
@@ -238,6 +239,20 @@ export function decideEdit(body: string, edits: EditPair[]): EditDecision {
     for (let i = 0; i < edits.length; i++) {
         const old = edits[i]?.oldText;
         if (typeof old !== "string" || body.includes(old)) continue;
+        // ALREADY APPLIED. The region the model targeted now holds exactly its
+        // `newText`, so the change it is trying to make is already in the file.
+        //
+        // This has to be said plainly, because the alternative message is what
+        // caused a loop. Refusing the repair here is right (#115 -- repairing
+        // would make the edit a no-op), but falling through to EXPLAIN then told
+        // the model "copy these bytes and adjust newText", which is advice for a
+        // problem it does not have. Observed on run-mte9oayl-nlqlm: it answered
+        // that three times, twice with a byte-identical oldText, because
+        // reproducing the whitespace is the very operation it cannot do. You
+        // cannot fix a reproduction failure by asking for more reproduction.
+        const target = findFlexMatch(body, old);
+        if (target !== null && target === edits[i].newText)
+            return { kind: "satisfied", index: i };
         // A repairable edit is not a blocker; it is handled below.
         if (repairEdits(body, [edits[i]]).repairs.length) continue;
         const actual = diagnoseMismatch(body, old);
@@ -250,6 +265,22 @@ export function decideEdit(body: string, edits: EditPair[]): EditDecision {
     return repairs.length
         ? { kind: "repair", edits: fixed, repairs }
         : { kind: "pass" };
+}
+
+/**
+ * The rejection text for a `satisfied` decision: the change is already in the
+ * file. Says so, and gives the agent its next action -- verify -- rather than
+ * another string to reproduce.
+ */
+export function satisfiedReason(path: string, index: number): string {
+    return (
+        `edits[${index}] is ALREADY APPLIED to ${path}. The text you are trying ` +
+        "to produce is what the file already contains, so there is nothing to " +
+        "change and no whitespace to correct.\n\nDo NOT retry this edit, and do " +
+        "not inspect the file for invisible characters. Move on: run this " +
+        "phase's tests to confirm the change is good, and if you were mid-way " +
+        "through a list of edits, continue with the next one."
+    );
 }
 
 /** The rejection text for an `explain` decision. */
