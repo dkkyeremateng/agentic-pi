@@ -43,6 +43,7 @@ import {
     sessionDirPath,
 } from "./workflow-core";
 import { commitStagedLearnings } from "./memory";
+import { runDiffAudit } from "./diff-audit";
 import { reflectFailedRun } from "../../obs/obs-reflect";
 import {
     type Verdict,
@@ -1020,7 +1021,10 @@ async function runWorkflowCoreImpl(
             h.ui.updateWidget();
             review = await h.execution.runPhase(
                 reviewerP,
-                shared(reviewTask(request, impl.output, priorReview), "reviewer"),
+                shared(
+                    reviewTask(request, impl.output, priorReview, runDiffAudit(cwd)),
+                    "reviewer",
+                ),
                 cwd,
             );
             if (!review.ok) return fail(s, h, cwd, request, "Review", review.output);
@@ -1084,7 +1088,10 @@ async function runWorkflowCoreImpl(
             h.ui.updateWidget();
             val = await h.execution.runPhase(
                 valP,
-                shared(validateTask(request, impl.output), "validator"),
+                shared(
+                    validateTask(request, impl.output, runDiffAudit(cwd)),
+                    "validator",
+                ),
                 cwd,
             );
             if (!val.ok) return fail(s, h, cwd, request, "Validation", val.output);
@@ -1113,7 +1120,8 @@ async function runWorkflowCoreImpl(
                 val = await h.execution.runPhase(
                     valP,
                     shared(
-                        validateTask(request, impl.output) + noVerdictRetryNote(),
+                        validateTask(request, impl.output, runDiffAudit(cwd)) +
+                        noVerdictRetryNote(),
                         "validator",
                     ),
                     cwd,
