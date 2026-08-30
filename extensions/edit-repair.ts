@@ -35,6 +35,7 @@ import {
     decideEdit,
     guidanceFor,
     formatRepair,
+    auditRecord,
     type EditPair,
 } from "../utils/edit/edit-repair";
 
@@ -91,7 +92,14 @@ export default function (pi: ExtensionAPI) {
             return undefined;
         }
 
-        const decision = decideEdit(body, input.edits as EditPair[]);
+        const edits = input.edits as EditPair[];
+        const decision = decideEdit(body, edits);
+
+        // One record per edit call, decided or not, so coverage can be measured
+        // from what the hook ACTUALLY saw rather than inferred from the agent's
+        // last read -- the two diverge, and every coverage figure reported for
+        // this module before now was computed the wrong way. See auditRecord.
+        audit(`DECISION ${JSON.stringify(auditRecord(path, body, edits, decision))}`);
 
         if (decision.kind === "repair") {
             // Mutating `event.input` in place is how pi's hook contract says to

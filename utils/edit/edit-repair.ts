@@ -582,6 +582,49 @@ export function guidanceFor(
     }
 }
 
+/** One machine-readable record of what the hook saw and decided. */
+export interface AuditRecord {
+    path: string;
+    /** Length of the file as the hook read it — the cheapest divergence signal. */
+    bodyLen: number;
+    kind: EditDecision["kind"];
+    /** How many edits the call carried, and what each would do. */
+    states: EditOutcome["state"][];
+    /** Repairs actually applied, as index numbers. */
+    repaired: number[];
+}
+
+/**
+ * Build the record for one edit call.
+ *
+ * This exists because every coverage number I have reported for this module was
+ * measured the wrong way. The analysis compared each `oldText` against the text
+ * the agent last READ; the hook matches against the file on DISK at call time.
+ * When those diverge — and run-mtfq7k48-0hmvl shows them diverging often, with
+ * six misses whose oldText was present at read time and gone by edit time — the
+ * offline analysis reports repairs that could never have happened, and the
+ * "coverage 23% -> 45% -> 63%" figures are optimistic by an unknown margin.
+ *
+ * Logging the hook's OWN view removes the inference. Every edit call is
+ * recorded, including the ones needing nothing, so the denominator is real
+ * rather than reconstructed.
+ */
+export function auditRecord(
+    path: string,
+    body: string,
+    edits: EditPair[],
+    decision: EditDecision,
+): AuditRecord {
+    return {
+        path,
+        bodyLen: body.length,
+        kind: decision.kind,
+        states: classifyBatch(body, edits).map((o) => o.state),
+        repaired:
+            decision.kind === "repair" ? decision.repairs.map((r) => r.index) : [],
+    };
+}
+
 /** A one-line audit record. Whitespace is escaped so a run is visible as a run. */
 export function formatRepair(path: string, r: Repair): string {
     const show = (s: string) =>

@@ -8,9 +8,19 @@ plan-build:
     - documenter
     - shipper
 
-soft-plan-build:
+roadmap-plan-build:
     - scout
     - roadmapper
+    - planner
+    - refiner
+    - implementer
+    - reviewer
+    - validator
+    - documenter
+    - shipper
+
+soft-plan-build:
+    - scout
     - planner
     - refiner
     - implementer
