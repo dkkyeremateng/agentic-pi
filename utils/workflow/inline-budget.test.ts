@@ -53,8 +53,17 @@ describe("the budget survives the process that spent it", () => {
     it("never throws on an unwritable path", () => {
         // The budget is an optimisation. Losing it degrades the breaker to
         // per-session, which is not worth failing a run over.
-        writeInlineTurns("/proc/nonexistent/nope", 5);
-        assert.equal(readInlineTurns("/proc/nonexistent/nope"), 0);
+        //
+        // Make the path unwritable PORTABLY, by rooting it at a regular file:
+        // creating `<file>/.agent` is ENOTDIR on every OS, instantly. The first
+        // version of this probed `/proc/nonexistent/nope`, which does not exist
+        // on macOS (so it failed fast locally and looked fine) but does on Linux
+        // — and CI hung on this step for every run after it landed. A test whose
+        // behaviour depends on the host's filesystem layout is not a test.
+        const file = join(fresh(), "not-a-directory");
+        writeFileSync(file, "x");
+        writeInlineTurns(file, 5);
+        assert.equal(readInlineTurns(file), 0);
     });
 
     it("resets, and tolerates resetting twice", () => {
