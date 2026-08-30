@@ -2965,49 +2965,89 @@ export function inlineGraceTurns(env = process.env): number {
 }
 
 /**
- * Whether to tell THIS instance to hand off: the run is over budget AND this
- * session has had its grace.
+ * Which kind of handoff, if any, this instance should be told about.
  *
- * Deliberately stricter than `inlineBudgetSpent`, which is what lifts the
- * dispatch refusal. The asymmetry is on purpose and the costs are not
- * symmetrical: lifting the ban early is free, because an agent that was told to
- * work inline does not spontaneously dispatch, while nudging early spends a
- * worker that was not needed.
+ * Two triggers, because the two situations are not the same problem and the
+ * evidence says they need different force.
+ *
+ * - **session** — THIS context has passed the budget on its own. The agent's own
+ *   transcript is the cost, it cannot see that from the inside, and it is the
+ *   case a handoff is unambiguously right for. On run-mtgd43jm-7555a an
+ *   implementer ran 127 turns in one session.
+ * - **run** — the RUN is over budget but this session is young, which happens
+ *   when the validator rejects and `fixTask` spawns another implementer. Here a
+ *   handoff is often wrong: on run-mtg79i9k-9nhsx every such instance was a few
+ *   turns from done and correctly finished inline.
+ *
+ * A session over budget reports "session" even if the run is too — the stronger
+ * signal wins, because it is the one with a clear answer.
  */
-export function inlineHandoffDue(
+export type InlineHandoffKind = "session" | "run" | null;
+
+export function inlineHandoffKind(
     cumulativeTurns: number,
     sessionTurns: number,
     env = process.env,
-): boolean {
-    return (
-        inlineBudgetSpent(cumulativeTurns, env) &&
-        sessionTurns >= inlineGraceTurns(env)
-    );
+): InlineHandoffKind {
+    const budget = inlineTurnBudget(env);
+    if (budget <= 0) return null;
+    if (sessionTurns >= budget) return "session";
+    if (cumulativeTurns >= budget && sessionTurns >= inlineGraceTurns(env))
+        return "run";
+    return null;
 }
 
 /**
- * The one-shot instruction handed to an implementer that has burned its inline
- * budget. Appended to a tool result, which is the only channel that reaches an
- * agent mid-run.
+ * The notice for a handoff of the given kind. Appended to a tool result, the
+ * only channel that reaches an agent mid-run.
  *
- * Phrased as a switch of strategy rather than a scolding, and it names what to
- * keep: the ledger and the commits are the coordinator's, and the phases already
- * marked `[x]` must not be redone. Without that last line the handoff costs more
- * than the loop it ends.
+ * The wording differs by kind because a measured softening cost us the
+ * instruction. #125's message was imperative -- "Stop implementing here and hand
+ * the REST of the work" -- and on run-mtg4oipc-4e984 the agent dispatched seven
+ * seconds later. #128 replaced that with a self-assessment, "if you are a few
+ * turns from finishing, finish it", and across the next two runs the notice was
+ * delivered six times and obeyed none: an agent mid-task will nearly always
+ * believe it is nearly done, because it cannot see the seventy turns ahead of it.
+ *
+ * So the escape hatch lives ONLY in the `run` message, where it was earned. The
+ * `session` message states what to do and does not ask the agent to judge.
  */
-export function inlineHandoffNotice(turns: number, env = process.env): string {
-    return [
-        "",
-        "---",
-        `INLINE BUDGET SPENT — ${turns} turns in this context, past the ${inlineTurnBudget(env)}-turn limit. Stop implementing here and hand the REST of the work to fresh \`phase-implementer\` workers; the dispatch refusal on this plan is now lifted.`,
-        "",
-        "Why, so the switch is not arbitrary: every turn in this session re-reads the whole transcript, so each one costs more than the last. Measured on a run that ran past this point, the per-turn prefix grew from 3 tokens to 127k and the per-turn cost tripled — the run reached $25 without ever passing 13% of the context window. A fresh worker starts that count at zero.",
-        "",
-        "- Dispatch each REMAINING phase to a `phase-implementer` (`dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for one).",
+export function inlineHandoffNotice(
+    cumulativeTurns: number,
+    sessionTurns: number,
+    env = process.env,
+    kind: InlineHandoffKind = inlineHandoffKind(cumulativeTurns, sessionTurns, env),
+): string {
+    const budget = inlineTurnBudget(env);
+    const shared = [
         "- Give each worker a self-contained task: the phase number and title, the plan path, what is already green, and — in a parallel wave — the files it owns.",
         "- Phases already marked `[x]` in `.agent/progress.md` are DONE. Do not redo them; continue from the first unchecked phase.",
         "- Keep the bookkeeping yours: verify each phase's targeted tests, flip its `[x]`, commit its checkpoint.",
         "- If you were mid-repair on a failing test, hand the worker the exact failure text rather than your diagnosis of it.",
+    ];
+    if (kind === "run") {
+        const prior = Math.max(0, cumulativeTurns - sessionTurns);
+        return [
+            "",
+            "---",
+            `INLINE BUDGET NOTICE — This session has run ${sessionTurns} turn(s). Earlier attempts in this run spent ${prior} more, so ${cumulativeTurns} turns have now gone into implementing this plan inline, past the ${budget}-turn budget for the run. The dispatch refusal on this plan is lifted.`,
+            "",
+            "Why: each fresh attempt re-reads the plan, the ledger and the files before it can do anything, and this run has now paid that entry cost several times over. A `phase-implementer` pays it once for a bounded piece of work and hands back a summary instead of a transcript.",
+            "",
+            "- If substantial work remains, dispatch it: each REMAINING phase to a `phase-implementer` (`dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for one).",
+            "- If you are a few turns from finishing what you already have in hand, finish it — a worker costs a spawn, a full prompt and a round trip, which is worth paying to escape a long context and not worth paying to save ten turns.",
+            ...shared,
+        ].join("\n");
+    }
+    return [
+        "",
+        "---",
+        `INLINE BUDGET SPENT — This session has run ${sessionTurns} turn(s), past the ${budget}-turn budget on its own. STOP implementing in this context and hand the REST of the work to fresh \`phase-implementer\` workers. The dispatch refusal on this plan is lifted. Do this now, before the next edit — not after the current test passes.`,
+        "",
+        "This is not a judgement call about how close you are. You cannot see it from in here: every turn re-reads this whole transcript, so each one costs more than the last, and the turns ahead of you cost more than the ones behind. Measured on a run that was allowed to continue past this point, the per-turn prefix grew from 3 tokens to 127k and the per-turn cost tripled — it reached $25 without ever passing 13% of the context window. A fresh worker starts that count at zero.",
+        "",
+        "- Dispatch each REMAINING phase to a `phase-implementer` (`dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for one).",
+        ...shared,
     ].join("\n");
 }
 

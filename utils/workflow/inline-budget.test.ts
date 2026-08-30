@@ -8,7 +8,7 @@ import {
     writeInlineTurns,
     resetInlineTurns,
 } from "./inline-budget";
-import { inlineHandoffDue, inlineBudgetSpent } from "./workflow-core";
+import { inlineHandoffKind, inlineBudgetSpent } from "./workflow-core";
 
 const fresh = () => mkdtempSync(join(tmpdir(), "inline-budget-"));
 
@@ -61,6 +61,26 @@ describe("the budget survives the process that spent it", () => {
     });
 });
 
+describe("escalation on the instance that ignored the old notice", () => {
+    // run-mtgd43jm-7555a instance #1: baseline 4 from a false start, then 127
+    // turns in ONE session. It got the notice and ground on for ~70 more turns.
+    // Under the split triggers it now gets the soft one first and the imperative
+    // one four turns later, which is the escalation the single flag prevented.
+    const at = (t: number) => inlineHandoffKind(4 + t, t);
+
+    it("stays quiet while both counts are under budget", () => {
+        assert.equal(at(15), null);
+        assert.equal(at(55), null);
+    });
+
+    it("nudges when the RUN crosses, then commands when the SESSION does", () => {
+        assert.equal(at(56), "run");
+        assert.equal(at(59), "run");
+        assert.equal(at(60), "session");
+        assert.equal(at(127), "session");
+    });
+});
+
 describe("replaying run-mtg4oipc-4e984 against the new rule", () => {
     // The real sequence: three implementer instances of 55, 71 and 99 turns,
     // spawned by two validator rejections. Under the per-session rule only the
@@ -75,7 +95,7 @@ describe("replaying run-mtg4oipc-4e984 against the new rule", () => {
             for (let turn = 0; turn <= len; turn++) {
                 if (
                     fired === null &&
-                    inlineHandoffDue(cumulative + turn, turn, budgetEnv as any)
+                    inlineHandoffKind(cumulative + turn, turn, budgetEnv as any)
                 )
                     fired = turn;
             }
@@ -103,9 +123,9 @@ describe("replaying run-mtg4oipc-4e984 against the new rule", () => {
         // The case the floor exists to protect: a validator asks for a one-line
         // fix, and the run happens to be over budget. Spawning a worker with an
         // 18k-char prompt for that costs more than the fix.
-        assert.equal(inlineHandoffDue(500, 0), false);
-        assert.equal(inlineHandoffDue(500, 14), false);
-        assert.equal(inlineHandoffDue(500, 15), true);
+        assert.equal(inlineHandoffKind(500, 0), null);
+        assert.equal(inlineHandoffKind(500, 14), null);
+        assert.equal(inlineHandoffKind(500, 15), "run");
     });
 
     it("keeps the refusal more permissive than the nudge", () => {
@@ -113,7 +133,7 @@ describe("replaying run-mtg4oipc-4e984 against the new rule", () => {
         // told to work inline does not spontaneously dispatch. Nudging early
         // spends a worker that was not needed.
         assert.equal(inlineBudgetSpent(60), true, "ban lifts on cumulative alone");
-        assert.equal(inlineHandoffDue(60, 3), false, "but nothing is said yet");
+        assert.equal(inlineHandoffKind(60, 3), null, "but nothing is said yet");
     });
 
     it("still does nothing at all when the breaker is off", () => {
