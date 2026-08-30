@@ -2822,9 +2822,12 @@ describe("the two handoff triggers are different problems", () => {
     // always believe it is nearly done; it cannot see the turns ahead of it.
 
     it("calls a long session a session problem, whatever the run has spent", () => {
-        assert.equal(inlineHandoffKind(60, 60), "session");
-        assert.equal(inlineHandoffKind(500, 60), "session", "stronger signal wins");
+        assert.equal(inlineHandoffKind(90, 90), "session");
+        assert.equal(inlineHandoffKind(500, 90), "session", "stronger signal wins");
         assert.equal(inlineHandoffKind(59, 59), null);
+        // 60 is the RUN budget, not a single context's — 66/70/71-turn sessions
+        // all finished within ~11 turns of crossing it.
+        assert.equal(inlineHandoffKind(60, 60), "run");
     });
 
     it("calls a young session in a spent run a run problem", () => {
@@ -2862,7 +2865,7 @@ describe("the session notice does not ask the agent to judge", () => {
     });
 
     it("states only its own session's count", () => {
-        assert.match(n, /This session has run 127 turn\(s\), past the 60-turn budget on its own/);
+        assert.match(n, /This session has run 127 turn\(s\), past the 90-turn budget for a single context/);
         assert.doesNotMatch(n, /Earlier attempts/);
     });
 });

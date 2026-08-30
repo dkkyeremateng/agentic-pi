@@ -2955,6 +2955,36 @@ export function inlineBudgetSpent(turns: number, env = process.env): boolean {
 //
 // 15 is above the small-fix case and far below the 71- and 99-turn instances the
 // breaker is meant to cut short. Override with PI_INLINE_GRACE_TURNS.
+// The SESSION trigger's threshold, distinct from the run's budget above.
+//
+// One number was doing two jobs and doing the second one badly. Every
+// implementer session observed across six runs:
+//
+//     127, 99, 71, 70, 66, 59, 55, 30, 25, 18, 9
+//
+// Five crossed 60. Of those, 66, 70 and 71 all ENDED within about eleven turns
+// of crossing -- they were nearly done, and a handoff would have bought a spawn,
+// an 18k-char prompt and a round trip to save ten turns. Only 99 and 127 ground
+// on, which is the pathology worth interrupting. On run-mtgevo3w-j2mrj the
+// imperative notice fired at turn 60 of a session that finished at 66, and the
+// agent ignored it and was right to.
+//
+// 90 separates the two groups cleanly with the widest margin the data offers: the
+// nearest session below is 71, the nearest above is 99. Override with
+// PI_INLINE_MAX_SESSION_TURNS.
+//
+// The RUN budget stays at 60. It only ever produces the advisory `run` notice,
+// which costs nothing when ignored, and it is also what lifts the dispatch
+// refusal -- lifting that early is free.
+export const INLINE_SESSION_MAX_TURNS = 90;
+
+export function inlineSessionBudget(env = process.env): number {
+    const raw = (env.PI_INLINE_MAX_SESSION_TURNS || "").trim();
+    if (!raw) return INLINE_SESSION_MAX_TURNS;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : INLINE_SESSION_MAX_TURNS;
+}
+
 export const INLINE_GRACE_TURNS = 15;
 
 export function inlineGraceTurns(env = process.env): number {
@@ -2990,8 +3020,8 @@ export function inlineHandoffKind(
     env = process.env,
 ): InlineHandoffKind {
     const budget = inlineTurnBudget(env);
-    if (budget <= 0) return null;
-    if (sessionTurns >= budget) return "session";
+    if (budget <= 0) return null; // 0 switches the whole breaker off
+    if (sessionTurns >= inlineSessionBudget(env)) return "session";
     if (cumulativeTurns >= budget && sessionTurns >= inlineGraceTurns(env))
         return "run";
     return null;
@@ -3042,7 +3072,7 @@ export function inlineHandoffNotice(
     return [
         "",
         "---",
-        `INLINE BUDGET SPENT — This session has run ${sessionTurns} turn(s), past the ${budget}-turn budget on its own. STOP implementing in this context and hand the REST of the work to fresh \`phase-implementer\` workers. The dispatch refusal on this plan is lifted. Do this now, before the next edit — not after the current test passes.`,
+        `INLINE BUDGET SPENT — This session has run ${sessionTurns} turn(s), past the ${inlineSessionBudget(env)}-turn budget for a single context. STOP implementing in this context and hand the REST of the work to fresh \`phase-implementer\` workers. The dispatch refusal on this plan is lifted. Do this now, before the next edit — not after the current test passes.`,
         "",
         "This is not a judgement call about how close you are. You cannot see it from in here: every turn re-reads this whole transcript, so each one costs more than the last, and the turns ahead of you cost more than the ones behind. Measured on a run that was allowed to continue past this point, the per-turn prefix grew from 3 tokens to 127k and the per-turn cost tripled — it reached $25 without ever passing 13% of the context window. A fresh worker starts that count at zero.",
         "",

@@ -8,7 +8,12 @@ import {
     writeInlineTurns,
     resetInlineTurns,
 } from "./inline-budget";
-import { inlineHandoffKind, inlineBudgetSpent } from "./workflow-core";
+import {
+    inlineHandoffKind,
+    inlineBudgetSpent,
+    inlineSessionBudget,
+    INLINE_SESSION_MAX_TURNS,
+} from "./workflow-core";
 
 const fresh = () => mkdtempSync(join(tmpdir(), "inline-budget-"));
 
@@ -75,8 +80,9 @@ describe("escalation on the instance that ignored the old notice", () => {
 
     it("nudges when the RUN crosses, then commands when the SESSION does", () => {
         assert.equal(at(56), "run");
-        assert.equal(at(59), "run");
-        assert.equal(at(60), "session");
+        assert.equal(at(60), "run", "60 is not a session problem — 66/70/71 all finished by then");
+        assert.equal(at(89), "run");
+        assert.equal(at(90), "session");
         assert.equal(at(127), "session");
     });
 });
@@ -139,5 +145,71 @@ describe("replaying run-mtg4oipc-4e984 against the new rule", () => {
     it("still does nothing at all when the breaker is off", () => {
         const off = { PI_INLINE_MAX_TURNS: "0" } as any;
         assert.deepEqual(replay(off).firedAt, [null, null, null]);
+    });
+});
+
+describe("the session threshold, against every session actually observed", () => {
+    // One number was doing two jobs. Every implementer session across six runs:
+    //
+    //     127, 99, 71, 70, 66, 59, 55, 30, 25, 18, 9
+    //
+    // Five crossed 60, and 66/70/71 all ENDED within ~11 turns of crossing — a
+    // handoff there buys a spawn and a full prompt to save ten turns. Only 99 and
+    // 127 ground on. 90 splits them with the widest margin the data offers:
+    // nearest below is 71, nearest above is 99.
+    //
+    // [session length, baseline from earlier instances]
+    const OBSERVED: [number, number, "session" | "run" | null][] = [
+        [127, 4, "session"],
+        [99, 0, "session"],
+        [71, 0, "run"],
+        [70, 0, "run"],
+        [66, 0, "run"],
+        [55, 0, null],
+        [30, 55, "run"],
+        [18, 110, "run"],
+    ];
+
+    const strongest = (len: number, base: number) => {
+        let out: "session" | "run" | null = null;
+        for (let t = 0; t <= len; t++) {
+            const k = inlineHandoffKind(base + t, t);
+            if (k === "session") return "session";
+            if (k === "run") out = "run";
+        }
+        return out;
+    };
+
+    for (const [len, base, want] of OBSERVED)
+        it(`a ${len}-turn session (after ${base}) ends at "${want}"`, () => {
+            assert.equal(strongest(len, base), want);
+        });
+
+    it("commands a handoff ONLY for the two that ground on", () => {
+        const commanded = OBSERVED.filter(([l, b]) => strongest(l, b) === "session");
+        assert.deepEqual(commanded.map(([l]) => l), [127, 99]);
+    });
+
+    it("keeps the run budget at 60 while the session one is 90", () => {
+        // They answer different questions. The run budget also lifts the dispatch
+        // refusal, where firing early is free; the session one commands, where it
+        // is not.
+        assert.equal(INLINE_SESSION_MAX_TURNS, 90);
+        assert.equal(inlineHandoffKind(60, 60), "run", "60 is no longer a session problem");
+        assert.equal(inlineHandoffKind(90, 90), "session");
+    });
+
+    it("is overridable, and junk falls back rather than disabling it", () => {
+        assert.equal(inlineSessionBudget({ PI_INLINE_MAX_SESSION_TURNS: "40" } as any), 40);
+        assert.equal(inlineSessionBudget({ PI_INLINE_MAX_SESSION_TURNS: "x" } as any), 90);
+        assert.equal(
+            inlineHandoffKind(50, 45, { PI_INLINE_MAX_SESSION_TURNS: "40" } as any),
+            "session",
+        );
+    });
+
+    it("still switches off entirely with PI_INLINE_MAX_TURNS=0", () => {
+        const off = { PI_INLINE_MAX_TURNS: "0" } as any;
+        assert.equal(inlineHandoffKind(999, 999, off), null);
     });
 });

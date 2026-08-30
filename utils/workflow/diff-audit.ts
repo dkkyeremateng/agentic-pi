@@ -49,6 +49,52 @@ const looksLikeLiteral = (s: string): boolean => {
 const collapseRuns = (s: string): string => s.replace(/[ \t]+/g, " ");
 
 /**
+ * Render a line with every horizontal whitespace run replaced by a COUNT.
+ *
+ * The audit was already finding this regression and reporting it correctly, and
+ * two gates still waved it through. On run-mtgevo3w-j2mrj the reviewer read the
+ * before/after pair and concluded "their text and leading alignment were
+ * preserved"; the validator read it and concluded the expectation "remains
+ * exactly" the flattened string. Both were answering the audit, not skipping it.
+ *
+ * The reason is the thing this whole module exists for: a model cannot see a run
+ * of spaces. Handing it two strings that differ only in run width and asking
+ * which changed is asking for the one comparison it cannot make. So do the
+ * counting for it -- `[9sp]` against `[1sp]` is a difference in TEXT, which it
+ * reads perfectly well.
+ */
+export function markRuns(line: string): string {
+    // Only runs of two or more. Marking every single space turned the line into
+    // "[1sp]" noise and buried the one run that mattered; a lone `[9sp]` against
+    // ordinary text is what makes the padding jump out.
+    return line.replace(/[ \t]{2,}/g, (run) => {
+        const tabs = (run.match(/\t/g) || []).length;
+        const spaces = run.length - tabs;
+        const parts: string[] = [];
+        if (spaces) parts.push(`${spaces}sp`);
+        if (tabs) parts.push(`${tabs}tab`);
+        return `[${parts.join("+")}]`;
+    });
+}
+
+/** The runs that actually changed width, described in numbers. Empty when the
+ *  two lines differ some other way, which the caller reports as-is. */
+export function runDelta(before: string, after: string): string {
+    const a = before.split(/([ \t]+)/);
+    const b = after.split(/([ \t]+)/);
+    if (a.length !== b.length) return "";
+    const notes: string[] = [];
+    for (let i = 1; i < a.length; i += 2) {
+        if (a[i] === b[i]) continue;
+        // Name the run by the token it precedes, so the reader can locate it.
+        const next = (b[i + 1] || "").trim().split(/\s/)[0] || "end of line";
+        notes.push(`${a[i].length} -> ${b[i].length} before "${next}"`);
+    }
+    return notes.join("; ");
+}
+
+
+/**
  * Findings from a unified diff. Two shapes, both invisible to a green suite:
  *
  * - **assertion-rewritten** — a test file where an existing string literal was
@@ -102,7 +148,11 @@ export function auditDiff(diff: string): DiffFinding[] {
                     isTestFile(file) && looksLikeLiteral(rem)
                         ? "assertion-rewritten"
                         : "whitespace-only-change",
-                detail: `${a.trim().slice(0, 60)}  ->  ${b.trim().slice(0, 60)}`,
+                // Counts, not raw spaces -- see markRuns. The unmarked text is
+                // kept too so the line is still recognisable in the file.
+                detail:
+                    `${markRuns(a.trim()).slice(0, 90)}  ->  ${markRuns(b.trim()).slice(0, 90)}` +
+                    (runDelta(a, b) ? `   [run width ${runDelta(a, b)}]` : ""),
             });
         }
         removed = [];
@@ -157,7 +207,7 @@ export function diffAuditBlock(findings: DiffFinding[]): string {
     const ws = byKind("whitespace-only-change");
     if (ws.length) {
         lines.push(
-            `**${ws.length} line(s) changed ONLY in whitespace width.** Confirm each was intended. Models flatten runs of spaces they cannot see, so this is how column alignment gets silently undone — and gofmt, prettier and a green suite will all still be happy.`,
+            `**${ws.length} line(s) changed ONLY in whitespace width.** Widths are shown as counts (\`[9sp]\`) because that difference is READABLE, where two lines differing by eight spaces are not — a reviewer and a validator both read this exact finding as raw text and concluded the alignment was "preserved". Treat a narrowing as ACCIDENTAL unless the plan asked for a layout change: models flatten runs they cannot see, and gofmt, prettier and a green suite are all happy either way.`,
         );
         for (const f of ws.slice(0, 8)) lines.push(`- \`${f.file}\`: ${f.detail}`);
         lines.push("");
