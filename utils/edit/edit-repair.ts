@@ -267,7 +267,17 @@ export function repairIndent(
     // and the mid-line repair already covers it.
     if (oldLines.length < 2) return null;
 
-    const trim = (l: string) => l.trim();
+    // Compare lines with their INTERNAL whitespace runs collapsed as well as
+    // their indentation stripped. Matching on trim() alone misses the commonest
+    // real shape, where the model flattened both at once:
+    //
+    //   saw:  '\t"hello":    greet.Hello,'
+    //   sent: ' "hello": greet.Hello,'
+    //
+    // trim() leaves the interior padding intact, so those two never matched and
+    // the repair declined. Nine of the ten edit misses in run-mtevhlm5-v6271
+    // were this.
+    const key = (l: string) => l.trim().replace(/[ \t]+/g, " ");
     const indentOf = (l: string) => (/^[ \t]*/.exec(l) || [""])[0];
 
     // Find the run of consecutive file lines whose TRIMMED content equals the
@@ -275,12 +285,12 @@ export function repairIndent(
     // one and we cannot know which the model meant, which is the same
     // uniqueness rule the mid-line repair uses.
     const bodyLines = body.split("\n");
-    const want = oldLines.map(trim);
+    const want = oldLines.map(key);
     const hits: number[] = [];
     for (let i = 0; i + want.length <= bodyLines.length; i++) {
         let ok = true;
         for (let j = 0; j < want.length; j++)
-            if (trim(bodyLines[i + j]) !== want[j]) {
+            if (key(bodyLines[i + j]) !== want[j]) {
                 ok = false;
                 break;
             }
@@ -295,18 +305,22 @@ export function repairIndent(
     // guessing would be speculation.
     const changed = fileLines.some((l, j) => l !== oldLines[j]);
     if (!changed) return null;
-    const onlyIndent = fileLines.every((l, j) => trim(l) === trim(oldLines[j]));
-    if (!onlyIndent) return null;
+    const onlyWhitespace = fileLines.every((l, j) => key(l) === key(oldLines[j]));
+    if (!onlyWhitespace) return null;
 
     // Map trimmed content -> the file's real indentation. Ambiguous content
     // (the same trimmed line twice with DIFFERENT indents) is refused rather
     // than guessed.
-    const indentFor = new Map<string, string>();
+    // Key -> the file's WHOLE line, not merely its indentation. A newText line
+    // the model only mangled can then be restored verbatim, interior alignment
+    // included; without that, rebuilding it as indent + the model's trimmed text
+    // would keep the flattened padding and silently de-align the file -- the
+    // regression #118's audit exists to catch.
+    const lineFor = new Map<string, string>();
     for (const l of fileLines) {
-        const k = trim(l);
-        const ind = indentOf(l);
-        if (indentFor.has(k) && indentFor.get(k) !== ind) return null;
-        indentFor.set(k, ind);
+        const k = key(l);
+        if (lineFor.has(k) && lineFor.get(k) !== l) return null;
+        lineFor.set(k, l);
     }
 
     // Re-indent newText with the same mapping, in three fallbacks. The order
@@ -325,19 +339,24 @@ export function repairIndent(
     const sameShape = newLines.length === fileLines.length;
     let lastKnown = indentOf(fileLines[0]);
     const rebuilt = newLines.map((l, i) => {
-        const k = trim(l);
+        const k = key(l);
         if (!k) return l; // blank lines keep whatever they had
-        const known = indentFor.get(k);
-        if (known !== undefined) {
-            lastKnown = known;
-            return known + k;
+        const exact = lineFor.get(k);
+        if (exact !== undefined) {
+            // The model changed nothing here but the whitespace: put the file's
+            // own line back, byte for byte.
+            lastKnown = indentOf(exact);
+            return exact;
         }
+        // A line whose CONTENT the model really changed: keep its text, give it
+        // the file's indentation.
+        const text = l.trim();
         if (sameShape) {
             const ind = indentOf(fileLines[i]);
             lastKnown = ind;
-            return ind + k;
+            return ind + text;
         }
-        return lastKnown + k;
+        return lastKnown + text;
     });
 
     return { oldText: fileLines.join("\n"), newText: rebuilt.join("\n") };
@@ -501,9 +520,9 @@ export function partialReason(path: string, outcomes: EditOutcome[]): string {
     const done = list("satisfied");
     const bad = list("missing");
     const lines = [
-        `This ${outcomes.length}-edit call was not run: pi applies a multi-edit ` +
-            "call as a UNIT, so one bad oldText would discard the rest. Here is " +
-            `exactly where each edit stands in ${path}:`,
+        `That ${outcomes.length}-edit call failed as a UNIT: pi applies a ` +
+            "multi-edit call all-or-nothing, so one bad oldText discarded the " +
+            `rest. Here is exactly where each edit stands in ${path}:`,
         "",
     ];
     if (fine.length)
@@ -523,11 +542,87 @@ export function partialReason(path: string, outcomes: EditOutcome[]): string {
     }
     lines.push(
         "",
-        "Re-send them as SEPARATE single-edit calls, not one batch. A single edit " +
-            "that misses costs you one call; a batch that misses costs you all of " +
-            "them, which is why this one was stopped.",
+        "Re-send them as SEPARATE single-edit calls, not one batch. A single " +
+            "edit that misses costs you one call; a batch that misses costs you " +
+            "all of them.",
     );
     return lines.join("\n");
+}
+
+/**
+ * The guidance to APPEND to pi's own error, for a decision that is not a repair.
+ *
+ * Why appended rather than substituted for the call. Every non-repair decision
+ * used to return `block: true`, which stops pi's edit from running at all. That
+ * looked harmless -- the edit was going to fail anyway -- but a blocked tool
+ * reads to the agent as a tool that does not work, and the measurements say it
+ * responded by leaving: python3-heredoc calls per edit call went 1.5, 1.1, 1.9,
+ * 1.7 across four runs and then **3.5** in the run with the most blocking. Once
+ * the agent is manipulating files with shell scripts, this module sees nothing,
+ * the diff audit does not run until review, and whitespace damage lands silently
+ * -- which is exactly the class of bug we have been chasing all along.
+ *
+ * So the call now goes through, pi reports its own failure in its own words, and
+ * this rides along underneath. Same information, without teaching the agent that
+ * `edit` is unreliable.
+ */
+export function guidanceFor(
+    path: string,
+    decision: EditDecision,
+): string | null {
+    switch (decision.kind) {
+        case "satisfied":
+            return satisfiedReason(path, decision.index);
+        case "explain":
+            return explainReason(path, decision.index, decision.actual);
+        case "partial":
+            return partialReason(path, decision.outcomes);
+        default:
+            return null;
+    }
+}
+
+/** One machine-readable record of what the hook saw and decided. */
+export interface AuditRecord {
+    path: string;
+    /** Length of the file as the hook read it — the cheapest divergence signal. */
+    bodyLen: number;
+    kind: EditDecision["kind"];
+    /** How many edits the call carried, and what each would do. */
+    states: EditOutcome["state"][];
+    /** Repairs actually applied, as index numbers. */
+    repaired: number[];
+}
+
+/**
+ * Build the record for one edit call.
+ *
+ * This exists because every coverage number I have reported for this module was
+ * measured the wrong way. The analysis compared each `oldText` against the text
+ * the agent last READ; the hook matches against the file on DISK at call time.
+ * When those diverge — and run-mtfq7k48-0hmvl shows them diverging often, with
+ * six misses whose oldText was present at read time and gone by edit time — the
+ * offline analysis reports repairs that could never have happened, and the
+ * "coverage 23% -> 45% -> 63%" figures are optimistic by an unknown margin.
+ *
+ * Logging the hook's OWN view removes the inference. Every edit call is
+ * recorded, including the ones needing nothing, so the denominator is real
+ * rather than reconstructed.
+ */
+export function auditRecord(
+    path: string,
+    body: string,
+    edits: EditPair[],
+    decision: EditDecision,
+): AuditRecord {
+    return {
+        path,
+        bodyLen: body.length,
+        kind: decision.kind,
+        states: classifyBatch(body, edits).map((o) => o.state),
+        repaired:
+            decision.kind === "repair" ? decision.repairs.map((r) => r.index) : [],
+    };
 }
 
 /** A one-line audit record. Whitespace is escaped so a run is visible as a run. */

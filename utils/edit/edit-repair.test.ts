@@ -288,7 +288,28 @@ describe("decideEdit", () => {
         assert.equal(d.edits[0].newText, 'import (\n\t"bytes"\n\t"errors"\n\t"testing"\n)');
     });
 
-    it("refuses when the same trimmed line sits at two different indents", () => {
+    it("handles indentation AND interior alignment flattened together", () => {
+        // The commonest real shape, and the one a trim()-based match missed:
+        // nine of the ten edit misses in run-mtevhlm5-v6271 flattened both at
+        // once. Matching on trim() alone leaves the interior padding intact, so
+        // '"hello": A,' never matched '"hello":    A,'.
+        const body = 'var m = map[string]f{\n\t"hello":    A,\n\t"farewell": B,\n}\n';
+        const r = repairIndent(body, {
+            oldText: 'var m = map[string]f{\n "hello": A,\n "farewell": B,\n}',
+            newText: 'var m = map[string]f{\n "hello": A,\n "farewell": B,\n "wave": C,\n}',
+        });
+        assert.ok(r);
+        assert.equal(r!.oldText, 'var m = map[string]f{\n\t"hello":    A,\n\t"farewell": B,\n}');
+        // The load-bearing property: a line the model only mangled comes back
+        // BYTE FOR BYTE, interior alignment included. Rebuilding it as indent +
+        // trimmed text would keep the flattened padding and silently de-align
+        // the file -- the regression #118's audit exists to catch.
+        assert.ok(r!.newText.includes('\t"hello":    A,'), "alignment restored");
+        // ...and a line the model genuinely added gets the file's indentation.
+        assert.ok(r!.newText.includes('\t"wave": C,'), "new line indented");
+    });
+
+    it("refuses when the same line sits at two different indents", () => {
         // Ambiguous: we cannot know which one the model meant, so guessing
         // could reindent the wrong block.
         // The SAME trimmed line at two depths inside the matched run: there is
@@ -403,6 +424,9 @@ describe("classifyBatch / partial", () => {
         assert.match(r, /edits\[0, 2\] — FINE/);
         assert.match(r, /edits\[1\] — NOT FOUND/);
         assert.match(r, /SEPARATE single-edit calls/);
+        // The wording must describe what pi DID (failed the call), not what the
+        // hook used to do (block it) -- the hook no longer blocks anything.
+        assert.ok(!/was not run|was stopped/.test(r), "no stale blocking language");
     });
 
     it("leaves a batch alone when every edit will apply", () => {
