@@ -32,6 +32,12 @@ export interface EditPair {
 export interface Repair {
     /** Index in the call's `edits` array. */
     index: number;
+    /** Which side was corrected. `oldText` is the usual case (the model's
+     *  description of what to replace); `newText` means the edit matched fine
+     *  and the replacement itself carried flattened padding. Reading the log
+     *  without this, a newText repair looks like an oldText one and the entry
+     *  makes no sense against the file. */
+    field?: "oldText" | "newText";
     /** What the model sent. */
     from: string;
     /** The file's actual bytes it was rewritten to. */
@@ -156,7 +162,12 @@ export function repairEdits(body: string, edits: EditPair[]): RepairResult {
         // repair below is about an oldText that fails to match.
         const carried = repairCarriedWhitespace(body, edit);
         if (carried !== null) {
-            repairs.push({ index, from: edit.newText as string, to: carried });
+            repairs.push({
+                index,
+                field: "newText",
+                from: edit.newText as string,
+                to: carried,
+            });
             return { ...edit, newText: carried };
         }
         const found = findFlexMatch(body, edit.oldText);
@@ -832,5 +843,5 @@ export function auditRecord(
 export function formatRepair(path: string, r: Repair): string {
     const show = (s: string) =>
         JSON.stringify(s.length > 120 ? s.slice(0, 117) + "..." : s);
-    return `${path} edits[${r.index}] ${show(r.from)} -> ${show(r.to)}`;
+    return `${path} edits[${r.index}].${r.field ?? "oldText"} ${show(r.from)} -> ${show(r.to)}`;
 }

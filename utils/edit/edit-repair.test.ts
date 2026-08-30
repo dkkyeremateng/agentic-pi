@@ -586,6 +586,41 @@ describe("repairCarriedWhitespace restores padding on a line carried through", (
     });
 });
 
+describe("the audit log says WHICH side was repaired", () => {
+    // Without the label a newText repair reads as an oldText one, and the entry
+    // makes no sense checked against the file — which is how the log gets read.
+    it("labels a newText repair as such", () => {
+        const body = [
+            ' --version         print the version and exit',
+            ' --help            show this help',
+        ].join("\n");
+        const d = decideEdit(body, [
+            {
+                oldText: body,
+                newText: [
+                    ' --style string    pick a style',
+                    ' --version print the version and exit',
+                    ' --help            show this help',
+                ].join("\n"),
+            },
+        ]);
+        assert.equal(d.kind, "repair");
+        if (d.kind !== "repair") return;
+        assert.equal(d.repairs[0].field, "newText");
+        assert.match(formatRepair("m.go", d.repairs[0]), /edits\[0\]\.newText/);
+    });
+
+    it("keeps the default label for an ordinary oldText repair", () => {
+        const d = decideEdit('a\nfoo    bar\nb', [
+            { oldText: "foo bar", newText: "foo baz" },
+        ]);
+        assert.equal(d.kind, "repair");
+        if (d.kind !== "repair") return;
+        assert.equal(d.repairs[0].field, undefined);
+        assert.match(formatRepair("m.go", d.repairs[0]), /edits\[0\]\.oldText/);
+    });
+});
+
 describe("padding inside a string literal: layout vs data", () => {
     // Both shapes are a literal with runs inside it, indistinguishable line for
     // line. What separates them is whether the padding lines a column up across
