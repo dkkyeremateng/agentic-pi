@@ -71,9 +71,20 @@ export default function (pi: ExtensionAPI) {
 
     pi.on("tool_call", (event) => {
         if (!isToolCallEventType("edit", event)) return undefined;
-        // Disabled outright with PI_EDIT_REPAIR=0, so a run can rule this out as
-        // a suspect without unloading the extension.
-        if (process.env.PI_EDIT_REPAIR === "0") return undefined;
+        // PI_EDIT_REPAIR=0       off entirely: no decision, no record.
+        // PI_EDIT_REPAIR=observe  decide and RECORD, but change nothing — no
+        //                         repair, no guidance appended.
+        //
+        // `observe` exists because `0` could not answer the question it was
+        // meant to. Disabling the hook also disabled its logging, so a baseline
+        // run produced no records at all and the per-edit breakdown that makes
+        // the comparison worth having (what share of edits are repairable,
+        // already-applied, or genuinely missing) simply did not exist for it.
+        // Observe-only gives a true control: identical measurement, zero
+        // intervention.
+        const mode = process.env.PI_EDIT_REPAIR;
+        if (mode === "0") return undefined;
+        const observeOnly = mode === "observe";
 
         const input = event.input as { path?: string; edits?: unknown };
         const path = input.path;
@@ -99,7 +110,16 @@ export default function (pi: ExtensionAPI) {
         // from what the hook ACTUALLY saw rather than inferred from the agent's
         // last read -- the two diverge, and every coverage figure reported for
         // this module before now was computed the wrong way. See auditRecord.
-        audit(`DECISION ${JSON.stringify(auditRecord(path, body, edits, decision))}`);
+        audit(
+            `DECISION ${JSON.stringify({
+                ...auditRecord(path, body, edits, decision),
+                ...(observeOnly ? { observed: true } : {}),
+            })}`,
+        );
+
+        // Observe-only stops here: the record is written, the call is untouched,
+        // and pi behaves exactly as it would with no extension loaded.
+        if (observeOnly) return undefined;
 
         if (decision.kind === "repair") {
             // Mutating `event.input` in place is how pi's hook contract says to

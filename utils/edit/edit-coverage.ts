@@ -26,6 +26,8 @@ export interface CoverageReport {
     satisfied: number;
     /** Individual edits by predicted fate, across every call. */
     states: Record<string, number>;
+    /** Calls recorded in observe-only mode, where the hook changed nothing. */
+    observed: number;
 }
 
 const KINDS = ["pass", "repair", "partial", "explain", "satisfied"] as const;
@@ -48,6 +50,7 @@ export function parseAuditLog(text: string, since = ""): CoverageReport {
         explain: 0,
         satisfied: 0,
         states: {},
+        observed: 0,
     };
     for (const line of (text || "").split(/\r?\n/)) {
         const at = line.indexOf(" DECISION ");
@@ -61,6 +64,7 @@ export function parseAuditLog(text: string, since = ""): CoverageReport {
         }
         if (!rec || typeof rec.kind !== "string") continue;
         report.calls++;
+        if (rec.observed) report.observed++;
         if (rec.kind === "pass") report.clean++;
         else if (rec.kind === "repair") {
             report.repairedCalls++;
@@ -80,8 +84,17 @@ export function parseAuditLog(text: string, since = ""): CoverageReport {
 export function formatCoverage(r: CoverageReport): string {
     const edits = Object.values(r.states).reduce((a, b) => a + b, 0);
     const pct = (n: number) => (edits ? `${Math.round((100 * n) / edits)}%` : "-");
+    // A mixed report would be meaningless: half the calls repaired, half left
+    // alone, one set of percentages over both. Say which it is.
+    const mode =
+        r.observed === 0
+            ? ""
+            : r.observed === r.calls
+              ? "  [OBSERVE-ONLY: the hook recorded these and changed nothing]\n"
+              : `  [MIXED: ${r.observed} of ${r.calls} calls were observe-only — do not read these as one population]\n`;
     const lines = [
         `edit calls seen by the hook: ${r.calls}  (${edits} individual edits)`,
+        mode.trimEnd(),
         "",
         `  needed nothing        ${String(r.clean).padStart(4)} calls`,
         `  repaired              ${String(r.repairedCalls).padStart(4)} calls  (${r.repairedEdits} edits)`,
