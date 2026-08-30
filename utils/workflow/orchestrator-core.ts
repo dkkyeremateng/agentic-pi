@@ -45,6 +45,7 @@ import {
 } from "./workflow-core";
 import { commitStagedLearnings } from "./memory";
 import { runDiffAudit } from "./diff-audit";
+import { resetInlineTurns } from "./inline-budget";
 import { reflectFailedRun } from "../../obs/obs-reflect";
 import {
     type Verdict,
@@ -111,6 +112,8 @@ export interface OrchestratorState {
      *  the inline floor's circuit-breaker: past a budget, refusing a worker
      *  costs more than spawning one. See INLINE_MAX_TURNS. */
     inlineTurns: number;
+    /** Turns in THIS session alone, for the grace period. */
+    inlineSessionTurns: number;
     // Dispatches currently in flight, and the OR of their verdicts so far. The
     // staged-learnings file is a single cwd-scoped file that the commit reads AND
     // clears, so concurrent dispatches must commit exactly once, when the last of
@@ -149,6 +152,7 @@ export function newOrchestratorState(): OrchestratorState {
         dispatchedThisTurn: false,
         dispatchesThisTurn: 0,
         inlineTurns: 0,
+        inlineSessionTurns: 0,
         activeDispatches: 0,
         dispatchLearningsPassed: false,
         freshContextViolation: false,
@@ -893,6 +897,11 @@ async function runWorkflowCoreImpl(
         // (all-unchecked) ledger for a new run, or if resume left no ledger behind.
         if (!(resuming && existsSync(join(cwd, ".agent", "progress.md")))) {
             initProgressLedger(cwd, wb?.base ?? "", plan.output, wb?.branch ?? "");
+            // A new run starts with its inline budget unspent. Deliberately in
+            // this branch and not the resume one: a resumed run has already
+            // burned the context the budget is there to bound, and handing it a
+            // fresh 60 turns would be the per-session bug all over again.
+            resetInlineTurns(cwd);
         } else {
             // Resuming an existing ledger: its `[x]` marks are only meaningful on the
             // branch that made them. If this run is on a different branch, that work

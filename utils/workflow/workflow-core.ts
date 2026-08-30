@@ -2934,10 +2934,55 @@ export function inlineTurnBudget(env = process.env): number {
 }
 
 /** True once an inline implementation has spent its turn budget. Always false
- *  when the budget is 0, which is how the breaker is switched off. */
+ *  when the budget is 0, which is how the breaker is switched off.
+ *
+ *  `turns` is the RUN's cumulative inline turns, not one session's -- see
+ *  utils/workflow/inline-budget.ts for why that distinction cost $15.45. */
 export function inlineBudgetSpent(turns: number, env = process.env): boolean {
     const budget = inlineTurnBudget(env);
     return budget > 0 && turns >= budget;
+}
+
+// Turns a FRESH implementer instance gets before the budget can push it into a
+// handoff, however much the run has already spent.
+//
+// Without this, a cumulative budget punishes the case the floor exists to
+// protect. On run-mtg4oipc-4e984 the first instance alone spent 55 of 60 turns,
+// so instance 2 -- spawned to make a small validator-requested fix -- would be
+// over budget on its fifth turn and would spawn a worker for a change it could
+// have made in ten. A worker costs a spawn, an 18k-char prompt and a round trip;
+// that is worth paying to escape a grinding context, not to apply a one-line fix.
+//
+// 15 is above the small-fix case and far below the 71- and 99-turn instances the
+// breaker is meant to cut short. Override with PI_INLINE_GRACE_TURNS.
+export const INLINE_GRACE_TURNS = 15;
+
+export function inlineGraceTurns(env = process.env): number {
+    const raw = (env.PI_INLINE_GRACE_TURNS || "").trim();
+    if (!raw) return INLINE_GRACE_TURNS;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : INLINE_GRACE_TURNS;
+}
+
+/**
+ * Whether to tell THIS instance to hand off: the run is over budget AND this
+ * session has had its grace.
+ *
+ * Deliberately stricter than `inlineBudgetSpent`, which is what lifts the
+ * dispatch refusal. The asymmetry is on purpose and the costs are not
+ * symmetrical: lifting the ban early is free, because an agent that was told to
+ * work inline does not spontaneously dispatch, while nudging early spends a
+ * worker that was not needed.
+ */
+export function inlineHandoffDue(
+    cumulativeTurns: number,
+    sessionTurns: number,
+    env = process.env,
+): boolean {
+    return (
+        inlineBudgetSpent(cumulativeTurns, env) &&
+        sessionTurns >= inlineGraceTurns(env)
+    );
 }
 
 /**

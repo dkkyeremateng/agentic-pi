@@ -288,6 +288,19 @@ describe("the inline floor is enforced where the spawn happens", () => {
         assert.match(text(r), /under the inline floor/);
     });
 
+    it("keeps refusing on a cumulative budget below the line", async () => {
+        // The refusal reads the RUN's cumulative turns now, not one session's.
+        const r = await dispatchAgentCore(
+            mkStateWithAgents(agents, { inlineTurns: 59 }),
+            mkHost(),
+            "phase-implementer",
+            "do phase 2",
+            undefined,
+            { cwd: cwdWithPlan(SMALL_PLAN) },
+        );
+        assert.match(text(r), /under the inline floor/);
+    });
+
     it("does not fire without a plan on disk", async () => {
         // dispatch_agent is callable standalone, with no workflow and no plan. An
         // unreadable plan is "unknown", which must never be read as "small".
