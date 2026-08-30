@@ -54,6 +54,35 @@ describe("parseAuditLog", () => {
     });
 });
 
+describe("observe-only runs are never conflated with acted-on ones", () => {
+    // The whole point of a baseline is that it is a DIFFERENT population.
+    // Reporting both under one set of percentages would answer the question
+    // wrongly while looking authoritative.
+    const obs = [
+        `2026-08-30T13:00:00.000Z DECISION {"path":"a.go","bodyLen":9,"kind":"repair","states":["repairable"],"repaired":[0],"observed":true}`,
+        `2026-08-30T13:00:01.000Z DECISION {"path":"a.go","bodyLen":9,"kind":"pass","states":["applies"],"repaired":[],"observed":true}`,
+    ].join("\n");
+
+    it("counts observe-only calls and says so", () => {
+        const r = parseAuditLog(obs);
+        assert.equal(r.calls, 2);
+        assert.equal(r.observed, 2);
+        assert.match(formatCoverage(r), /OBSERVE-ONLY/);
+    });
+
+    it("flags a mixed log rather than averaging over it", () => {
+        const mixed = obs + "\n" + LOG;
+        const r = parseAuditLog(mixed);
+        assert.ok(r.observed > 0 && r.observed < r.calls);
+        assert.match(formatCoverage(r), /MIXED/);
+        assert.match(formatCoverage(r), /do not read these as one population/);
+    });
+
+    it("says nothing about mode when no call was observe-only", () => {
+        assert.ok(!/OBSERVE-ONLY|MIXED/.test(formatCoverage(parseAuditLog(LOG))));
+    });
+});
+
 describe("formatCoverage", () => {
     it("reports percentages of EDITS, since a call is all-or-nothing", () => {
         const out = formatCoverage(parseAuditLog(LOG));
