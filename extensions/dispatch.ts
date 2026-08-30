@@ -39,9 +39,13 @@ import {
     type PhaseState,
     agentStallMsFromEnv,
     isSmallPlan,
-    inlineBudgetSpent,
+    inlineHandoffDue,
     inlineHandoffNotice,
 } from "../utils/workflow/workflow-core";
+import {
+    readInlineTurns,
+    writeInlineTurns,
+} from "../utils/workflow/inline-budget";
 import {
     newOrchestratorState,
     type OrchestratorHost,
@@ -428,6 +432,12 @@ export default function (pi: ExtensionAPI) {
     // One handoff per session: the notice is a switch of strategy, and
     // repeating it would spend the very context it exists to save.
     let handoffSent = false;
+    // Turns earlier implementer instances of this run already spent. Read once
+    // per session; null until then.
+    let inlineBaseline: number | null = null;
+    const cwdOf = () => widgetCtx?.cwd || process.cwd();
+    const isImplementer = () =>
+        (process.env.PI_AGENT_NAME || "").trim().toLowerCase() === "implementer";
 
     pi.on("session_start", async (_event, ctx) => {
         widgetCtx = ctx;
@@ -464,21 +474,39 @@ export default function (pi: ExtensionAPI) {
     // lifting the ban alone changes nothing, because an agent told not to
     // dispatch does not spontaneously retry.
     pi.on("turn_start", async (event: any) => {
-        st.inlineTurns = Number(event?.turnIndex) || 0;
+        const sessionTurns = Number(event?.turnIndex) || 0;
+        // Cumulative across the run, not this process. Three implementer
+        // instances of 55/71/99 turns each counted from zero on
+        // run-mtg4oipc-4e984, so 225 inline turns passed and only the last one
+        // ever crossed 60. The baseline is read once per session; only the
+        // implementer contributes, since a worker's context is bounded by its own
+        // session and is not what the budget is protecting against.
+        if (isImplementer()) {
+            if (inlineBaseline === null) inlineBaseline = readInlineTurns(cwdOf());
+            st.inlineTurns = inlineBaseline + sessionTurns;
+            st.inlineSessionTurns = sessionTurns;
+            writeInlineTurns(cwdOf(), st.inlineTurns);
+        } else {
+            st.inlineTurns = sessionTurns;
+            st.inlineSessionTurns = sessionTurns;
+        }
     });
 
     // A tool result is the only channel that reaches an agent mid-run, so the
     // handoff rides on one. Once, on crossing the line: repeating it every call
     // would spend the context this exists to save.
     pi.on("tool_result", (event: any) => {
-        if (handoffSent || !inlineBudgetSpent(st.inlineTurns)) return undefined;
+        if (
+            handoffSent ||
+            !inlineHandoffDue(st.inlineTurns, st.inlineSessionTurns)
+        )
+            return undefined;
         // Only an implementer working a plan the floor actually covers. Every
         // other agent, and every larger plan, is none of this hook's business.
-        if ((process.env.PI_AGENT_NAME || "").trim().toLowerCase() !== "implementer")
-            return undefined;
+        if (!isImplementer()) return undefined;
         let plan: string;
         try {
-            plan = readFileSync(join(widgetCtx?.cwd || ".", ".agent", "plan.md"), "utf8");
+            plan = readFileSync(join(cwdOf(), ".agent", "plan.md"), "utf8");
         } catch {
             return undefined;
         }
