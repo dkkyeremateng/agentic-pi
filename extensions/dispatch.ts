@@ -471,24 +471,35 @@ export default function (pi: ExtensionAPI) {
     // handoff rides on one. Once, on crossing the line: repeating it every call
     // would spend the context this exists to save.
     pi.on("tool_result", (event: any) => {
-        if (handoffSent || !inlineBudgetSpent(st.inlineTurns)) return;
+        if (handoffSent || !inlineBudgetSpent(st.inlineTurns)) return undefined;
         // Only an implementer working a plan the floor actually covers. Every
         // other agent, and every larger plan, is none of this hook's business.
         if ((process.env.PI_AGENT_NAME || "").trim().toLowerCase() !== "implementer")
-            return;
+            return undefined;
         let plan: string;
         try {
             plan = readFileSync(join(widgetCtx?.cwd || ".", ".agent", "plan.md"), "utf8");
         } catch {
-            return;
+            return undefined;
         }
-        if (!isSmallPlan(plan)) return;
+        if (!isSmallPlan(plan)) return undefined;
         handoffSent = true;
-        const content = event?.content;
-        if (typeof content === "string")
-            event.content = content + inlineHandoffNotice(st.inlineTurns);
-        else if (Array.isArray(content))
-            content.push({ type: "text", text: inlineHandoffNotice(st.inlineTurns) });
+        // RETURN the new content; do not mutate `event.content` in place. pi's
+        // runner skips a handler that returns nothing (`if (!handlerResult)
+        // continue`) and gates the change on a `modified` flag, so an in-place
+        // push reaches the model only by way of a shallow-copy alias that is not
+        // part of the contract. `tool_call` is the hook that documents in-place
+        // mutation; `tool_result` is not, and this is the pattern edit-repair.ts
+        // already uses.
+        return {
+            content: [
+                ...(event.content ?? []),
+                {
+                    type: "text" as const,
+                    text: inlineHandoffNotice(st.inlineTurns),
+                },
+            ],
+        };
     });
 
     // Teardown: pi fires session_shutdown on /new, /resume, /fork, /reload, and
