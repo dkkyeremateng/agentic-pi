@@ -37,6 +37,7 @@ import {
     inlineTurnBudget,
     inlineBudgetSpent,
     inlineHandoffNotice,
+    inlineHandoffKind,
     INLINE_MAX_TURNS,
     documentTask,
     planTask,
@@ -2811,57 +2812,99 @@ describe("the inline floor is a default, not a permanent ban", () => {
     });
 });
 
-describe("inlineHandoffNotice states only what the agent can verify", () => {
-    // Lifting the refusal alone changes nothing: an agent told not to dispatch
-    // does not spontaneously retry. So the notice has to land — and on
-    // run-mtg79i9k-9nhsx it was delivered four times and disregarded four times.
-    // Three of those told a 15-turn session it had spent 60 turns "in this
-    // context", which the agent can check against its own transcript and find
-    // false. A claim a model can falsify is a reason to drop the whole
-    // instruction.
+describe("the two handoff triggers are different problems", () => {
+    // Splitting them is the fix for a regression I introduced. #125's message was
+    // imperative and on run-mtg4oipc-4e984 the agent dispatched seven seconds
+    // after it fired. #128 replaced that with a self-assessment — "if you are a
+    // few turns from finishing, finish it" — and across the next two runs the
+    // notice was delivered SIX times and obeyed none, including to an implementer
+    // that then ran 127 turns in one session. An agent mid-task will nearly
+    // always believe it is nearly done; it cannot see the turns ahead of it.
 
-    it("separates this session's turns from the run's, when they differ", () => {
-        const n = inlineHandoffNotice(63, 15);
-        assert.match(n, /This session has run 15 turn\(s\)/);
-        assert.match(n, /Earlier attempts in this run spent 48 more/);
-        assert.match(n, /63 turns have now gone into implementing this plan inline/);
-        // The false claim must be gone.
-        assert.doesNotMatch(n, /15 turns in this context/);
-        assert.doesNotMatch(n, /63 turns in this context/);
+    it("calls a long session a session problem, whatever the run has spent", () => {
+        assert.equal(inlineHandoffKind(60, 60), "session");
+        assert.equal(inlineHandoffKind(500, 60), "session", "stronger signal wins");
+        assert.equal(inlineHandoffKind(59, 59), null);
     });
 
-    it("says it plainly when there were no earlier attempts", () => {
-        const n = inlineHandoffNotice(60, 60);
-        assert.match(n, /This session has run 60 turn\(s\), past the 60-turn budget/);
+    it("calls a young session in a spent run a run problem", () => {
+        assert.equal(inlineHandoffKind(63, 15), "run");
+        assert.equal(inlineHandoffKind(63, 14), null, "grace not yet served");
+        assert.equal(inlineHandoffKind(59, 40), null, "run still under budget");
+    });
+
+    it("says nothing at all when the breaker is off", () => {
+        const off = { PI_INLINE_MAX_TURNS: "0" } as any;
+        assert.equal(inlineHandoffKind(999, 999, off), null);
+    });
+});
+
+describe("the session notice does not ask the agent to judge", () => {
+    const n = inlineHandoffNotice(130, 127);
+
+    it("is imperative, and says to act before the next edit", () => {
+        assert.match(n, /STOP implementing in this context/);
+        assert.match(n, /Do this now, before the next edit/);
+        assert.match(n, /not after the current test passes/);
+    });
+
+    it("carries NO nearly-done escape hatch — that is what broke it", () => {
+        // The exact clause that cost six deliveries. If it ever reappears in the
+        // session notice, this run's finding has been undone.
+        assert.doesNotMatch(n, /a few turns from finishing/);
+        assert.doesNotMatch(n, /If substantial work remains/);
+        assert.match(n, /not a judgement call about how close you are/);
+    });
+
+    it("explains why the agent cannot self-assess from inside", () => {
+        assert.match(n, /You cannot see it from in here/);
+        assert.match(n, /prefix grew from 3 tokens to 127k/);
+    });
+
+    it("states only its own session's count", () => {
+        assert.match(n, /This session has run 127 turn\(s\), past the 60-turn budget on its own/);
         assert.doesNotMatch(n, /Earlier attempts/);
     });
+});
 
-    it("matches the cost argument to whichever number is large", () => {
-        // A long single session is expensive because its own prefix grew; a short
-        // session in a long run is expensive because the run keeps starting new
-        // ones. Using the wrong argument invites the same dismissal.
-        assert.match(inlineHandoffNotice(60, 60), /prefix grew from 3 tokens to 127k/);
-        assert.match(inlineHandoffNotice(63, 15), /re-reads the plan, the ledger and the files/);
-        assert.doesNotMatch(inlineHandoffNotice(63, 15), /127k/);
-    });
+describe("the run notice keeps the escape hatch, where it was earned", () => {
+    // Every instance it fired on in run-mtg79i9k-9nhsx was genuinely a few turns
+    // from done and correctly finished inline. Here the judgement call is real.
+    const n = inlineHandoffNotice(63, 15);
 
-    it("tells the agent to finish when it is nearly done", () => {
-        // Every instance in that run was a few turns from finishing, and each
-        // correctly ignored the nudge. The notice should say so rather than
-        // demand a handoff that costs more than the work left.
-        const n = inlineHandoffNotice(63, 15);
+    it("offers both options rather than commanding one", () => {
+        assert.match(n, /If substantial work remains, dispatch it/);
         assert.match(n, /If you are a few turns from finishing/);
         assert.match(n, /not worth paying to save ten turns/);
-        assert.match(n, /If substantial work remains, dispatch it/);
     });
 
-    it("says the refusal is lifted, and protects the work already done", () => {
-        const n = inlineHandoffNotice(63, 15);
-        assert.match(n, /refusal on this plan is now lifted/);
-        assert.match(n, /already marked `\[x\]`.*are DONE/s);
-        assert.match(n, /Do not redo them/);
-        assert.match(n, /exact failure text/);
+    it("still states both numbers truthfully", () => {
+        assert.match(n, /This session has run 15 turn\(s\)/);
+        assert.match(n, /Earlier attempts in this run spent 48 more/);
+        assert.doesNotMatch(n, /15 turns in this context/);
     });
+
+    it("uses the entry-cost argument, not prefix growth", () => {
+        // Quoting 127k prefix growth at a 15-turn context is another claim the
+        // agent can check and reject.
+        assert.match(n, /re-reads the plan, the ledger and the files/);
+        assert.doesNotMatch(n, /127k/);
+    });
+});
+
+describe("both notices protect the work already done", () => {
+    for (const [label, n] of [
+        ["session", inlineHandoffNotice(130, 127)],
+        ["run", inlineHandoffNotice(63, 15)],
+    ] as const) {
+        it(`${label}: keeps the ledger and the finished phases`, () => {
+            assert.match(n, /refusal on this plan is lifted/);
+            assert.match(n, /already marked `\[x\]`.*are DONE/s);
+            assert.match(n, /Do not redo them/);
+            assert.match(n, /Keep the bookkeeping yours/);
+            assert.match(n, /exact failure text/);
+        });
+    }
 });
 
 describe("inlineFloorRefusal enforces the floor at the dispatch itself", () => {

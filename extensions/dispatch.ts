@@ -39,7 +39,7 @@ import {
     type PhaseState,
     agentStallMsFromEnv,
     isSmallPlan,
-    inlineHandoffDue,
+    inlineHandoffKind,
     inlineHandoffNotice,
 } from "../utils/workflow/workflow-core";
 import {
@@ -431,7 +431,11 @@ export default function (pi: ExtensionAPI) {
     // ── Inline-floor breaker state ───────────────────────────────────────────
     // One handoff per session: the notice is a switch of strategy, and
     // repeating it would spend the very context it exists to save.
-    let handoffSent = false;
+    // One notice of EACH kind per session. A session can legitimately get the
+    // softer `run` notice early and the imperative `session` one later; that
+    // escalation is the point, and collapsing them into a single flag would
+    // silence the strong message because the weak one already fired.
+    const handoffSent = new Set<string>();
     // Turns earlier implementer instances of this run already spent. Read once
     // per session; null until then.
     let inlineBaseline: number | null = null;
@@ -507,11 +511,8 @@ export default function (pi: ExtensionAPI) {
     // handoff rides on one. Once, on crossing the line: repeating it every call
     // would spend the context this exists to save.
     pi.on("tool_result", (event: any) => {
-        if (
-            handoffSent ||
-            !inlineHandoffDue(st.inlineTurns, st.inlineSessionTurns)
-        )
-            return undefined;
+        const kind = inlineHandoffKind(st.inlineTurns, st.inlineSessionTurns);
+        if (!kind || handoffSent.has(kind)) return undefined;
         // Only an implementer working a plan the floor actually covers. Every
         // other agent, and every larger plan, is none of this hook's business.
         if (!isImplementer()) return undefined;
@@ -522,7 +523,7 @@ export default function (pi: ExtensionAPI) {
             return undefined;
         }
         if (!isSmallPlan(plan)) return undefined;
-        handoffSent = true;
+        handoffSent.add(kind);
         // RETURN the new content; do not mutate `event.content` in place. pi's
         // runner skips a handler that returns nothing (`if (!handlerResult)
         // continue`) and gates the change on a `modified` flag, so an in-place
@@ -538,6 +539,8 @@ export default function (pi: ExtensionAPI) {
                     text: inlineHandoffNotice(
                         st.inlineTurns,
                         st.inlineSessionTurns,
+                        process.env,
+                        kind,
                     ),
                 },
             ],
