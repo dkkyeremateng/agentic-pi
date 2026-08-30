@@ -141,14 +141,24 @@ export function findFlexMatch(body: string, oldText: string): string | null {
  * tool matches them too ("Each edit is matched against the original file, not
  * incrementally"), so repairs cannot interact with each other.
  *
- * `newText` is never touched. The model's replacement is its intent; only its
- * description of what to replace is corrected.
+ * `newText` is corrected only where the model plainly did not mean to change it:
+ * repairIndent rebuilds it alongside a repaired `oldText`, and
+ * repairCarriedWhitespace restores a padded line carried through unchanged.
+ * Anything the model actually rewrote is its intent and is left alone.
  */
 export function repairEdits(body: string, edits: EditPair[]): RepairResult {
     const repairs: Repair[] = [];
     if (!Array.isArray(edits)) return { edits, repairs };
     const out = edits.map((edit, index) => {
         if (!edit || typeof edit.oldText !== "string") return edit;
+        // An edit that MATCHES can still be wrong: newText may carry a flattened
+        // copy of a line it is not changing. Handled first because every other
+        // repair below is about an oldText that fails to match.
+        const carried = repairCarriedWhitespace(body, edit);
+        if (carried !== null) {
+            repairs.push({ index, from: edit.newText as string, to: carried });
+            return { ...edit, newText: carried };
+        }
         const found = findFlexMatch(body, edit.oldText);
         if (found === null) {
             // The mid-line repair declined. Try the indentation repair, which
@@ -360,6 +370,199 @@ export function repairIndent(
     });
 
     return { oldText: fileLines.join("\n"), newText: rebuilt.join("\n") };
+}
+
+/**
+ * Restore alignment the model flattened on a line it was not trying to change.
+ *
+ * The gap this closes. Every other repair here fixes an `oldText` that will not
+ * MATCH. This one fixes an edit that matches perfectly and writes the wrong
+ * bytes: the model reproduces the surrounding context inside `newText` and
+ * flattens a padded column on the way through. The edit applies, gofmt is happy,
+ * and the only symptom is a test comparing exact output.
+ *
+ * Measured on run-mtfx17xn-wpdrq. Adding a `--style` help row flattened the
+ * neighbouring row it merely carried along:
+ *
+ *     want:  " --version         print the version and exit"
+ *     got:   " --version print the version and exit"
+ *
+ * `TestRun/help_flag` then failed for three minutes -- 40 turns, 45 tool calls,
+ * $2.31, 44% of that implementer's entire cost -- including a hex dump of the
+ * mismatched bytes added to the test file and reverted afterwards. It recovered
+ * without editing the expectation, which is the good outcome, at the price of
+ * the most expensive stretch in the run.
+ *
+ * Only ever NARROWS-to-a-single-space are repaired, and only on a line carried
+ * through from `oldText`:
+ *
+ * - **A run the model WIDENED is never touched.** Widening is what deliberate
+ *   re-alignment looks like (a longer entry arrives, the column moves), and
+ *   reverting it would fight the edit's actual intent.
+ * - **A run narrowed to something other than one space is never touched**, for
+ *   the same reason: re-aligning to a NEW column is a real edit, while collapsing
+ *   to exactly one space is the signature of a model that cannot see the run at
+ *   all. That is the shape in every occurrence measured.
+ * - The line must appear in `oldText`, so the model is re-transcribing context
+ *   rather than authoring it.
+ *
+ * Returns the corrected `newText`, or null when there is nothing safe to do.
+ */
+export function repairCarriedWhitespace(
+    body: string,
+    edit: EditPair,
+): string | null {
+    const old = edit?.oldText;
+    const next = edit?.newText;
+    if (typeof old !== "string" || typeof next !== "string") return null;
+    if (!old || !next || old.length > MAX_OLD_TEXT_CHARS) return null;
+    // ONLY for an edit that already matches. When it does, `oldText` is a literal
+    // slice of the file, so it is the truth to restore from and no search of the
+    // body is needed. A non-matching edit is repairIndent's job, and that path
+    // already rebuilds newText.
+    if (!body.includes(old)) return null;
+
+    const key = (l: string) => l.trim().replace(/[ \t]+/g, " ");
+
+    // Content -> the file's own line. Ambiguous content (the same collapsed text
+    // at two different widths) is refused rather than guessed, matching the
+    // uniqueness rule the other repairs use.
+    const lineFor = new Map<string, string>();
+    for (const l of old.split("\n")) {
+        const k = key(l);
+        if (!k) continue;
+        if (lineFor.has(k) && lineFor.get(k) !== l) {
+            lineFor.set(k, "\0ambiguous");
+            continue;
+        }
+        lineFor.set(k, l);
+    }
+
+    // Offsets where a padded column lands, across the lines of oldText. Used to
+    // tell alignment from data inside a string literal -- see isFlattened.
+    const columns = columnOffsets(old.split("\n"));
+
+    let changed = false;
+    const out = next.split("\n").map((sent) => {
+        const k = key(sent);
+        if (!k) return sent;
+        const file = lineFor.get(k);
+        if (file === undefined || file === "\0ambiguous" || file === sent)
+            return sent;
+        if (!isFlattened(sent, file, columns)) return sent;
+        changed = true;
+        return file;
+    });
+    return changed ? out.join("\n") : null;
+}
+
+/**
+ * True when `sent` is `file` with one or more whitespace runs collapsed to a
+ * single space, and nothing else different.
+ *
+ * Both lines have the same collapsed form by the time this is called, so their
+ * split alternates identically: text at even indices, runs at odd. Every text
+ * part must be equal, every run either identical or a collapse to one space, and
+ * at least one must actually have collapsed.
+ */
+function isFlattened(
+    sent: string,
+    file: string,
+    columns: Map<number, number>,
+): boolean {
+    const a = sent.split(/([ \t]+)/);
+    const b = file.split(/([ \t]+)/);
+    if (a.length !== b.length) return false;
+    const inString = literalMask(file);
+    let collapsed = 0;
+    let at = 0; // offset of b[i] within `file`
+    for (let i = 0; i < a.length; i++) {
+        const start = at;
+        at += b[i].length;
+        if (a[i] === b[i]) continue;
+        // A differing TEXT part means this is a real content change, not padding.
+        if (i % 2 === 0) return false;
+        // A run the model made WIDER, or re-aligned to some other width, is the
+        // edit's intent. Only the collapse-to-one-space signature is repaired.
+        if (a[i] !== " ") return false;
+        // Whitespace INSIDE a string literal is data, not layout. Replaying this
+        // over the sink caught the case that makes the distinction non-optional:
+        //
+        //     sent:  stdin:           " Ada \n",
+        //     file:  stdin:           "  Ada  \n",
+        //
+        // Those are different test INPUTS. "Restoring" the padding would rewrite
+        // what the case feeds in while every gate stayed green -- precisely the
+        // silent damage this module exists to prevent. Two of the ten historical
+        // edits this repair fired on were exactly that.
+        let literal = false;
+        for (let k = start; k < at; k++) if (inString[k]) literal = true;
+        // Padding inside a literal is repaired only when it forms a COLUMN: some
+        // other line in this edit puts its text at the same offset. That is what
+        // alignment IS, and it is the one signal that separates the two cases,
+        // which are otherwise identical line-for-line.
+        if (literal && (columns.get(at) || 0) < 2) return false;
+        collapsed++;
+    }
+    return collapsed > 0;
+}
+
+/**
+ * How many of these lines start a text token at each offset, counting only
+ * tokens preceded by a run of two or more spaces.
+ *
+ * This is the test for "is that padding, or is it data". Both look identical on
+ * one line -- a Go help row and a table-driven test's stdin field are each a
+ * string literal with runs inside it -- but alignment exists to put the NEXT
+ * token at a shared offset across neighbouring lines, and data does not:
+ *
+ *     " --version         print the version and exit"     both put their text
+ *     " --help            show this help"                 at offset 20 -> column
+ *
+ *     stdin:           "  Ada  \\n",                        nothing shares an
+ *     stdin:           "   \\n\\t",                          offset -> data
+ */
+function columnOffsets(lines: string[]): Map<number, number> {
+    const counts = new Map<number, number>();
+    for (const line of lines) {
+        for (const m of line.matchAll(/[ \t]{2,}(?=[^ \t])/g)) {
+            const end = (m.index ?? 0) + m[0].length;
+            counts.set(end, (counts.get(end) || 0) + 1);
+        }
+    }
+    return counts;
+}
+
+/**
+ * Per-character "is inside a string literal" for one line.
+ *
+ * Deliberately crude: one line at a time, no knowledge of the language, quotes
+ * closed by their own kind, backslash escapes honoured. An unterminated quote
+ * (an apostrophe in a comment, a literal spanning lines) marks the rest of the
+ * line as string, which only ever makes the caller DECLINE a repair. Erring
+ * toward "this is data, leave it alone" is the correct bias for a mask whose
+ * only job is to veto rewrites.
+ */
+function literalMask(line: string): boolean[] {
+    const mask = new Array<boolean>(line.length).fill(false);
+    let quote = "";
+    for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (quote) {
+            mask[i] = true;
+            if (c === "\\") {
+                if (i + 1 < line.length) mask[++i] = true;
+                continue;
+            }
+            if (c === quote) quote = "";
+            continue;
+        }
+        if (c === '"' || c === "'" || c === "`") {
+            quote = c;
+            mask[i] = true;
+        }
+    }
+    return mask;
 }
 
 /** What will happen to one edit in a batch, decided before the call runs. */

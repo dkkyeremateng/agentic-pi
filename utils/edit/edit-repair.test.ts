@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+    repairCarriedWhitespace,
     flexPattern,
     findFlexMatch,
     repairEdits,
@@ -477,5 +478,188 @@ describe("explainReason", () => {
         assert.ok(r.includes("  aligned    text"), "the real bytes are quoted");
         assert.match(r, /Do NOT re-send/);
         assert.match(r, /invisible characters/);
+    });
+});
+
+describe("repairCarriedWhitespace restores padding on a line carried through", () => {
+    // The real file from run-mtfx17xn-wpdrq. The edit ADDS a --style row and
+    // matches oldText exactly; the damage is that newText re-types the two rows
+    // beside it with their padding collapsed.
+    const BODY = [
+        'func printUsage(stdout io.Writer) {',
+        '\tfmt.Fprintln(stdout, "Flags:")',
+        '\tfmt.Fprintln(stdout, " -n, --name string name to greet")',
+        '\tfmt.Fprintln(stdout, " --version         print the version and exit")',
+        '\tfmt.Fprintln(stdout, " --help            show this help")',
+        '}',
+    ].join("\n");
+    const OLD = [
+        '\tfmt.Fprintln(stdout, " --version         print the version and exit")',
+        '\tfmt.Fprintln(stdout, " --help            show this help")',
+    ].join("\n");
+
+    it("puts back the padding the model flattened while inserting a line", () => {
+        const NEW = [
+            '\tfmt.Fprintln(stdout, " --style string    greeting style")',
+            '\tfmt.Fprintln(stdout, " --version print the version and exit")',
+            '\tfmt.Fprintln(stdout, " --help show this help")',
+        ].join("\n");
+        const got = repairCarriedWhitespace(BODY, { oldText: OLD, newText: NEW });
+        assert.ok(got);
+        assert.match(got!, / --version {9}print the version and exit/);
+        assert.match(got!, / --help {12}show this help/);
+        // The inserted line is the model's own and must survive untouched.
+        assert.match(got!, / --style string {4}greeting style/);
+    });
+
+    it("does nothing when the model reproduced the padding correctly", () => {
+        const NEW = OLD.replace(
+            '\t\tfmt',
+            '\t\tfmt',
+        );
+        assert.equal(repairCarriedWhitespace(BODY, { oldText: OLD, newText: NEW }), null);
+    });
+
+    it("never reverts a run the model WIDENED", () => {
+        // Widening is what deliberate re-alignment looks like: a longer entry
+        // arrives and the column moves. Reverting it would fight the edit.
+        const NEW = [
+            '\tfmt.Fprintln(stdout, " --version             print the version and exit")',
+            '\tfmt.Fprintln(stdout, " --help                show this help")',
+        ].join("\n");
+        assert.equal(repairCarriedWhitespace(BODY, { oldText: OLD, newText: NEW }), null);
+    });
+
+    it("never touches a run re-aligned to some OTHER width", () => {
+        // Narrowing to a new column is a real edit; only the collapse to exactly
+        // one space is the signature of a model that cannot see the run.
+        const NEW = [
+            '\tfmt.Fprintln(stdout, " --version   print the version and exit")',
+            '\tfmt.Fprintln(stdout, " --help      show this help")',
+        ].join("\n");
+        assert.equal(repairCarriedWhitespace(BODY, { oldText: OLD, newText: NEW }), null);
+    });
+
+    it("leaves a line whose CONTENT changed alone", () => {
+        const NEW = [
+            '\tfmt.Fprintln(stdout, " --version print the build and exit")',
+            '\tfmt.Fprintln(stdout, " --help            show this help")',
+        ].join("\n");
+        // Same collapsed key? No — the words differ, so it is not carried
+        // through and this module has no business rewriting it.
+        assert.equal(repairCarriedWhitespace(BODY, { oldText: OLD, newText: NEW }), null);
+    });
+
+    it("only fires on an edit that already matches the file", () => {
+        // A non-matching edit is repairIndent's job, and that path rebuilds
+        // newText itself. Doing both would be two repairs racing on one string.
+        const stale = OLD.replace("--version", "--vers");
+        const NEW = '\tfmt.Fprintln(stdout, " --version print the version and exit")';
+        assert.equal(repairCarriedWhitespace(BODY, { oldText: stale, newText: NEW }), null);
+    });
+
+    it("refuses when the carried line is ambiguous in oldText", () => {
+        const dupBody = 'a\nx    y\nx  y\nb';
+        const dupOld = 'x    y\nx  y';
+        assert.equal(
+            repairCarriedWhitespace(dupBody, { oldText: dupOld, newText: 'x y\nx y' }),
+            null,
+        );
+    });
+
+    it("restores a flattened tab indent", () => {
+        const body = 'func f() {\n\t\treturn 1\n}';
+        const got = repairCarriedWhitespace(body, {
+            oldText: '\t\treturn 1',
+            newText: ' return 1',
+        });
+        assert.equal(got, '\t\treturn 1');
+    });
+
+    it("survives junk without throwing", () => {
+        assert.equal(repairCarriedWhitespace("", { oldText: "a", newText: "a" }), null);
+        assert.equal(repairCarriedWhitespace("a", {} as any), null);
+        assert.equal(
+            repairCarriedWhitespace("a", { oldText: "a", newText: "" }),
+            null,
+        );
+    });
+});
+
+describe("padding inside a string literal: layout vs data", () => {
+    // Both shapes are a literal with runs inside it, indistinguishable line for
+    // line. What separates them is whether the padding lines a column up across
+    // siblings. Replaying the sink surfaced one of each.
+
+    it("REPAIRS a help row, where the padding forms a column", () => {
+        // From run-mtfx17xn-wpdrq: adding --style flattened the row beside it.
+        const body = [
+            '\tfmt.Fprintln(stdout, " --version         print the version and exit")',
+            '\tfmt.Fprintln(stdout, " --help            show this help")',
+        ].join("\n");
+        const got = repairCarriedWhitespace(body, {
+            oldText: body,
+            newText: [
+                '\tfmt.Fprintln(stdout, " --style string    greeting style")',
+                '\tfmt.Fprintln(stdout, " --version print the version and exit")',
+                '\tfmt.Fprintln(stdout, " --help            show this help")',
+            ].join("\n"),
+        });
+        assert.ok(got, "the column is real; this is alignment");
+        assert.match(got!, / --version {9}print/);
+    });
+
+    it("REFUSES a table-driven test's stdin field, where it is data", () => {
+        // Real, from the sink. `" Ada "` and `"  Ada  "` are DIFFERENT inputs;
+        // rewriting one to the other changes what the case asserts while every
+        // gate stays green — the exact silent damage this module exists to stop.
+        const body = [
+            '\t\t\tstdin:           "  Ada  \\n",',
+            '\t\t\twantStdout:      "Hello, Ada!\\n",',
+        ].join("\n");
+        const got = repairCarriedWhitespace(body, {
+            oldText: body,
+            newText: [
+                '\t\t\tstdin:           " Ada \\n",',
+                '\t\t\twantStdout:      "Hello, Ada!\\n",',
+            ].join("\n"),
+        });
+        assert.equal(got, null);
+    });
+
+    it("still repairs indentation, which is never inside a literal", () => {
+        assert.equal(
+            repairCarriedWhitespace('\t_, err = pool.Exec(ctx,', {
+                oldText: '\t_, err = pool.Exec(ctx,',
+                newText: ' _, err = pool.Exec(ctx,',
+            }),
+            '\t_, err = pool.Exec(ctx,',
+        );
+    });
+});
+
+describe("the carried-whitespace repair reaches the hook's decision", () => {
+    // It must arrive as a `repair`, not a `pass`, or the extension never applies
+    // it and the audit never records it.
+    const BODY = 'x\n --version         print\n --help            show\ny';
+    const edits = [
+        {
+            oldText: ' --version         print\n --help            show',
+            newText: ' --style    pick\n --version print\n --help show',
+        },
+    ];
+
+    it("turns a matching-but-flattening edit into a repair", () => {
+        const d = decideEdit(BODY, edits);
+        assert.equal(d.kind, "repair");
+        if (d.kind !== "repair") return;
+        assert.equal(d.repairs.length, 1);
+        assert.match(d.edits[0].newText, / --version {9}print/);
+        assert.match(d.edits[0].newText, / --style {4}pick/);
+    });
+
+    it("classifies the edit as applying, since it does", () => {
+        // The repair changes what gets written, not whether the call lands.
+        assert.deepEqual(classifyBatch(BODY, edits)[0], { index: 0, state: "applies" });
     });
 });
