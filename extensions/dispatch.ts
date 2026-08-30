@@ -428,7 +428,7 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
-    // ── Lifecycle — load agents and reset per-turn dispatch state ────────────
+    // ── Inline-floor breaker state ───────────────────────────────────────────
     // One handoff per session: the notice is a switch of strategy, and
     // repeating it would spend the very context it exists to save.
     let handoffSent = false;
@@ -439,6 +439,7 @@ export default function (pi: ExtensionAPI) {
     const isImplementer = () =>
         (process.env.PI_AGENT_NAME || "").trim().toLowerCase() === "implementer";
 
+    // ── Lifecycle — load agents and reset per-turn dispatch state ────────────
     pi.on("session_start", async (_event, ctx) => {
         widgetCtx = ctx;
         modelRegistry = (ctx as any).modelRegistry;
@@ -468,28 +469,38 @@ export default function (pi: ExtensionAPI) {
     // implementer context, the per-turn prefix growing 3 tokens -> 127k as it
     // went. Nothing tripped, because context never passed 13% of the window.
     //
-    // So the floor gets a bound. `turn_start` carries the index for free;
+    // So the floor gets a bound, counted across the whole RUN rather than one
+    // session (#127 -- the validator rejects, `fixTask` spawns a fresh
+    // implementer, and a per-session counter starts over each time).
     // `inlineFloorRefusal` stops refusing once the budget is spent, and the
     // notice below tells the agent to actually use that. Both halves are needed:
     // lifting the ban alone changes nothing, because an agent told not to
     // dispatch does not spontaneously retry.
     pi.on("turn_start", async (event: any) => {
-        const sessionTurns = Number(event?.turnIndex) || 0;
-        // Cumulative across the run, not this process. Three implementer
-        // instances of 55/71/99 turns each counted from zero on
-        // run-mtg4oipc-4e984, so 225 inline turns passed and only the last one
-        // ever crossed 60. The baseline is read once per session; only the
-        // implementer contributes, since a worker's context is bounded by its own
-        // session and is not what the budget is protecting against.
-        if (isImplementer()) {
-            if (inlineBaseline === null) inlineBaseline = readInlineTurns(cwdOf());
-            st.inlineTurns = inlineBaseline + sessionTurns;
-            st.inlineSessionTurns = sessionTurns;
-            writeInlineTurns(cwdOf(), st.inlineTurns);
-        } else {
-            st.inlineTurns = sessionTurns;
-            st.inlineSessionTurns = sessionTurns;
+        // Anyone else's turn count must NOT touch this. `st.inlineTurns` is what
+        // lifts the dispatch refusal, and this extension also loads in the
+        // top-level session, where PI_AGENT_NAME is unset: counting those turns
+        // would quietly stop the floor refusing once that session passed 60, for
+        // reasons having nothing to do with any implementer. Zero keeps the floor
+        // refusing, which is the safe default. A phase-implementer is excluded for
+        // a different reason -- its context is bounded by its own session, which
+        // is the thing the budget is buying.
+        if (!isImplementer()) {
+            st.inlineTurns = 0;
+            st.inlineSessionTurns = 0;
+            return;
         }
+        // Cumulative across the RUN, not this process: three implementer
+        // instances of 55/71/99 turns each counted from zero on
+        // run-mtg4oipc-4e984, so 225 inline turns passed and only the last ever
+        // crossed 60. The baseline is read once per session and the running total
+        // written every turn, because the next instance is a different process
+        // with no channel to this one.
+        const sessionTurns = Number(event?.turnIndex) || 0;
+        if (inlineBaseline === null) inlineBaseline = readInlineTurns(cwdOf());
+        st.inlineTurns = inlineBaseline + sessionTurns;
+        st.inlineSessionTurns = sessionTurns;
+        writeInlineTurns(cwdOf(), st.inlineTurns);
     });
 
     // A tool result is the only channel that reaches an agent mid-run, so the

@@ -301,6 +301,23 @@ describe("the inline floor is enforced where the spawn happens", () => {
         assert.match(text(r), /under the inline floor/);
     });
 
+    it("does not lift the floor on some other agent's turn count", async () => {
+        // dispatch.ts also loads in the top-level session, where PI_AGENT_NAME is
+        // unset. If that session's turn index fed the budget, the floor would
+        // stop refusing once it passed 60 for reasons unrelated to any
+        // implementer. The extension pins non-implementers to 0; this asserts the
+        // refusal that depends on it.
+        const r = await dispatchAgentCore(
+            mkStateWithAgents(agents, { inlineTurns: 0, inlineSessionTurns: 0 }),
+            mkHost(),
+            "phase-implementer",
+            "do phase 2",
+            undefined,
+            { cwd: cwdWithPlan(SMALL_PLAN) },
+        );
+        assert.match(text(r), /under the inline floor/);
+    });
+
     it("does not fire without a plan on disk", async () => {
         // dispatch_agent is callable standalone, with no workflow and no plan. An
         // unreadable plan is "unknown", which must never be read as "small".
