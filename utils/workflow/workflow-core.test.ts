@@ -2811,30 +2811,55 @@ describe("the inline floor is a default, not a permanent ban", () => {
     });
 });
 
-describe("inlineHandoffNotice tells the agent what to do with the lifted ban", () => {
+describe("inlineHandoffNotice states only what the agent can verify", () => {
     // Lifting the refusal alone changes nothing: an agent told not to dispatch
-    // does not spontaneously retry. Both halves are required.
-    const n = inlineHandoffNotice(60);
+    // does not spontaneously retry. So the notice has to land — and on
+    // run-mtg79i9k-9nhsx it was delivered four times and disregarded four times.
+    // Three of those told a 15-turn session it had spent 60 turns "in this
+    // context", which the agent can check against its own transcript and find
+    // false. A claim a model can falsify is a reason to drop the whole
+    // instruction.
 
-    it("names the budget and says the refusal is lifted", () => {
-        assert.match(n, /INLINE BUDGET SPENT/);
-        assert.match(n, /60 turns/);
+    it("separates this session's turns from the run's, when they differ", () => {
+        const n = inlineHandoffNotice(63, 15);
+        assert.match(n, /This session has run 15 turn\(s\)/);
+        assert.match(n, /Earlier attempts in this run spent 48 more/);
+        assert.match(n, /63 turns have now gone into implementing this plan inline/);
+        // The false claim must be gone.
+        assert.doesNotMatch(n, /15 turns in this context/);
+        assert.doesNotMatch(n, /63 turns in this context/);
+    });
+
+    it("says it plainly when there were no earlier attempts", () => {
+        const n = inlineHandoffNotice(60, 60);
+        assert.match(n, /This session has run 60 turn\(s\), past the 60-turn budget/);
+        assert.doesNotMatch(n, /Earlier attempts/);
+    });
+
+    it("matches the cost argument to whichever number is large", () => {
+        // A long single session is expensive because its own prefix grew; a short
+        // session in a long run is expensive because the run keeps starting new
+        // ones. Using the wrong argument invites the same dismissal.
+        assert.match(inlineHandoffNotice(60, 60), /prefix grew from 3 tokens to 127k/);
+        assert.match(inlineHandoffNotice(63, 15), /re-reads the plan, the ledger and the files/);
+        assert.doesNotMatch(inlineHandoffNotice(63, 15), /127k/);
+    });
+
+    it("tells the agent to finish when it is nearly done", () => {
+        // Every instance in that run was a few turns from finishing, and each
+        // correctly ignored the nudge. The notice should say so rather than
+        // demand a handoff that costs more than the work left.
+        const n = inlineHandoffNotice(63, 15);
+        assert.match(n, /If you are a few turns from finishing/);
+        assert.match(n, /not worth paying to save ten turns/);
+        assert.match(n, /If substantial work remains, dispatch it/);
+    });
+
+    it("says the refusal is lifted, and protects the work already done", () => {
+        const n = inlineHandoffNotice(63, 15);
         assert.match(n, /refusal on this plan is now lifted/);
-    });
-
-    it("gives the measurement, so the switch is not arbitrary", () => {
-        assert.match(n, /127k/);
-        assert.match(n, /13% of the context window/);
-    });
-
-    it("protects the work already done", () => {
-        // Without this the handoff costs more than the loop it ends.
         assert.match(n, /already marked `\[x\]`.*are DONE/s);
         assert.match(n, /Do not redo them/);
-        assert.match(n, /Keep the bookkeeping yours/);
-    });
-
-    it("hands over the failure text, not a diagnosis of it", () => {
         assert.match(n, /exact failure text/);
     });
 });

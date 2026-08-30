@@ -524,7 +524,10 @@ export default function (pi: ExtensionAPI) {
                 ...(event.content ?? []),
                 {
                     type: "text" as const,
-                    text: inlineHandoffNotice(st.inlineTurns),
+                    text: inlineHandoffNotice(
+                        st.inlineTurns,
+                        st.inlineSessionTurns,
+                    ),
                 },
             ],
         };

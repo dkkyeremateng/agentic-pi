@@ -2995,15 +2995,37 @@ export function inlineHandoffDue(
  * marked `[x]` must not be redone. Without that last line the handoff costs more
  * than the loop it ends.
  */
-export function inlineHandoffNotice(turns: number, env = process.env): string {
+export function inlineHandoffNotice(
+    cumulativeTurns: number,
+    sessionTurns: number,
+    env = process.env,
+): string {
+    const prior = Math.max(0, cumulativeTurns - sessionTurns);
+    // State the two numbers separately. They are different things, and after the
+    // budget became cumulative (#127) the old single-number wording said "N turns
+    // in this context" while the agent's context held far fewer -- a claim it can
+    // check against its own transcript and find false. On run-mtg79i9k-9nhsx this
+    // notice was delivered four times and disregarded four times; three of those
+    // told a 15-turn session it had spent 60 turns.
+    const spend = prior
+        ? `This session has run ${sessionTurns} turn(s). Earlier attempts in this run spent ${prior} more, so ${cumulativeTurns} turns have now gone into implementing this plan inline, past the ${inlineTurnBudget(env)}-turn budget for the run.`
+        : `This session has run ${sessionTurns} turn(s), past the ${inlineTurnBudget(env)}-turn budget for the run.`;
+    // The cost argument has to match which number is large, or it invites the
+    // same dismissal. A long single session is expensive because its own prefix
+    // grew; a short session in a long run is expensive because the run keeps
+    // starting new ones.
+    const why = prior
+        ? "Why: each fresh attempt re-reads the plan, the ledger and the files before it can do anything, and this run has now paid that entry cost several times over. A `phase-implementer` pays it once for a bounded piece of work and hands back a summary instead of a transcript."
+        : "Why: every turn in this session re-reads the whole transcript, so each one costs more than the last. Measured on a run that ran past this point, the per-turn prefix grew from 3 tokens to 127k and the per-turn cost tripled — it reached $25 without ever passing 13% of the context window. A fresh worker starts that count at zero.";
     return [
         "",
         "---",
-        `INLINE BUDGET SPENT — ${turns} turns in this context, past the ${inlineTurnBudget(env)}-turn limit. Stop implementing here and hand the REST of the work to fresh \`phase-implementer\` workers; the dispatch refusal on this plan is now lifted.`,
+        `INLINE BUDGET SPENT — ${spend} The dispatch refusal on this plan is now lifted.`,
         "",
-        "Why, so the switch is not arbitrary: every turn in this session re-reads the whole transcript, so each one costs more than the last. Measured on a run that ran past this point, the per-turn prefix grew from 3 tokens to 127k and the per-turn cost tripled — the run reached $25 without ever passing 13% of the context window. A fresh worker starts that count at zero.",
+        why,
         "",
-        "- Dispatch each REMAINING phase to a `phase-implementer` (`dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for one).",
+        "- If substantial work remains, dispatch it: each REMAINING phase to a `phase-implementer` (`dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for one).",
+        "- If you are a few turns from finishing what you already have in hand, finish it — a worker costs a spawn, a full prompt and a round trip, which is worth paying to escape a long context and not worth paying to save ten turns.",
         "- Give each worker a self-contained task: the phase number and title, the plan path, what is already green, and — in a parallel wave — the files it owns.",
         "- Phases already marked `[x]` in `.agent/progress.md` are DONE. Do not redo them; continue from the first unchecked phase.",
         "- Keep the bookkeeping yours: verify each phase's targeted tests, flip its `[x]`, commit its checkpoint.",
