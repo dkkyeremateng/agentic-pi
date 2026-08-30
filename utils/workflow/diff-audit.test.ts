@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { auditDiff, diffAuditBlock, isTestFile } from "./diff-audit";
+import {
+    auditDiff,
+    diffAuditBlock,
+    isTestFile,
+    markRuns,
+    runDelta,
+} from "./diff-audit";
 
 // The diff that shipped the regression this module exists for
 // (run-mteaylzh-wlcwt): a `--style` row inserted correctly, the two rows beside
@@ -110,5 +116,65 @@ describe("diffAuditBlock", () => {
 
     it("is empty when there is nothing to report, so a clean run reads clean", () => {
         assert.equal(diffAuditBlock([]), "");
+    });
+});
+
+describe("whitespace differences are rendered as counts, not as whitespace", () => {
+    // The regression this closes. On run-mtgevo3w-j2mrj the audit found the
+    // flattened --version/--help rows and reported them correctly, and BOTH gates
+    // still passed the diff:
+    //
+    //   reviewer:  "their text and leading alignment were preserved"
+    //   validator: "the existing --version expectation remains exactly ..."
+    //
+    // They were answering the finding, not skipping it. They just could not see
+    // the difference, because the difference is a run of spaces — the one
+    // comparison a model cannot make, and the reason this module exists at all.
+
+    it("renders a run of two or more as a count", () => {
+        assert.equal(markRuns(" --version         print"), " --version[9sp]print");
+        assert.equal(markRuns("\t\tfoo"), "[2tab]foo");
+        // " \t x" is space, tab, space -> one run of 2 spaces and a tab.
+        assert.equal(markRuns(" \t x"), "[2sp+1tab]x");
+    });
+
+    it("leaves single spaces alone, so the marked run stands out", () => {
+        // Marking every space turned the line into "[1sp]" noise and buried the
+        // one run that mattered.
+        assert.equal(markRuns("a b c"), "a b c");
+        assert.equal(markRuns("a b  c"), "a b[2sp]c");
+    });
+
+    it("states the width change and which token it precedes", () => {
+        assert.equal(
+            runDelta(" --version         print the version", " --version print the version"),
+            '9 -> 1 before "print"',
+        );
+        assert.equal(runDelta("a  b", "a  b"), "", "nothing changed");
+        assert.equal(runDelta("a b", "totally different"), "", "not a run difference");
+    });
+
+    it("puts both into the finding, so the claim is checkable", () => {
+        const diff = [
+            "+++ b/cmd/greet/main.go",
+            '-\tfmt.Fprintln(stdout, " --version         print the version and exit")',
+            '+\tfmt.Fprintln(stdout, " --version print the version and exit")',
+        ].join("\n");
+        const [f] = auditDiff(diff);
+        assert.equal(f.kind, "whitespace-only-change");
+        assert.match(f.detail, /\[9sp\]/);
+        assert.match(f.detail, /run width 9 -> 1 before "print"/);
+    });
+
+    it("tells the reader a narrowing is accidental by default", () => {
+        // "Confirm each was intended" was too weak: two gates confirmed it was.
+        const diff = [
+            "+++ b/x.go",
+            '-a  b',
+            '+a b',
+        ].join("\n");
+        const block = diffAuditBlock(auditDiff(diff));
+        assert.match(block, /Treat a narrowing as ACCIDENTAL/);
+        assert.match(block, /concluded the alignment was "preserved"/);
     });
 });
