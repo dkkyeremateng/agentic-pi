@@ -21,6 +21,7 @@ import { Text, Markdown } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { appendFileSync } from "fs";
 import { join } from "path";
+import { readFileSync } from "fs";
 import {
     setupSessions as setupSessionsCore,
     runAgentWithFallback,
@@ -37,6 +38,9 @@ import {
     type AgentDef,
     type PhaseState,
     agentStallMsFromEnv,
+    isSmallPlan,
+    inlineBudgetSpent,
+    inlineHandoffNotice,
 } from "../utils/workflow/workflow-core";
 import {
     newOrchestratorState,
@@ -421,6 +425,10 @@ export default function (pi: ExtensionAPI) {
     });
 
     // ── Lifecycle — load agents and reset per-turn dispatch state ────────────
+    // One handoff per session: the notice is a switch of strategy, and
+    // repeating it would spend the very context it exists to save.
+    let handoffSent = false;
+
     pi.on("session_start", async (_event, ctx) => {
         widgetCtx = ctx;
         modelRegistry = (ctx as any).modelRegistry;
@@ -441,6 +449,46 @@ export default function (pi: ExtensionAPI) {
         st.dispatchesThisTurn = 0;
         st.dispatchedThisTurn = false;
         dispatchAborted = false;
+    });
+
+    // ── the inline floor's circuit-breaker ──
+    //
+    // The floor tells the implementer to do a small plan itself. That is right
+    // until it is not: run-mtfy2a2v-lq87f spent 270 turns and $25.13 in ONE
+    // implementer context, the per-turn prefix growing 3 tokens -> 127k as it
+    // went. Nothing tripped, because context never passed 13% of the window.
+    //
+    // So the floor gets a bound. `turn_start` carries the index for free;
+    // `inlineFloorRefusal` stops refusing once the budget is spent, and the
+    // notice below tells the agent to actually use that. Both halves are needed:
+    // lifting the ban alone changes nothing, because an agent told not to
+    // dispatch does not spontaneously retry.
+    pi.on("turn_start", async (event: any) => {
+        st.inlineTurns = Number(event?.turnIndex) || 0;
+    });
+
+    // A tool result is the only channel that reaches an agent mid-run, so the
+    // handoff rides on one. Once, on crossing the line: repeating it every call
+    // would spend the context this exists to save.
+    pi.on("tool_result", (event: any) => {
+        if (handoffSent || !inlineBudgetSpent(st.inlineTurns)) return;
+        // Only an implementer working a plan the floor actually covers. Every
+        // other agent, and every larger plan, is none of this hook's business.
+        if ((process.env.PI_AGENT_NAME || "").trim().toLowerCase() !== "implementer")
+            return;
+        let plan: string;
+        try {
+            plan = readFileSync(join(widgetCtx?.cwd || ".", ".agent", "plan.md"), "utf8");
+        } catch {
+            return;
+        }
+        if (!isSmallPlan(plan)) return;
+        handoffSent = true;
+        const content = event?.content;
+        if (typeof content === "string")
+            event.content = content + inlineHandoffNotice(st.inlineTurns);
+        else if (Array.isArray(content))
+            content.push({ type: "text", text: inlineHandoffNotice(st.inlineTurns) });
     });
 
     // Teardown: pi fires session_shutdown on /new, /resume, /fork, /reload, and

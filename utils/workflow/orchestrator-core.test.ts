@@ -261,6 +261,33 @@ describe("the inline floor is enforced where the spawn happens", () => {
         assert.doesNotMatch(text(r), /Retrying this dispatch will be refused/);
     });
 
+    it("lifts the refusal once the inline turn budget is spent", async () => {
+        // The circuit-breaker, through the real dispatch path. Proves the turn
+        // count on the state is actually consulted -- lifting it only in
+        // inlineFloorRefusal's unit tests would prove nothing about the wiring.
+        const r = await dispatchAgentCore(
+            mkStateWithAgents(agents, { inlineTurns: 270 }),
+            mkHost(),
+            "phase-implementer",
+            "do phase 2",
+            undefined,
+            { cwd: cwdWithPlan(SMALL_PLAN) },
+        );
+        assert.doesNotMatch(text(r), /under the inline floor/);
+    });
+
+    it("still refuses while the budget is intact", async () => {
+        const r = await dispatchAgentCore(
+            mkStateWithAgents(agents, { inlineTurns: 5 }),
+            mkHost(),
+            "phase-implementer",
+            "do phase 2",
+            undefined,
+            { cwd: cwdWithPlan(SMALL_PLAN) },
+        );
+        assert.match(text(r), /under the inline floor/);
+    });
+
     it("does not fire without a plan on disk", async () => {
         // dispatch_agent is callable standalone, with no workflow and no plan. An
         // unreadable plan is "unknown", which must never be read as "small".
