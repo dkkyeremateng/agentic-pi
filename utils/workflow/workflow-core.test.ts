@@ -32,6 +32,8 @@ import {
     freshPhases,
     roadmapTask,
     implementTask,
+    delegationDirective,
+    inlineFloorRefusal,
     documentTask,
     planTask,
     refineTask,
@@ -2687,8 +2689,124 @@ describe("roadmap-aware planning prompts", () => {
     });
 });
 
+// A plan the floor covers, and one it does not, in the shapes the planner emits.
+const SMALL_PLAN = [
+    "## Phase 1: one",
+    "## Phase 2: two",
+    "## Critical Files",
+    "| File | Action |",
+    "|---|---|",
+    "| `a.go` | Modify: the thing |",
+    "| `a_test.go` | Modify: cover it |",
+    "| `b.go` | Reference only: context |",
+].join("\n");
+const BIG_PLAN = [
+    "## Phase 1: one",
+    "## Phase 2: two",
+    "## Phase 3: three",
+    "## Critical Files",
+    "- `a.go`",
+    "- `b.go`",
+    "- `c.go`",
+    "- `d.go`",
+].join("\n");
+
+describe("the inline floor reaches the task the implementer is actually given", () => {
+    // The regression this exists for. The floor shipped into agents/implementer.md
+    // and into freshContextViolated, but implementTask kept saying "DELEGATE EVERY
+    // PHASE ... no exception for a phase that looks small" on EVERY run. The agent
+    // had a rule in its prompt and the opposite instruction in its task, and obeyed
+    // the task: five consecutive runs on a 2-phase/2-file plan dispatched workers,
+    // and phase-implementer was 40% of their combined cost.
+    it("tells a small plan to implement inline, not to delegate", () => {
+        const t = implementTask("build the thing", SMALL_PLAN);
+        assert.match(t, /IMPLEMENT EVERY PHASE YOURSELF/);
+        assert.doesNotMatch(t, /DELEGATE EVERY PHASE/);
+    });
+
+    it("agrees with the audit, so obeying it cannot trigger a re-run", () => {
+        // These two must move together. If the task said inline while the audit
+        // still called it a violation, the implementer would be re-run for
+        // following its own instructions — costing more than the dispatch the
+        // floor was meant to save.
+        assert.equal(isSmallPlan(SMALL_PLAN), true);
+        assert.equal(isSmallPlan(BIG_PLAN), false);
+        assert.match(delegationDirective(SMALL_PLAN), /IMPLEMENT EVERY PHASE YOURSELF/);
+        assert.match(delegationDirective(BIG_PLAN), /DELEGATE EVERY PHASE/);
+    });
+
+    it("states the counts it decided on, so a wrong verdict is visible", () => {
+        const t = delegationDirective(SMALL_PLAN);
+        assert.match(t, /2 phase\(s\) changing 2 file\(s\)/);
+    });
+
+    it("delegates when the plan is missing or unparseable", () => {
+        // Asymmetric failure modes: wrongly inlining a large plan reintroduces the
+        // context bloat workers exist to prevent; wrongly dispatching a small one
+        // only costs money. So "unknown" must fall to delegate.
+        assert.match(implementTask("x"), /DELEGATE EVERY PHASE/);
+        assert.match(delegationDirective(""), /DELEGATE EVERY PHASE/);
+        assert.match(
+            delegationDirective("## Phase 1: one\n## Phase 2: two\n"),
+            /DELEGATE EVERY PHASE/,
+            "no Critical Files section means unknown, not zero",
+        );
+    });
+
+    it("keeps the rest of the task text unchanged either way", () => {
+        for (const plan of [SMALL_PLAN, BIG_PLAN]) {
+            const t = implementTask("build the thing", plan);
+            assert.match(t, /COMMIT EVERY PHASE/);
+            assert.match(t, /\.agent\/scratch\//);
+            assert.match(t, /build the thing/);
+        }
+    });
+});
+
+describe("inlineFloorRefusal enforces the floor at the dispatch itself", () => {
+    // The directive is text in a prompt; this is the backstop. One stray
+    // phase-implementer on a two-file plan costs more than the floor saves.
+    it("refuses a phase-implementer on a plan under the floor", () => {
+        const r = inlineFloorRefusal("phase-implementer", SMALL_PLAN);
+        assert.match(r || "", /under the inline floor/);
+        assert.match(r || "", /2 phase\(s\) changing 2 file\(s\)/);
+    });
+
+    it("tells the agent a retry is futile and what to do instead", () => {
+        // A refusal read as transient buys a retry loop instead of an inline
+        // implementation, which is worse than not refusing at all.
+        const r = inlineFloorRefusal("phase-implementer", SMALL_PLAN) || "";
+        assert.match(r, /Retrying this dispatch will be refused identically/);
+        assert.match(r, /Implement the phases yourself/);
+        assert.match(r, /compliance, not a violation/);
+    });
+
+    it("leaves every other dispatch alone", () => {
+        // Narrow by construction: this must not become a general dispatch gate.
+        for (const a of ["reviewer", "validator", "documenter", "implementer"])
+            assert.equal(inlineFloorRefusal(a, SMALL_PLAN), null, a);
+        assert.equal(inlineFloorRefusal("phase-implementer", BIG_PLAN), null);
+        assert.equal(inlineFloorRefusal("phase-implementer", ""), null);
+    });
+
+    it("resolves the agent name case- and space-insensitively", () => {
+        assert.ok(inlineFloorRefusal("  Phase-Implementer ", SMALL_PLAN));
+    });
+
+    it("can be disabled when it judges a plan wrongly", () => {
+        const prev = process.env.PI_INLINE_FLOOR;
+        process.env.PI_INLINE_FLOOR = "0";
+        try {
+            assert.equal(inlineFloorRefusal("phase-implementer", SMALL_PLAN), null);
+        } finally {
+            if (prev === undefined) delete process.env.PI_INLINE_FLOOR;
+            else process.env.PI_INLINE_FLOOR = prev;
+        }
+    });
+});
+
 describe("implementTask restates the delegation contract", () => {
-    const t = implementTask("build the thing");
+    const t = implementTask("build the thing", BIG_PLAN);
 
     it("names the dispatch tools and the no-exceptions rule", () => {
         assert.match(t, /DELEGATE EVERY PHASE/);

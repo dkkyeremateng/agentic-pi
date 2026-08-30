@@ -2862,11 +2862,61 @@ export function reviewFixTask(
 // cwd is therefore FUNNELLED into `cat >`/`sed -i`, the one channel with no guard
 // and no write events — so the run cannot see what it built. Giving it a legal
 // place to work inside the tree is cheaper than trying to parse shell.
-export function implementTask(original: string): string {
+// The one line of the implementer's task that decides where the money goes.
+//
+// The inline floor shipped in three places and reached only two of them. The agent
+// definition got it, `freshContextViolated` got it -- and this task text, which is
+// injected into every implementer run, kept saying "DELEGATE EVERY PHASE ... no
+// exception for a phase that looks small". The implementer was reading a rule in its
+// prompt and the opposite instruction in its actual task, and it obeyed the task.
+// Five consecutive runs on a 2-phase / 2-file plan dispatched workers anyway; across
+// them `phase-implementer` was $19.78 of $49.22 (40%) and 319 of 791 turns, while the
+// one run that never dispatched shipped the same kind of change for $1.03 in 18 turns.
+//
+// So the verdict is COMPUTED here from the same `isSmallPlan` the audit uses, rather
+// than left to the agent to derive by counting `## Critical Files` rows against a rule
+// buried in its definition. One source of truth, and the two can no longer disagree.
+//
+// An empty/unparseable plan falls through to the delegate directive: the floor's
+// failure modes are asymmetric -- wrongly inlining a large plan reintroduces exactly
+// the context bloat workers exist to prevent, wrongly dispatching a small one just
+// costs money.
+export function delegationDirective(plan: string): string {
+    if (!isSmallPlan(plan))
+        return "DELEGATE EVERY PHASE. On a plan with 2+ phases each phase goes to a `phase-implementer` in a fresh context — `dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for a single one — with no exception for a phase that looks small. You are the COORDINATOR: you own the ledger, the per-phase re-verification, the checkpoint commits, and the final full-suite gate; the workers write the code. This is audited after your phase: a 2+-phase plan with zero dispatches is re-run once with the violation named.";
+    const phases = parsePlanPhases(plan).length;
+    const files = (planChangedFiles(plan) || []).length;
+    return `IMPLEMENT EVERY PHASE YOURSELF — do NOT dispatch. This plan is UNDER the inline floor: ${phases} phase(s) changing ${files} file(s), against a floor of ${INLINE_MAX_PHASES} phases and ${INLINE_MAX_FILES} files. At this size there is no context bloat for a worker to prevent, and the machinery is not free — measured on a plan of exactly this shape, dispatched phases were $7.22 of a $9.49 run across 95 turns, while the same change implemented inline cost $1.03 across 18. Work each phase as a worker would: TDD, smallest change that passes, targeted tests, \`lsp diagnostics\`. Everything else stays yours — the ledger, the checkpoint commit per phase, the final full-suite gate. The delegation audit applies this same floor, so inlining here is compliance and will NOT be re-run; dispatching a \`phase-implementer\` on this plan is refused.`;
+}
+
+// The backstop behind `delegationDirective`, for the dispatch tools themselves.
+//
+// The directive above is still only text in a prompt, and this session's other long
+// investigation is a standing reminder that prompt guidance lands maybe half the time.
+// A single stray `phase-implementer` on a two-file plan costs more than everything the
+// floor saves, so the floor is also enforced where the spawn actually happens.
+//
+// Deliberately narrow: `phase-implementer` only, and only when the run's own plan is
+// under the floor. Every other dispatch — reviewer, validator, a worker on a real
+// multi-file plan — is untouched. Returns null when the dispatch should proceed.
+//
+// The message says retrying is futile, because a refusal the agent reads as transient
+// buys a retry loop instead of an inline implementation. `PI_INLINE_FLOOR=0` disables
+// it for the case this judges wrongly.
+export function inlineFloorRefusal(agent: string, plan: string): string | null {
+    if (process.env.PI_INLINE_FLOOR === "0") return null;
+    if (agent.trim().toLowerCase() !== "phase-implementer") return null;
+    if (!isSmallPlan(plan)) return null;
+    const phases = parsePlanPhases(plan).length;
+    const files = (planChangedFiles(plan) || []).length;
+    return `Refused: this plan is under the inline floor (${phases} phase(s) changing ${files} file(s); the floor is ${INLINE_MAX_PHASES} phases and ${INLINE_MAX_FILES} files), so \`phase-implementer\` workers are not available for it. A worker exists to keep a long plan's later phases out of a crowded context — at this size there is nothing to protect, and the spawn plus its prompt costs several times the change itself. Implement the phases yourself, in order, exactly as a worker would: TDD, smallest change that passes, targeted tests, \`lsp diagnostics\`, then your checkpoint commit. Retrying this dispatch will be refused identically. The delegation audit applies the same floor, so implementing inline here is compliance, not a violation.`;
+}
+
+export function implementTask(original: string, plan = ""): string {
     return [
         "Implement the approved plan in `.agent/plan.md` — read it for the phases, file list, and acceptance criteria.",
         "When your own re-run of a phase is RED: make at most ONE bounded fix attempt, then re-dispatch that phase with the exact failure text. Never iterate read-edit-test on the same failure — repair is what fills your context, not verification (measured: one repair loop cost 44k, six times a verification pass, and carried a coordinator to 60% mid-build).",
-        "DELEGATE EVERY PHASE. On a plan with 2+ phases each phase goes to a `phase-implementer` in a fresh context — `dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for a single one — with no exception for a phase that looks small. You are the COORDINATOR: you own the ledger, the per-phase re-verification, the checkpoint commits, and the final full-suite gate; the workers write the code. This is audited after your phase: a 2+-phase plan with zero dispatches is re-run once with the violation named.",
+        delegationDirective(plan),
         "COMMIT EVERY PHASE before starting the next. If the repo has no commits yet, make the baseline commit FIRST — without a base sha there is no work branch, no rollback point, and a run that dies mid-way leaves every file untracked with a ledger claiming the phases are done. One `wip(phase N)` commit per wave, yours to make, never the worker's.",
         "Spike INSIDE the working directory — use `.agent/scratch/` for throwaway experiments, never `/tmp`. Work outside the cwd is invisible to the run, unguarded, uncommitted, and discarded; and because the file tools are confined to the cwd, building there forces you into shell writes that nothing can check.",
         "",

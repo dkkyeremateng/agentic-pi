@@ -183,6 +183,99 @@ describe("resolveAgent", () => {
     });
 });
 
+// ── the inline floor, enforced at the dispatch ───
+
+describe("the inline floor is enforced where the spawn happens", () => {
+    // The directive in implementTask is text in a prompt, and prompt guidance lands
+    // maybe half the time. A single stray phase-implementer on a two-file plan costs
+    // more than the floor saves across a run, so the refusal lives here too.
+    const SMALL_PLAN = [
+        "## Phase 1: one",
+        "## Phase 2: two",
+        "## Critical Files",
+        "| File | Action |",
+        "|---|---|",
+        "| `a.go` | Modify |",
+        "| `a_test.go` | Modify |",
+    ].join("\n");
+
+    function cwdWithPlan(plan: string): string {
+        const cwd = mkdtempSync(join(tmpdir(), "inline-floor-"));
+        mkdirSync(join(cwd, ".agent"), { recursive: true });
+        writeFileSync(join(cwd, ".agent", "plan.md"), plan);
+        return cwd;
+    }
+
+    const agents = new Map<string, AgentDef>([
+        ["phase-implementer", mkAgent("phase-implementer")],
+        ["reviewer", mkAgent("reviewer")],
+    ]);
+    const text = (r: any) => (r.content[0] as { text: string }).text;
+
+    it("refuses dispatch_agent for a phase-implementer under the floor", async () => {
+        const r = await dispatchAgentCore(
+            mkStateWithAgents(agents),
+            mkHost(),
+            "phase-implementer",
+            "do phase 1",
+            undefined,
+            { cwd: cwdWithPlan(SMALL_PLAN) },
+        );
+        assert.match(text(r), /under the inline floor/);
+        assert.match(text(r), /Retrying this dispatch will be refused identically/);
+    });
+
+    it("refuses a dispatch_parallel wave with the floor's own reason", async () => {
+        // The parallel path is how a wave of workers actually arrives, and its
+        // generic "no runnable agents" reads as a config fault and invites a retry.
+        const r = await dispatchParallelCore(
+            mkStateWithAgents(agents),
+            mkHost(),
+            [
+                { agent: "phase-implementer", task: "phase 1" },
+                { agent: "phase-implementer", task: "phase 2" },
+            ],
+            undefined,
+            { cwd: cwdWithPlan(SMALL_PLAN) },
+        );
+        assert.match(text(r), /under the inline floor/);
+        assert.doesNotMatch(text(r), /No runnable agents/);
+    });
+
+    it("leaves other agents runnable in the same batch", async () => {
+        // Narrowness matters: this must gate the worker, not the run.
+        const r = await dispatchParallelCore(
+            mkStateWithAgents(agents),
+            mkHost(),
+            [
+                { agent: "phase-implementer", task: "phase 1" },
+                { agent: "reviewer", task: "review" },
+            ],
+            undefined,
+            { cwd: cwdWithPlan(SMALL_PLAN) },
+        );
+        // The worker is skipped with the floor named in the skip list; the reviewer
+        // still runs. The batch is NOT refused wholesale.
+        assert.match(text(r), /Skipped: phase-implementer \(under the inline floor\)/);
+        assert.match(text(r), /\[reviewer\]/);
+        assert.doesNotMatch(text(r), /Retrying this dispatch will be refused/);
+    });
+
+    it("does not fire without a plan on disk", async () => {
+        // dispatch_agent is callable standalone, with no workflow and no plan. An
+        // unreadable plan is "unknown", which must never be read as "small".
+        const r = await dispatchAgentCore(
+            mkStateWithAgents(agents),
+            mkHost(),
+            "phase-implementer",
+            "do phase 1",
+            undefined,
+            { cwd: mkdtempSync(join(tmpdir(), "inline-floor-noplan-")) },
+        );
+        assert.doesNotMatch(text(r), /under the inline floor/);
+    });
+});
+
 // ── dispatchAgentCore ────────────────────────────
 
 describe("dispatchAgentCore", () => {

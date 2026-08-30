@@ -24,6 +24,7 @@ import {
     parsePlanPhases,
     agentsWithNoPinnedModel,
     isSmallPlan,
+    inlineFloorRefusal,
     clampOutput,
     contextBundleForPhase,
     buildWorkflowReport,
@@ -911,7 +912,7 @@ async function runWorkflowCoreImpl(
         const implStartedAt = Date.now();
         impl = await h.execution.runPhase(
             implP,
-            shared(implementTask(request), "implementer"),
+            shared(implementTask(request, plan.output), "implementer"),
             cwd,
         );
         if (!impl.ok) return fail(s, h, cwd, request, "Implementing", impl.output);
@@ -967,7 +968,8 @@ async function runWorkflowCoreImpl(
                 impl = await h.execution.runPhase(
                     implP,
                     shared(
-                        implementTask(request) + freshContextRetryNote(phaseCount),
+                        implementTask(request, plan.output) +
+                            freshContextRetryNote(phaseCount),
                         "implementer",
                     ),
                     cwd,
@@ -2292,6 +2294,17 @@ function dispatchDepthLimits(): { depth: number; max: number } {
     return { depth, max: Number.isNaN(rawMax) || rawMax < 0 ? 1 : rawMax };
 }
 
+// This run's plan, for the inline-floor guard below. Best-effort: dispatch_agent can
+// be called standalone with no workflow and therefore no plan, and "" is read as
+// "unknown", which `inlineFloorRefusal` treats as not-small and lets through.
+function runPlanText(cwd: string): string {
+    try {
+        return readFileSync(join(cwd, ".agent", "plan.md"), "utf-8");
+    } catch {
+        return "";
+    }
+}
+
 // ── dispatch_agent: run one specialist on a focused task ──
 export async function dispatchAgentCore(
     s: OrchestratorState,
@@ -2348,6 +2361,12 @@ export async function dispatchAgentCore(
         return textResult(
             `Cycle detected: "${def.name}" is already an ancestor in this dispatch chain (${dispatchAncestry.join(" > ")}). Refusing to avoid an infinite loop — do the work yourself or report back.`,
         );
+
+    // Inline floor: a plan small enough that a worker costs more than the context it
+    // would protect. Enforced here as well as in the implementer's task text, because
+    // one stray dispatch on a two-file plan outweighs everything the floor saves.
+    const floorRefusal = inlineFloorRefusal(def.name, runPlanText(ctx.cwd));
+    if (floorRefusal) return textResult(floorRefusal);
 
     if (onUpdate) onUpdate(textResult(`Dispatching to ${def.name}...`));
 
@@ -2602,6 +2621,9 @@ export async function dispatchParallelCore(
         .filter(Boolean);
     const runnable: { def: AgentDef; task: string }[] = [];
     const skipped: string[] = [];
+    // Read the plan once for the whole batch rather than per item.
+    const planText = runPlanText(ctx.cwd);
+    let floorRefusal: string | null = null;
     for (const it of items) {
         const def = resolveAgent(s.agents, it.agent || "");
         if (!def) {
@@ -2612,8 +2634,20 @@ export async function dispatchParallelCore(
             skipped.push(`${def.name} (cycle)`);
             continue;
         }
+        // A wave of phase-implementers is the expensive shape the floor exists to
+        // stop, and it arrives here rather than through dispatch_agent.
+        const refusal = inlineFloorRefusal(def.name, planText);
+        if (refusal) {
+            floorRefusal = refusal;
+            skipped.push(`${def.name} (under the inline floor)`);
+            continue;
+        }
         runnable.push({ def, task: it.task });
     }
+
+    // Refuse the whole batch with the floor's own explanation rather than the generic
+    // "no runnable agents", which reads as a configuration fault and invites a retry.
+    if (runnable.length === 0 && floorRefusal) return textResult(floorRefusal);
 
     if (runnable.length === 0) {
         const available = Array.from(s.agents.values())
