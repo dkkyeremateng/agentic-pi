@@ -107,6 +107,10 @@ export interface OrchestratorState {
     pipelineRanThisTurn: boolean;
     dispatchedThisTurn: boolean;
     dispatchesThisTurn: number;
+    /** Turn index within THIS agent's own session, from pi's turn_start. Feeds
+     *  the inline floor's circuit-breaker: past a budget, refusing a worker
+     *  costs more than spawning one. See INLINE_MAX_TURNS. */
+    inlineTurns: number;
     // Dispatches currently in flight, and the OR of their verdicts so far. The
     // staged-learnings file is a single cwd-scoped file that the commit reads AND
     // clears, so concurrent dispatches must commit exactly once, when the last of
@@ -144,6 +148,7 @@ export function newOrchestratorState(): OrchestratorState {
         pipelineRanThisTurn: false,
         dispatchedThisTurn: false,
         dispatchesThisTurn: 0,
+        inlineTurns: 0,
         activeDispatches: 0,
         dispatchLearningsPassed: false,
         freshContextViolation: false,
@@ -2365,7 +2370,11 @@ export async function dispatchAgentCore(
     // Inline floor: a plan small enough that a worker costs more than the context it
     // would protect. Enforced here as well as in the implementer's task text, because
     // one stray dispatch on a two-file plan outweighs everything the floor saves.
-    const floorRefusal = inlineFloorRefusal(def.name, runPlanText(ctx.cwd));
+    const floorRefusal = inlineFloorRefusal(
+        def.name,
+        runPlanText(ctx.cwd),
+        s.inlineTurns,
+    );
     if (floorRefusal) return textResult(floorRefusal);
 
     if (onUpdate) onUpdate(textResult(`Dispatching to ${def.name}...`));
@@ -2636,7 +2645,7 @@ export async function dispatchParallelCore(
         }
         // A wave of phase-implementers is the expensive shape the floor exists to
         // stop, and it arrives here rather than through dispatch_agent.
-        const refusal = inlineFloorRefusal(def.name, planText);
+        const refusal = inlineFloorRefusal(def.name, planText, s.inlineTurns);
         if (refusal) {
             floorRefusal = refusal;
             skipped.push(`${def.name} (under the inline floor)`);

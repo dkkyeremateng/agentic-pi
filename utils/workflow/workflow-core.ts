@@ -2903,10 +2903,81 @@ export function delegationDirective(plan: string): string {
 // The message says retrying is futile, because a refusal the agent reads as transient
 // buys a retry loop instead of an inline implementation. `PI_INLINE_FLOOR=0` disables
 // it for the case this judges wrongly.
-export function inlineFloorRefusal(agent: string, plan: string): string | null {
+// How many turns an inline implementation may take before the floor stops being
+// the right answer.
+//
+// The floor (see delegationDirective) is a bet: a two-file plan is cheaper done
+// inline than dispatched. On the happy path the bet pays -- 38 turns and $4.14
+// where the dispatched version cost 113 turns and $6.65. The tail is where it
+// breaks, and run-mtfy2a2v-lq87f is what that looks like: 270 implementer turns
+// in ONE context, $25.13, with the per-turn prefix growing 3 tokens -> 127k and
+// the per-turn cost rising 3.3x as it went. Context never passed 13% of the
+// window, so nothing tripped; it was simply cache-read billing on a transcript
+// that only ever grows.
+//
+// That is precisely the pathology a fresh `phase-implementer` exists to prevent,
+// and the floor had removed the only bound on it. So the floor is a DEFAULT, not
+// a permanent ban: past this many turns the refusal lifts and the agent is told
+// to hand the rest to fresh workers. A worker's spawn cost is a fixed price; an
+// unbounded inline context is not.
+//
+// 60 sits well above the happy path (38 turns, and 19 on the smallest observed
+// run) and well below the pathology (270). Override with PI_INLINE_MAX_TURNS; 0
+// disables the breaker and restores the unconditional floor.
+export const INLINE_MAX_TURNS = 60;
+
+export function inlineTurnBudget(env = process.env): number {
+    const raw = (env.PI_INLINE_MAX_TURNS || "").trim();
+    if (!raw) return INLINE_MAX_TURNS;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : INLINE_MAX_TURNS;
+}
+
+/** True once an inline implementation has spent its turn budget. Always false
+ *  when the budget is 0, which is how the breaker is switched off. */
+export function inlineBudgetSpent(turns: number, env = process.env): boolean {
+    const budget = inlineTurnBudget(env);
+    return budget > 0 && turns >= budget;
+}
+
+/**
+ * The one-shot instruction handed to an implementer that has burned its inline
+ * budget. Appended to a tool result, which is the only channel that reaches an
+ * agent mid-run.
+ *
+ * Phrased as a switch of strategy rather than a scolding, and it names what to
+ * keep: the ledger and the commits are the coordinator's, and the phases already
+ * marked `[x]` must not be redone. Without that last line the handoff costs more
+ * than the loop it ends.
+ */
+export function inlineHandoffNotice(turns: number, env = process.env): string {
+    return [
+        "",
+        "---",
+        `INLINE BUDGET SPENT — ${turns} turns in this context, past the ${inlineTurnBudget(env)}-turn limit. Stop implementing here and hand the REST of the work to fresh \`phase-implementer\` workers; the dispatch refusal on this plan is now lifted.`,
+        "",
+        "Why, so the switch is not arbitrary: every turn in this session re-reads the whole transcript, so each one costs more than the last. Measured on a run that ran past this point, the per-turn prefix grew from 3 tokens to 127k and the per-turn cost tripled — the run reached $25 without ever passing 13% of the context window. A fresh worker starts that count at zero.",
+        "",
+        "- Dispatch each REMAINING phase to a `phase-implementer` (`dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for one).",
+        "- Give each worker a self-contained task: the phase number and title, the plan path, what is already green, and — in a parallel wave — the files it owns.",
+        "- Phases already marked `[x]` in `.agent/progress.md` are DONE. Do not redo them; continue from the first unchecked phase.",
+        "- Keep the bookkeeping yours: verify each phase's targeted tests, flip its `[x]`, commit its checkpoint.",
+        "- If you were mid-repair on a failing test, hand the worker the exact failure text rather than your diagnosis of it.",
+    ].join("\n");
+}
+
+export function inlineFloorRefusal(
+    agent: string,
+    plan: string,
+    turns = 0,
+): string | null {
     if (process.env.PI_INLINE_FLOOR === "0") return null;
     if (agent.trim().toLowerCase() !== "phase-implementer") return null;
     if (!isSmallPlan(plan)) return null;
+    // The floor is a default, not a permanent ban. Once the inline context has
+    // cost more than the workers would have, refusing them is the expensive
+    // choice -- see INLINE_MAX_TURNS.
+    if (inlineBudgetSpent(turns)) return null;
     const phases = parsePlanPhases(plan).length;
     const files = (planChangedFiles(plan) || []).length;
     return `Refused: this plan is under the inline floor (${phases} phase(s) changing ${files} file(s); the floor is ${INLINE_MAX_PHASES} phases and ${INLINE_MAX_FILES} files), so \`phase-implementer\` workers are not available for it. A worker exists to keep a long plan's later phases out of a crowded context — at this size there is nothing to protect, and the spawn plus its prompt costs several times the change itself. Implement the phases yourself, in order, exactly as a worker would: TDD, smallest change that passes, targeted tests, \`lsp diagnostics\`, then your checkpoint commit. Retrying this dispatch will be refused identically. The delegation audit applies the same floor, so implementing inline here is compliance, not a violation.`;

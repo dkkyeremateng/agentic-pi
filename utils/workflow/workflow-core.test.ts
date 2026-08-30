@@ -34,6 +34,10 @@ import {
     implementTask,
     delegationDirective,
     inlineFloorRefusal,
+    inlineTurnBudget,
+    inlineBudgetSpent,
+    inlineHandoffNotice,
+    INLINE_MAX_TURNS,
     documentTask,
     planTask,
     refineTask,
@@ -2760,6 +2764,78 @@ describe("the inline floor reaches the task the implementer is actually given", 
             assert.match(t, /\.agent\/scratch\//);
             assert.match(t, /build the thing/);
         }
+    });
+});
+
+describe("the inline floor is a default, not a permanent ban", () => {
+    // run-mtfy2a2v-lq87f: 270 implementer turns in ONE context, $25.13, the
+    // per-turn prefix growing 3 tokens -> 127k and per-turn cost tripling.
+    // Context never passed 13% of the window, so nothing tripped. The floor had
+    // removed the only bound on exactly the pathology workers prevent.
+    const SMALL = [
+        "## Phase 1: one",
+        "## Phase 2: two",
+        "## Critical Files",
+        "- `a.go`",
+    ].join("\n");
+
+    it("refuses a worker while the inline budget is intact", () => {
+        assert.ok(inlineFloorRefusal("phase-implementer", SMALL, 0));
+        assert.ok(inlineFloorRefusal("phase-implementer", SMALL, INLINE_MAX_TURNS - 1));
+    });
+
+    it("stops refusing once the budget is spent", () => {
+        // Past this point a fixed spawn cost beats an unbounded context.
+        assert.equal(inlineFloorRefusal("phase-implementer", SMALL, INLINE_MAX_TURNS), null);
+        assert.equal(inlineFloorRefusal("phase-implementer", SMALL, 270), null);
+    });
+
+    it("sits above the happy path and below the pathology", () => {
+        // The whole bet. 19 and 38 turns are real inline runs that SHOULD finish
+        // inline; 270 is the run this exists to stop.
+        assert.equal(inlineBudgetSpent(19), false);
+        assert.equal(inlineBudgetSpent(38), false);
+        assert.equal(inlineBudgetSpent(270), true);
+    });
+
+    it("is configurable, and 0 restores the unconditional floor", () => {
+        assert.equal(inlineTurnBudget({} as any), INLINE_MAX_TURNS);
+        assert.equal(inlineTurnBudget({ PI_INLINE_MAX_TURNS: "10" } as any), 10);
+        assert.equal(inlineBudgetSpent(11, { PI_INLINE_MAX_TURNS: "10" } as any), true);
+        // 0 = off. Without this the breaker could not be disabled for a run that
+        // genuinely wants the floor held all the way.
+        assert.equal(inlineBudgetSpent(9999, { PI_INLINE_MAX_TURNS: "0" } as any), false);
+        // Junk falls back rather than disabling the breaker by accident.
+        assert.equal(inlineTurnBudget({ PI_INLINE_MAX_TURNS: "abc" } as any), INLINE_MAX_TURNS);
+        assert.equal(inlineTurnBudget({ PI_INLINE_MAX_TURNS: "-5" } as any), INLINE_MAX_TURNS);
+    });
+});
+
+describe("inlineHandoffNotice tells the agent what to do with the lifted ban", () => {
+    // Lifting the refusal alone changes nothing: an agent told not to dispatch
+    // does not spontaneously retry. Both halves are required.
+    const n = inlineHandoffNotice(60);
+
+    it("names the budget and says the refusal is lifted", () => {
+        assert.match(n, /INLINE BUDGET SPENT/);
+        assert.match(n, /60 turns/);
+        assert.match(n, /refusal on this plan is now lifted/);
+    });
+
+    it("gives the measurement, so the switch is not arbitrary", () => {
+        assert.match(n, /127k/);
+        assert.match(n, /13% of the context window/);
+    });
+
+    it("protects the work already done", () => {
+        // Without this the handoff costs more than the loop it ends.
+        assert.match(n, /already marked `\[x\]`.*are DONE/s);
+        assert.match(n, /Do not redo them/);
+        assert.match(n, /Keep the bookkeeping yours/);
+    });
+
+    it("hands over the failure text, not a diagnosis of it", () => {
+        assert.match(n, /exact failure text/);
     });
 });
 
