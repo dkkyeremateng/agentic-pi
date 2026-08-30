@@ -49,18 +49,33 @@ process.exit(1);
 ' "$PI_BIN")" || { echo "patch-pi-statusline: could not locate pi's package root." >&2; exit 1; }
 
 # Find the file by CONTENT, not by path, so the next reorganisation is survivable.
-FILE="$(grep -rl 'showStatus(`Model: ' "$PI_PKG/dist" --include='*.js' 2>/dev/null | head -1 || true)"
-[[ -n "$FILE" ]] || {
+#
+# EVERY match, not the first. 0.84.4 ships the same call twice — once in
+# dist/modes/interactive/interactive-mode.js and once in the esbuild bundle at
+# dist/bundle/chunks/chunk-*.js — and package.json points `bin.pi` at
+# dist/bundle/cli.js, so the BUNDLE is what actually runs. `head -1` picked the
+# modes/ copy, patched dead code, and reported success: the status line kept
+# appearing with nothing to show for the patch. Patching both is also correct if
+# a future layout collapses them back into one.
+# Read into an array WITHOUT `mapfile`: this runs under /usr/bin/env bash, and
+# macOS still ships bash 3.2, where mapfile does not exist.
+FILES=()
+while IFS= read -r f; do
+    [[ -n "$f" ]] && FILES+=("$f")
+done < <(grep -rl 'showStatus(`Model: ' "$PI_PKG/dist" --include='*.js' 2>/dev/null || true)
+[[ ${#FILES[@]} -gt 0 ]] || {
     echo "patch-pi-statusline: no file in $PI_PKG/dist contains a \`Model: \` showStatus call." >&2
     echo "  Either pi already removed the line, or it was rewritten — inspect before forcing this." >&2
     exit 1
 }
 
 if [[ "${1:-}" == "--revert" || "${1:-}" == "--unpatch" ]]; then
+    reverted=0
+    for FILE in "${FILES[@]}"; do
     if ! grep -qF "$MARKER" "$FILE"; then
-        echo "patch-pi-statusline: not applied — nothing to revert."
-        exit 0
+        continue
     fi
+    reverted=1
     python3 - "$FILE" <<'PY'
 import re, sys
 path = sys.argv[1]
@@ -77,15 +92,20 @@ open(path, "w", encoding="utf-8").write(out)
 print(f"patch-pi-statusline: reverted {n} call(s) in {path}")
 PY
     node --check "$FILE" >/dev/null 2>&1 &&
-        echo "patch-pi-statusline: syntax OK" ||
+        echo "patch-pi-statusline: syntax OK ($FILE)" ||
         { echo "patch-pi-statusline: SYNTAX CHECK FAILED — reinstall pi." >&2; exit 1; }
+    done
+    [[ $reverted == 1 ]] || echo "patch-pi-statusline: not applied — nothing to revert."
     exit 0
 fi
 
+patched=0
+for FILE in "${FILES[@]}"; do
 if grep -qF "$MARKER" "$FILE"; then
-    echo "patch-pi-statusline: already applied — nothing to do."
-    exit 0
+    echo "patch-pi-statusline: already applied — $FILE"
+    continue
 fi
+patched=1
 
 python3 - "$FILE" <<'PY'
 import re, sys
@@ -105,5 +125,7 @@ print(f"patch-pi-statusline: commented out {n} call(s) in {path}")
 PY
 
 node --check "$FILE" >/dev/null 2>&1 &&
-    echo "patch-pi-statusline: syntax OK" ||
+    echo "patch-pi-statusline: syntax OK ($FILE)" ||
     { echo "patch-pi-statusline: SYNTAX CHECK FAILED — reinstall pi." >&2; exit 1; }
+done
+[[ $patched == 1 ]] || echo "patch-pi-statusline: nothing to do — all ${#FILES[@]} file(s) already patched."
