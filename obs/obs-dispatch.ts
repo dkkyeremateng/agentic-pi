@@ -201,6 +201,50 @@ function writeRootsFor(cwd: string, home: string, tmp: string, env: NodeJS.Proce
     ];
 }
 
+/** pi's agent directory (`PI_CODING_AGENT_DIR`, tilde-expanded, else ~/.pi/agent). */
+function agentDirFor(home: string, env: NodeJS.ProcessEnv): string {
+    return env.PI_CODING_AGENT_DIR
+        ? expandHome(env.PI_CODING_AGENT_DIR, home)
+        : join(home, ".pi", "agent");
+}
+
+/** Paths INSIDE the writable `~/.pi` root that must stay read-only, because pi
+ *  loads code or grants trust from them on a LATER, unsandboxed run.
+ *
+ *  `~/.pi` has to be writable — pi keeps its session logs and settings lock there,
+ *  and an agent that cannot write them cannot run. But the same tree holds the
+ *  global extensions (`<agentDir>/extensions/*.ts`), which pi loads in EVERY future
+ *  session before project trust is even resolved. A sandboxed agent that dropped a
+ *  file there would be executing unconfined code the next time the user ran pi —
+ *  the sandbox contains the process, not its successors. `settings.json` is the same
+ *  hole by another route (it can add `packages`/`extensions` paths), `prompts`/
+ *  `skills`/`SYSTEM.md` steer any later agent, and `trust.json` would let the agent
+ *  pre-approve arbitrary projects.
+ *
+ *  Denied AFTER the write allow, because Seatbelt takes the last matching rule. */
+function denyWriteDirs(home: string, env: NodeJS.ProcessEnv): string[] {
+    const agentDir = agentDirFor(home, env);
+    return [
+        join(agentDir, "extensions"),
+        join(agentDir, "skills"),
+        join(agentDir, "prompts"),
+        join(agentDir, "themes"),
+        join(agentDir, "npm"),
+        join(home, ".pi", "skills"), // legacy global skills root
+        join(home, ".pi", "extensions"),
+    ];
+}
+
+function denyWriteFiles(home: string, env: NodeJS.ProcessEnv): string[] {
+    const agentDir = agentDirFor(home, env);
+    return [
+        join(agentDir, "settings.json"),
+        join(agentDir, "trust.json"),
+        join(agentDir, "SYSTEM.md"),
+        join(agentDir, "APPEND_SYSTEM.md"),
+    ];
+}
+
 /** $HOME-relative dirs whose CONTENTS the agent may read (everything outside
  *  $HOME is already readable). Covers cwd, pi state, the node/pi install, this
  *  repo (extensions/skills), tool caches + configs, skill roots, and operator
@@ -251,6 +295,10 @@ export function macSandboxProfile(o: { cwd: string; home: string; tmp: string; b
         "(allow default)", // system reads, network, and exec stay allowed
         "(deny file-write*)",
         `(allow file-write* ${subs(writeRoots)} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/stdout") (literal "/dev/stderr") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
+        // Carve the code-loading paths back OUT of the writable ~/.pi root (last
+        // matching rule wins in SBPL). Without this the sandbox is escapable by
+        // writing a global extension that runs unconfined on the next pi session.
+        `(deny file-write* ${subs(denyWriteDirs(o.home, env))} ${lits(denyWriteFiles(o.home, env))})`,
         // Hide the CONTENTS of the rest of $HOME (other projects, secrets). Deny
         // only file-read-DATA (not metadata) so lstat/traversal still works — else
         // Node's module loader (lstat on $HOME) breaks. The re-allow must be an
@@ -273,7 +321,14 @@ export function buildSandboxLaunch(sb: SandboxConfig, cwd: string, bin: string, 
         // pi needs (the project cwd, plus ~/.pi for its session logs + settings lock)
         // portably — we spawn the wrapper directly, so no shell expands ~ or $HOME.
         const home = env.HOME || homedir();
-        const toks = sb.customCmd.replace(/\{cwd\}/g, cwd).replace(/\{home\}/g, home).split(/\s+/).filter(Boolean);
+        // Tokenise FIRST, then substitute per token: a path with a space in it
+        // (`~/My Projects/app`) used to be split into two argv entries, so a bwrap
+        // recipe like `--bind {cwd} {cwd}` bound the wrong paths and the wrapper
+        // failed with an error that pointed nowhere near the space.
+        const toks = sb.customCmd
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((t) => t.replace(/\{cwd\}/g, cwd).replace(/\{home\}/g, home));
         if (!toks.length) return { error: "PI_OBS_DISPATCH_SANDBOX_CMD is empty" };
         return { cmd: toks[0], argv: [...toks.slice(1), bin, ...args] };
     }
