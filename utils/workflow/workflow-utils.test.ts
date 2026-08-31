@@ -756,3 +756,43 @@ describe("detectShip accepts the LOCAL marker", () => {
         );
     });
 });
+
+describe("outcomeLine names the gate that actually stopped the run", () => {
+    // run-mtgg9k2p-vmgn1: the validator's output OPENED with "VERDICT: PASS" and
+    // the reviewer returned "REVISE BEFORE MERGE" over a stale help fixture — a
+    // correct block. The report's header said the validator had failed to answer.
+    // That line is the one everybody reads, and it sent a whole investigation
+    // into the verdict parser, which was working the entire time.
+
+    it("blames the reviewer when the validator passed", () => {
+        const line = outcomeLine("needs-review", 2, "pass");
+        assert.match(line, /validator PASSED/);
+        assert.match(line, /reviewer asked for changes/);
+        assert.match(line, /review section, not the validation one/);
+        assert.doesNotMatch(line, /did not return a clear/);
+    });
+
+    it("still blames the validator when there was genuinely no verdict", () => {
+        for (const v of ["", "unknown"])
+            assert.match(
+                outcomeLine("needs-review", 1, v),
+                /did not return a clear PASS\/FAIL\/PAUSED verdict/,
+            );
+    });
+
+    it("says so when the validator paused rather than deciding", () => {
+        assert.match(outcomeLine("needs-review", 1, "paused"), /PAUSED rather than deciding/);
+    });
+
+    it("is case-insensitive about the verdict it is handed", () => {
+        assert.match(outcomeLine("needs-review", 1, "PASS"), /validator PASSED/);
+    });
+
+    it("leaves every other status alone", () => {
+        assert.match(outcomeLine("shipped", 1, "pass"), /SHIPPED/);
+        assert.match(outcomeLine("shipped-local", 1, "pass"), /COMPLETE/);
+        assert.match(outcomeLine("failed-after-retries", 3, "fail"), /FAILED/);
+        // The verdict argument is optional; old callers must not change meaning.
+        assert.equal(outcomeLine("shipped", 1), outcomeLine("shipped", 1, "pass"));
+    });
+});

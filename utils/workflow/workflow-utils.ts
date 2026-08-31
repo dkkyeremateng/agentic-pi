@@ -495,7 +495,30 @@ export function gitPreflightNote(
     return "";
 }
 
-export function outcomeLine(status: string, passes: number): string {
+/**
+ * The one-line outcome at the top of the report.
+ *
+ * `needs-review` has TWO causes and used to name only one of them. It is set both
+ * when the validator returns no parseable verdict AND when the validator passed
+ * but the reviewer blocked -- and it always printed "the validator did not return
+ * a clear PASS/FAIL/PAUSED verdict".
+ *
+ * On run-mtgg9k2p-vmgn1 that line was simply false. The validator opened its
+ * output with `VERDICT: PASS`; the REVIEWER returned `REVISE BEFORE MERGE` over a
+ * stale help-output fixture, which is a correct block. The report said the
+ * validator had failed to answer, and reading it sent this investigation into the
+ * verdict parser -- which was working -- while the actual blocker sat unnamed in
+ * the review section. The header of the report is the one line everyone reads;
+ * it has to say which gate stopped the run.
+ *
+ * The verdict is enough to tell them apart, so no new plumbing: a real verdict
+ * with `needs-review` means something after the validator objected.
+ */
+export function outcomeLine(
+    status: string,
+    passes: number,
+    verdict = "",
+): string {
     switch (status) {
         case "shipped":
             return "SHIPPED — the validator approved the change and opened a draft pull request.";
@@ -506,6 +529,10 @@ export function outcomeLine(status: string, passes: number): string {
         case "failed-after-retries":
             return `FAILED — the change did not pass validation after ${passes} attempt(s).`;
         case "needs-review":
+            if (verdict.toLowerCase() === "pass")
+                return "NEEDS REVIEW — the validator PASSED, but the reviewer asked for changes before merge, so nothing was documented or shipped. The blocking findings are in the review section, not the validation one.";
+            if (verdict.toLowerCase() === "paused")
+                return "NEEDS REVIEW — the validator PAUSED rather than deciding; check the validation section for what it was waiting on.";
             return "NEEDS REVIEW — the validator did not return a clear PASS/FAIL/PAUSED verdict; check the validation section.";
         default:
             return status.toUpperCase();

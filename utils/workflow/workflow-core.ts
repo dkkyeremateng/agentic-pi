@@ -2154,7 +2154,7 @@ export function buildWorkflowReport(o: {
         `# Workflow Report`,
         ``,
         `**Request:** ${o.request}`,
-        `**Outcome:** ${outcomeLine(o.status, o.passes)}`,
+        `**Outcome:** ${outcomeLine(o.status, o.passes, o.verdict)}`,
         `**Result:** ${o.status} · verdict ${o.verdict.toUpperCase()} · ${o.passes} attempt(s) of ${o.maxLoops}`,
         `**Totals:** ${totalsLine(o.totals)}`,
         ...(o.prUrl ? [`**Pull request:** ${o.prUrl}`] : []),
