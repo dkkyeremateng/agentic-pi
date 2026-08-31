@@ -213,11 +213,19 @@ describe("blockedFileWrites", () => {
         "patch -p1 < fix.diff",
         "dd if=/dev/zero of=blob.bin",
         "cd /tmp && sed -i '' 's/x/y/' a.md",
+        // a quoted target is still a redirection
+        'echo x > "my notes.md"',
     ]) {
         it(`blocks ${JSON.stringify(cmd)}`, () => {
             assert.ok(blockedFileWrites(cmd).length > 0, cmd);
         });
     }
+
+    it("reports a quoted target in full, not as a bare quote", () => {
+        assert.deepEqual(blockedFileWrites('echo x > "my notes.md"'), [
+            "> my notes.md (shell redirection to a file)",
+        ]);
+    });
 
     for (const cmd of [
         "grep -n 'Milestone' roadmap.md",
@@ -231,9 +239,87 @@ describe("blockedFileWrites", () => {
         "npm test -- --reporter=dot",
         "nl -ba plan.md | grep -E '^ *[0-9]+ #'",
         "",
+        // A `>` inside a string is an argument, not a redirection. Every one of
+        // these was refused as a write before the scan became quote-aware --
+        // ordinary reading work, blocked by the guard meant to permit it.
+        'grep -n "a > b" src/x.ts',
+        "grep -rn 'if (n > 0)' src/",
+        'node -e "console.log(1 > 0)"',
+        'awk "{ if ($1 > 2) print }" data.txt',
+        'git log --format="%h -> %s" -5',
+        'echo "score > 5"',
     ]) {
         it(`allows ${JSON.stringify(cmd)}`, () => {
             assert.deepEqual(blockedFileWrites(cmd), [], cmd);
+        });
+    }
+});
+
+// A wrapper that merely execs another command must not hide it. `sudo git push`
+// and `… | xargs git push` slipped through as unpoliced heads; `sh -c "git push"`
+// hid the command inside a quoted argument.
+describe("blockedCommands through exec wrappers", () => {
+    for (const cmd of [
+        "sudo git push origin main",
+        "sudo -n git push", // -n is sudo's non-interactive flag, NOT a value flag
+        "sudo -u bob gh pr merge 1",
+        "doas git push",
+        "xargs -n1 git push",
+        "echo main | xargs git push origin",
+        'bash -c "git push origin main"',
+        "sh -c 'gh pr merge 1'",
+        'echo "$(git push)"', // substitution runs even inside double quotes
+        "stdbuf -o0 git commit -m x",
+    ]) {
+        it(`sees through ${JSON.stringify(cmd)}`, () => {
+            assert.ok(blockedCommands(cmd).length > 0, cmd);
+        });
+    }
+
+    for (const cmd of [
+        "sudo -n true",
+        "timeout 5 git log --oneline",
+        "nice -n 10 git status",
+        'bash -c "git log --oneline | head"',
+        "echo x | xargs grep -l pattern",
+    ]) {
+        it(`leaves ${JSON.stringify(cmd)} alone`, () => {
+            assert.deepEqual(blockedCommands(cmd), [], cmd);
+        });
+    }
+});
+
+// Subcommands whose read and write forms differ: blanket-blocking `reflog` or
+// `bisect` would refuse the inspection commands agents actually use.
+describe("gitArgsReadOnly on context-sensitive subcommands", () => {
+    for (const args of [
+        ["reflog"],
+        ["reflog", "-n", "5"],
+        ["bisect", "log"],
+        ["notes", "show"],
+        ["notes", "list"],
+        ["submodule", "status"],
+        ["submodule", "summary"],
+        ["archive", "HEAD"],
+    ]) {
+        it(`allows git ${args.join(" ")}`, () => {
+            assert.equal(gitArgsReadOnly(args), true, args.join(" "));
+        });
+    }
+
+    for (const args of [
+        ["reflog", "expire", "--all"],
+        ["reflog", "delete", "HEAD@{1}"],
+        ["bisect", "reset"],
+        ["bisect", "start"],
+        ["notes", "add", "-m", "x"],
+        ["submodule", "update", "--remote"],
+        ["submodule", "foreach", "rm -rf x"],
+        ["archive", "-o", "out.tar", "HEAD"],
+        ["format-patch", "HEAD~1"],
+    ]) {
+        it(`denies git ${args.join(" ")}`, () => {
+            assert.equal(gitArgsReadOnly(args), false, args.join(" "));
         });
     }
 });

@@ -118,7 +118,7 @@ import {
     getModelOverrides,
     parseProgressLedger,
     buildReviewChecklist,
-    REVIEW_CHECKLIST,
+    matchReviewMarkers,
     agentStallMsFromEnv,
 } from "../utils/workflow/workflow-core";
 import {
@@ -745,13 +745,7 @@ export default function (pi: ExtensionAPI) {
     // out of the capped buffer. Reset between reviewer runs (see buildWidgetLines).
     const reviewMarks = new Set<string>();
     function scanReviewMarkers(text: string) {
-        if (!text) return;
-        for (const line of text.match(/\[review-check\][^\n]*/gi) || []) {
-            const low = line.toLowerCase();
-            for (const item of REVIEW_CHECKLIST) {
-                if (low.includes(item.toLowerCase())) reviewMarks.add(item);
-            }
-        }
+        for (const item of matchReviewMarkers(text)) reviewMarks.add(item);
     }
 
     // The implementer's phase checklist, read fresh from .agent/progress.md so the

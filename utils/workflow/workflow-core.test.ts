@@ -14,6 +14,7 @@ import {
     isSmallPlan,
     parseProgressLedger,
     buildReviewChecklist,
+    matchReviewMarkers,
     REVIEW_CHECKLIST,
     inferWorkflowTeam,
     buildPhaseMap,
@@ -782,6 +783,50 @@ describe("inferWorkflowTeam", () => {
             inferWorkflowTeam("implement the plan", { spec: ["planner"] }),
             "",
         );
+    });
+});
+
+describe("matchReviewMarkers", () => {
+    it("matches a marker line loosely, since models rarely echo the label verbatim", () => {
+        assert.deepEqual(
+            matchReviewMarkers("[review-check] correctness: looks fine"),
+            ["Correctness"],
+        );
+        assert.deepEqual(
+            matchReviewMarkers("[REVIEW-CHECK] Plan conformance verified"),
+            ["Plan conformance"],
+        );
+    });
+
+    it("collects every check across a stream, without duplicates", () => {
+        const stream = [
+            "reading src/x.ts",
+            "[review-check] Correctness - ok",
+            "still working",
+            "[review-check] Tests: added 3",
+            "[review-check] correctness re-verified after the fix",
+        ].join("\n");
+        assert.deepEqual(matchReviewMarkers(stream).sort(), ["Correctness", "Tests"]);
+    });
+
+    it("ticks more than one box when a single marker names several", () => {
+        assert.deepEqual(
+            matchReviewMarkers("[review-check] Correctness and Regressions both clear").sort(),
+            ["Correctness", "Regressions"],
+        );
+    });
+
+    it("ignores prose that merely mentions a checklist word", () => {
+        // The whole point of the marker prefix: a reviewer writing about tests in
+        // its narration must not tick the Tests box.
+        assert.deepEqual(matchReviewMarkers("The tests cover error handling well."), []);
+        assert.deepEqual(matchReviewMarkers("Correctness is the main risk here."), []);
+    });
+
+    it("handles empty and marker-free input", () => {
+        assert.deepEqual(matchReviewMarkers(""), []);
+        assert.deepEqual(matchReviewMarkers("no markers at all"), []);
+        assert.deepEqual(matchReviewMarkers("[review-check] nothing recognisable"), []);
     });
 });
 

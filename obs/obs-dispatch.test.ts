@@ -108,6 +108,21 @@ test("buildSandboxLaunch: custom substitutes {home} (so ~/.pi can be bound writa
     });
 });
 
+test("buildSandboxLaunch: custom tokenises before substituting, so a cwd with a space survives", () => {
+    // Substituting first split "/Users/me/My Projects/app" across two argv entries,
+    // so the wrapper bound "/Users/me/My" and "Projects/app".
+    const r = buildSandboxLaunch(
+        { mode: "custom", customCmd: "bwrap --bind {cwd} {cwd} --" },
+        "/Users/me/My Projects/app",
+        "/usr/bin/pi",
+        ["-p", "hi"],
+    );
+    assert.deepEqual(r, {
+        cmd: "bwrap",
+        argv: ["--bind", "/Users/me/My Projects/app", "/Users/me/My Projects/app", "--", "/usr/bin/pi", "-p", "hi"],
+    });
+});
+
 test("buildSandboxLaunch: fail-closed when the platform has no built-in", () => {
     assert.ok("error" in buildSandboxLaunch({ mode: "auto", customCmd: "" }, "/proj", "pi", [], {}, "linux"));
     assert.ok("error" in buildSandboxLaunch({ mode: "sandbox-exec", customCmd: "" }, "/proj", "pi", [], {}, "linux"));
@@ -140,6 +155,44 @@ test("macSandboxProfile confines reads+writes to cwd + tool infra, hides the res
     // credentials are NOT exposed by default: no blanket ~/.config, no ~/.npmrc
     assert.ok(!/"\/Users\/me\/\.config"/.test(p), "blanket ~/.config must not be readable");
     assert.ok(!p.includes(".npmrc"), "~/.npmrc (npm _authToken) must not be readable by default");
+});
+
+test("macSandboxProfile keeps ~/.pi writable but not its code-loading paths", () => {
+    const p = macSandboxProfile({ cwd: "/Users/me/proj", home: "/Users/me", tmp: "/tmp", env: {} });
+    // ~/.pi stays writable -- pi needs it for session logs and the settings lock.
+    assert.match(p, /allow file-write\*[^\n]*"\/Users\/me\/\.pi"/);
+    // ...but the paths pi loads code or trust from on a LATER, unsandboxed run are
+    // carved back out. The deny must come AFTER the allow: SBPL is last-match-wins.
+    const allowAt = p.indexOf("(allow file-write*");
+    const denyAt = p.indexOf('(deny file-write* (subpath "/Users/me/.pi/agent/extensions"');
+    assert.ok(denyAt > allowAt, "the write deny must follow the write allow");
+    for (const denied of [
+        "/Users/me/.pi/agent/extensions",
+        "/Users/me/.pi/agent/skills",
+        "/Users/me/.pi/agent/prompts",
+        "/Users/me/.pi/agent/npm",
+        "/Users/me/.pi/skills",
+    ]) {
+        assert.match(p.slice(denyAt), new RegExp(`\\(subpath "${denied}"\\)`), denied);
+    }
+    for (const denied of [
+        "/Users/me/.pi/agent/settings.json",
+        "/Users/me/.pi/agent/trust.json",
+        "/Users/me/.pi/agent/SYSTEM.md",
+    ]) {
+        assert.match(p.slice(denyAt), new RegExp(`\\(literal "${denied}"\\)`), denied);
+    }
+});
+
+test("macSandboxProfile follows PI_CODING_AGENT_DIR when carving out the code paths", () => {
+    const p = macSandboxProfile({
+        cwd: "/p",
+        home: "/h",
+        tmp: "/tmp",
+        env: { PI_CODING_AGENT_DIR: "~/custom-pi" },
+    });
+    assert.match(p, /\(deny file-write\*[^\n]*\(subpath "\/h\/custom-pi\/extensions"\)/);
+    assert.match(p, /\(deny file-write\*[^\n]*\(literal "\/h\/custom-pi\/settings\.json"\)/);
 });
 
 test("sandboxBinHint: turns a bwrap exec-fail into an actionable bind hint", () => {

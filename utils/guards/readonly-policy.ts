@@ -51,6 +51,15 @@ export function gitArgsReadOnly(rest: string[]): boolean {
     if (GIT_ALWAYS_MUTATING.has(sub)) return false;
     if (sub === "stash") return firstWord === "list" || firstWord === "show";
     if (sub === "remote") return !GIT_REMOTE_MUTATING.has(firstWord);
+    // `submodule foreach` runs an arbitrary command per submodule, so only the two
+    // genuine inspection verbs pass.
+    if (sub === "submodule") return firstWord === "status" || firstWord === "summary";
+    if (sub === "notes") return firstWord === "list" || firstWord === "show";
+    if (sub === "reflog") return firstWord !== "expire" && firstWord !== "delete";
+    if (sub === "bisect")
+        return firstWord === "log" || firstWord === "view" || firstWord === "visualize";
+    // `git archive` streams to stdout unless asked for a file.
+    if (sub === "archive") return !hasAnyFlag(args, GIT_ARCHIVE_WRITE_FLAGS);
     if (sub === "branch") return gitRefCmdReadOnly(args, GIT_BRANCH_MUTATING_FLAGS);
     if (sub === "tag") return gitRefCmdReadOnly(args, GIT_TAG_MUTATING_FLAGS);
     if (sub === "config") {
@@ -119,17 +128,66 @@ function isNullSink(t: string): boolean {
 }
 
 // The first `>`/`>>` redirection whose target is a real file. Skips fd duplication
-// (`2>&1`, `>&2` — `&` is excluded from the target class so they never match) and
+// (`2>&1`, `>&2` — `&` is excluded from the lookahead so they never match) and
 // the standard null/std sinks, which read-only agents use constantly.
+//
+// The scan runs over a QUOTE-MASKED copy, because a `>` inside a string is an
+// argument, not a redirection. Without that, `grep -n "a > b" src/x.ts`,
+// `node -e "console.log(1 > 0)"` and `awk "{ if ($1 > 2) print }" f` were all
+// refused as writes — ordinary reading work, blocked by the guard that exists to
+// let read-only agents work. A false block costs a run; the leak it would close
+// (a redirection hidden inside quotes) is not a redirection at all.
 function redirectTarget(seg: string): string | null {
-    const re = /(?:^|\s)\d?>>?\s*([^\s|&;<>]+)/g;
+    const masked = maskQuoted(seg);
+    // Match up to the START of the target, then read the real (unmasked) word, so
+    // a quoted target (`> "my file.txt"`) is reported in full rather than as `"`.
+    const re = /(?:^|\s)\d?>>?\s*(?=[^\s|&;<>])/g;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(seg))) {
-        const target = m[1];
+    while ((m = re.exec(masked))) {
+        const target = readWord(seg, m.index + m[0].length);
+        if (!target) continue;
         if (/^\/dev\/(null|stdout|stderr|fd\/\d+|tty)$/.test(target)) continue;
         return target;
     }
     return null;
+}
+
+// Replace the CONTENTS of quoted spans with spaces, keeping the quote characters
+// and the overall length so offsets into the original stay valid. An unterminated
+// quote swallows the rest of the segment, which is what bash does too.
+function maskQuoted(s: string): string {
+    const out = s.split("");
+    let quote: string | null = null;
+    for (let i = 0; i < out.length; i++) {
+        const ch = out[i];
+        if (quote) {
+            if (ch === quote) quote = null;
+            else out[i] = " ";
+            continue;
+        }
+        if (ch === "'" || ch === '"') quote = ch;
+    }
+    return out.join("");
+}
+
+// Read one shell word starting at `i`, honouring quotes and stripping them.
+// Stops at whitespace or a separator that is outside quotes.
+function readWord(s: string, i: number): string {
+    let out = "";
+    while (i < s.length) {
+        const ch = s[i];
+        if (ch === "'" || ch === '"') {
+            const end = s.indexOf(ch, i + 1);
+            if (end === -1) return out + s.slice(i + 1);
+            out += s.slice(i + 1, end);
+            i = end + 1;
+            continue;
+        }
+        if (/[\s|&;<>]/.test(ch)) break;
+        out += ch;
+        i++;
+    }
+    return out;
 }
 
 // Commands that bring a repository into existence, or repoint one at a new remote.
@@ -197,7 +255,12 @@ const GIT_ALWAYS_MUTATING = new Set([
     "am", "pull", "fetch", "checkout", "switch", "restore", "clean", "rm",
     "mv", "apply", "init", "clone", "gc", "prune", "worktree", "update-ref",
     "filter-branch", "fast-import", "repack",
+    // writes .patch files into the working tree by default
+    "format-patch",
 ]);
+
+// `git archive` flags that send the archive to a FILE instead of stdout.
+const GIT_ARCHIVE_WRITE_FLAGS = new Set(["-o", "--output"]);
 
 // `git remote <verb>` forms that mutate (else bare/-v/show/get-url are reads).
 const GIT_REMOTE_MUTATING = new Set([
@@ -255,13 +318,121 @@ function apiIsReadOnly(rest: string[]): boolean {
 
 // Split a bash command into simple-command segments (best-effort; bash is not fully
 // parseable) so each invocation can be classified independently. Splits on command
-// separators, pipes, and subshell/group punctuation.
-function segments(cmd: string): string[] {
-    return cmd
-        .replace(/\$\(/g, " ")
-        .split(/[|&;\n`(){}]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+// separators, pipes, and subshell/group punctuation — but only OUTSIDE quotes, so a
+// separator inside a string stays part of its argument. A blind character split cut
+// `node -e "console.log(1 > 0)"` at the parens and handed `1 > 0` to the redirection
+// scanner as if it were a command.
+//
+// A `sh -c "…"` payload is segmented too and appended, so the command a shell
+// wrapper is asked to run is classified rather than hidden behind the wrapper.
+function segments(cmd: string, depth = 0): string[] {
+    const out = splitTopLevel(cmd);
+    if (depth >= 2) return out; // guard against pathological nesting
+    const nested: string[] = [];
+    for (const seg of out) {
+        const toks = commandTokens(seg); // peels sudo/env/… first
+        const head = toks[0] || "";
+        const base = head.includes("/") ? head.slice(head.lastIndexOf("/") + 1) : head;
+        if (!SHELL_WRAPPERS.has(base)) continue;
+        const i = toks.findIndex((t, n) => n > 0 && /^-[a-z]*c$/.test(t));
+        if (i === -1 || !toks[i + 1]) continue;
+        nested.push(...segments(toks[i + 1], depth + 1));
+    }
+    return nested.length ? [...out, ...nested] : out;
+}
+
+// Shells whose `-c` argument is another command to classify.
+const SHELL_WRAPPERS = new Set(["sh", "bash", "zsh", "ksh", "dash", "ash"]);
+
+// Characters that end a simple command when they appear outside quotes.
+const SEPARATORS = new Set(["|", "&", ";", "\n", "`", "(", ")", "{", "}"]);
+
+// Quote-aware split on SEPARATORS. `$(…)` opens a nested command even inside double
+// quotes (that is real bash), so its body is emitted as its own segment and the
+// enclosing quote state is restored on the closing paren.
+function splitTopLevel(cmd: string): string[] {
+    const out: string[] = [];
+    const quotes: (string | null)[] = [];
+    let cur = "";
+    let quote: string | null = null;
+    let subDepth = 0;
+    const flush = () => {
+        const t = cur.trim();
+        if (t) out.push(t);
+        cur = "";
+    };
+    for (let i = 0; i < cmd.length; i++) {
+        const ch = cmd[i];
+        if (quote !== "'" && ch === "$" && cmd[i + 1] === "(") {
+            flush();
+            quotes.push(quote);
+            quote = null;
+            subDepth++;
+            i++;
+            continue;
+        }
+        if (quote) {
+            if (ch === "\\" && quote === '"' && i + 1 < cmd.length) {
+                cur += ch + cmd[++i];
+                continue;
+            }
+            cur += ch;
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === "'" || ch === '"') {
+            quote = ch;
+            cur += ch;
+            continue;
+        }
+        if (ch === ")" && subDepth > 0) {
+            flush();
+            quote = quotes.pop() ?? null;
+            subDepth--;
+            continue;
+        }
+        if (SEPARATORS.has(ch)) {
+            flush();
+            continue;
+        }
+        cur += ch;
+    }
+    flush();
+    return out;
+}
+
+// Split a segment into words on unquoted whitespace, stripping the quotes. Keeps
+// `git commit -m "a b"` as four tokens rather than five, and lets `find "/"` be
+// recognised as the root search it is.
+function shellTokens(seg: string): string[] {
+    const out: string[] = [];
+    let i = 0;
+    while (i < seg.length) {
+        if (/\s/.test(seg[i])) {
+            i++;
+            continue;
+        }
+        const start = i;
+        let word = "";
+        while (i < seg.length && !/\s/.test(seg[i])) {
+            const ch = seg[i];
+            if (ch === "'" || ch === '"') {
+                const end = seg.indexOf(ch, i + 1);
+                if (end === -1) {
+                    word += seg.slice(i + 1);
+                    i = seg.length;
+                    break;
+                }
+                word += seg.slice(i + 1, end);
+                i = end + 1;
+                continue;
+            }
+            word += ch;
+            i++;
+        }
+        if (word || i > start) out.push(word);
+    }
+    return out.filter(Boolean);
 }
 
 // True if any token is one of `flags` (matching `--flag` and `--flag=value`).
@@ -282,14 +453,39 @@ function gitRefCmdReadOnly(args: string[], mutatingFlags: Set<string>): boolean 
 
 // Command prefixes that merely exec another command. Peeling them exposes a gh/git
 // call hidden behind `env FOO=b gh …`, `command gh …`, `nohup gh …`,
-// `timeout 5 gh …`, `nice git push`, so it's still classified instead of slipping
-// through as an unpoliced head.
-const EXEC_WRAPPERS = new Set(["env", "command", "builtin", "exec", "nohup", "setsid", "nice", "timeout"]);
+// `timeout 5 gh …`, `nice git push`, `sudo git push`, `… | xargs git push`, so it's
+// still classified instead of slipping through as an unpoliced head.
+const EXEC_WRAPPERS = new Set([
+    "env", "command", "builtin", "exec", "nohup", "setsid", "nice", "timeout",
+    "sudo", "doas", "xargs", "stdbuf",
+]);
+
 // Wrapper option flags that consume the FOLLOWING token as their value (so the
 // scanner skips the value too, not just the flag).
-const WRAPPER_VALUE_FLAGS = new Set([
-    "-u", "--unset", "-C", "--chdir", "-n", "--adjustment", "-s", "--signal", "-k", "--kill-after",
-]);
+//
+// Keyed PER WRAPPER, because the same flag means different things: `nice -n 5` and
+// `xargs -n 1` take a value while `sudo -n` (non-interactive) does not, and a shared
+// table would skip the very token that names the command — turning `sudo -n git push`
+// into an unclassified `push`.
+const WRAPPER_VALUE_FLAGS: Record<string, Set<string>> = {
+    env: new Set(["-u", "--unset", "-C", "--chdir"]),
+    nice: new Set(["-n", "--adjustment"]),
+    timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+    sudo: new Set([
+        "-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "--close-from",
+        "-D", "--chdir", "-h", "--host", "-r", "--role", "-t", "--type",
+        "-U", "--other-user", "-R", "--chroot",
+    ]),
+    doas: new Set(["-u", "-C"]),
+    xargs: new Set([
+        "-n", "--max-args", "-P", "--max-procs", "-I", "--replace", "-d",
+        "--delimiter", "-E", "-e", "--eof", "-L", "--max-lines", "-s",
+        "--max-chars", "-a", "--arg-file",
+    ]),
+    stdbuf: new Set(["-i", "--input", "-o", "--output", "-e", "--error"]),
+    exec: new Set(["-a"]),
+};
+const NO_VALUE_FLAGS: Set<string> = new Set();
 
 // Return the real command tokens for a segment: drop leading `VAR=value` env
 // assignments, then peel any exec-wrapper prefixes (env/command/nohup/timeout/…)
@@ -297,7 +493,7 @@ const WRAPPER_VALUE_FLAGS = new Set([
 // isn't fully parseable — and it only ever REVEALS a command, never turns a read
 // into a block.
 function commandTokens(seg: string): string[] {
-    let toks = seg.split(/\s+/).filter(Boolean);
+    let toks = shellTokens(seg);
     for (let guard = 0; guard < 8 && toks.length; guard++) {
         let i = 0;
         while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++; // VAR=value
@@ -305,13 +501,14 @@ function commandTokens(seg: string): string[] {
         const head = toks[0] || "";
         const base = head.includes("/") ? head.slice(head.lastIndexOf("/") + 1) : head;
         if (!EXEC_WRAPPERS.has(base)) break;
+        const valueFlags = WRAPPER_VALUE_FLAGS[base] ?? NO_VALUE_FLAGS;
         let j = 1;
         let sawDuration = false;
         while (j < toks.length) {
             const t = toks[j];
             if (t === "--") { j++; break; }
             if (t.startsWith("-")) {
-                j += WRAPPER_VALUE_FLAGS.has(t) ? 2 : 1;
+                j += valueFlags.has(t.split("=")[0]) && !t.includes("=") ? 2 : 1;
                 continue;
             }
             if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { j++; continue; } // env VAR=value
