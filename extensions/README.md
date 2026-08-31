@@ -1,4 +1,4 @@
-# agent-workflow.ts — plan / refine / implement / review / validate / ship orchestrator
+# agent-workflow.ts — plan / refine / implement / review / validate / document / ship orchestrator
 
 A self-contained pi extension that runs the agents as a **self-healing loop**,
 gated by the reviewer and the validator — optionally led by a read-only **scout**
@@ -8,9 +8,9 @@ at the end to ship.
 ### Full workflow
 
 ```
-scout ──▶ planner ──▶ refiner ──▶ implementer ⇄ reviewer ──▶ validator ──▶ ship
-(optional)            (hardens     (REVISE BEFORE MERGE        (FAIL loops    (on PASS)
-                       the plan)    loops back)                 to implementer)
+scout ──▶ planner ──▶ refiner ──▶ implementer ⇄ reviewer ──▶ validator ──▶ documenter ──▶ ship
+(optional)            (hardens     (REVISE BEFORE MERGE        (FAIL loops    (README,       (on PASS)
+                       the plan)    loops back)                 to implementer) on PASS)
 ```
 
 The **refiner** reviews and hardens the planner's plan (completeness, edge cases,
@@ -37,9 +37,13 @@ reviewer; likewise the **validate↔implement** loop only runs when it has a val
 (and an implementer to send fixes to). A team missing a loop's agents just runs its
 phases straight through.
 
-Documentation is the implementer's job — it updates the docs/comments its change
-touches as part of implementing (there is no separate documenter phase). The ship
-step commits code + tests + docs together and opens the PR, so the docs are in it.
+Documentation splits in two. The **in-tree docs and comments a change touches are
+the implementer's job**, written as part of implementing — there is no separate
+tester or doc-writer for those. The **`README.md` is the documenter's**: an optional
+phase that runs only after a PASS and only before the shipper, so the README never
+advertises work that did not land and its edit is committed with the change it
+describes. A team without a `documenter` on its roster simply skips it. The ship step
+commits code + tests + docs together and opens the PR, so all of it is in one PR.
 
 - **PASS** → ship. Ship opens a draft PR (if a GitHub remote exists).
 - **PAUSED** → ship found no GitHub remote. It made the local branch + commit and stopped; the report shows the exact commands to add a remote.
@@ -194,11 +198,13 @@ a grid of cards, one per agent in the active team, each with its status, the
 **model it will run** (`◆ <model>`), and a short description. Teams come from
 `.pi/agents/teams.yaml`. There is **no spec/full mode**: a team's roster *is* the
 pipeline — the workflow runs exactly the agents the team lists, in the canonical
-order `scout → planner → refiner → implementer → reviewer → validator → shipper`. A
-`planner` team produces a plan; an `implementer, reviewer, validator, shipper`
+order
+`scout → planner → refiner → implementer → reviewer → validator → documenter → shipper`.
+A `planner` team produces a plan; an `implementer, reviewer, validator, shipper`
 team builds, reviews, validates, and ships; each loop (implement↔review,
-validate↔implement) runs only when its agents are on the team. (Docs are part of the
-implementer's change — there is no documenter phase.)
+validate↔implement) runs only when its agents are on the team. (In-tree docs are
+part of the implementer's change; the `documenter` phase exists only to keep
+`README.md` truthful, and runs only when the team lists it.)
 
 When the primary agent drives **ad-hoc work** (rather than the full
 `run_agent_workflow` pipeline), the dashboard grid **stays on screen** and narrows

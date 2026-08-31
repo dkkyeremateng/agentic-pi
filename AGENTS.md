@@ -11,7 +11,7 @@ drop one with these sections in any project root and the pipeline will respect i
 - **Run the unit suite:** `npx tsx --test utils/*/*.test.ts obs/*.test.ts`
 - **Syntax-check a file:** `node --experimental-strip-types --check <file>`
 - **Type-check:** `npx tsc --noEmit` (covers `utils/`, `extensions/`, `obs/` — it excludes `obs/ui`, which has its own).
-- **The obs dashboard is a separate package** — `cd obs/ui` first: `npm test` (139 tests), `npm run typecheck`, `npm run build`. Its build output is untracked, and obs-server serves the *build*, so **editing `obs/ui/src` changes nothing until you rebuild**.
+- **The obs dashboard is a separate package** — `cd obs/ui` first: `npm test`, `npm run typecheck`, `npm run build`. Its build output is untracked, and obs-server serves the *build*, so **editing `obs/ui/src` changes nothing until you rebuild**.
 - `just` wraps all of the above — `just verify` runs both suites, both type-checks and a dashboard build.
 
 ## Conventions
@@ -37,10 +37,15 @@ drop one with these sections in any project root and the pipeline will respect i
 
 Run the unit suite (`npx tsx --test utils/*/*.test.ts obs/*.test.ts`), typecheck
 (`npx tsc --noEmit` — covers utils/, extensions/, obs/), and syntax-check every
-changed `.ts` file. A change is done only when the suite passes (currently 967
-tests), `tsc` is clean, and the files check clean.
+changed `.ts` file. A change is done only when the suite reports **`fail 0`**,
+`tsc` is clean, and the files check clean.
+
+**Read the count, don't memorise it.** Note the `tests N` line before your change
+and compare it after: the total only ever grows, so a *drop* means you deleted or
+silently skipped coverage and is the thing to investigate. A hardcoded number here
+would be stale within a week and would then be read as a target to hit.
 
 If you touched `obs/ui`, that package is not covered by any of the above: also run
-its own `npm test` (139 tests) and `npm run typecheck`, then `npm run build` — the
-server serves the build, so an unbuilt change is an unshipped one. `just verify`
-runs the whole set.
+its own `npm test` and `npm run typecheck`, then `npm run build` — the server serves
+the build, so an unbuilt change is an unshipped one. `just verify` runs the whole
+set.
