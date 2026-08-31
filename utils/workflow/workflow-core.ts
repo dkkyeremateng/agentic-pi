@@ -2535,6 +2535,35 @@ export const REVIEW_CHECKLIST = [
     "Tests",
 ];
 
+// The checklist items a reviewer has reported finishing, scanned out of its
+// streamed output. The reviewer is read-only, so it cannot tick a ledger — instead
+// it emits a `[review-check] <item>` marker line per completed check and we read
+// those back off the stream.
+//
+// Matching is case-insensitive and substring-based in BOTH directions of looseness:
+// the model rarely echoes a label verbatim ("[review-check] correctness: ok" has to
+// match "Correctness"), and one marker line may legitimately name more than one
+// check. Anything that is not a marker line is ignored, so ordinary review prose
+// that happens to contain the word "Tests" never ticks a box.
+//
+// Lives here rather than in the widget closure that used to own it because it is
+// pure, it is the only part of the live panel that can silently stop working, and a
+// closure over a mutable Set in a 2000-line extension is not reachable from a test.
+export function matchReviewMarkers(
+    text: string,
+    checklist: readonly string[] = REVIEW_CHECKLIST,
+): string[] {
+    if (!text) return [];
+    const found = new Set<string>();
+    for (const line of text.match(/\[review-check\][^\n]*/gi) || []) {
+        const low = line.toLowerCase();
+        for (const item of checklist) {
+            if (low.includes(item.toLowerCase())) found.add(item);
+        }
+    }
+    return [...found];
+}
+
 // Build the reviewer's checklist items from the run's phases. Empty (panel hidden)
 // until the reviewer phase has started. While it runs, items tick live from
 // `doneLabels` — the set of checks the reviewer has reported finishing via its
