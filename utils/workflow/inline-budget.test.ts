@@ -13,6 +13,7 @@ import {
     inlineBudgetSpent,
     inlineSessionBudget,
     INLINE_SESSION_MAX_TURNS,
+    workerOverrunNotice,
 } from "./workflow-core";
 
 const fresh = () => mkdtempSync(join(tmpdir(), "inline-budget-"));
@@ -220,5 +221,56 @@ describe("the session threshold, against every session actually observed", () =>
     it("still switches off entirely with PI_INLINE_MAX_TURNS=0", () => {
         const off = { PI_INLINE_MAX_TURNS: "0" } as any;
         assert.equal(inlineHandoffKind(999, 999, off), null);
+    });
+});
+
+describe("a worker that grinds gets its own notice", () => {
+    // The budget counted only the implementer, on the reasoning that a worker's
+    // context is bounded by its focused task. run-mtsh2nm9-l7dry disproved it:
+    // one worker ran 106 turns on a single phase — longer than any implementer
+    // session in the series — while 51 edits failed against the same file.
+    const n = workerOverrunNotice(106);
+
+    it("tells it to stop and REPORT BACK, not to dispatch", () => {
+        // Dispatch depth is capped at 1, so a worker has no worker of its own.
+        // Telling it to dispatch would be telling it to do something the guard
+        // refuses — the implementer's notice is wrong advice for this role.
+        assert.match(n, /REPORT BACK to your coordinator/);
+        assert.match(n, /Do NOT try to dispatch/);
+        assert.match(n, /dispatch depth is capped and it will be refused/);
+    });
+
+    it("does not ask the worker to judge how close it is", () => {
+        // Same lesson as the implementer's notice: an agent mid-task always
+        // believes it is nearly done.
+        assert.match(n, /not a judgement call about how close you are/);
+        assert.doesNotMatch(n, /a few turns from finishing/);
+    });
+
+    it("asks for a handoff a fresh worker can actually use", () => {
+        assert.match(n, /What is DONE and verified/);
+        assert.match(n, /What REMAINS/);
+        assert.match(n, /without re-deriving it/);
+        assert.match(n, /exact failure text/);
+        assert.match(n, /not your diagnosis of them/);
+    });
+
+    it("keeps the ledger and checkpoints with the coordinator", () => {
+        assert.match(n, /Commit nothing and revert nothing/);
+    });
+
+    it("quotes its own session count and the shared threshold", () => {
+        assert.match(n, /106 turn\(s\)/);
+        assert.match(n, new RegExp(`${INLINE_SESSION_MAX_TURNS}-turn budget`));
+        // Same threshold as the implementer's session trigger: the pathology is
+        // the same, so the number should not differ by role.
+        assert.equal(inlineSessionBudget(), INLINE_SESSION_MAX_TURNS);
+    });
+
+    it("respects an override, like the implementer's", () => {
+        assert.match(
+            workerOverrunNotice(50, { PI_INLINE_MAX_SESSION_TURNS: "40" } as any),
+            /40-turn budget/,
+        );
     });
 });

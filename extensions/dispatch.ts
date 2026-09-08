@@ -41,6 +41,8 @@ import {
     isSmallPlan,
     inlineHandoffKind,
     inlineHandoffNotice,
+    workerOverrunNotice,
+    inlineSessionBudget,
 } from "../utils/workflow/workflow-core";
 import {
     readInlineTurns,
@@ -440,8 +442,9 @@ export default function (pi: ExtensionAPI) {
     // per session; null until then.
     let inlineBaseline: number | null = null;
     const cwdOf = () => widgetCtx?.cwd || process.cwd();
-    const isImplementer = () =>
-        (process.env.PI_AGENT_NAME || "").trim().toLowerCase() === "implementer";
+    const agentName = () => (process.env.PI_AGENT_NAME || "").trim().toLowerCase();
+    const isImplementer = () => agentName() === "implementer";
+    const isWorker = () => agentName() === "phase-implementer";
 
     // ── Lifecycle — load agents and reset per-turn dispatch state ────────────
     pi.on("session_start", async (_event, ctx) => {
@@ -490,8 +493,12 @@ export default function (pi: ExtensionAPI) {
         // a different reason -- its context is bounded by its own session, which
         // is the thing the budget is buying.
         if (!isImplementer()) {
+            // A worker gets no cumulative budget -- each is a fresh, bounded task
+            // and the run's total is not its problem -- but it DOES need its own
+            // session counted, because a worker that grinds is unbraked. See
+            // workerOverrunNotice.
             st.inlineTurns = 0;
-            st.inlineSessionTurns = 0;
+            st.inlineSessionTurns = isWorker() ? Number(event?.turnIndex) || 0 : 0;
             return;
         }
         // Cumulative across the RUN, not this process: three implementer
@@ -511,11 +518,30 @@ export default function (pi: ExtensionAPI) {
     // handoff rides on one. Once, on crossing the line: repeating it every call
     // would spend the context this exists to save.
     pi.on("tool_result", (event: any) => {
+        // A worker cannot dispatch, so it gets its own notice: stop and report
+        // back, which buys the same fresh context by the only route open to it.
+        if (isWorker()) {
+            if (
+                handoffSent.has("worker") ||
+                st.inlineSessionTurns < inlineSessionBudget()
+            )
+                return undefined;
+            handoffSent.add("worker");
+            return {
+                content: [
+                    ...(event.content ?? []),
+                    {
+                        type: "text" as const,
+                        text: workerOverrunNotice(st.inlineSessionTurns),
+                    },
+                ],
+            };
+        }
         const kind = inlineHandoffKind(st.inlineTurns, st.inlineSessionTurns);
         if (!kind || handoffSent.has(kind)) return undefined;
         // Only an implementer working a plan the floor actually covers. Every
         // other agent, and every larger plan, is none of this hook's business.
-        if (!isImplementer()) return undefined;
+        if (!isImplementer()) return undefined; // workers handled above
         let plan: string;
         try {
             plan = readFileSync(join(cwdOf(), ".agent", "plan.md"), "utf8");

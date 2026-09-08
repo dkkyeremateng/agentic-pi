@@ -3110,6 +3110,44 @@ export function inlineHandoffNotice(
     ].join("\n");
 }
 
+/**
+ * The notice for a `phase-implementer` that has run too long in one session.
+ *
+ * The inline budget deliberately counts only the implementer, on the reasoning
+ * that a worker's context is bounded by its own focused task. run-mtsh2nm9-l7dry
+ * disproved that: one worker ran 106 turns on a single phase -- longer than any
+ * implementer session in the whole series -- with nothing to interrupt it, while
+ * 51 failed edits piled up against one file.
+ *
+ * A worker cannot take the implementer's advice, though. Dispatch depth is capped
+ * at 1, so it has no worker of its own to hand to; telling it to dispatch would be
+ * telling it to do something the guard will refuse. Its equivalent move is to STOP
+ * and report back, so the coordinator can re-dispatch the remainder into a fresh
+ * context -- which is the same saving by a different route.
+ *
+ * Threshold shared with the implementer's session budget: the pathology is the
+ * same one (a transcript that only grows), so the number that separates "long but
+ * finishing" from "grinding" should not differ by role.
+ */
+export function workerOverrunNotice(
+    sessionTurns: number,
+    env = process.env,
+): string {
+    return [
+        "",
+        "---",
+        `CONTEXT BUDGET SPENT — this worker has run ${sessionTurns} turn(s) in one session, past the ${inlineSessionBudget(env)}-turn budget for a single context. STOP here and REPORT BACK to your coordinator now, before the next edit.`,
+        "",
+        "This is not a judgement call about how close you are. Every turn re-reads this whole transcript, so the turns ahead of you cost more than the ones behind; a worker that grinds is the most expensive thing in a run. Measured on run-mtsh2nm9-l7dry: one worker ran 106 turns on a single phase while 51 edits failed against the same file.",
+        "",
+        "Do NOT try to dispatch — dispatch depth is capped and it will be refused. Report instead:",
+        "- What is DONE and verified, naming the files and the tests that pass.",
+        "- What REMAINS, specifically enough that a fresh worker can pick it up without re-deriving it.",
+        "- If you were stuck on a failing test or a rejected edit, quote the exact failure text and the exact bytes you were trying to match — not your diagnosis of them.",
+        "- Commit nothing and revert nothing; the coordinator owns the ledger and the checkpoints.",
+    ].join("\n");
+}
+
 export function inlineFloorRefusal(
     agent: string,
     plan: string,
