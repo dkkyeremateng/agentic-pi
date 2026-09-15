@@ -46,6 +46,18 @@ import {
 import { commitStagedLearnings } from "./memory";
 import { runDiffAudit } from "./diff-audit";
 import { resetInlineTurns } from "./inline-budget";
+import {
+    worktreeIsolationEnabled,
+    worktreeBlocker,
+    createWaveWorktrees,
+    collectWorktreeChanges,
+    planWaveMerge,
+    applyWaveMerge,
+    removeWaveWorktrees,
+    linkSharedPaths,
+    excludeWorktreeDir,
+    type WaveWorktree,
+} from "./worktree";
 import { reflectFailedRun } from "../../obs/obs-reflect";
 import {
     type Verdict,
@@ -2763,6 +2775,63 @@ export async function dispatchParallelCore(
         Math.floor(DISPATCH_PARALLEL_OUTPUT_MAX / Math.max(1, entries.length)),
     );
 
+    // ── Per-worker git worktrees (opt-in: PI_WORKTREE_ISOLATION=1) ──
+    //
+    // Without this, every worker in the wave writes into ONE tree and the only
+    // thing keeping them apart is a sentence in their prompts. When that fails
+    // the later write wins silently. Each worker gets its own checkout instead,
+    // and the merge afterwards turns an invisible clobber into a reported
+    // overlap.
+    //
+    // Every failure here degrades to the shared tree. Isolation is an
+    // improvement, not a precondition — refusing to dispatch because a worktree
+    // could not be created would make the wave strictly worse.
+    let worktrees: WaveWorktree[] = [];
+    const cwdFor = new Map<number, string>();
+    if (worktreeIsolationEnabled()) {
+        const git = h.setup.git?.(ctx.cwd);
+        const blocker = git ? worktreeBlocker(git) : "no git runner available";
+        if (blocker) {
+            h.ui.notify(
+                `Worktree isolation requested but unavailable (${blocker}) — this wave shares one working tree.`,
+                "warning",
+            );
+        } else if (git) {
+            try {
+                // Before creating anything: without this a coordinator checkpoint
+                // using `git add -A` would commit every worker's whole checkout.
+                excludeWorktreeDir(git(["rev-parse", "--absolute-git-dir"]));
+                const base = git(["rev-parse", "HEAD"]);
+                worktrees = createWaveWorktrees(
+                    git,
+                    ctx.cwd,
+                    base,
+                    entries.map(
+                        ({ phase }, i) => phase.dispatchId || `wave-${start}-${i}`,
+                    ),
+                );
+                for (const wt of worktrees) {
+                    // Without the shared gitignored paths a fresh worktree has no
+                    // node_modules and the worker's first test command fails.
+                    linkSharedPaths(ctx.cwd, wt.path);
+                    cwdFor.set(wt.index, wt.path);
+                }
+                if (worktrees.length)
+                    h.ui.notify(
+                        `Worktree isolation: ${worktrees.length}/${entries.length} worker(s) running in their own checkout.`,
+                        "info",
+                    );
+            } catch (e) {
+                h.ui.notify(
+                    `Worktree isolation failed (${e instanceof Error ? e.message : String(e)}) — this wave shares one working tree.`,
+                    "warning",
+                );
+                worktrees = [];
+                cwdFor.clear();
+            }
+        }
+    }
+
     // Stream the whole wave's live activity into the parent transcript while it runs
     // (opt-in via PI_DISPATCH_STREAM) — one updating block with each agent's latest
     // line. Stopped once every item resolves.
@@ -2783,15 +2852,18 @@ export async function dispatchParallelCore(
     }[];
     try {
         results = await Promise.all(
-            entries.map(async ({ def, task, phase }) => {
+            entries.map(async ({ def, task, phase }, itemIndex) => {
                 const t0 = Date.now();
+                // Its own checkout when isolation is on and came up for this item;
+                // the shared tree otherwise.
+                const itemCwd = cwdFor.get(itemIndex) ?? ctx.cwd;
                 // Per-item isolation: one rejected spawn must not reject the whole
                 // Promise.all, which would leave its siblings detached, their phases
                 // stuck "running", no dispatch_end emitted and the batch's learnings
                 // commit skipped.
                 let res: { output: string; exitCode: number };
                 try {
-                    res = await runAgentWithEmptyRetry(h, def, task, phase, ctx.cwd);
+                    res = await runAgentWithEmptyRetry(h, def, task, phase, itemCwd);
                 } catch (e) {
                     res = {
                         output: `Dispatch failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -2855,6 +2927,66 @@ export async function dispatchParallelCore(
     // batch failed. See the mirror in dispatchAgentCore.
     finishDispatchLearnings(s, ctx.cwd, okCount > 0, entries.length);
 
+    // ── Merge the isolated worktrees back ──
+    //
+    // Workers do not commit (the coordinator owns the ledger and the
+    // checkpoints), so each worktree holds uncommitted work. Commit it on their
+    // behalf, then land only the file sets that are provably disjoint.
+    //
+    // A contested file lands NEITHER side. The shared tree already had a policy
+    // for two workers writing one file — keep the later write — and that policy
+    // is the data loss this exists to stop. Reporting the overlap and re-running
+    // those phases sequentially is the only answer that cannot lose a phase's
+    // intent.
+    let worktreeNote = "";
+    if (worktrees.length) {
+        const git = h.setup.git?.(ctx.cwd);
+        try {
+            if (git) {
+                const changes = worktrees.map((wt) =>
+                    collectWorktreeChanges(
+                        (path: string) => h.setup.git?.(path) ?? git,
+                        wt,
+                    ),
+                );
+                const plan = planWaveMerge(changes);
+                const landed = applyWaveMerge(git, plan);
+                const nameOf = (i: number) =>
+                    displayName(entries[i]?.def.name ?? `worker ${i}`);
+                if (plan.conflicts.size) {
+                    const desc = Array.from(plan.conflicts.entries())
+                        .map(
+                            ([file, idxs]) =>
+                                `${file} (${idxs.map(nameOf).join(", ")})`,
+                        )
+                        .join("; ");
+                    worktreeNote =
+                        `\nWORKTREE MERGE HELD BACK — these files were changed by more than one worker: ${desc}. ` +
+                        `Nothing from the affected worker(s) was merged, because keeping one side is how the shared tree silently lost the other. ` +
+                        `Their work is still in .agent/worktrees/ — re-run those phases sequentially, or inspect the worktrees and merge by hand.`;
+                    h.ui.notify(
+                        `Worktree merge held back: ${plan.conflicts.size} contested file(s).`,
+                        "warning",
+                    );
+                } else if (landed.length) {
+                    worktreeNote = `\nMerged ${landed.length} file(s) from ${plan.apply.length} isolated worker(s).`;
+                }
+            }
+        } catch (e) {
+            // The work is not lost — it is committed inside the worktrees, which
+            // are deliberately NOT removed on this path.
+            worktreeNote =
+                `\nWORKTREE MERGE FAILED (${e instanceof Error ? e.message : String(e)}). ` +
+                `The workers' commits are intact in .agent/worktrees/; merge them by hand before re-running.`;
+            h.ui.notify(worktreeNote.trim(), "warning");
+            worktrees = [];
+        }
+        // Only tear down once the work is safely in the main tree. A conflict
+        // leaves them in place on purpose: they are the only copy of that work.
+        if (git && !worktreeNote.includes("HELD BACK") && !worktreeNote.includes("FAILED"))
+            removeWaveWorktrees(git, worktrees);
+    }
+
     const skipNote = skipped.length ? ` Skipped: ${skipped.join(", ")}.` : "";
     const blocks = results
         .map(
@@ -2867,7 +2999,7 @@ export async function dispatchParallelCore(
           `Parallel workers share ONE working tree, so concurrent writes to the same file clobber each other silently. ` +
           `Check each file above holds the change its owning phase intended, and re-run any phase whose file looks merged or truncated — sequentially this time.`
         : "";
-    const summary = `Parallel dispatch complete: ${okCount}/${results.length} succeeded.${skipNote}${collNote}`;
+    const summary = `Parallel dispatch complete: ${okCount}/${results.length} succeeded.${skipNote}${collNote}${worktreeNote}`;
 
     return {
         content: [{ type: "text", text: `${summary}\n\n${blocks}` }],

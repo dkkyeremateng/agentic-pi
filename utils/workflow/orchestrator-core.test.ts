@@ -1,6 +1,7 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -1414,6 +1415,172 @@ describe("dispatch commits staged learnings", () => {
         assert.deepEqual(details.collisions[0].agents, ["scout", "seeker"]);
 
         // (the returned text is asserted above, on `waveText`)
+    });
+});
+
+describe("worktree isolation, end to end through dispatchParallelCore", () => {
+    // The module's own tests prove the git mechanics. These prove the WIRING,
+    // which is where this class of change actually breaks — the last collision
+    // feature "worked" in tests while writing its warning to a field that
+    // runAgentCore wiped microseconds later.
+
+    const gitIn = (cwd: string) => (args: string[]) =>
+        execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+
+    function seedRepo(): string {
+        const dir = mkdtempSync(join(tmpdir(), "wt-disp-"));
+        const run = gitIn(dir);
+        run(["init", "-q"]);
+        run(["config", "user.email", "t@t"]);
+        run(["config", "user.name", "t"]);
+        writeFileSync(join(dir, "a.txt"), "base\n");
+        writeFileSync(join(dir, "b.txt"), "base\n");
+        run(["add", "-A"]);
+        run(["commit", "-q", "-m", "base"]);
+        return dir;
+    }
+
+    // A host whose "agents" write a file inside whatever cwd they are given.
+    function hostWriting(
+        writes: Record<string, [string, string]>,
+        notifications: Array<{ msg: string; type?: string }>,
+    ) {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        agents.set("seeker", mkAgent("seeker"));
+        return {
+            agents,
+            host: mkHost({
+                setup: {
+                    loadAgents: () => agents,
+                    setupSessions: () => {},
+                    prepareRun: () => {},
+                    git: gitIn,
+                },
+                ui: { notify: (msg, type) => notifications.push({ msg, type }) },
+                execution: {
+                    runAgent: async (def, _task, _phase, cwd) => {
+                        const w = writes[def.name];
+                        if (w) writeFileSync(join(cwd, w[0]), w[1]);
+                        return { output: "done " + "x".repeat(60), exitCode: 0 };
+                    },
+                },
+            }),
+        };
+    }
+
+    const withIsolation = async <T>(fn: () => Promise<T>): Promise<T> => {
+        const prev = process.env.PI_WORKTREE_ISOLATION;
+        process.env.PI_WORKTREE_ISOLATION = "1";
+        try {
+            return await fn();
+        } finally {
+            if (prev === undefined) delete process.env.PI_WORKTREE_ISOLATION;
+            else process.env.PI_WORKTREE_ISOLATION = prev;
+        }
+    };
+
+    it("runs each worker in its own checkout and merges disjoint work back", async () => {
+        const dir = seedRepo();
+        const notes: Array<{ msg: string; type?: string }> = [];
+        const { agents, host } = hostWriting(
+            { scout: ["a.txt", "from scout\n"], seeker: ["c.txt", "from seeker\n"] },
+            notes,
+        );
+        const result = await withIsolation(() =>
+            dispatchParallelCore(
+                mkStateWithAgents(agents),
+                host,
+                [
+                    { agent: "scout", task: "edit `a.txt`" },
+                    { agent: "seeker", task: "create `c.txt`" },
+                ],
+                undefined,
+                { cwd: dir },
+            ),
+        );
+
+        // Both workers' changes landed in the MAIN tree.
+        assert.equal(readFileSync(join(dir, "a.txt"), "utf-8"), "from scout\n");
+        assert.equal(readFileSync(join(dir, "c.txt"), "utf-8"), "from seeker\n");
+        const text = (result.content[0] as { text: string }).text;
+        assert.match(text, /Merged \d+ file\(s\) from 2 isolated worker\(s\)/);
+        // And the worktrees are gone once the work is safely merged.
+        assert.ok(!existsSync(join(dir, ".agent", "worktrees", "")) ||
+            (gitIn(dir)(["worktree", "list"]).split("\n").length === 1));
+    });
+
+    it("holds back BOTH sides when two workers change one file", async () => {
+        // The shared tree kept the later write silently. Neither lands here.
+        const dir = seedRepo();
+        const notes: Array<{ msg: string; type?: string }> = [];
+        const { agents, host } = hostWriting(
+            { scout: ["a.txt", "from scout\n"], seeker: ["a.txt", "from seeker\n"] },
+            notes,
+        );
+        const result = await withIsolation(() =>
+            dispatchParallelCore(
+                mkStateWithAgents(agents),
+                host,
+                [
+                    { agent: "scout", task: "edit a" },
+                    { agent: "seeker", task: "edit a" },
+                ],
+                undefined,
+                { cwd: dir },
+            ),
+        );
+        assert.equal(
+            readFileSync(join(dir, "a.txt"), "utf-8"),
+            "base\n",
+            "neither side may win",
+        );
+        const text = (result.content[0] as { text: string }).text;
+        assert.match(text, /WORKTREE MERGE HELD BACK/);
+        assert.match(text, /a\.txt/);
+        // The work must still exist somewhere recoverable.
+        assert.match(text, /\.agent\/worktrees/);
+        assert.ok(existsSync(join(dir, ".agent", "worktrees")));
+    });
+
+    it("falls back to the shared tree outside a git repo, without failing", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "wt-norepo-"));
+        const notes: Array<{ msg: string; type?: string }> = [];
+        const { agents, host } = hostWriting({ scout: ["a.txt", "x\n"] }, notes);
+        const result = await withIsolation(() =>
+            dispatchParallelCore(
+                mkStateWithAgents(agents),
+                host,
+                [{ agent: "scout", task: "edit a" }],
+                undefined,
+                { cwd: dir },
+            ),
+        );
+        assert.match(
+            (result.content[0] as { text: string }).text,
+            /Parallel dispatch complete: 1\/1 succeeded/,
+        );
+        assert.ok(
+            notes.some((n) => /shares one working tree/.test(n.msg)),
+            "should say why it fell back",
+        );
+        assert.equal(readFileSync(join(dir, "a.txt"), "utf-8"), "x\n");
+    });
+
+    it("does nothing at all when the flag is off", async () => {
+        const dir = seedRepo();
+        const notes: Array<{ msg: string; type?: string }> = [];
+        const { agents, host } = hostWriting({ scout: ["a.txt", "shared\n"] }, notes);
+        await dispatchParallelCore(
+            mkStateWithAgents(agents),
+            host,
+            [{ agent: "scout", task: "edit a" }],
+            undefined,
+            { cwd: dir },
+        );
+        assert.equal(readFileSync(join(dir, "a.txt"), "utf-8"), "shared\n");
+        assert.ok(!existsSync(join(dir, ".agent", "worktrees")));
+        assert.ok(!notes.some((n) => /[Ww]orktree/.test(n.msg)));
     });
 });
 
