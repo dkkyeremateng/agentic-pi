@@ -11,6 +11,8 @@
 //   tsx obs/obs-cli.ts score <runId|--last> --pass|--fail [--note <text>]
 //                                  [--sink <file>]
 //   tsx obs/obs-cli.ts explain <runId|--last> [--json] [--sink <file>]
+//   tsx obs/obs-cli.ts eval <runId|--last> [--json] [--sink <file>] [--cost <usd>]
+//                                  [--duration <sec>] [--tools <n>]
 //   tsx obs/obs-cli.ts reap [--stale <minutes>] [--apply] [--json] [--sink <file>]
 //   tsx obs/obs-cli.ts lessons [--json]
 //
@@ -22,6 +24,8 @@
 //   --since/--until  scope a continued session file to one run (single-project),
 //                or filter runs by start date (--all).
 //   --json       emit JSON instead of the text report.
+//   eval         score a run against heuristic evaluator budgets (error-free,
+//                cost-budget, latency, tool-efficiency) from the CLI.
 //   lessons      show agent self-learning lessons broken down by source
 //                (remember = saved on a passing run; reflect = distilled from a
 //                failed run) so you can watch the balance of the two paths.
@@ -52,6 +56,14 @@ import {
 import { RunIndexer, LineScanner, type RunSummary } from "./obs-run-index";
 import { lessonSourceStats } from "../utils/workflow/memory";
 import { buildRunDigest, formatRunDigest } from "./obs-explain";
+import {
+    evaluateRun,
+    overallScore,
+    formatEvalReport,
+    DEFAULT_EVAL_CONFIG,
+    type EvalConfig,
+    type EvalRunInput,
+} from "./obs-eval-core";
 import { planReap, reapEvent } from "./obs-reap";
 import { listLiveSessions } from "./obs-chat-control";
 import {
@@ -603,6 +615,101 @@ function explainCommand(argv: string[]): void {
     console.log(formatRunDigest(digest).join("\n"));
 }
 
+// `eval` — score a run against heuristic evaluator budgets (error-free,
+// cost-budget, latency, tool-efficiency) headlessly.
+/**
+ * A numeric flag value, or exit with a usage error.
+ *
+ * `parseFloat("abc")` is NaN, and NaN survives `??` — so a typo'd budget flowed
+ * all the way to the report, where every comparison against NaN is false, the
+ * level resolves to "fail", and the output reads `FAIL (score: NaN/100)` with
+ * `$NaN`. A confidently wrong verdict from a typo is worse than refusing to run.
+ */
+function numericArg(flag: string, raw: string, integer = false): number {
+    const n = integer ? parseInt(raw, 10) : parseFloat(raw);
+    if (!Number.isFinite(n) || n < 0) {
+        console.error(
+            `obs-cli: ${flag} expects a non-negative number, got ${JSON.stringify(raw)}`,
+        );
+        process.exit(1);
+    }
+    return n;
+}
+
+function evalCommand(argv: string[]): void {
+    let runArg = "";
+    let last = false;
+    let json = false;
+    let sinkArg = "";
+    let budgetCost: number | undefined;
+    let budgetMs: number | undefined;
+    let budgetTools: number | undefined;
+
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (a === "--last") last = true;
+        else if (a === "--json") json = true;
+        else if (a === "--sink" && argv[i + 1]) sinkArg = argv[++i];
+        else if (a === "--cost" && argv[i + 1])
+            budgetCost = numericArg(a, argv[++i]);
+        else if (a === "--duration" && argv[i + 1])
+            budgetMs = numericArg(a, argv[++i]) * 1000;
+        else if (a === "--tools" && argv[i + 1])
+            budgetTools = numericArg(a, argv[++i], true);
+        else if (!a.startsWith("-") && !runArg) runArg = a;
+    }
+    if (!runArg && !last) {
+        console.error(
+            "usage: eval <runId|--last> [--json] [--sink <file>] [--cost <usd>] [--duration <sec>] [--tools <n>]",
+        );
+        process.exit(1);
+    }
+    const sink = obsSinkPath(sinkArg);
+    if (!existsSync(sink)) {
+        console.error(
+            `No obs sink at ${sink} — run a workflow with PI_OBS=1 first.`,
+        );
+        process.exit(1);
+    }
+    const runs = indexSink(sink).runs();
+    if (!runs.length) {
+        console.error(`No runs recorded in ${sink}.`);
+        process.exit(1);
+    }
+    const run = resolveRun(runs, runArg, last);
+    const digest = buildRunDigest(readRunEvents(sink, run));
+
+    const cfg: EvalConfig = {
+        costBudgetUsd: budgetCost ?? DEFAULT_EVAL_CONFIG.costBudgetUsd,
+        maxDurationMs: budgetMs ?? DEFAULT_EVAL_CONFIG.maxDurationMs,
+        maxToolCalls: budgetTools ?? DEFAULT_EVAL_CONFIG.maxToolCalls,
+    };
+
+    const input: EvalRunInput = {
+        runId: run.runId,
+        costUsd: digest.totals.costUsd,
+        durationMs: digest.activeMs || digest.wallMs,
+        toolCalls: digest.totals.toolCalls,
+        errors: digest.totals.toolErrors + digest.totals.providerErrors,
+        project: digest.cwd,
+    };
+
+    const results = evaluateRun(input, cfg);
+    const ov = overallScore(results);
+
+    if (json) {
+        console.log(
+            JSON.stringify(
+                { run: input, config: cfg, results, overall: ov },
+                null,
+                2,
+            ),
+        );
+        return;
+    }
+    console.log(formatEvalReport(input, results, cfg));
+}
+
 // `lessons` — agent self-learning ledger by source. Counts each committed lesson
 // as `remember` (agent-authored, kept on a passing run), `reflect` (distilled
 // from a failed run), or `unknown` (written before source tracking / hand edit),
@@ -641,6 +748,10 @@ function main() {
     }
     if (argv[0] === "explain") {
         explainCommand(argv.slice(1));
+        return;
+    }
+    if (argv[0] === "eval") {
+        evalCommand(argv.slice(1));
         return;
     }
     if (argv[0] === "reap") {

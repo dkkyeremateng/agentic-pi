@@ -15,11 +15,57 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-PI_BIN="$(command -v pi || true)"
-[[ -n "$PI_BIN" ]] || {
-    echo "link-pi-types: 'pi' not found on PATH — install pi first." >&2
+link() { # link <target> <name-under-node_modules>
+    local target="$1"
+    local name="$2"
+    local dest="$ROOT/node_modules/$name"
+    [[ -e "$target" ]] || {
+        echo "link-pi-types: missing dependency '$target'" >&2
+        exit 1
+    }
+    mkdir -p "$(dirname "$dest")"
+    rm -rf "$dest"
+    ln -s "$target" "$dest"
+}
+
+# What to do when `pi` is not on PATH.
+#
+# Order matters, and it was wrong: this checked `types/stubs` FIRST and exited,
+# so the real-types branch below was dead whenever the stubs directory existed. A
+# transient PATH miss would then REPLACE working type links with stubs, silently
+# downgrading a machine that had the real thing.
+#
+# The stubs are also not a substitute for types. They are `any`-shaped, with
+# `[key: string]: any` index signatures, so `tsc --noEmit` against them accepts
+# almost anything — a CI typecheck built on them is vacuously green, which is
+# worse than no typecheck because it reads as coverage. So stubs are opt-in
+# (PI_TYPES_ALLOW_STUBS=1) and say plainly what they are worth.
+fallback_stubs() {
+    if [[ -d "$ROOT/node_modules/@earendil-works/pi-coding-agent" ]]; then
+        echo "link-pi-types: 'pi' not on PATH, but real types are already linked in node_modules — keeping them."
+        exit 0
+    fi
+    if [[ "${PI_TYPES_ALLOW_STUBS:-}" == "1" && -d "$ROOT/types/stubs" ]]; then
+        link "$ROOT/types/stubs/pi-coding-agent" "@earendil-works/pi-coding-agent"
+        link "$ROOT/types/stubs/pi-coding-agent" "@mariozechner/pi-coding-agent"
+        link "$ROOT/types/stubs/pi-tui" "@earendil-works/pi-tui"
+        link "$ROOT/types/stubs/pi-tui" "@mariozechner/pi-tui"
+        link "$ROOT/types/stubs/typebox" "@sinclair/typebox"
+        echo "link-pi-types: WARNING — linked ANY-shaped fallback stubs, not real pi types." >&2
+        echo "link-pi-types:   A typecheck against these proves almost nothing. Use it to run" >&2
+        echo "link-pi-types:   the suite without pi installed; do NOT treat it as type coverage." >&2
+        exit 0
+    fi
+    echo "link-pi-types: 'pi' not found on PATH and no real types in node_modules." >&2
+    echo "link-pi-types:   Install pi, or set PI_TYPES_ALLOW_STUBS=1 to link any-shaped" >&2
+    echo "link-pi-types:   stubs (which makes a typecheck vacuous — see this function)." >&2
     exit 1
 }
+
+PI_BIN="$(command -v pi || true)"
+if [[ -z "$PI_BIN" ]]; then
+    fallback_stubs
+fi
 
 # Resolve the pi package root by walking UP from the bin until a package.json
 # with pi's own name appears. Do not assume how deep the entry point sits: pi
@@ -45,27 +91,15 @@ for (let i = 0; i < 10; i++) {
     dir = up;
 }
 process.exit(1);
-' "$PI_BIN")"
-[[ -f "$PI_PKG/dist/index.d.ts" ]] || {
-    echo "link-pi-types: could not locate pi types at '$PI_PKG'" >&2
-    exit 1
-}
+' "$PI_BIN" 2>/dev/null || true)"
+
+if [[ -z "$PI_PKG" || ! -f "$PI_PKG/dist/index.d.ts" ]]; then
+    fallback_stubs
+fi
 
 PI_TUI="$PI_PKG/node_modules/@earendil-works/pi-tui"
 TYPEBOX="$PI_PKG/node_modules/typebox"
 
-link() { # link <target> <name-under-node_modules>
-    local target="$1"
-    local name="$2"
-    local dest="$ROOT/node_modules/$name"
-    [[ -e "$target" ]] || {
-        echo "link-pi-types: missing dependency '$target'" >&2
-        exit 1
-    }
-    mkdir -p "$(dirname "$dest")"
-    rm -rf "$dest"
-    ln -s "$target" "$dest"
-}
 
 # Repo imports both scopes for the coding-agent API and pi-tui; typebox is `Type`.
 link "$PI_PKG" "@earendil-works/pi-coding-agent"

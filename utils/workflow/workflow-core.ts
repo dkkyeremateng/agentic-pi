@@ -14,12 +14,14 @@ import { homedir } from "os";
 import { createHash } from "crypto";
 import {
     readFileSync,
+    writeFileSync,
     existsSync,
     readdirSync,
     mkdirSync,
     unlinkSync,
     statSync,
     openSync,
+    ftruncateSync,
     readSync,
     closeSync,
     realpathSync,
@@ -4194,6 +4196,138 @@ export function agentStallMsFromEnv(
     return Math.max(0, min) * 60_000;
 }
 
+/**
+ * Validate and sanitize a JSONL session file before resuming it with -c.
+ * Ensures the header has valid JSON lines, and repairs any incomplete/corrupted
+ * trailing line left by an abrupt termination (SIGTERM/SIGKILL/timeout).
+ * Returns true if the session is usable, false if it had to be discarded.
+ */
+export function sanitizeSessionFile(sessionFile: string): boolean {
+    if (!existsSync(sessionFile)) return false;
+    try {
+        const stats = statSync(sessionFile);
+        // Check if file is too small (likely corrupted) or too large (might be incompatible)
+        if (stats.size < 10 || stats.size > 10 * 1024 * 1024) {
+            console.error(
+                `[sanitizeSessionFile] Session file ${sessionFile} has suspicious size (${stats.size} bytes), deleting and starting fresh`,
+            );
+            unlinkSync(sessionFile);
+            return false;
+        }
+
+        // Validate the session file header (~2KB)
+        const MAX_VALIDATE_BYTES = 2048;
+        const buf = Buffer.alloc(MAX_VALIDATE_BYTES);
+        let bytesRead = 0;
+        const fd = openSync(sessionFile, "r");
+        try {
+            bytesRead = readSync(fd, buf, 0, MAX_VALIDATE_BYTES, 0);
+        } finally {
+            closeSync(fd);
+        }
+        const head = buf.toString("utf-8", 0, bytesRead);
+        const lines = head.split("\n").filter((l) => l.trim());
+        let validLines = 0;
+        for (const line of lines.slice(0, 5)) {
+            try {
+                JSON.parse(line);
+                validLines++;
+            } catch {
+                break;
+            }
+        }
+        if (validLines === 0) {
+            console.error(
+                `[sanitizeSessionFile] Session file ${sessionFile} has no valid JSON lines at start, deleting and starting fresh`,
+            );
+            unlinkSync(sessionFile);
+            return false;
+        }
+
+        // Check the tail for any incomplete line from an abrupt kill
+        const TAIL_BYTES = Math.min(stats.size, 8192);
+        const tailBuf = Buffer.alloc(TAIL_BYTES);
+        const tailFd = openSync(sessionFile, "r");
+        try {
+            readSync(tailFd, tailBuf, 0, TAIL_BYTES, stats.size - TAIL_BYTES);
+        } finally {
+            closeSync(tailFd);
+        }
+
+        const tailStr = tailBuf.toString("utf-8");
+        const rawTailLines = tailStr.split("\n");
+        const lastNonEmpty = rawTailLines.filter((l) => l.trim()).pop();
+        if (lastNonEmpty) {
+            try {
+                JSON.parse(lastNonEmpty);
+                return true;
+            } catch {}
+        }
+
+        // Corrupted tail — trim back to the last complete JSON line.
+        //
+        // TRUNCATE, do not rewrite. The first version read the whole file into a
+        // string (the very 10MB read the tail-window check above exists to avoid)
+        // and wrote it back whole; a crash mid-write would have destroyed a
+        // session that was merely missing its last line. `ftruncateSync` touches
+        // only the end of the file, needs no full read, and cannot lose the part
+        // it is keeping.
+        //
+        // The scan walks BACKWARD through the tail window we already hold, so a
+        // 5MB session costs the same as a 5KB one.
+        let keepBytes = -1;
+        {
+            // Byte offset of the end of each line within the tail window, so a
+            // good line maps back to an absolute file offset.
+            const windowStart = stats.size - TAIL_BYTES;
+            let offset = 0;
+            const ends: number[] = [];
+            for (const line of rawTailLines) {
+                offset += Buffer.byteLength(line, "utf-8") + 1; // +1 for "\n"
+                ends.push(offset);
+            }
+            for (let i = rawTailLines.length - 1; i >= 0; i--) {
+                const trimmed = rawTailLines[i].trim();
+                if (!trimmed) continue;
+                try {
+                    JSON.parse(trimmed);
+                    keepBytes = windowStart + ends[i];
+                    break;
+                } catch {}
+            }
+        }
+
+        if (keepBytes > 0 && keepBytes <= stats.size) {
+            const fd = openSync(sessionFile, "r+");
+            try {
+                ftruncateSync(fd, keepBytes);
+            } finally {
+                closeSync(fd);
+            }
+            console.error(
+                `[sanitizeSessionFile] Repaired ${sessionFile}: truncated ${stats.size - keepBytes} malformed trailing byte(s)`,
+            );
+            return true;
+        }
+        // No complete line anywhere in the tail window. The head already
+        // validated, so the file is not obviously junk — leave it for pi rather
+        // than deleting a session we cannot prove is unusable.
+        console.error(
+            `[sanitizeSessionFile] ${sessionFile} has a malformed tail and no complete JSON line in the last ${TAIL_BYTES} bytes; leaving it untouched`,
+        );
+        return true;
+    } catch (error) {
+        console.error(
+            `[sanitizeSessionFile] Session file ${sessionFile} is corrupted or invalid, deleting and starting fresh:`,
+            error instanceof Error ? error.message : String(error),
+        );
+        try {
+            unlinkSync(sessionFile);
+        } catch {}
+        return false;
+    }
+}
+
 export function spawnAgentWithModel(
     agentDef: AgentDef,
     task: string,
@@ -4235,67 +4369,10 @@ export function spawnAgentWithModel(
         }
     }
 
-    // Validate session file before using it
+    // Validate and sanitize session file before using it
     let hasSession = false;
     if (existsSync(sessionFile)) {
-        try {
-            const stats = statSync(sessionFile);
-            // Check if file is too small (likely corrupted) or too large (might be incompatible)
-            if (stats.size < 10 || stats.size > 10 * 1024 * 1024) {
-                console.error(
-                    `[spawnAgentWithModel] Session file ${sessionFile} has suspicious size (${stats.size} bytes), deleting and starting fresh`,
-                );
-                unlinkSync(sessionFile);
-            } else {
-                // Validate the session file by reading only the first ~2KB
-                // instead of the entire file (which can be up to 10MB).
-                // This avoids blocking the event loop for large sessions.
-                const MAX_VALIDATE_BYTES = 2048;
-                const buf = Buffer.alloc(MAX_VALIDATE_BYTES);
-                let bytesRead = 0;
-                const fd = openSync(sessionFile, "r");
-                try {
-                    bytesRead = readSync(fd, buf, 0, MAX_VALIDATE_BYTES, 0);
-                } finally {
-                    closeSync(fd);
-                }
-                const head = buf.toString("utf-8", 0, bytesRead);
-                const lines = head.split("\n").filter((l) => l.trim());
-                let validLines = 0;
-                for (const line of lines.slice(0, 5)) {
-                    try {
-                        JSON.parse(line);
-                        validLines++;
-                    } catch {
-                        break;
-                    }
-                }
-                // Only use the session if at least the first line is valid
-                if (validLines > 0) {
-                    hasSession = true;
-                } else {
-                    console.error(
-                        `[spawnAgentWithModel] Session file ${sessionFile} has no valid JSON lines, deleting and starting fresh`,
-                    );
-                    unlinkSync(sessionFile);
-                }
-            }
-        } catch (error) {
-            console.error(
-                `[spawnAgentWithModel] Session file ${sessionFile} is corrupted or invalid, deleting and starting fresh:`,
-                error instanceof Error ? error.message : String(error),
-            );
-            try {
-                unlinkSync(sessionFile);
-            } catch (deleteError) {
-                console.error(
-                    `[spawnAgentWithModel] Failed to delete corrupted session file:`,
-                    deleteError instanceof Error
-                        ? deleteError.message
-                        : String(deleteError),
-                );
-            }
-        }
+        hasSession = sanitizeSessionFile(sessionFile);
     }
 
     const args = [

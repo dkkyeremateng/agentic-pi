@@ -15,6 +15,8 @@ import {
     nextMilestone,
     markMilestoneDone,
     milestoneEarned,
+    extractReferencedFiles,
+    detectFileCollisions,
 } from "./workflow-utils";
 
 // Run with: npx tsx --test workflow-utils.test.ts
@@ -68,10 +70,25 @@ describe("detectVerdict", () => {
         assert.equal(detectVerdict(lines.join("\n")), "pass");
     });
 
-    it("matches fallback fail within the first 20 lines", () => {
+    it("does NOT read a verdict out of prose", () => {
+        // The old fallback matched the bare word anywhere in the first 20 lines,
+        // which inverted real verdicts: validator output routinely says "all
+        // targeted tests pass" above a FAIL marker. A retry costs a round trip;
+        // a wrong verdict ships a failing run.
         const lines = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`);
         lines[3] = "this will fail";
-        assert.equal(detectVerdict(lines.join("\n")), "fail");
+        assert.equal(detectVerdict(lines.join("\n")), "unknown");
+    });
+
+    it("never lets prose above the marker win", () => {
+        assert.equal(
+            detectVerdict("All targeted tests pass.\n\n**VERDICT:** FAIL"),
+            "fail",
+        );
+    });
+
+    it("accepts a bare verdict that is the whole line", () => {
+        assert.equal(detectVerdict("Checks done.\nFAIL\n"), "fail");
     });
 
     it("returns unknown when no signal at all", () => {
@@ -103,11 +120,13 @@ describe("detectVerdict", () => {
         assert.equal(detectVerdict(output), "pass");
     });
 
-    it("detects paused from fallback", () => {
+    it("does not read 'paused' out of a sentence", () => {
+        // Same reason as above: a word inside prose is not a verdict.
         assert.equal(
             detectVerdict("The workflow is paused due to missing config"),
-            "paused",
+            "unknown",
         );
+        assert.equal(detectVerdict("Blocked.\nPAUSED"), "paused");
     });
 
     it("ignores paused keyword beyond line 20", () => {
@@ -126,6 +145,35 @@ describe("detectVerdict", () => {
         const lines = Array.from({ length: 21 }, (_, i) => `line ${i + 1}`);
         lines[20] = "pass";
         assert.equal(detectVerdict(lines.join("\n")), "unknown");
+    });
+
+    it("detects bolded and backticked markdown verdicts", () => {
+        assert.equal(detectVerdict("**VERDICT:** PASS"), "pass");
+        assert.equal(detectVerdict("**VERDICT: FAIL**"), "fail");
+        assert.equal(detectVerdict("VERDICT: **PASS**"), "pass");
+        assert.equal(detectVerdict("VERDICT: `PASS`"), "pass");
+        assert.equal(detectVerdict("## Verdict: PASS"), "pass");
+        assert.equal(detectVerdict("### **VERDICT:** PAUSED"), "paused");
+    });
+
+    it("detects JSON formatted verdicts", () => {
+        assert.equal(detectVerdict('{"verdict": "pass"}'), "pass");
+        assert.equal(detectVerdict('{"verdict": "FAIL"}'), "fail");
+        assert.equal(
+            detectVerdict('```json\n{\n  "verdict": "paused"\n}\n```'),
+            "paused",
+        );
+    });
+
+    it("prefers the later marker between text and JSON", () => {
+        assert.equal(
+            detectVerdict('VERDICT: FAIL\n\nLater confirmed:\n{"verdict": "pass"}'),
+            "pass",
+        );
+        assert.equal(
+            detectVerdict('{"verdict": "pass"}\n\nFinal correction:\nVERDICT: FAIL'),
+            "fail",
+        );
     });
 });
 
@@ -154,25 +202,48 @@ describe("detectShip", () => {
         assert.equal(detectShip("Work paused — no remote found"), "paused");
     });
 
-    it("defaults to shipped when no signal", () => {
-        assert.equal(detectShip("PR created successfully"), "shipped");
+    it("defaults to LOCAL, not shipped, when there is no marker", () => {
+        // "shipped" asserts a pull request exists — a claim the reader cannot
+        // check without leaving the report, and it was wrong for every unmatched
+        // local run. Understating is recoverable; overstating sends people
+        // looking for a PR that was never opened.
+        assert.equal(detectShip("Committed on a local branch."), "paused");
+        // An explicit "shipped" in the head is still honoured.
+        assert.equal(detectShip("PR created successfully — shipped."), "shipped");
     });
 
-    it("ignores 'paused' keyword beyond line 20", () => {
+    it("ignores a bare keyword beyond line 20", () => {
+        // Only the FALLBACK is head-limited; an explicit marker is matched
+        // anywhere. Probe with "shipped" now that the default is "paused",
+        // otherwise the assertion would hold for the wrong reason.
         const lines = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`);
-        lines[22] = "paused";
+        lines[22] = "shipped";
+        assert.equal(detectShip(lines.join("\n")), "paused");
+    });
+
+    it("still honours an explicit marker beyond line 20", () => {
+        const lines = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`);
+        lines[22] = "SHIP: SHIPPED";
         assert.equal(detectShip(lines.join("\n")), "shipped");
     });
 
-    it("ignores 'no remote' beyond line 20", () => {
+    it("does not let prose beyond line 20 claim a ship", () => {
         const lines = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`);
-        lines[21] = "no GitHub remote";
-        assert.equal(detectShip(lines.join("\n")), "shipped");
+        lines[21] = "shipped to production";
+        assert.equal(detectShip(lines.join("\n")), "paused");
     });
 
     it("takes the LAST marker (the final outcome wins over an earlier mention)", () => {
         const output = ["SHIP: PAUSED would mean no remote.", "SHIP: SHIPPED"].join("\n");
         assert.equal(detectShip(output), "shipped");
+    });
+
+    it("detects bolded, backticked, and JSON ship markers", () => {
+        assert.equal(detectShip("**SHIP:** SHIPPED"), "shipped");
+        assert.equal(detectShip("**SHIP: LOCAL**"), "paused");
+        assert.equal(detectShip("SHIP: `LOCAL`"), "paused");
+        assert.equal(detectShip('{"ship": "LOCAL"}'), "paused");
+        assert.equal(detectShip('{"ship": "SHIPPED"}'), "shipped");
     });
 });
 
@@ -794,5 +865,87 @@ describe("outcomeLine names the gate that actually stopped the run", () => {
         assert.match(outcomeLine("failed-after-retries", 3, "fail"), /FAILED/);
         // The verdict argument is optional; old callers must not change meaning.
         assert.equal(outcomeLine("shipped", 1), outcomeLine("shipped", 1, "pass"));
+    });
+});
+
+describe("extractReferencedFiles", () => {
+    it("returns empty array on empty or falsy text", () => {
+        assert.deepEqual(extractReferencedFiles(""), []);
+        assert.deepEqual(extractReferencedFiles("just some plain instructions"), []);
+    });
+
+    it("extracts backticked file paths", () => {
+        const text = "Please modify `src/index.ts` and also check `package.json` before running.";
+        assert.deepEqual(extractReferencedFiles(text), ["package.json", "src/index.ts"]);
+    });
+
+    it("extracts relative paths with directory separators in prose", () => {
+        const text = "Update utils/workflow/workflow-core.ts and obs/obs-eval-core.ts to add metrics.";
+        assert.deepEqual(extractReferencedFiles(text), [
+            "obs/obs-eval-core.ts",
+            "utils/workflow/workflow-core.ts",
+        ]);
+    });
+
+    it("handles ./ prefixed paths and trims surrounding punctuation", () => {
+        const text = "Examine (./utils/foo.ts), [./lib/bar.js], and ./config.json.";
+        assert.deepEqual(extractReferencedFiles(text), [
+            "config.json",
+            "lib/bar.js",
+            "utils/foo.ts",
+        ]);
+    });
+
+    it("extracts file:// URIs", () => {
+        const text = "Look at file:///Users/test/workspace/src/app.tsx for details";
+        assert.deepEqual(extractReferencedFiles(text), [
+            "Users/test/workspace/src/app.tsx",
+        ]);
+    });
+
+    it("ignores HTTP and HTTPS URLs", () => {
+        const text = "See https://github.com/repo/file.ts or http://example.com/test.js for examples.";
+        assert.deepEqual(extractReferencedFiles(text), []);
+    });
+
+    it("ignores float numbers, versions, and prose abbreviations", () => {
+        const text = "In version 1.2.3 (e.g. 2.0), edit `src/main.ts` i.e. not config.";
+        assert.deepEqual(extractReferencedFiles(text), ["src/main.ts"]);
+    });
+});
+
+describe("detectFileCollisions", () => {
+    it("returns empty array when there are no collisions", () => {
+        const items = [
+            { agent: "agent-a", task: "Edit `src/a.ts` and test it." },
+            { agent: "agent-b", task: "Update `src/b.ts` and verify." },
+        ];
+        assert.deepEqual(detectFileCollisions(items), []);
+    });
+
+    it("detects when multiple agents reference the same file", () => {
+        const items = [
+            { agent: "agent-a", task: "Edit `src/shared.ts` and `src/a.ts`." },
+            { agent: "agent-b", task: "Modify `src/shared.ts` and `src/b.ts`." },
+        ];
+        const collisions = detectFileCollisions(items);
+        assert.equal(collisions.length, 1);
+        assert.equal(collisions[0].file, "src/shared.ts");
+        assert.deepEqual(collisions[0].agents, ["agent-a", "agent-b"]);
+    });
+
+    it("detects multi-file multi-agent collisions", () => {
+        const items = [
+            { agent: "worker-1", task: "Touch config.json and utils/core.ts" },
+            { agent: "worker-2", task: "Update config.json and docs/readme.md" },
+            { agent: "worker-3", task: "Fix utils/core.ts" },
+        ];
+        const collisions = detectFileCollisions(items);
+        assert.equal(collisions.length, 2);
+        assert.equal(collisions[0].file, "config.json");
+        assert.deepEqual(collisions[0].agents, ["worker-1", "worker-2"]);
+        // Order follows dispatch position now, not alphabetical agent name.
+        assert.equal(collisions[1].file, "utils/core.ts");
+        assert.deepEqual(collisions[1].agents, ["worker-1", "worker-3"]);
     });
 });

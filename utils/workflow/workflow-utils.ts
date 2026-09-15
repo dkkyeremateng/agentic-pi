@@ -26,6 +26,55 @@ export function isTrivialPing(request: string): boolean {
 }
 
 /**
+ * A regex for a `LABEL: VALUE` marker, tolerant of the markdown an agent wraps
+ * around it but never of the prose around that.
+ *
+ * Built rather than hand-written because the hand-written pair got the same
+ * detail wrong twice: the decoration group sat directly against the value, so
+ * `**VERDICT:** PASS` -- a form the doc comment claimed to support -- did not
+ * match. The space after `**` killed it, the call fell through to the fallback
+ * heuristic, and the tests passed only because that heuristic happened to find
+ * the right bare word. It does not always:
+ *
+ *     "All targeted tests pass.\n\n**VERDICT:** FAIL"  ->  pass
+ *
+ * A validator that says FAIL read as PASS is the worst outcome this module can
+ * produce, and validator output routinely opens with prose about tests passing.
+ *
+ * `\s*` after the colon is deliberate (a value on the next line is still a
+ * value); it cannot run away, because whitespace alone cannot skip a word.
+ */
+function markerPattern(label: string, values: string): RegExp {
+    return new RegExp(
+        // optional markdown heading, then decoration that may open before the
+        // label and close after it, or wrap the whole `LABEL: VALUE` pair
+        `(?:#{1,6}[ \\t]*)?[\`*_]{0,2}${label}[\`*_]{0,2}[ \\t]*:` +
+            // the value may be on the next line, decorated, or both -- and the
+            // decoration may be followed by space before the value itself
+            `\\s*[\`*_]{0,2}[ \\t]*(${values})[\`*_]{0,2}`,
+        "gi",
+    );
+}
+
+/**
+ * The fallback for output with no marker at all: a line that is NOTHING BUT the
+ * bare word, give or take decoration.
+ *
+ * Deliberately far stricter than "the word appears in the first 20 lines". That
+ * version inverted verdicts, and the failing shape is the common one -- any
+ * sentence mentioning passing tests ahead of the marker won. Returning
+ * `unknown` costs a retry with `noVerdictRetryNote`; guessing wrong ships a
+ * failing run.
+ */
+function bareLineValue(output: string, values: RegExp): string | null {
+    for (const line of output.split("\n").slice(0, 20)) {
+        const m = /^[ \t>#*_`-]*([A-Za-z]+)[ \t*_`.:]*$/.exec(line);
+        if (m && values.test(m[1])) return m[1].toLowerCase();
+    }
+    return null;
+}
+
+/**
  * Detect the validator's verdict from its output.
  * Prefers the explicit VERDICT: marker; falls back to scanning only the first
  * 20 lines to avoid false matches in the agent's reasoning text.
@@ -35,16 +84,26 @@ export function detectVerdict(output: string): Verdict {
     // Take the LAST occurrence: the authoritative verdict is emitted at the end, so
     // an earlier one in the reasoning (e.g. "this would be VERDICT: FAIL if …") must
     // not override the final line.
-    const markers = [...output.matchAll(/VERDICT:\s*(PASS|FAIL|PAUSED)/gi)];
-    if (markers.length) return markers[markers.length - 1][1].toLowerCase() as Verdict;
+    // Matches:
+    //   VERDICT: PASS
+    //   **VERDICT:** PASS or **VERDICT: PASS** or VERDICT: **PASS** or VERDICT: `PASS`
+    //   ## Verdict: PASS
+    //   "verdict": "pass"
+    const textMarkers = [
+        ...output.matchAll(markerPattern("VERDICT", "PASS|FAIL|PAUSED")),
+    ];
+    const jsonMarkers = [
+        ...output.matchAll(/"verdict"[ \t]*:[ \t]*['"](PASS|FAIL|PAUSED)['"]/gi),
+    ];
+    const markers = [...textMarkers, ...jsonMarkers].sort(
+        (a, b) => (a.index ?? 0) - (b.index ?? 0),
+    );
+    if (markers.length)
+        return markers[markers.length - 1][1].toLowerCase() as Verdict;
 
-    // Fallback heuristic: only scan the first 20 lines to avoid matching
-    // "pass" or "fail" inside the agent's reasoning text.
-    const head = output.split("\n").slice(0, 20).join("\n");
-    if (/\bpaused\b/i.test(head)) return "paused";
-    const m = head.match(/\b(pass|fail)\b/i);
-    if (!m) return "unknown";
-    return m[1].toLowerCase() === "pass" ? "pass" : "fail";
+    // No marker: accept only a line that is nothing but the bare word. Anything
+    // looser inverts verdicts -- see bareLineValue.
+    return (bareLineValue(output, /^(pass|fail|paused)$/i) as Verdict) ?? "unknown";
 }
 
 // The explicit review markers, in priority order at any given position:
@@ -107,16 +166,30 @@ export function detectCritique(output: string): CritiqueVerdict {
  */
 export function detectShip(output: string): "shipped" | "paused" {
     // Take the LAST marker: the authoritative outcome is emitted at the end.
-    const markers = [...output.matchAll(/SHIP:\s*(SHIPPED|PAUSED|LOCAL)/gi)];
+    const textMarkers = [
+        ...output.matchAll(markerPattern("SHIP", "SHIPPED|PAUSED|LOCAL")),
+    ];
+    const jsonMarkers = [
+        ...output.matchAll(/"ship"[ \t]*:[ \t]*['"](SHIPPED|PAUSED|LOCAL)['"]/gi),
+    ];
+    const markers = [...textMarkers, ...jsonMarkers].sort(
+        (a, b) => (a.index ?? 0) - (b.index ?? 0),
+    );
     if (markers.length) {
         const v = markers[markers.length - 1][1].toLowerCase();
         return v === "paused" || v === "local" ? "paused" : "shipped";
     }
-    // Fallback: only check the first 20 lines to avoid false positives.
+    // No marker. Default to "paused", i.e. committed locally with no PR.
+    //
+    // The old default was "shipped", which asserts a pull request exists. That is
+    // the claim a reader cannot check without leaving the report, and it was wrong
+    // for every unmatched local run. Understating is recoverable -- someone opens
+    // the PR -- while overstating sends people looking for a PR that was never
+    // created.
     const head = output.split("\n").slice(0, 20).join("\n");
-    if (/\bpaused\b/i.test(head) || /\bno\b[^.\n]{0,16}\bremote\b/i.test(head))
-        return "paused";
-    return "shipped";
+    if (/\bshipped\b/i.test(head) && !/\bno\b[^.\n]{0,16}\bremote\b/i.test(head))
+        return "shipped";
+    return "paused";
 }
 
 // Format a duration: plain seconds under a minute, "Nm Ss" (or "Nm") above it.
@@ -537,4 +610,123 @@ export function outcomeLine(
         default:
             return status.toUpperCase();
     }
+}
+
+export interface FileCollision {
+    file: string;
+    agents: string[];
+}
+
+function cleanCandidatePath(raw: string, cwd = ""): string | null {
+    if (!raw) return null;
+    let s = raw.trim();
+    s = s.replace(/^["'`(<[{]+|[)"'`>\]}.,:;]+$/g, "");
+    if (!s) return null;
+    if (/^https?:\/\//i.test(s)) return null;
+    if (s.startsWith("file://")) s = s.slice(7);
+    s = s.replace(/\\/g, "/");
+    // Resolve an absolute path against the run's cwd BEFORE stripping slashes.
+    // Stripping alone left `/Users/me/repo/src/a.ts` and `src/a.ts` as different
+    // keys, so two workers naming the same file two ways were never flagged.
+    if (cwd) {
+        const root = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+        if (s === root) return null;
+        if (s.startsWith(root + "/")) s = s.slice(root.length + 1);
+    }
+    s = s.replace(/^\.\//, "");
+    s = s.replace(/^\/+/, "");
+    const parts = s.split("/");
+    const last = parts[parts.length - 1];
+    if (!last || !last.includes(".")) return null;
+    if (/^\d+\.\d+(\.\d+)?$/.test(last)) return null;
+    if (/^(e\.g\.|i\.e\.|etc\.)$/i.test(last)) return null;
+    const ext = last.split(".").pop()?.toLowerCase();
+    if (!ext || ext.length > 8 || !/^[a-z0-9]+$/i.test(ext)) return null;
+    return s;
+}
+
+/**
+ * Extracts referenced file paths from an agent task description or prompt.
+ * Recognizes backticked files (`src/app.ts`), file:// paths, relative paths
+ * with directories (utils/workflow/foo.ts), and well-known source file patterns.
+ */
+export function extractReferencedFiles(text: string, cwd = ""): string[] {
+    if (!text) return [];
+    // Remove http:// and https:// URLs first so they are never parsed as local files.
+    const sanitized = text.replace(/https?:\/\/[^\s"'`<>]+/gi, " ");
+    const files = new Set<string>();
+
+    const backtickRegex = /`([^`\n\r]+)`/g;
+    let match: RegExpExecArray | null;
+    while ((match = backtickRegex.exec(sanitized)) !== null) {
+        const candidate = cleanCandidatePath(match[1], cwd);
+        if (candidate) files.add(candidate);
+    }
+
+    const fileUriRegex = /file:\/\/[^\s"'`<>]+/g;
+    while ((match = fileUriRegex.exec(sanitized)) !== null) {
+        const candidate = cleanCandidatePath(match[0], cwd);
+        if (candidate) files.add(candidate);
+    }
+
+    const pathRegex = /(?:(?:\.{1,2}\/|[a-zA-Z0-9_@-]+\/)+[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]{1,10}|\b[a-zA-Z0-9_.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|py|rs|go|sh|ya?ml|toml|css|html)\b)/g;
+    while ((match = pathRegex.exec(sanitized)) !== null) {
+        const candidate = cleanCandidatePath(match[0], cwd);
+        if (candidate) files.add(candidate);
+    }
+
+    return Array.from(files).sort();
+}
+
+/**
+ * Detects potential file collisions across concurrent tasks in a parallel wave.
+ * Returns a list of files that are referenced by more than one agent.
+ */
+export function detectFileCollisions(
+    items: { agent: string; task: string }[],
+    cwd = "",
+): FileCollision[] {
+    // Key by the item's INDEX, not its agent name. `dispatchParallelCore` never
+    // dedupes agents, and the commonest wave is several `phase-implementer`s --
+    // so a name-keyed set collapsed the two-workers-one-file case to size 1 and
+    // never flagged it. That is exactly the case worth flagging.
+    const fileToItems = new Map<string, Set<number>>();
+    items.forEach((item, i) => {
+        // Bare filenames count. A mention ("see package.json") can produce a
+        // warning that was not a real overlap, and that costs a line of noise;
+        // skipping them loses `package.json` / `go.mod` collisions, which are the
+        // shared-file clobbers this exists to catch. The detector only WARNS, so
+        // the cheap error is the right one to make. The wording says "referenced
+        // by", which stays true either way.
+        for (const file of extractReferencedFiles(item.task, cwd)) {
+            let set = fileToItems.get(file);
+            if (!set) {
+                set = new Set();
+                fileToItems.set(file, set);
+            }
+            set.add(i);
+        }
+    });
+    // Disambiguate identical agent names so the warning names distinct workers.
+    const counts = new Map<string, number>();
+    for (const it of items)
+        counts.set(it.agent, (counts.get(it.agent) ?? 0) + 1);
+    const seen = new Map<string, number>();
+    const label = items.map((it) => {
+        if ((counts.get(it.agent) ?? 0) < 2) return it.agent;
+        const n = (seen.get(it.agent) ?? 0) + 1;
+        seen.set(it.agent, n);
+        return `${it.agent} #${n}`;
+    });
+
+    const collisions: FileCollision[] = [];
+    for (const [file, idxs] of fileToItems.entries())
+        if (idxs.size > 1)
+            collisions.push({
+                file,
+                agents: Array.from(idxs)
+                    .sort((a, b) => a - b)
+                    .map((i) => label[i]),
+            });
+    return collisions.sort((a, b) => a.file.localeCompare(b.file));
 }

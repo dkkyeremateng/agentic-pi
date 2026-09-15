@@ -73,6 +73,7 @@ import {
     getModelOverride,
     getModelOverrides,
     setupSessions,
+    sanitizeSessionFile,
     loadTeams,
     loadDotEnv,
     handleSpawnEvent,
@@ -85,10 +86,13 @@ import {
 import { detectCritique } from "./workflow-utils";
 import {
     writeFileSync,
+    readFileSync,
     mkdtempSync,
     mkdirSync,
+    rmSync,
     existsSync,
     utimesSync,
+    statSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -3365,5 +3369,118 @@ describe("agentsWithNoPinnedModel", () => {
             if (saved === undefined) delete process.env.PI_AGENT_SCOUT_MODEL;
             else process.env.PI_AGENT_SCOUT_MODEL = saved;
         }
+    });
+});
+
+describe("sanitizeSessionFile repairs by truncating, not rewriting", () => {
+    // The first version read the WHOLE file into a string — the exact 10MB read
+    // the tail-window check above exists to avoid — and wrote it back whole. A
+    // crash mid-write would destroy a session that was only missing its last
+    // line. ftruncateSync touches the end only and cannot lose what it keeps.
+    const line = (i: number) =>
+        JSON.stringify({ role: "user", content: `turn ${i} ` + "x".repeat(300) });
+
+    function withTail(tail: string) {
+        const dir = mkdtempSync(join(tmpdir(), "sess-repair-"));
+        const f = join(dir, "s.jsonl");
+        writeFileSync(f, [line(1), line(2), line(3)].join("\n") + "\n" + tail);
+        return f;
+    }
+
+    it("keeps every complete line and drops only the torn tail", () => {
+        const f = withTail('{"role":"user","content":"tr');
+        assert.equal(sanitizeSessionFile(f), true);
+        const kept = readFileSync(f, "utf-8").trim().split("\n");
+        assert.equal(kept.length, 3);
+        for (const l of kept) JSON.parse(l); // throws if we kept a broken line
+    });
+
+    it("shrinks the file rather than rewriting it whole", () => {
+        const f = withTail('{"broken": ');
+        const before = statSync(f).size;
+        sanitizeSessionFile(f);
+        const after = statSync(f).size;
+        assert.ok(after < before, "file should shrink");
+        // Exactly the torn bytes, nothing else.
+        assert.equal(before - after, '{"broken": '.length);
+    });
+
+    it("leaves a clean file completely alone", () => {
+        const f = withTail("");
+        const before = readFileSync(f, "utf-8");
+        assert.equal(sanitizeSessionFile(f), true);
+        assert.equal(readFileSync(f, "utf-8"), before);
+    });
+
+    it("does NOT delete a session it cannot prove is unusable", () => {
+        // Deleting on any parse failure threw away whole 5MB histories over a
+        // torn final line. If no complete line is found in the tail window the
+        // head has already validated, leave it for pi.
+        const dir = mkdtempSync(join(tmpdir(), "sess-repair-"));
+        const f = join(dir, "s.jsonl");
+        writeFileSync(f, line(1) + "\n" + "z".repeat(200));
+        sanitizeSessionFile(f);
+        assert.ok(existsSync(f), "must not unlink");
+    });
+});
+
+describe("sanitizeSessionFile", () => {
+    const tmpDir = join(process.cwd(), ".agent", "scratch", "test-session-sanitizer");
+
+    beforeEach(() => {
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        try {
+            rmSync(tmpDir, { recursive: true, force: true });
+        } catch {}
+    });
+
+    it("returns false for a non-existent file", () => {
+        assert.equal(sanitizeSessionFile(join(tmpDir, "missing.jsonl")), false);
+    });
+
+    it("discards files smaller than 10 bytes", () => {
+        const file = join(tmpDir, "tiny.jsonl");
+        writeFileSync(file, "short\n", "utf-8");
+        assert.equal(sanitizeSessionFile(file), false);
+        assert.equal(existsSync(file), false);
+    });
+
+    it("accepts a clean, valid session file", () => {
+        const file = join(tmpDir, "clean.jsonl");
+        const lines = [
+            JSON.stringify({ type: "session_start", id: "s1" }),
+            JSON.stringify({ type: "message_start", id: "m1" }),
+            JSON.stringify({ type: "message_end", id: "m1" }),
+        ].join("\n") + "\n";
+        writeFileSync(file, lines, "utf-8");
+
+        assert.equal(sanitizeSessionFile(file), true);
+        assert.equal(readFileSync(file, "utf-8"), lines);
+    });
+
+    it("repairs an incomplete/corrupted trailing line", () => {
+        const file = join(tmpDir, "corrupted-tail.jsonl");
+        const validPart = [
+            JSON.stringify({ type: "session_start", id: "s1" }),
+            JSON.stringify({ type: "message_start", id: "m1" }),
+        ].join("\n") + "\n";
+        // Append a broken, truncated JSON line (as from SIGKILL)
+        writeFileSync(file, validPart + '{"type":"message_update","content":"partial text tha', "utf-8");
+
+        assert.equal(sanitizeSessionFile(file), true);
+        assert.equal(existsSync(file), true);
+        // The corrupt tail was removed, leaving only the valid lines
+        assert.equal(readFileSync(file, "utf-8"), validPart);
+    });
+
+    it("discards file if even the first line is not valid JSON", () => {
+        const file = join(tmpDir, "garbage.jsonl");
+        writeFileSync(file, "this is not json at all\nand neither is this line\n", "utf-8");
+
+        assert.equal(sanitizeSessionFile(file), false);
+        assert.equal(existsSync(file), false);
     });
 });
