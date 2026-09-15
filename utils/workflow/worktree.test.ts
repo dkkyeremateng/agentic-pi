@@ -327,7 +327,15 @@ describe("excludeWorktreeDir keeps the checkouts out of the repo's history", () 
     });
 
     it("never throws on an unwritable git dir", () => {
-        excludeWorktreeDir("/proc/nonexistent/nope");
+        // Make it unwritable PORTABLY, by rooting the path at a regular file:
+        // `<file>/info` is ENOTDIR on every OS, instantly. Probing
+        // `/proc/nonexistent/nope` is what hung CI in #132 — macOS has no /proc
+        // so it fails fast locally and looks fine, while Linux blocks. I wrote
+        // that same probe again here; the lesson is that a test whose behaviour
+        // depends on the host's filesystem layout is not a test.
+        const file = join(mkdtempSync(join(tmpdir(), "wt-ro-")), "not-a-dir");
+        writeFileSync(file, "x");
+        excludeWorktreeDir(file);
     });
 });
 
