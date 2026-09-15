@@ -62,7 +62,10 @@ import {
     type RoadmapMilestone,
     markMilestoneDone,
     milestoneEarned,
+    detectFileCollisions,
+    type FileCollision,
 } from "./workflow-utils";
+export { detectFileCollisions, type FileCollision } from "./workflow-utils";
 import { obsEmit } from "../../obs/obs-events";
 import {
     writeFileSync,
@@ -2727,6 +2730,27 @@ export async function dispatchParallelCore(
         phase.status = "running";
         return { def, task, phase };
     });
+
+    // Check for file collisions across concurrent tasks to flag race hazards.
+    const collisions = detectFileCollisions(
+        runnable.map((r) => ({ agent: r.def.name, task: r.task })),
+        ctx.cwd,
+    );
+    if (collisions.length > 0) {
+        const desc = collisions
+            .map((c) => `${c.file} (${c.agents.join(", ")})`)
+            .join("; ");
+        h.ui.notify(
+            `Warning: Potential parallel write collision on: ${desc}`,
+            "warning",
+        );
+        // Deliberately NOT written to `phase.note`. runAgentCore resets that to ""
+        // the moment the agent starts and overwrites it on every stream event, so
+        // a warning parked there is gone microseconds later — and the test that
+        // covered it passed only because its mock runAgent never reaches
+        // runAgentCore. The durable channel is the wave's returned text
+        // (`collNote` below), which the coordinator reads and the report keeps.
+    }
     h.ui.updateWidget();
 
     // Aggregate ceiling: split a fixed total budget across the batch (still capped
@@ -2838,7 +2862,12 @@ export async function dispatchParallelCore(
                 `[${r.name}] ${r.ok ? "done" : "FAILED"} in ${secs(r.elapsed)}\n${r.truncated}`,
         )
         .join("\n\n---\n\n");
-    const summary = `Parallel dispatch complete: ${okCount}/${results.length} succeeded.${skipNote}`;
+    const collNote = collisions.length
+        ? `\nWARNING — these files are referenced by more than one worker in this wave: ${collisions.map((c) => `${c.file} (${c.agents.join(", ")})`).join("; ")}. ` +
+          `Parallel workers share ONE working tree, so concurrent writes to the same file clobber each other silently. ` +
+          `Check each file above holds the change its owning phase intended, and re-run any phase whose file looks merged or truncated — sequentially this time.`
+        : "";
+    const summary = `Parallel dispatch complete: ${okCount}/${results.length} succeeded.${skipNote}${collNote}`;
 
     return {
         content: [{ type: "text", text: `${summary}\n\n${blocks}` }],
@@ -2852,6 +2881,7 @@ export async function dispatchParallelCore(
                 elapsed: r.elapsed,
             })),
             skipped,
+            collisions: collisions.length > 0 ? collisions : undefined,
         },
     };
 }

@@ -1354,6 +1354,67 @@ describe("dispatch commits staged learnings", () => {
             restore();
         }
     });
+
+    it("warns and annotates phases when parallel tasks reference overlapping files", async () => {
+        const agents = new Map<string, AgentDef>();
+        agents.set("scout", mkAgent("scout"));
+        agents.set("seeker", mkAgent("seeker"));
+        const notifications: Array<{ msg: string; type?: string }> = [];
+        const host = mkHost({
+            setup: {
+                loadAgents: () => agents,
+                setupSessions: () => {},
+                prepareRun: () => {},
+            },
+            ui: {
+                notify: (msg, type) => {
+                    notifications.push({ msg, type });
+                },
+            },
+            execution: {
+                runAgent: async (def) => ({ output: `result from ${def.name} ` + "x".repeat(50), exitCode: 0 }),
+            },
+        });
+        const st = mkStateWithAgents(agents);
+        const result = await dispatchParallelCore(
+            st,
+            host,
+            [
+                { agent: "scout", task: "Modify `src/common.ts` to implement cache" },
+                { agent: "seeker", task: "Update `src/common.ts` to handle errors" },
+            ],
+            undefined,
+            mkCtx(),
+        );
+
+        // UI notification emitted
+        assert.ok(
+            notifications.some(
+                (n) => n.type === "warning" && n.msg.includes("src/common.ts"),
+            ),
+            "should notify with a warning naming the conflicting file",
+        );
+
+        // The warning rides on the wave's RETURNED TEXT, not on phase.note.
+        // runAgentCore resets note to "" when an agent starts and overwrites it
+        // on every stream event, so a warning parked there is gone microseconds
+        // later — and this test could not see that, because its mock runAgent
+        // never reaches runAgentCore. Assert the channel that actually survives.
+        const waveText = (result.content[0] as { text: string }).text;
+        assert.match(waveText, /referenced by more than one worker/);
+        assert.match(waveText, /src\/common\.ts \(scout, seeker\)/);
+        assert.match(waveText, /clobber each other silently/);
+        assert.match(waveText, /re-run any phase whose file looks merged/);
+
+        // Details structure records collision
+        const details = result.details as any;
+        assert.ok(details.collisions, "details should include collisions list");
+        assert.equal(details.collisions.length, 1);
+        assert.equal(details.collisions[0].file, "src/common.ts");
+        assert.deepEqual(details.collisions[0].agents, ["scout", "seeker"]);
+
+        // (the returned text is asserted above, on `waveText`)
+    });
 });
 
 // ── selectAgentsCore ─────────────────────────────
