@@ -2221,7 +2221,15 @@ export function buildWorkflowReport(o: {
                   ...(o.scoutP
                       ? [`### Reconnaissance`, ``, body("scoutFindings", o.scoutFindings), ``]
                       : []),
-                  ...(o.planP ? [`### Plan`, ``, body("plan", o.plan), ``] : []),
+                  // Rendered whenever there IS a plan, not only when a planner
+                  // ran this time. A resumed run built from .agent/plan.md, and a
+                  // run that used the request itself as the brief, both drive the
+                  // whole pipeline off plan text the report was omitting -- so
+                  // the record did not say what the change had been judged
+                  // against.
+                  ...(o.planP || (o.plan || "").trim()
+                      ? [`### Plan`, ``, body("plan", o.plan), ``]
+                      : []),
                   ...(o.implP ? [`### Implementation`, ``, body("impl", o.impl), ``] : []),
                   ...(o.reviewerP ? [`### Review`, ``, body("review", o.review), ``] : []),
                   ...(o.valP ? [`### Validation`, ``, body("val", o.val), ``] : []),
@@ -2912,7 +2920,15 @@ export function reviewFixTask(
 // failure modes are asymmetric -- wrongly inlining a large plan reintroduces exactly
 // the context bloat workers exist to prevent, wrongly dispatching a small one just
 // costs money.
-export function delegationDirective(plan: string): string {
+export function delegationDirective(plan: string, planless = false): string {
+    // No plan at all: the request itself is the brief. There are no phases to
+    // hand out, so the DELEGATE branch below would tell the agent to dispatch
+    // per-phase workers for phases that do not exist -- and an unparseable plan
+    // falls through to exactly that branch. Say plainly that there is nothing to
+    // delegate and let it work, rather than spawning workers to discover the
+    // same thing one context each.
+    if (planless)
+        return "THERE IS NO PHASED PLAN and no `.agent/plan.md`. The request below is the whole brief: implement it DIRECTLY and do not dispatch — there are no phases to hand out, and a worker spawned against a brief re-derives the same scope in a fresh context at full prompt cost. Work it as a worker would: smallest change that satisfies the request, tests alongside, targeted verification, `lsp diagnostics`. The ledger, the commits and the final full-suite gate stay yours. If the request turns out to be large enough that it genuinely needs phasing, say so in your report and stop rather than improvising a plan mid-build.";
     if (!isSmallPlan(plan))
         return "DELEGATE EVERY PHASE. On a plan with 2+ phases each phase goes to a `phase-implementer` in a fresh context — `dispatch_parallel` for a wave of provably independent phases, `dispatch_agent` for a single one — with no exception for a phase that looks small. You are the COORDINATOR: you own the ledger, the per-phase re-verification, the checkpoint commits, and the final full-suite gate; the workers write the code. This is audited after your phase: a 2+-phase plan with zero dispatches is re-run once with the violation named.";
     const phases = parsePlanPhases(plan).length;
@@ -3167,11 +3183,17 @@ export function inlineFloorRefusal(
     return `Refused: this plan is under the inline floor (${phases} phase(s) changing ${files} file(s); the floor is ${INLINE_MAX_PHASES} phases and ${INLINE_MAX_FILES} files), so \`phase-implementer\` workers are not available for it. A worker exists to keep a long plan's later phases out of a crowded context — at this size there is nothing to protect, and the spawn plus its prompt costs several times the change itself. Implement the phases yourself, in order, exactly as a worker would: TDD, smallest change that passes, targeted tests, \`lsp diagnostics\`, then your checkpoint commit. Retrying this dispatch will be refused identically. The delegation audit applies the same floor, so implementing inline here is compliance, not a violation.`;
 }
 
-export function implementTask(original: string, plan = ""): string {
+export function implementTask(
+    original: string,
+    plan = "",
+    planless = false,
+): string {
     return [
-        "Implement the approved plan in `.agent/plan.md` — read it for the phases, file list, and acceptance criteria.",
+        planless
+            ? "There is NO plan file. Implement the request at the end of this message directly — it is the brief, and nothing else is coming."
+            : "Implement the approved plan in `.agent/plan.md` — read it for the phases, file list, and acceptance criteria.",
         "When your own re-run of a phase is RED: make at most ONE bounded fix attempt, then re-dispatch that phase with the exact failure text. Never iterate read-edit-test on the same failure — repair is what fills your context, not verification (measured: one repair loop cost 44k, six times a verification pass, and carried a coordinator to 60% mid-build).",
-        delegationDirective(plan),
+        delegationDirective(plan, planless),
         "COMMIT EVERY PHASE before starting the next. If the repo has no commits yet, make the baseline commit FIRST — without a base sha there is no work branch, no rollback point, and a run that dies mid-way leaves every file untracked with a ledger claiming the phases are done. One `wip(phase N)` commit per wave, yours to make, never the worker's.",
         "Spike INSIDE the working directory — use `.agent/scratch/` for throwaway experiments, never `/tmp`. Work outside the cwd is invisible to the run, unguarded, uncommitted, and discarded; and because the file tools are confined to the cwd, building there forces you into shell writes that nothing can check.",
         "",

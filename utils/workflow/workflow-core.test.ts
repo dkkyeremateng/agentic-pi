@@ -2819,6 +2819,30 @@ describe("the inline floor reaches the task the implementer is actually given", 
         );
     });
 
+    it("tells a plan-less run to implement directly, not to dispatch", () => {
+        // A brief has no phases, so DELEGATE would send workers after phases
+        // that do not exist -- and an unparseable plan falls to exactly that
+        // branch, which is why plan-lessness has to be passed in rather than
+        // inferred from the text.
+        const t = delegationDirective("", true);
+        assert.match(t, /THERE IS NO PHASED PLAN/);
+        assert.doesNotMatch(t, /DELEGATE EVERY PHASE/);
+        assert.doesNotMatch(t, /IMPLEMENT EVERY PHASE YOURSELF/);
+    });
+
+    it("stops pointing a plan-less implementer at a plan file", () => {
+        // The old first line read "Implement the approved plan in .agent/plan.md"
+        // whatever was passed, which on a brief names a file that is not there.
+        const t = implementTask("Add a --style flag and test it.", "", true);
+        assert.match(t, /There is NO plan file/);
+        assert.doesNotMatch(t, /Implement the approved plan/);
+        assert.match(t, /Add a --style flag and test it\./, "the brief is still carried");
+        // The rest of the contract survives -- commits and scratch discipline are
+        // not conditional on there being a plan.
+        assert.match(t, /COMMIT EVERY PHASE/);
+        assert.match(t, /\.agent\/scratch\//);
+    });
+
     it("keeps the rest of the task text unchanged either way", () => {
         for (const plan of [SMALL_PLAN, BIG_PLAN]) {
             const t = implementTask("build the thing", plan);

@@ -640,6 +640,16 @@ async function runWorkflowCoreImpl(
     // treating e.g. a review-only run as a resume would adopt (and validate) a stale
     // plan and skip this run's scratch reset. Detect the existing plan BEFORE the
     // scratch wipe below (which would delete it).
+    // How long a request must be before it can stand in for a plan.
+    //
+    // Crude on purpose. Before any agent runs there is nothing else to go on,
+    // and the job is only to separate "fix the tests" from a real brief -- the
+    // one this was built for ran ~300 characters and named its verification
+    // commands. Set it too high and a terse but complete request is refused; too
+    // low and an implementer is launched at a fragment. 80 is roughly a sentence
+    // with a constraint attached.
+    const MIN_BRIEF_CHARS = 80;
+
     const hasPlanner = members.some((m) => m.toLowerCase() === "planner");
     const hasImplementer = members.some(
         (m) => m.toLowerCase() === "implementer",
@@ -679,18 +689,48 @@ async function runWorkflowCoreImpl(
             "warning",
         );
     }
-    if (hasImplementer && !hasPlanner && !hasExistingPlan) {
-        // Nothing to build from: no planner to produce a plan, and none on disk.
+    // No planner on the roster and no plan on disk. Whether that is fatal turns
+    // entirely on what the REQUEST says.
+    //
+    // This branch used to fail unconditionally, and ~/.af/repos/job-178 is what
+    // that costs: a headless run carrying a complete brief died in 39ms for
+    // $0.00 because the brief named `/work/.agent/plan.md`, a path inside the
+    // container it was written for, while cwd was the host checkout. A request
+    // that describes the work, names the verification commands and lists the
+    // constraints is a brief; refusing it because no FILE says so throws away
+    // the whole job over a path prefix.
+    //
+    // A bare request ("fix the tests") still is fatal, because there is nothing
+    // to implement from and guessing is worse than saying so. The line between
+    // them is length, which is crude but is the only signal available before any
+    // agent runs -- and it only has to separate a sentence fragment from a brief.
+    const briefAsPlan =
+        hasImplementer &&
+        !hasPlanner &&
+        !hasExistingPlan &&
+        request.trim().length >= MIN_BRIEF_CHARS;
+    if (hasImplementer && !hasPlanner && !hasExistingPlan && !briefAsPlan) {
         s.runStartedAt = Date.now();
         return finalizeError(
             s,
             h,
             cwd,
             request,
-            "This team has no planner and there is no .agent/plan.md to build from. " +
-                "Run a team that includes a planner (e.g. plan-build or spec) first, then " +
-                "re-run the build team to resume the implementation from the saved plan.",
+            "This team has no planner, there is no .agent/plan.md to build from, and " +
+                `the request is too short (${request.trim().length} characters, under ${MIN_BRIEF_CHARS}) ` +
+                "to stand in for one. Run a team that includes a planner (e.g. plan-build or " +
+                "spec) first and re-run the build team to resume from the saved plan, or " +
+                "re-send this request with the work, the verification commands and the " +
+                "constraints spelled out.",
             [],
+        );
+    }
+    if (briefAsPlan) {
+        h.ui.notify(
+            "No planner and no .agent/plan.md — using the request itself as the brief. " +
+                "There are no phases, so the implementer works it directly rather than " +
+                "dispatching. Run a planning team first if you wanted it phased.",
+            "warning",
         );
     }
 
@@ -871,6 +911,22 @@ async function runWorkflowCoreImpl(
         } catch {}
     }
 
+    // Brief-as-plan: there is no plan text anywhere, so the request IS it. Note
+    // that this deliberately does NOT reach validatePlan below -- that gate is
+    // `planP || resuming`, and a prose brief has none of the structure it checks
+    // by definition. Validating it would reintroduce the hard failure this
+    // branch exists to remove.
+    if (briefAsPlan)
+        plan = {
+            output:
+                "## Brief (no plan file)\n\nThis run had no planner and no " +
+                ".agent/plan.md. The request below stood in as the brief: no phases " +
+                "were derived, none were dispatched, and no plan structure was " +
+                "validated. Reviewers and the validator should judge the change " +
+                `against this text.\n\n${request}`,
+            ok: true,
+        };
+
     // Enforce plan structure on the FINAL plan whenever one drives the rest of the
     // pipeline: post-refine when a planner ran (the plan is the deliverable for a
     // plan-only team too), and on resume (a stale, truncated, or corrupt
@@ -941,7 +997,10 @@ async function runWorkflowCoreImpl(
         const implStartedAt = Date.now();
         impl = await h.execution.runPhase(
             implP,
-            shared(implementTask(request, plan.output), "implementer"),
+            shared(
+                implementTask(request, plan.output, briefAsPlan),
+                "implementer",
+            ),
             cwd,
         );
         if (!impl.ok) return fail(s, h, cwd, request, "Implementing", impl.output);
@@ -997,7 +1056,7 @@ async function runWorkflowCoreImpl(
                 impl = await h.execution.runPhase(
                     implP,
                     shared(
-                        implementTask(request, plan.output) +
+                        implementTask(request, plan.output, briefAsPlan) +
                             freshContextRetryNote(phaseCount),
                         "implementer",
                     ),

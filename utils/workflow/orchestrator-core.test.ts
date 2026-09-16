@@ -6000,3 +6000,84 @@ describe("streamWorkflowActivity", () => {
         stop();
     });
 });
+
+// ── A build team with no plan: a brief is enough, a fragment is not ──
+
+describe("runWorkflowCore plan-less build team", () => {
+    const BRIEF =
+        "Implement the validated Airtel deposit reconciliation change in this " +
+        "repository. Make only the described changes, run go build ./..., go vet " +
+        "./... and go test ./..., and wire startup through cmd/cd-airtel/main.go.";
+
+    function planlessHost(tasks: string[]) {
+        const agents = new Map<string, AgentDef>();
+        for (const n of ["implementer", "reviewer"]) agents.set(n, mkAgent(n));
+        return {
+            agents,
+            host: mkHost({
+                setup: { loadAgents: () => agents },
+                execution: {
+                    runPhase: async (phase, task) => {
+                        tasks.push(`${phase.agent}:${task}`);
+                        return { output: `${phase.agent} output`, ok: true };
+                    },
+                },
+            }),
+        };
+    }
+
+    it("runs from the request when there is no planner and no plan file", async () => {
+        // ~/.af/repos/job-178 is why. A headless run carrying this exact shape of
+        // brief died in 39ms for $0.00 because the brief named /work/.agent/plan.md
+        // -- a path inside the container it was written for -- while cwd was the
+        // host checkout. The whole job was lost over a path prefix.
+        const cwd = mkdtempSync(join(tmpdir(), "planless-"));
+        const tasks: string[] = [];
+        const { agents, host } = planlessHost(tasks);
+        const st = mkStateWithAgents(agents, {
+            teams: { build: ["implementer", "reviewer"] },
+            activeTeamName: "build",
+        });
+        const result = await runWorkflowCore(st, host, BRIEF, 3, { cwd });
+
+        assert.notEqual(result.status, "error");
+        const implTask = tasks.find((t) => t.startsWith("implementer:"));
+        assert.ok(implTask, "the implementer ran");
+        // It must not be sent after a file that is not there, nor after phases
+        // that do not exist.
+        assert.match(implTask as string, /There is NO plan file/);
+        assert.match(implTask as string, /THERE IS NO PHASED PLAN/);
+        assert.doesNotMatch(implTask as string, /DELEGATE EVERY PHASE/);
+    });
+
+    it("marks the report so a brief-built run is not read as a planned one", async () => {
+        const cwd = mkdtempSync(join(tmpdir(), "planless-report-"));
+        const tasks: string[] = [];
+        const { agents, host } = planlessHost(tasks);
+        const st = mkStateWithAgents(agents, {
+            teams: { build: ["implementer", "reviewer"] },
+            activeTeamName: "build",
+        });
+        await runWorkflowCore(st, host, BRIEF, 3, { cwd });
+        const report = readFileSync(join(cwd, "workflow-report.md"), "utf-8");
+        assert.match(report, /Brief \(no plan file\)/);
+        assert.match(report, /no plan structure was\s+validated/);
+    });
+
+    it("still fails on a request too short to stand in for a plan", async () => {
+        // Guessing from a fragment is worse than saying there is nothing to build
+        // from, so the hard failure survives for exactly that case.
+        const cwd = mkdtempSync(join(tmpdir(), "planless-short-"));
+        const tasks: string[] = [];
+        const { agents, host } = planlessHost(tasks);
+        const st = mkStateWithAgents(agents, {
+            teams: { build: ["implementer", "reviewer"] },
+            activeTeamName: "build",
+        });
+        const result = await runWorkflowCore(st, host, "fix the tests", 3, { cwd });
+
+        assert.equal(result.status, "error");
+        assert.match(result.report, /too short/i);
+        assert.equal(tasks.length, 0, "nothing ran");
+    });
+});
