@@ -4,7 +4,13 @@
 // Why this exists. Measured over the obs sink (2026-06-11 -> 2026-08-27, 234
 // runs): 991 `edit` calls, 408 rejected — a 41% failure rate — and the largest
 // classifiable cause, 205 of them, was `oldText` reproducing column-aligned text
-// with its padding flattened. The file holds
+// with its padding flattened.
+//
+// A later pass over the whole sink corrected the proportions, and the correction
+// is why `anchorMismatch` exists: of 653 rejections classified against every byte
+// of tool output their session had received, whitespace accounts for 12% and
+// text the model never had verbatim for 81%. The whitespace repairs below are
+// right about their 12% and were never the whole story. The file holds
 //
 //     fmt.Fprintln(stdout, " --version         print the version and exit")
 //
@@ -247,6 +253,122 @@ export function diagnoseMismatch(body: string, oldText: string): string | null {
     const matches = body.match(re);
     if (!matches || matches.length !== 1) return null;
     return matches[0] === oldText ? null : matches[0];
+}
+
+/**
+ * A window of the file the model evidently meant, located WITHOUT matching its
+ * `oldText` at all.
+ */
+export interface Anchor {
+    /** 1-based line number of the window's first line. */
+    startLine: number;
+    /** 1-based line number of its last line. */
+    endLine: number;
+    /** The file's real bytes for the window. */
+    text: string;
+    /** The one `oldText` line that located it, trimmed. */
+    on: string;
+    /** Where that line really is, 1-based. */
+    onLine: number;
+}
+
+/** Lines of the file to quote either side of the span `oldText` covers. */
+export const ANCHOR_CONTEXT_LINES = 3;
+
+/** An anchor window longer than this is a `read`, not a rejection message. */
+export const MAX_ANCHOR_CHARS = 4_000;
+
+/**
+ * The file text the model was aiming at when `oldText` is not merely mis-spaced
+ * but partly INVENTED — the residual case this module has always waved through.
+ *
+ * Why it is worth a function. Classifying 653 rejections in the sink against
+ * every byte of tool output their session had ever received:
+ *
+ *     532 (81%)  no span of it appeared in ANY tool output, even modulo
+ *                whitespace -- reconstructed from memory
+ *      80 (12%)  present modulo whitespace -- diagnoseMismatch's case
+ *      41 ( 6%)  partially present
+ *
+ * So the whitespace story this file was built on is the 12%, and the 81% has
+ * been getting pi's own "the old text must match exactly" — true, and containing
+ * no bytes, so the only move it leaves is another guess. 148 rejections in the
+ * hook's own audit log took that path.
+ *
+ * `diagnoseMismatch` cannot help here by design: it widens whitespace and
+ * requires the result to match, which fails the moment any real character is
+ * wrong. This locates the region a different way — by finding one `oldText` line
+ * that does occur in the file, exactly once — and quotes what is really there.
+ * An anchor that occurs twice names two places, so it is refused rather than
+ * guessed, the same uniqueness rule the repairs use.
+ *
+ * The quoted bytes carry NO line numbers, deliberately. Line-numbered `read`
+ * output is what the model transcribes indentation out of and gets wrong; the
+ * range goes in the prose instead, where it cannot be copied into an `oldText`.
+ */
+export function anchorMismatch(body: string, oldText: string): Anchor | null {
+    if (!body || !oldText) return null;
+    if (body.includes(oldText)) return null;
+    if (oldText.length > MAX_OLD_TEXT_CHARS) return null;
+
+    const bodyLines = body.split("\n");
+    const seen = new Map<string, number>();
+    const firstAt = new Map<string, number>();
+    for (let i = 0; i < bodyLines.length; i++) {
+        const key = bodyLines[i].trim();
+        if (!key) continue;
+        seen.set(key, (seen.get(key) ?? 0) + 1);
+        if (!firstAt.has(key)) firstAt.set(key, i);
+    }
+
+    // The longest uniquely-occurring line wins. Length is the proxy for
+    // distinctiveness: a one-token line like `}` or `return nil` is unique by
+    // accident, a whole statement is unique because it is the place meant.
+    const oldLines = oldText.split("\n");
+    let best: { on: string; fileLine: number; oldIndex: number } | null = null;
+    for (let i = 0; i < oldLines.length; i++) {
+        const key = oldLines[i].trim();
+        if (!key || seen.get(key) !== 1) continue;
+        if (!best || key.length > best.on.length)
+            best = { on: key, fileLine: firstAt.get(key) as number, oldIndex: i };
+    }
+    if (!best) return null;
+
+    // Line up the file against `oldText` at the anchor, then widen by the
+    // context margin, so the window covers the span the model was editing rather
+    // than just the line that happened to survive its retyping.
+    const from = Math.max(
+        0,
+        best.fileLine - best.oldIndex - ANCHOR_CONTEXT_LINES,
+    );
+    const to = Math.min(
+        bodyLines.length,
+        best.fileLine - best.oldIndex + oldLines.length + ANCHOR_CONTEXT_LINES,
+    );
+    let text = bodyLines.slice(from, to).join("\n");
+    let endLine = to;
+    if (text.length > MAX_ANCHOR_CHARS) {
+        // Truncate by whole lines: half a line of context reads as the file
+        // having half a line, and that is a new way to produce a wrong oldText.
+        const kept: string[] = [];
+        let used = 0;
+        for (const line of bodyLines.slice(from, to)) {
+            if (used + line.length + 1 > MAX_ANCHOR_CHARS) break;
+            kept.push(line);
+            used += line.length + 1;
+        }
+        if (!kept.length) return null;
+        text = kept.join("\n");
+        endLine = from + kept.length;
+    }
+
+    return {
+        startLine: from + 1,
+        endLine,
+        text,
+        on: best.on,
+        onLine: best.fileLine + 1,
+    };
 }
 
 /**
@@ -584,6 +706,9 @@ export interface EditOutcome {
     state: "applies" | "repairable" | "satisfied" | "missing";
     /** For `missing`, the file text it evidently meant, when that is knowable. */
     actual?: string;
+    /** For `missing` with no whitespace diagnosis, the region of the file the
+     *  edit was aimed at, located by a surviving line rather than by matching. */
+    anchor?: Anchor;
 }
 
 /**
@@ -617,7 +742,9 @@ export function classifyBatch(body: string, edits: EditPair[]): EditOutcome[] {
         if (target !== null) return { index, state: "repairable" as const };
         if (repairIndent(body, edit)) return { index, state: "repairable" as const };
         const actual = diagnoseMismatch(body, old);
-        return { index, state: "missing" as const, ...(actual ? { actual } : {}) };
+        if (actual) return { index, state: "missing" as const, actual };
+        const anchor = anchorMismatch(body, old);
+        return { index, state: "missing" as const, ...(anchor ? { anchor } : {}) };
     });
 }
 
@@ -634,6 +761,7 @@ export type EditDecision =
     | { kind: "pass" }
     | { kind: "repair"; edits: EditPair[]; repairs: Repair[] }
     | { kind: "explain"; index: number; actual: string }
+    | { kind: "anchor"; index: number; anchor: Anchor }
     | { kind: "satisfied"; index: number }
     | { kind: "partial"; outcomes: EditOutcome[] };
 
@@ -675,9 +803,13 @@ export function decideEdit(body: string, edits: EditPair[]): EditDecision {
         // A repairable edit is not a blocker; it is handled below.
         if (repairEdits(body, [edits[i]]).repairs.length) continue;
         const actual = diagnoseMismatch(body, old);
-        // No diagnosis means the mismatch is not about whitespace (stale or
-        // invented text). pi's own error is better than anything from here.
         if (actual) return { kind: "explain", index: i, actual };
+        // No whitespace diagnosis means part of `oldText` is stale or invented.
+        // That used to fall through to pi's own "must match exactly", which
+        // carries no bytes and so leaves guessing as the only next move. Quote
+        // the region instead -- see anchorMismatch for the 81% this is.
+        const anchor = anchorMismatch(body, old);
+        if (anchor) return { kind: "anchor", index: i, anchor };
     }
 
     const { edits: fixed, repairs } = repairEdits(body, edits);
@@ -719,6 +851,28 @@ export function explainReason(
 }
 
 /**
+ * The rejection text for an `anchor` decision.
+ *
+ * Says the one thing pi's own message cannot: here are the file's real bytes
+ * for the place you meant. The whole failure mode is a model reproducing a span
+ * it no longer has verbatim, so the answer has to BE the span -- asking for a
+ * re-read just returns it to the same position one turn poorer, and the
+ * measured response to a contentless rejection is a byte-forensics loop.
+ */
+export function anchorReason(path: string, index: number, a: Anchor): string {
+    return (
+        `edits[${index}].oldText is not in ${path}, and the difference is NOT ` +
+        "whitespace — some of what you sent is not in the file at all.\n\n" +
+        `Your line\n\n    ${a.on}\n\nis at line ${a.onLine}, and this is what ` +
+        `${path} really contains at lines ${a.startLine}-${a.endLine}:\n\n` +
+        `${a.text}\n\n` +
+        "Copy oldText out of the block above rather than retyping it. Do NOT " +
+        "re-send the oldText you just sent, do NOT re-read the file — this is " +
+        "the file — and do not look for invisible characters."
+    );
+}
+
+/**
  * The rejection text for a `partial` decision.
  *
  * Its whole job is to stop the agent re-deriving edits that were already right.
@@ -748,11 +902,20 @@ export function partialReason(path: string, outcomes: EditOutcome[]): string {
             `- edits[${done.join(", ")}] — ALREADY APPLIED. The file already contains this change. Drop them.`,
         );
     for (const o of outcomes.filter((x) => x.state === "missing")) {
-        lines.push(
-            o.actual
-                ? `- edits[${o.index}] — NOT FOUND, and differs from the file only in whitespace. The file has:\n\n${o.actual}\n`
-                : `- edits[${o.index}] — NOT FOUND. Re-read the file around this point; your oldText is stale or wrong.`,
-        );
+        if (o.actual) {
+            lines.push(
+                `- edits[${o.index}] — NOT FOUND, and differs from the file only in whitespace. The file has:\n\n${o.actual}\n`,
+            );
+        } else if (o.anchor) {
+            lines.push(
+                `- edits[${o.index}] — NOT FOUND, and not merely mis-spaced: part of it is not in the file. ` +
+                    `Lines ${o.anchor.startLine}-${o.anchor.endLine} really contain:\n\n${o.anchor.text}\n`,
+            );
+        } else {
+            lines.push(
+                `- edits[${o.index}] — NOT FOUND. Re-read the file around this point; your oldText is stale or wrong.`,
+            );
+        }
     }
     lines.push(
         "",
@@ -789,6 +952,8 @@ export function guidanceFor(
             return satisfiedReason(path, decision.index);
         case "explain":
             return explainReason(path, decision.index, decision.actual);
+        case "anchor":
+            return anchorReason(path, decision.index, decision.anchor);
         case "partial":
             return partialReason(path, decision.outcomes);
         default:

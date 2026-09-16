@@ -13,7 +13,10 @@ import {
     partialReason,
     classifyBatch,
     repairIndent,
+    anchorMismatch,
+    anchorReason,
     MAX_OLD_TEXT_CHARS,
+    MAX_ANCHOR_CHARS,
 } from "./edit-repair";
 
 // The line that started this: column-aligned help text, whose padding the model
@@ -696,5 +699,118 @@ describe("the carried-whitespace repair reaches the hook's decision", () => {
     it("classifies the edit as applying, since it does", () => {
         // The repair changes what gets written, not whether the call lands.
         assert.deepEqual(classifyBatch(BODY, edits)[0], { index: 0, state: "applies" });
+    });
+});
+
+describe("anchorMismatch", () => {
+    // The shape that dominates the sink: the model reproduces a block it no
+    // longer has verbatim, getting one real line right and inventing around it.
+    const MAIN = [
+        "func main() {",
+        "\tlogger := log.New()",
+        "\tdb := database.Open(cfg)",
+        "\tcontext := airtel.ServiceContext{",
+        "\t\tAtp:  tokenProvider,",
+        "\t\tRepo: airtel.NewRepository(db),",
+        "\t}",
+        "",
+        "\tservice := airtel.NewService(logger, &context)",
+        "\tapp.Run(service)",
+        "}",
+    ].join("\n");
+
+    it("quotes the real bytes around the one line that does exist", () => {
+        const a = anchorMismatch(
+            MAIN,
+            "\tcontext := airtel.ServiceContext{\n\t\tAtp:  tokenProvider,\n\t\tEvent: airtel.NewEventEmitter(logger, producer),\n\t}",
+        );
+        assert.ok(a, "an anchor was found");
+        // The anchor is the LONGEST uniquely-occurring line, not the first.
+        assert.equal(a!.on, "context := airtel.ServiceContext{");
+        assert.equal(a!.onLine, 4);
+        // And the window really is the file's bytes, tabs intact -- the whole
+        // point is that the model can copy rather than retype.
+        assert.ok(a!.text.includes("\t\tRepo: airtel.NewRepository(db),"));
+        assert.ok(a!.startLine <= 4 && a!.endLine >= 6);
+    });
+
+    it("refuses when no line of oldText occurs exactly once", () => {
+        // Every line is either absent or ambiguous, so there is no region to
+        // point at and guessing one would put the agent in the wrong place.
+        const body = "a()\nb()\na()\nb()\n";
+        assert.equal(anchorMismatch(body, "c()\nd()"), null);
+        assert.equal(anchorMismatch(body, "a()\nb()\nc()"), null);
+    });
+
+    it("refuses when oldText already matches", () => {
+        assert.equal(anchorMismatch(MAIN, "\tapp.Run(service)"), null);
+    });
+
+    it("quotes whole lines when the window has to be truncated", () => {
+        // Half a line of context reads as the file having half a line, which is
+        // a fresh way to produce a wrong oldText.
+        const wide = "x".repeat(200);
+        const body = ["UNIQUEANCHORLINE", ...Array(200).fill(wide)].join("\n");
+        const a = anchorMismatch(body, "UNIQUEANCHORLINE\nnot in the file at all");
+        assert.ok(a);
+        assert.ok(a!.text.length <= MAX_ANCHOR_CHARS);
+        for (const line of a!.text.split("\n"))
+            assert.ok(line === "UNIQUEANCHORLINE" || line === wide, "whole lines only");
+    });
+
+    it("carries no line numbers in the quoted bytes", () => {
+        // Line-numbered `read` output is what the model transcribes indentation
+        // out of and gets wrong. The range belongs in the prose, where it cannot
+        // be pasted into an oldText.
+        const a = anchorMismatch(MAIN, "\tservice := airtel.NewService(logger, &context)\n\tinvented()");
+        assert.ok(a);
+        for (const line of a!.text.split("\n"))
+            assert.ok(!/^\s*\d+[\t|]/.test(line), `line-numbered: ${JSON.stringify(line)}`);
+    });
+
+    it("decideEdit routes a non-whitespace miss to anchor, not pass", () => {
+        // The residual this was built for. Measured over 342 real rejections
+        // replayed against the body the session had read, `anchor` fires on 37
+        // of the 71 that previously got pi's contentless message -- 52%.
+        const d = decideEdit(MAIN, [
+            {
+                oldText: "\tservice := airtel.NewService(logger, &context)\n\tautoReconciler := airtel.NewAutoReconciler(repo)",
+                newText: "y",
+            },
+        ]);
+        assert.equal(d.kind, "anchor");
+    });
+
+    it("whitespace still wins: a mis-spaced edit is repaired, not anchored", () => {
+        // Precedence matters. Anchoring quotes a region and costs the agent a
+        // turn to re-derive the span; repairing lands the edit outright. A
+        // recoverable mismatch must never be routed to the weaker answer.
+        const d = decideEdit(MAIN, [
+            { oldText: "\t\tAtp: tokenProvider,", newText: "\t\tAtp: tp," },
+        ]);
+        assert.equal(d.kind, "repair");
+    });
+
+    it("the rejection text tells the agent not to re-read", () => {
+        const a = anchorMismatch(MAIN, "\tcontext := airtel.ServiceContext{\n\tinvented()");
+        assert.ok(a);
+        const text = anchorReason("main.go", 0, a!);
+        assert.match(text, /NOT\s+whitespace/);
+        assert.match(text, /do NOT re-read the file/i);
+        // It has to actually contain the bytes, or it is pi's message again.
+        assert.ok(text.includes("\t\tRepo: airtel.NewRepository(db),"));
+    });
+
+    it("a doomed batch names the region for its missing edit", () => {
+        const out = partialReason(
+            "main.go",
+            classifyBatch(MAIN, [
+                { oldText: "\tapp.Run(service)", newText: "q" },
+                { oldText: "\tcontext := airtel.ServiceContext{\n\tinvented()", newText: "z" },
+            ]),
+        );
+        assert.match(out, /edits\[0\] — FINE/);
+        assert.match(out, /not merely mis-spaced/);
+        assert.ok(out.includes("\t\tRepo: airtel.NewRepository(db),"));
     });
 });
