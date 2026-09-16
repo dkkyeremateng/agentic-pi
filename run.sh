@@ -363,6 +363,7 @@ EXT=(
     -e "$DIR/extensions/footer.ts"
     -e "$DIR/extensions/revert.ts"
     -e "$DIR/extensions/edit-repair.ts"
+    -e "$DIR/extensions/grep-guard.ts"
 )
 
 # Live observability (Phase 2): the orchestrator and every sub-agent emit

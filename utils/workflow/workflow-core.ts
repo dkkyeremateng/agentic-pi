@@ -3883,6 +3883,11 @@ export function subagentExtArgs(tools: string, readOnlyBash = false, opts?: { ob
     // orchestrator 34.8%), which is also why run.sh loads it for the main
     // session. Agents without `edit` have nothing for it to hook.
     if (/\bedit\b/.test(t)) add("edit-repair.ts");
+    // grep-guard.ts escapes the parens in a search pattern that do not pair, so
+    // an unbalanced one runs the search instead of dying in ripgrep's parser
+    // with an error quoting the (?:...) wrapper pi added rather than the pattern
+    // the agent wrote. 13 such calls in the sink, all from agents with `grep`.
+    if (/\bgrep\b/.test(t)) add("grep-guard.ts");
 
     // Live observability: when PI_OBS=1, every sub-agent emits ObsEvents to the
     // shared sink so the dashboard shows the whole pipeline. PI_OBS_AGENT (set on

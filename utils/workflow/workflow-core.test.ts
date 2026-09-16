@@ -1429,12 +1429,14 @@ describe("subagentExtArgs", () => {
     it("adds agent-memory.ts by default; nothing else for a plain agent", () => {
         const saved = process.env.PI_AGENT_MEMORY;
         try {
-            // with memory off, a plain (no dispatch/guard) agent gets no extensions
+            // with memory off, a plain (no dispatch/guard) agent gets no
+            // extensions. `grep` is deliberately absent from this tool set --
+            // it now pulls grep-guard.ts, which is the point of that hook.
             process.env.PI_AGENT_MEMORY = "0";
-            assert.deepEqual(subagentExtArgs("read,write,grep,find,ls"), []);
+            assert.deepEqual(subagentExtArgs("read,write,find,ls"), []);
             // default on: every agent gets the remember tool
             delete process.env.PI_AGENT_MEMORY;
-            assert.ok(subagentExtArgs("read,write,grep,find,ls").some((a) => a.endsWith("agent-memory.ts")));
+            assert.ok(subagentExtArgs("read,write,find,ls").some((a) => a.endsWith("agent-memory.ts")));
         } finally {
             if (saved === undefined) delete process.env.PI_AGENT_MEMORY;
             else process.env.PI_AGENT_MEMORY = saved;
@@ -1448,6 +1450,16 @@ describe("subagentExtArgs", () => {
         assert.ok(has("read,edit,bash"), "an editing agent");
         assert.ok(!has("read,grep,find,ls"), "a read-only agent has nothing to hook");
         assert.ok(!has("read,write,ls"), "write without edit is not the edit tool");
+    });
+    it("passes -e grep-guard.ts to any agent that can grep", () => {
+        // Same principle as edit-repair: the hook follows the TOOL, not the
+        // role. The 13 broken searches in the sink came from a phase-implementer
+        // and a reviewer alike.
+        const has = (t: string) =>
+            subagentExtArgs(t).some((a) => a.endsWith("grep-guard.ts"));
+        assert.ok(has("read,grep,find,ls"), "a read-only searching agent");
+        assert.ok(has("read,edit,grep,bash"), "an editing agent that searches");
+        assert.ok(!has("read,edit,bash"), "no grep, nothing to hook");
     });
     it("passes -e dispatch.ts when tools include a dispatch tool", () => {
         const a = subagentExtArgs("read,dispatch_agent,ls");
