@@ -23,13 +23,22 @@ jobs:
       # type-only pi imports at runtime, so no pi install or type-linking is needed —
       # we run tsx directly rather than `npm test`, whose pretest hook links types
       # from a global pi install that does not exist on a runner.
+      # A cap, so a hanging test FAILS with a log instead of running forever.
+      # This has cost hours twice. Both times one test probed `/proc`, which does
+      # not exist on macOS (so it passed locally) but is a live filesystem on the
+      # ubuntu runner, and the step blocked. GitHub only publishes a job's log
+      # once the job finishes, so a hang produces NO output to diagnose from —
+      # every run in the repo just sits `in_progress`. The suite takes about two
+      # seconds, so the cap costs nothing and turns that into a normal failure.
       - name: Unit tests
+        timeout-minutes: 5
         run: npx tsx --test utils/*/*.test.ts obs/*.test.ts
       # Parse-only check of every extension + util + obs. `node --check` does no
       # module resolution, so it needs no pi packages either. obs/ui is pruned:
       # it is the browser dashboard, whose .d.ts/ambient declarations are not
       # erasable-syntax-only and so cannot be type-stripped. It has its own job.
       - name: Syntax check
+        timeout-minutes: 5
         run: find extensions utils obs -path obs/ui -prune -o -name '*.ts' -print0 | xargs -0 -n1 node --experimental-strip-types --check
 
   dashboard:
