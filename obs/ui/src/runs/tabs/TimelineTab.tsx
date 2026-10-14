@@ -101,14 +101,16 @@ export function TimelineTab({ runId }: { runId: string }) {
 
   const lanes = useMemo<Lane[]>(() => {
     const out: Lane[] = [];
-    const byDepth = new Map<number, Lane>();
+    // by session, not depth - 1: a tool call nested under codemode sits a
+    // level deeper than its agent's direct children but is still that lane's
+    const bySession = new Map<string, Lane>();
     for (const s of scopedSpans) {
       if (s.kind === "agent") {
         const lane: Lane = { agent: s.agent, depth: s.depth, envelope: s, segs: [] };
         out.push(lane);
-        byDepth.set(s.depth, lane);
+        bySession.set(s.sessionId, lane);
       } else {
-        byDepth.get(s.depth - 1)?.segs.push(s);
+        bySession.get(s.sessionId)?.segs.push(s);
       }
     }
     return out;

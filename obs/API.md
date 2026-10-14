@@ -275,7 +275,8 @@ Event types and notable payload fields:
 | `session_start` | `model`, `pid`, `dispatchId` |
 | `boot` | `tools[]`, `skills[]`, `contextFiles[{path,bytes,hash}]`, `promptChars`, `promptHash` |
 | `turn_start` / `turn_end` | end: `turnIndex`, `tokens{input,output,cacheRead,cacheWrite,total}`, `costUsd`, `durationMs`, `tps`, `prefillMs`, `context{tokens,window,percent}`, `model`, `stopReason` |
-| `tool_start` / `tool_end` | `toolCallId`, `toolName`, `arg`/`argsText`, end: `durationMs`, `isError`, `result`/`resultText` |
+| `tool_start` / `tool_end` | `toolCallId`, `parentToolCallId` (codemode-made calls), `toolName`, `arg`/`argsText`, end: `durationMs`, `isError`, `result`/`resultText` |
+| `agent_settled` | `aborted` — one per run (a session can hold several); `true` when the run was cancelled rather than finished |
 | `message` | `role`, `kind` (`user`/`assistant`/`thinking`), `text` (opt-in via `PI_OBS_CONTENT=1`) |
 | `model_change` | `model`, `previous`, `source` |
 | `compaction` | `reason` (`manual`/`threshold`/`overflow`), `willRetry` (turn retried after an overflow compaction), `fromExtension`, `tokensBefore` (context size just before compacting) |

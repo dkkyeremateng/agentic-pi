@@ -126,6 +126,14 @@ activates alongside the workflow — loaded on their own they cleanly do nothing
 `run.sh` loads `footer.ts` and `revert.ts` alongside the workflow; add
 `-e .pi/extensions/lsp-panel.ts` yourself to enable the LSP panel.
 
+- **`tool-renderers.ts`** — draws `dispatch_agent`, `dispatch_parallel`,
+  `select_agents` and `run_agent_workflow` calls in sessions where the extension
+  that registers them is not loaded: a workflow session resumed with a plain
+  `pi --resume`, or exported with `/export`. It only fills in (pi 1.0.1+
+  `registerToolRenderer`), so it changes nothing inside a `run.sh` session. Load
+  it everywhere by linking it into pi's global extensions:
+  `ln -s "$PWD/extensions/tool-renderers.ts" ~/.pi/agent/extensions/`.
+
 ## Use it
 
 ```bash
@@ -302,13 +310,13 @@ Create `.env` next to `.pi/`:
 PI_WORKFLOW_MODEL=anthropic/claude-opus-4-8        # global fallback for all agents
 
 # Per-agent model overrides (scout -> planner -> refiner -> implementer -> reviewer -> validator -> shipper)
-PI_AGENT_SCOUT_MODEL=anthropic/claude-haiku-4-5
+PI_AGENT_SCOUT_MODEL=anthropic/claude-haiku-5-5
 PI_AGENT_PLANNER_MODEL=anthropic/claude-opus-4-8
 PI_AGENT_REFINER_MODEL=anthropic/claude-sonnet-4-6
 PI_AGENT_IMPLEMENTER_MODEL=anthropic/claude-sonnet-4-6
 PI_AGENT_REVIEWER_MODEL=anthropic/claude-opus-4-8
 PI_AGENT_VALIDATOR_MODEL=anthropic/claude-opus-4-8
-PI_AGENT_SHIPPER_MODEL=anthropic/claude-haiku-4-5
+PI_AGENT_SHIPPER_MODEL=anthropic/claude-haiku-5-5
 ```
 
 `export KEY=value` lines and `# comments` are both accepted. Add `.env` to your

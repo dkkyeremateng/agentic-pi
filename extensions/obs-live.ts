@@ -543,6 +543,11 @@ export default function obsLive(pi: any): void {
             control?.onAgentEnd();
         } catch {}
     });
+    // pi 1.1+ says whether the run was cancelled; without it a cancelled run and
+    // a finished one look the same in the sink.
+    pi.on("agent_settled", async (e: any) => {
+        emit("agent_settled", { aborted: !!e?.aborted });
+    });
     pi.on("message_update", async (e: any) => {
         if (!control) return;
         try {
@@ -615,6 +620,8 @@ export default function obsLive(pi: any): void {
         const cap = toolMax();
         emit("tool_start", {
             toolCallId: e?.toolCallId,
+            // set when a codemode script (pi 1.2+) made this call
+            parentToolCallId: e?.parentToolCallId,
             toolName: e?.toolName,
             arg: argPreview(e?.args),
             argsText: capText(argsRaw, cap),
@@ -626,14 +633,22 @@ export default function obsLive(pi: any): void {
         try {
             control?.onTool("end", e?.toolName || "tool");
         } catch {}
-        // (d) tool execution latency.
+        // (d) tool execution latency. pi 1.1+ reports how long `execute()` took
+        // on a monotonic clock; our own start→end stamp is the fallback for
+        // older runtimes and for calls that never ran (pi omits it then).
         const started = e?.toolCallId ? toolStartTs.get(e.toolCallId) : undefined;
-        const durationMs = started ? Date.now() - started : 0;
+        const durationMs =
+            typeof e?.durationMs === "number"
+                ? Math.round(e.durationMs)
+                : started
+                  ? Date.now() - started
+                  : 0;
         if (e?.toolCallId) toolStartTs.delete(e.toolCallId);
         const full = flattenText(e?.result);
         const cap = toolMax();
         emit("tool_end", {
             toolCallId: e?.toolCallId,
+            parentToolCallId: e?.parentToolCallId,
             toolName: e?.toolName,
             isError: !!e?.isError,
             durationMs,

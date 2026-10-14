@@ -742,6 +742,7 @@ components:
             - message
             - tool_start
             - tool_end
+            - agent_settled
             - model_change
             - compaction
             - error
@@ -759,8 +760,10 @@ components:
             prefillMs, context{tokens,window,percent}, model, resolvedModel
             ("provider/id" the configured `model` resolved to; absent on older
             events and when the runtime exposes none), stopReason;
-            tool_start/end: toolCallId, toolName, arg/argsText, durationMs,
-            isError, result/resultText; boot: tools[], skills[],
+            tool_start/end: toolCallId, parentToolCallId (set when a codemode
+            script made the call), toolName, arg/argsText, durationMs,
+            isError, result/resultText; agent_settled: aborted (one per run,
+            true when it was cancelled); boot: tools[], skills[],
             contextFiles[{path,bytes,hash}], promptChars, promptHash;
             error: source, status, message; dispatch_*: agent, dispatchId,
             reason, status, attempts; verdict: status(pass|fail|open),

@@ -28,6 +28,24 @@ test("formatWatchEvent renders the events a lane cares about", () => {
     assert.match(strip(formatWatchEvent(f.next("session_end", {}, 0)))!, /■ done/);
 });
 
+test("formatWatchEvent indents codemode-made calls under their script", () => {
+    const top = strip(formatWatchEvent(f.next("tool_start", { toolCallId: "t1", toolName: "codemode" }, 0)))!;
+    const child = strip(
+        formatWatchEvent(f.next("tool_start", { toolCallId: "t1/1", parentToolCallId: "t1", toolName: "read" }, 0)),
+    )!;
+    const grandchild = strip(
+        formatWatchEvent(f.next("tool_end", { toolCallId: "t1/1/2", parentToolCallId: "t1/1", toolName: "bash", durationMs: 5 }, 0)),
+    )!;
+    const col = (line: string, mark: string) => line.indexOf(mark);
+    assert.equal(col(child, "→") - col(top, "→"), 2);
+    assert.equal(col(grandchild, "✓") - col(top, "→"), 4);
+});
+
+test("formatWatchEvent shows a cancelled run and hides a finished one", () => {
+    assert.match(strip(formatWatchEvent(f.next("agent_settled", { aborted: true }, 0)))!, /■ cancelled/);
+    assert.equal(formatWatchEvent(f.next("agent_settled", { aborted: false }, 0)), null);
+});
+
 test("formatWatchEvent surfaces the detail: tool command, tool result, and agent prose", () => {
     // tool_start shows the command being run
     assert.match(

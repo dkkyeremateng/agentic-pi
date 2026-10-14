@@ -1797,7 +1797,11 @@ export default function (pi: ExtensionAPI) {
         // A new user request = a new workflow. Mark it so the first
         // select_agents / dispatch_agent of this request rebuilds the cards from
         // scratch instead of carrying over the previous workflow's state.
-        st.freshDispatchSession = true;
+        // Since pi 1.2 this hook also fires for runs an extension starts with
+        // `pi.sendMessage(..., { triggerTurn: true })` (messageType "custom");
+        // those continue the current request, so they keep its cards — but they
+        // still get the orchestrator prompt below.
+        if (event.messageType === "user") st.freshDispatchSession = true;
 
         // The agents the orchestrator may dispatch. Only while a team-scoped
         // job is actually running do we restrict it to that team's roster;

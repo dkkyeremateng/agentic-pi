@@ -130,3 +130,60 @@ test("spanBar clamps to the run window", () => {
   assert.equal(b.left, 0);
   assert.ok(b.width > 0 && b.width <= 1);
 });
+
+test("tool calls a codemode script made nest under the codemode span", () => {
+  const P = { parentToolCallId: "cm" };
+  const events: ObsEvent[] = [
+    ev({ sessionId: "a", agent: "a", type: "session_start", ts: 0 }),
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 100, payload: { toolCallId: "cm", toolName: "codemode" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 110, payload: { toolCallId: "cm/1", toolName: "read", ...P } }),
+    // a parallel top-level call starting mid-script must not split the subtree
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 115, payload: { toolCallId: "t2", toolName: "grep" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 120, payload: { toolCallId: "cm/1", toolName: "read", ...P } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 130, payload: { toolCallId: "cm/2", toolName: "codemode", ...P } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 140, payload: { toolCallId: "cm/2/1", toolName: "bash", parentToolCallId: "cm/2" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 150, payload: { toolCallId: "cm/2/1", toolName: "bash", parentToolCallId: "cm/2" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 160, payload: { toolCallId: "cm/2", toolName: "codemode", ...P } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 170, payload: { toolCallId: "t2", toolName: "grep" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 200, payload: { toolCallId: "cm", toolName: "codemode" } }),
+  ];
+  const m = buildTrace(events, "run1", 9999);
+  assert.deepEqual(
+    m.spans.map((s) => `${s.depth}:${s.label}`),
+    ["0:a", "1:codemode", "2:read", "2:codemode", "3:bash", "1:grep"],
+  );
+  const span = (callId: string) => m.spans.find((s) => s.callId === callId)!;
+  assert.equal(span("cm/1").parentId, span("cm").id);
+  assert.equal(span("cm/2/1").parentId, span("cm/2").id);
+  assert.equal(span("cm").parentId, undefined);
+  assert.equal(span("t2").parentId, undefined);
+  // the codemode span keeps its own pairing — its children don't shorten it
+  assert.deepEqual([span("cm").startTs, span("cm").endTs], [100, 200]);
+});
+
+test("a nested call whose codemode parent is still open stays top-level", () => {
+  const events: ObsEvent[] = [
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 100, payload: { toolCallId: "cm", toolName: "codemode" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 110, payload: { toolCallId: "cm/1", toolName: "read", parentToolCallId: "cm" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 120, payload: { toolCallId: "cm/1", toolName: "read", parentToolCallId: "cm" } }),
+  ];
+  const m = buildTrace(events, "run1", 9999);
+  const read = m.spans.find((s) => s.kind === "tool")!;
+  assert.equal(read.depth, 1); // shown under the agent, not dropped
+  assert.equal(read.parentId, undefined);
+});
+
+test("legacy tool events without parentToolCallId render exactly as before", () => {
+  const events: ObsEvent[] = [
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 100, payload: { toolCallId: "t1", tool: "bash" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 110, payload: { toolCallId: "t2", tool: "read" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 150, payload: { toolCallId: "t2" } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 200, payload: { toolCallId: "t1" } }),
+  ];
+  const m = buildTrace(events, "run1", 9999);
+  assert.deepEqual(
+    m.spans.map((s) => `${s.depth}:${s.kind}:${s.label}:${s.startTs}-${s.endTs}`),
+    ["0:agent:a:100-200", "1:tool:bash:100-200", "1:tool:read:110-150"],
+  );
+  assert.ok(m.spans.every((s) => s.parentId === undefined));
+});

@@ -2,7 +2,7 @@
 // renders — the single place event presentation is decided, so the Live wall,
 // the Events tab, and Search all label the same event identically.
 import type { ObsEvent } from "../data/types";
-import { summarizeToolArgs, summarizeToolResult } from "../lib/toolArgs";
+import { parentToolCallId, summarizeToolArgs, summarizeToolResult } from "../lib/toolArgs";
 import { formatCostPrecise, formatTokens } from "../lib/format";
 
 export type BadgeClass = "tool" | "rs" | "err" | "turn" | "say" | "dim";
@@ -59,7 +59,10 @@ export function eventEmoji(ev: ObsEvent): string {
 }
 
 export function eventMeta(ev: ObsEvent): EventMeta {
-  return { ...baseMeta(ev), emoji: eventEmoji(ev) };
+  const m = { ...baseMeta(ev), emoji: eventEmoji(ev) };
+  // a call a codemode script made reads as a child of that call, not a turn's own
+  if ((ev.type === "tool_start" || ev.type === "tool_end") && parentToolCallId(ev.payload)) m.text = `↳ ${m.text}`;
+  return m;
 }
 
 function baseMeta(ev: ObsEvent): Omit<EventMeta, "emoji"> {
@@ -69,6 +72,11 @@ function baseMeta(ev: ObsEvent): Omit<EventMeta, "emoji"> {
       return { badge: "start", badgeClass: "say", text: `session start · ${s(p.model) || "model"}` };
     case "session_end":
       return { badge: "end", badgeClass: "dim", text: "session end" };
+    case "agent_settled":
+      // once per run, after its last turn; aborted = the user/caller cancelled it
+      return p.aborted === true
+        ? { badge: "cancelled", badgeClass: "err", text: "run cancelled" }
+        : { badge: "settled", badgeClass: "dim", text: "run finished" };
     case "turn_start":
       return { badge: `turn ${n(p.turnIndex) ?? "?"}`, badgeClass: "turn", text: "thinking…" };
     case "turn_end": {

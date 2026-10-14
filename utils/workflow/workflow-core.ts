@@ -103,6 +103,32 @@ export function spawnSessionName(cwd: string, agentName: string): string {
     return `${proj} · ${agentName}`;
 }
 
+// MCP flags for a spawned sub-agent. Since pi 1.0.4 `--tools` keeps every MCP
+// tool unless an entry starts with `mcp__`, so an agent whose frontmatter lists
+// only built-in tools would otherwise inherit every configured MCP server —
+// a read-only reviewer included. `--no-mcp` keeps the declared list the whole
+// toolset (and skips connecting servers it cannot use); an agent that names an
+// `mcp__…` tool or pattern keeps MCP, and pi then filters it to those entries.
+export function spawnMcpArgs(tools: string): string[] {
+    const wantsMcp = (tools || "")
+        .split(",")
+        .some((t) => t.trim().startsWith("mcp__"));
+    return wantsMcp ? [] : ["--no-mcp"];
+}
+
+// The `--tools` value for a spawned sub-agent. PI_WORKFLOW_CODEMODE=1 adds pi's
+// `codemode` tool, which lets an agent run several tool calls from one script in
+// a single turn — and turns, not context size, are what a run costs. It is safe
+// with the guards: calls a script makes go through the same `tool_call` hooks
+// (readonly-guard, cwd-guard), reach only the agent's active tools, and the
+// script itself runs in a QuickJS sandbox with no file system or network.
+// Opt-in until obs shows it cuts turns without hurting pass rates.
+export function spawnToolsArg(tools: string, env: NodeJS.ProcessEnv = process.env): string {
+    if (env.PI_WORKFLOW_CODEMODE !== "1") return tools;
+    const list = (tools || "").split(",").map((t) => t.trim()).filter(Boolean);
+    return list.includes("codemode") ? list.join(",") : [...list, "codemode"].join(",");
+}
+
 // Appended to EVERY spawned agent's system prompt so any agent answers a trivial
 // ping / health check directly instead of running its full workload.
 export const TRIVIAL_PING_RULE = `
@@ -919,6 +945,18 @@ export function renderDispatchAgentResult(
         );
     }
     return new TextCtor(header, 0, 0);
+}
+
+// Render a dispatch_parallel call header: the agents it fans out to, ∥-joined.
+export function renderDispatchParallelCall(args: any, theme: any, TextCtor: any): any {
+    const items = (args?.agents || []) as { agent: string }[];
+    const names = items.map((i) => i.agent).join(" ∥ ");
+    return new TextCtor(
+        theme.fg("toolTitle", theme.bold("dispatch_parallel ")) +
+            theme.fg("accent", names || "?"),
+        0,
+        0,
+    );
 }
 
 // Render the dispatch_parallel tool result: one ✓/✗ line per agent when
@@ -4407,7 +4445,8 @@ export function spawnAgentWithModel(
         "json",
         "-p",
         "--tools",
-        agentDef.tools,
+        spawnToolsArg(agentDef.tools),
+        ...spawnMcpArgs(agentDef.tools),
         "--append-system-prompt",
         agentDef.systemPrompt + TRIVIAL_PING_RULE + memoryInjection(agentDef.name),
         "--session",

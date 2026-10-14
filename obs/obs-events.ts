@@ -20,6 +20,9 @@ export type ObsEventType =
     | "message"
     | "tool_start"
     | "tool_end"
+    // pi 1.1+: a run fully settled. { aborted } tells a cancelled run (Escape, an
+    // abort from the caller) from one that finished. One per run, not per session.
+    | "agent_settled"
     | "model_change"
     | "compaction"
     | "error"

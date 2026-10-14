@@ -249,7 +249,8 @@ export class RunIndexer {
             const dur = Number(p?.durationMs ?? 0);
             if (dur > 0 && !r.orchestrators.has(ev.agent)) r.spans.push([ev.ts - dur, ev.ts]);
         }
-        if (ev.type === "tool_start") r.toolCalls++;
+        // top-level calls only — a codemode script's calls belong to its own call
+        if (ev.type === "tool_start" && !p?.parentToolCallId) r.toolCalls++;
         if (ev.type === "tool_end") {
             const name = String(p?.toolName ?? "");
             if (ORCH_WRAPPER_TOOLS.has(name)) {

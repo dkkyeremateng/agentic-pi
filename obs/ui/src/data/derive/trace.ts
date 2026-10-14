@@ -1,8 +1,11 @@
 // §7.2 trace model — folds a run's event stream into a flattened span tree.
 // One AGENT span per session; nested sub-agents by `parent` (agent name);
 // LLM spans from turn_start/turn_end pairs and TOOL spans from
-// tool_start/tool_end pairs, interleaved under their agent by time.
+// tool_start/tool_end pairs, interleaved under their agent by time. A tool call
+// made by another tool (codemode, via `parentToolCallId`) nests under that
+// call's span instead.
 import type { ObsEvent } from "../types";
+import { parentToolCallId } from "../../lib/toolArgs";
 
 export type SpanKind = "agent" | "llm" | "tool";
 export type SpanStatus = "running" | "error" | "done";
@@ -22,6 +25,8 @@ export interface Span {
   status: SpanStatus;
   costUsd?: number; // agent spans: total spend for the session
   model?: string; // agent spans: the model it ran on
+  callId?: string; // tool spans: the toolCallId, when the collector sent one
+  parentId?: string; // nested tool spans: the enclosing (codemode) tool span's id
 }
 
 export interface TraceModel {
@@ -51,6 +56,8 @@ interface ChildSpan {
   startTs: number;
   endTs: number;
   error: boolean;
+  callId?: string;
+  parentCallId?: string;
 }
 
 function str(v: unknown): string | undefined {
@@ -79,7 +86,7 @@ export function buildTrace(events: ObsEvent[], runId: string, now = Date.now()):
   const nodes = new Map<string, AgentNode>();
   // open spans keyed by their correlation id
   const openTurns = new Map<string, { key: string; idx: unknown; model?: string; ts: number }>();
-  const openTools = new Map<string, { key: string; ts: number; label: string }>();
+  const openTools = new Map<string, { key: string; ts: number; label: string; callId?: string; parentCallId?: string }>();
 
   for (const ev of evs) {
     let n = nodes.get(ev.sessionId);
@@ -142,7 +149,7 @@ export function buildTrace(events: ObsEvent[], runId: string, now = Date.now()):
       }
       case "tool_start": {
         const key = toolKey(ev.sessionId, p);
-        openTools.set(key, { key, ts: ev.ts, label: toolName(p) });
+        openTools.set(key, { key, ts: ev.ts, label: toolName(p), callId: str(p.toolCallId), parentCallId: parentToolCallId(p) });
         break;
       }
       case "tool_end": {
@@ -170,6 +177,8 @@ export function buildTrace(events: ObsEvent[], runId: string, now = Date.now()):
           startTs: open?.ts ?? ev.ts,
           endTs: ev.ts,
           error,
+          callId: str(p.toolCallId) ?? open?.callId,
+          parentCallId: parentToolCallId(p) ?? open?.parentCallId,
         });
         if (open) openTools.delete(open.key);
         break;
@@ -218,26 +227,38 @@ export function buildTrace(events: ObsEvent[], runId: string, now = Date.now()):
       costUsd: n.costUsd,
       model: n.model,
     });
+    // Nested tool calls go under their parent call's span. One whose parent
+    // hasn't ended yet (a live codemode call has no span until its tool_end)
+    // stays top-level until it does — shown, rather than hidden.
+    const byCall = new Map<string, ChildSpan>();
+    for (const c of n.children) if (c.callId) byCall.set(c.callId, c);
+    const nested = new Map<ChildSpan, ChildSpan[]>();
+    const top: ChildSpan[] = [];
+    for (const c of n.children) {
+      const parent = c.parentCallId ? byCall.get(c.parentCallId) : undefined;
+      if (parent && parent !== c) nested.set(parent, [...(nested.get(parent) ?? []), c]);
+      else top.push(c);
+    }
+    const emitChild = (c: ChildSpan, d: number, parentId?: string) => {
+      spans.push({
+        id: c.id,
+        kind: c.kind,
+        label: c.label,
+        agent: n.agent,
+        sessionId: n.sessionId,
+        depth: d,
+        startTs: c.startTs,
+        endTs: c.endTs,
+        status: c.error ? "error" : "done",
+        callId: c.callId,
+        parentId,
+      });
+      for (const k of [...(nested.get(c) ?? [])].sort((a, b) => a.startTs - b.startTs)) emitChild(k, d + 1, c.id);
+    };
     // interleave own child spans + sub-agent subtrees by start time
     type Item = { ts: number; emit: () => void };
     const items: Item[] = [];
-    for (const c of n.children) {
-      items.push({
-        ts: c.startTs,
-        emit: () =>
-          spans.push({
-            id: c.id,
-            kind: c.kind,
-            label: c.label,
-            agent: n.agent,
-            sessionId: n.sessionId,
-            depth: depth + 1,
-            startTs: c.startTs,
-            endTs: c.endTs,
-            status: c.error ? "error" : "done",
-          }),
-      });
-    }
+    for (const c of top) items.push({ ts: c.startTs, emit: () => emitChild(c, depth + 1) });
     for (const k of n.kids) items.push({ ts: k.firstTs, emit: () => walk(k, depth + 1) });
     items.sort((a, b) => a.ts - b.ts);
     for (const it of items) it.emit();

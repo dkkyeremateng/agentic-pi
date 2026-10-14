@@ -99,3 +99,25 @@ test("unknown event types degrade to a dim row named by their type", () => {
   assert.equal(m.badgeClass, "dim");
   assert.equal(m.text, "something odd");
 });
+
+test("agent_settled reads as a cancellation when aborted, else as finished", () => {
+  const cancelled = eventMeta(ev("agent_settled", { aborted: true }));
+  assert.equal(cancelled.badge, "cancelled");
+  assert.equal(cancelled.badgeClass, "err");
+  assert.equal(cancelled.text, "run cancelled");
+  for (const payload of [{ aborted: false }, {}]) {
+    const done = eventMeta(ev("agent_settled", payload));
+    const label = JSON.stringify(payload);
+    assert.equal(done.badge, "settled", label);
+    assert.equal(done.badgeClass, "dim", label);
+    assert.equal(done.text, "run finished", label);
+  }
+});
+
+test("tool rows a codemode script made are marked as nested; top-level rows are not", () => {
+  const nested = eventMeta(ev("tool_start", { toolName: "bash", args: { command: "ls" }, parentToolCallId: "cm" }));
+  assert.equal(nested.badge, "bash");
+  assert.equal(nested.text, "↳ ls");
+  assert.equal(eventMeta(ev("tool_end", { toolName: "read", result: "ok", parentToolCallId: "cm" })).text, "↳ ok");
+  assert.equal(eventMeta(ev("tool_start", { toolName: "bash", args: { command: "ls" } })).text, "ls");
+});

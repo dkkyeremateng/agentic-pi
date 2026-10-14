@@ -32,6 +32,7 @@ import {
     displayName,
     renderDispatchAgentCall,
     renderDispatchAgentResult,
+    renderDispatchParallelCall,
     renderDispatchParallelResult,
     renderSelectAgentsCall,
     renderSelectAgentsResult,
@@ -381,14 +382,7 @@ export default function (pi: ExtensionAPI) {
             }
         },
         renderCall(args, theme) {
-            const items = (args?.agents || []) as { agent: string }[];
-            const names = items.map((i) => i.agent).join(" ∥ ");
-            return new Text(
-                theme.fg("toolTitle", theme.bold("dispatch_parallel ")) +
-                    theme.fg("accent", names || "?"),
-                0,
-                0,
-            );
+            return renderDispatchParallelCall(args, theme, Text);
         },
         renderResult(result, options, theme) {
             return renderDispatchParallelResult(
@@ -457,10 +451,12 @@ export default function (pi: ExtensionAPI) {
     });
 
     // A new user request rebuilds dispatch phases from scratch (first dispatch of
-    // the turn resets), and resets the per-turn dispatch cap.
-    pi.on("before_agent_start", async (_event, ctx) => {
+    // the turn resets), and resets the per-turn dispatch cap. A run an extension
+    // starts with `triggerTurn` (pi 1.2+, messageType "custom") is not a new
+    // request, so it keeps the current phases.
+    pi.on("before_agent_start", async (event, ctx) => {
         widgetCtx = ctx;
-        st.freshDispatchSession = true;
+        if (event.messageType === "user") st.freshDispatchSession = true;
     });
     pi.on("agent_start", async () => {
         st.primaryTurnStartedAt = Date.now();

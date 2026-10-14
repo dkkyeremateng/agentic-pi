@@ -211,6 +211,8 @@ test("RunIndexer counts tool_start calls and flags an all-zero (empty) run", () 
             f.next("tool_start", { tool: "bash" }, 2),
             f.next("tool_end", {}, 3),
             f.next("tool_start", { tool: "grep" }, 4),
+            // a call a codemode script made is part of its parent call, not a third
+            f.next("tool_start", { tool: "read", toolCallId: "c/1", parentToolCallId: "c" }, 4),
             f.next("turn_end", { costUsd: 0.1, tokens: { total: 5 } }, 5),
             // a do-nothing run: only session start/end, no turns/tools/cost
             e.next("session_start", {}, 6),
