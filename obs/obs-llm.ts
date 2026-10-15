@@ -195,7 +195,7 @@ export type RunPi = (model: string, system: string, prompt: string, timeoutMs: n
 
 const runPiText: RunPi = (model, system, prompt, timeoutMs) =>
     new Promise((resolve, reject) => {
-        const args = ["--mode", "text", "-p", "--no-tools", "--no-session", "--no-skills", "--no-extensions"];
+        const args = ["--mode", "text", "-p", "--no-tools", "--no-mcp", "--no-session", "--no-skills", "--no-extensions"];
         if (model) args.push("--model", model);
         // Never let a flag-shaped prompt inject pi flags: pi matches known flags at
         // ANY argv position and has no `--` separator, so a prompt like "--model x"

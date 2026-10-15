@@ -84,3 +84,24 @@ test("tool span detail shows command input + error output", () => {
   assert.equal(d.output?.text, "exit 1");
   assert.equal(d.chips.find((c) => c.k === "status")?.warn, true);
 });
+
+test("a nested tool span names its codemode caller and pairs by call id", () => {
+  const P = { parentToolCallId: "cm" };
+  const evs: ObsEvent[] = [
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 100, payload: { toolCallId: "cm", toolName: "codemode", args: { code: "x" } } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_start", ts: 110, payload: { toolCallId: "cm/1", toolName: "bash", args: { command: "ls" }, ...P } }),
+    // the child and its codemode parent end in the same millisecond
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 200, payload: { toolCallId: "cm/1", result: "child out", ...P } }),
+    ev({ sessionId: "a", agent: "a", type: "tool_end", ts: 200, payload: { toolCallId: "cm", result: "parent out" } }),
+  ];
+  const m = buildTrace(evs, "r1", 999);
+  const child = m.spans.find((sp) => sp.callId === "cm/1")!;
+  const parent = m.spans.find((sp) => sp.callId === "cm")!;
+  const dc = spanDetail(child, evs);
+  assert.equal(dc.input?.text, "ls");
+  assert.equal(dc.output?.text, "child out");
+  assert.equal(dc.meta.find((r) => r.k === "called by")?.v, "cm");
+  const dp = spanDetail(parent, evs);
+  assert.equal(dp.output?.text, "parent out"); // not the child's same-ms end
+  assert.equal(dp.meta.find((r) => r.k === "called by"), undefined);
+});

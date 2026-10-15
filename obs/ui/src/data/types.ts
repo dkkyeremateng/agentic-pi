@@ -15,6 +15,7 @@ export type ObsEventType =
   | "lifecycle"
   | "tool"
   | "turn"
+  | "agent_settled"
   | (string & {});
 
 export interface ObsEvent {
@@ -29,6 +30,21 @@ export interface ObsEvent {
   name?: string;
   type: ObsEventType;
   payload: Record<string, unknown>;
+}
+
+// The tool_start / tool_end payload fields the trace pairs and nests on.
+// `parentToolCallId` (pi 1.1+) is set when another tool made the call — pi's
+// codemode script — and nested ids read `<parentToolCallId>/<n>`, possibly
+// deeper. Absent on top-level calls and on every older sink.
+export interface ToolEventPayload {
+  toolCallId?: string;
+  parentToolCallId?: string;
+}
+
+// agent_settled: emitted once per agent run, after its last turn. `aborted`
+// means the user/caller cancelled the run (Escape) rather than it finishing.
+export interface AgentSettledPayload {
+  aborted: boolean;
 }
 
 export interface RunVerdict {

@@ -61,6 +61,8 @@ import {
     agentStallMsFromEnv,
     shouldApproveProjectForSpawn,
     spawnSessionName,
+    spawnMcpArgs,
+    spawnToolsArg,
     loadSkills,
     sessionLabel,
     resolveAgentModel,
@@ -1507,6 +1509,37 @@ describe("spawnSessionName", () => {
     });
     it("falls back to 'pi' when the cwd has no basename", () => {
         assert.equal(spawnSessionName("/", "scout"), "pi · scout");
+    });
+});
+
+describe("spawnMcpArgs", () => {
+    // pi 1.0.4+: `--tools` keeps MCP tools unless an entry starts with mcp__.
+    it("turns MCP off for an agent that lists only built-in tools", () => {
+        assert.deepEqual(spawnMcpArgs("read,grep,find,ls,bash"), ["--no-mcp"]);
+    });
+    it("turns MCP off for an empty or missing tool list", () => {
+        assert.deepEqual(spawnMcpArgs(""), ["--no-mcp"]);
+        assert.deepEqual(spawnMcpArgs(undefined as unknown as string), ["--no-mcp"]);
+    });
+    it("keeps MCP when an entry names an MCP tool or pattern", () => {
+        assert.deepEqual(spawnMcpArgs("read, mcp__linear__*"), []);
+        assert.deepEqual(spawnMcpArgs("mcp__github__get_issue"), []);
+    });
+    it("does not mistake a tool that merely contains mcp__ for an MCP entry", () => {
+        assert.deepEqual(spawnMcpArgs("read,my_mcp__tool"), ["--no-mcp"]);
+    });
+});
+
+describe("spawnToolsArg", () => {
+    it("passes the agent's tools through unchanged by default", () => {
+        assert.equal(spawnToolsArg("read,bash", {}), "read,bash");
+        assert.equal(spawnToolsArg("read,bash", { PI_WORKFLOW_CODEMODE: "0" }), "read,bash");
+    });
+    it("adds codemode when PI_WORKFLOW_CODEMODE=1", () => {
+        assert.equal(spawnToolsArg("read, bash", { PI_WORKFLOW_CODEMODE: "1" }), "read,bash,codemode");
+    });
+    it("does not add codemode twice", () => {
+        assert.equal(spawnToolsArg("codemode,read", { PI_WORKFLOW_CODEMODE: "1" }), "codemode,read");
     });
 });
 

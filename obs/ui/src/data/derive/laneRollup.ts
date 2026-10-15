@@ -1,6 +1,7 @@
 // Per-lane rollup — port of obs-server-core applyRollup, computed client-side
 // from a lane's buffered events for the Live wall cards.
 import type { ObsEvent } from "../types";
+import { parentToolCallId } from "../../lib/toolArgs";
 
 export interface LaneRollup {
   agent: string;
@@ -69,11 +70,13 @@ export function laneRollup(events: ObsEvent[]): LaneRollup {
         if (ctx) r.ctxPct = ctx;
         break;
       }
+      // calls a codemode script made are counted once, as that codemode call —
+      // tallying them too would inflate the lane past the calls its model made
       case "tool_start":
-        r.toolCalls++;
+        if (!parentToolCallId(p)) r.toolCalls++;
         break;
       case "tool_end":
-        if (p.isError) r.toolErrors++;
+        if (p.isError && !parentToolCallId(p)) r.toolErrors++;
         break;
       case "error":
         r.errors++;

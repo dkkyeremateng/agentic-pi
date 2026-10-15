@@ -40,8 +40,10 @@ import {
     type AgentDef,
     loadAgents,
     shouldApproveProjectForSpawn,
+    spawnMcpArgs,
     spawnModelArg,
     spawnSessionName,
+    spawnToolsArg,
     stripInheritedSecrets,
     subagentExtArgs,
     TRIVIAL_PING_RULE,
@@ -413,7 +415,8 @@ export function dispatchStream(
             "json",
             "-p",
             "--tools",
-            def.tools,
+            spawnToolsArg(def.tools),
+            ...spawnMcpArgs(def.tools),
             "--append-system-prompt",
             // Inject the agent's committed memory so a dispatched agent benefits from
             // its own past lessons (e.g. a research source found to be captcha-walled)

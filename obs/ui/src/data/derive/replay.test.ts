@@ -76,3 +76,16 @@ test("buildWarp even gives equal wall-time per boundary, collapsing gaps", () =>
   assert.ok(Math.abs(w.inv(900) - 1 / 3) < 1e-9);
   assert.ok(Math.abs(w.inv(905) - (1 + 0.5) / 3) < 1e-9);
 });
+
+test("the tools tally counts a codemode call once, not its nested calls", () => {
+  const m = buildReplay(
+    [
+      ev({ ts: 10, type: "tool_start", payload: { toolCallId: "cm", toolName: "codemode" } }),
+      ev({ ts: 20, type: "tool_start", payload: { toolCallId: "cm/1", toolName: "read", parentToolCallId: "cm" } }),
+      ev({ ts: 30, type: "tool_start", payload: { toolCallId: "cm/2", toolName: "read", parentToolCallId: "cm" } }),
+      ev({ ts: 40, type: "tool_start", payload: { toolName: "bash" } }), // legacy, no field
+    ],
+    [],
+  );
+  assert.equal(m.total.tools, 2);
+});

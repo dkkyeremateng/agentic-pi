@@ -4,7 +4,7 @@
 import type { ObsEvent } from "../../data/types";
 import type { Span } from "../../data/derive/trace";
 import { laneRollup } from "../../data/derive/laneRollup";
-import { summarizeToolArgs, summarizeToolResult } from "../../lib/toolArgs";
+import { parentToolCallId, summarizeToolArgs, summarizeToolResult } from "../../lib/toolArgs";
 import { formatCostPrecise, formatSpanDur, formatTokens } from "../../lib/format";
 
 export interface DetailChip {
@@ -161,9 +161,14 @@ export function spanDetail(span: Span, events: ObsEvent[]): SpanDetail {
   }
 
   if (span.kind === "tool") {
-    const start = sess.find((e) => e.type === "tool_start" && e.ts === span.startTs);
-    const end = sess.find((e) => e.type === "tool_end" && e.ts === span.endTs);
+    // match on the call id when there is one: a codemode call and the last
+    // call its script made can end in the same millisecond
+    const same = (e: ObsEvent) => !span.callId || e.payload?.toolCallId === span.callId;
+    const start = sess.find((e) => e.type === "tool_start" && e.ts === span.startTs && same(e));
+    const end = sess.find((e) => e.type === "tool_end" && e.ts === span.endTs && same(e));
     const { tool, text } = summarizeToolArgs((start?.payload ?? end?.payload) as Record<string, unknown>);
+    const via = parentToolCallId(start?.payload ?? end?.payload);
+    if (via) meta.splice(2, 0, { k: "called by", v: via });
     const chips: DetailChip[] = [
       { k: "tool", v: tool },
       { k: "latency", v: latency },

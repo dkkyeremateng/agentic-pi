@@ -59,6 +59,13 @@ export function summarizeToolArgs(payload: Record<string, unknown> | undefined):
   return { tool, text: clamp(s(p.arg)) || tool };
 }
 
+/** The call that made this one (see ToolEventPayload) — set only on calls a
+ *  codemode script issued, so `undefined` means a top-level call. Nested calls
+ *  run inside their parent's span, so counts and durations skip them. */
+export function parentToolCallId(payload: Record<string, unknown> | undefined): string | undefined {
+  return s(payload?.parentToolCallId) || undefined;
+}
+
 // ── result summary (tool_end) ──
 
 function textField(c: unknown): string {

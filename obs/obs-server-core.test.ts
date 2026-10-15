@@ -74,6 +74,21 @@ test("summarize rolls up per-agent turns, tools, tokens and cost", () => {
     assert.equal(impl?.tokens, 900);
 });
 
+test("summarize counts only top-level tool calls, not a codemode script's own", () => {
+    const { f, start } = evs("scout");
+    const nested = { toolCallId: "c/1", parentToolCallId: "c", toolName: "read" };
+    const sum = summarize([
+        start,
+        f.next("tool_start", { toolCallId: "c", toolName: "codemode" }, 3),
+        f.next("tool_start", nested, 3),
+        f.next("tool_end", { ...nested, isError: true }, 4),
+        f.next("tool_end", { toolCallId: "c", toolName: "codemode" }, 5),
+    ]);
+    const scout = sum.agents.find((x) => x.agent === "scout");
+    assert.equal(scout?.toolCalls, 1);
+    assert.equal(scout?.toolErrors, 0);
+});
+
 test("summarize drops finished no-op sessions but keeps active ones", () => {
     const worked = evs("scout");
     const noop = makeFactory({ sessionId: "orch-1", agent: "orchestrator" });

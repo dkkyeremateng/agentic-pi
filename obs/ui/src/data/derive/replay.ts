@@ -4,6 +4,7 @@
 // "now" readout can show cost / tokens / tools / errors up to the playhead.
 import type { ObsEvent } from "../types";
 import type { Span } from "./trace";
+import { parentToolCallId } from "../../lib/toolArgs";
 
 export type MarkerKind = "error" | "dispatch" | "turn";
 
@@ -63,7 +64,8 @@ export function buildReplay(events: ObsEvent[], spans: Span[]): ReplayModel {
         t.tokens += tokenTotal(p.tokens) || num(p.totalTokens);
         break;
       case "tool_start":
-        t.tools += 1;
+        // a codemode script's calls are tallied once, as the codemode call
+        if (!parentToolCallId(p)) t.tools += 1;
         break;
       case "turn_start":
         markers.push({ ts: ev.ts, kind: "turn", label: `turn ${typeof p.turnIndex === "number" ? p.turnIndex : "?"}` });

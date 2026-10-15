@@ -31,6 +31,14 @@ function tok(n: number): string {
     if (!n) return "0";
     return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n));
 }
+// A call a codemode script made (pi 1.2+) sits two columns further in per level
+// of nesting, so the script's own calls read as its children. Nested ids are
+// `<parentToolCallId>/<n>`, so the depth is the number of `/` in the id.
+function nest(p: Record<string, any>): string {
+    if (!p.parentToolCallId) return "";
+    const depth = String(p.toolCallId || "").split("/").length - 1;
+    return "  ".repeat(Math.max(1, depth));
+}
 function clock(ts: number): string {
     try {
         return new Date(ts).toISOString().slice(11, 19);
@@ -63,14 +71,14 @@ export function formatWatchEvent(ev: ObsEvent): string | null {
             // The command / call detail — the most useful "what is it doing" line.
             const name = String(p.toolName || "tool");
             const arg = String(p.arg || "").replace(/\s+/g, " ").trim();
-            return `${t}   ${yellow("→ " + name)}${arg ? " " + dim(arg) : ""}`;
+            return `${t}   ${nest(p)}${yellow("→ " + name)}${arg ? " " + dim(arg) : ""}`;
         }
         case "tool_end": {
             const name = String(p.toolName || "tool");
             const ms = Number(p.durationMs ?? 0);
             const mark = p.isError ? red("✖") : green("✓");
             const dur = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-            let line = `${t}   ${mark} ${name} ${dim(dur)}`;
+            let line = `${t}   ${nest(p)}${mark} ${name} ${dim(dur)}`;
             // Tool output — the other half of the detail (result preview is single-line).
             const result = String(p.result || "").replace(/\s+/g, " ").trim();
             if (result) line += `\n           ${(p.isError ? red : dim)(result)}`;
@@ -100,6 +108,9 @@ export function formatWatchEvent(ev: ObsEvent): string | null {
             return p.status === "error"
                 ? `${t} ${red("✖ dispatch error")}${p.reason ? dim(` (${p.reason})`) : ""}`
                 : null;
+        case "agent_settled":
+            // Only a cancelled run is lane-worthy; session_end already marks done.
+            return p.aborted ? `${t} ${red("■ cancelled")}` : null;
         case "session_end":
             return `${t} ${bold("■ done")}`;
         default:

@@ -283,12 +283,15 @@ function spansForRun(traceKey: string, events: ObsEvent[]): any[] {
             const name = sp.toolName || ep.toolName || "tool";
             const start = t.start?.ts ?? ref.ts;
             const end = t.end?.ts ?? ref.ts;
+            const toolSpanId = (key: string) =>
+                spanIdFor(traceKey + "/tool:" + s.sessionId + ":" + key);
+            // A call a codemode script made (pi 1.2+) nests under the codemode
+            // call's span — the same id the parent's own span derives from its key.
+            const parentCall = String(sp.parentToolCallId || ep.parentToolCallId || "");
             const tool: any = {
                 traceId,
-                spanId: spanIdFor(
-                    traceKey + "/tool:" + s.sessionId + ":" + (t.key || name + ":" + start),
-                ),
-                parentSpanId: agentSpanId,
+                spanId: toolSpanId(t.key || name + ":" + start),
+                parentSpanId: parentCall ? toolSpanId(parentCall) : agentSpanId,
                 name: "execute_tool " + name,
                 kind: SPAN_KIND_INTERNAL,
                 startTimeUnixNano: nanos(start),

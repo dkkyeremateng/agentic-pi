@@ -126,12 +126,16 @@ export function summarize(events: ObsEvent[]): LiveSummary {
                 totalCost += cost;
                 break;
             }
+            // Calls a codemode script made (parentToolCallId, pi 1.2+) are part
+            // of the script's own call: count only top-level calls, as the
+            // dashboard's lane rollup does, so the two totals agree.
             case "tool_start":
-                a.toolCalls++;
+                if (!(ev.payload as any)?.parentToolCallId) a.toolCalls++;
                 a.active = true;
                 break;
             case "tool_end":
-                if ((ev.payload as any)?.isError) a.toolErrors++;
+                if ((ev.payload as any)?.isError && !(ev.payload as any)?.parentToolCallId)
+                    a.toolErrors++;
                 break;
             case "error":
                 a.errors++;

@@ -80,3 +80,19 @@ test("an empty tail is neither active nor ended", () => {
   assert.equal(r.ended, false);
   assert.equal(r.events, 0);
 });
+
+test("calls a codemode script made count once, as the codemode call", () => {
+  const P = { parentToolCallId: "cm" };
+  const r = laneRollup([
+    ev({ type: "tool_start", ts: 1, payload: { toolCallId: "cm", toolName: "codemode" } }),
+    ev({ type: "tool_start", ts: 2, payload: { toolCallId: "cm/1", toolName: "read", ...P } }),
+    ev({ type: "tool_end", ts: 3, payload: { toolCallId: "cm/1", isError: true, ...P } }),
+    ev({ type: "tool_start", ts: 4, payload: { toolCallId: "cm/2", toolName: "bash", ...P } }),
+    ev({ type: "tool_end", ts: 5, payload: { toolCallId: "cm/2", ...P } }),
+    ev({ type: "tool_end", ts: 6, payload: { toolCallId: "cm", isError: true } }),
+    // a legacy top-level call (no field) still counts
+    ev({ type: "tool_start", ts: 7, payload: { toolName: "grep" } }),
+  ]);
+  assert.equal(r.toolCalls, 2); // codemode + grep, not its 2 nested calls
+  assert.equal(r.toolErrors, 1); // the failed codemode call, not its failed child too
+});

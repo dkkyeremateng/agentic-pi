@@ -129,6 +129,25 @@ test("execute_tool span records the tool name and error status", () => {
     assert.equal(tool.status?.code, 2); // STATUS_ERROR
 });
 
+test("a codemode-made tool call nests under the codemode span", () => {
+    const base = { v: 2, sessionId: "sct", agent: "scout", runId: "run-1" };
+    const evs: ObsEvent[] = [
+        ...sampleEvents(),
+        { ...base, seq: 10, ts: 3000, type: "tool_start", payload: { toolCallId: "c1", toolName: "codemode" } },
+        { ...base, seq: 11, ts: 3010, type: "tool_start", payload: { toolCallId: "c1/1", parentToolCallId: "c1", toolName: "read" } },
+        { ...base, seq: 12, ts: 3020, type: "tool_end", payload: { toolCallId: "c1/1", parentToolCallId: "c1", toolName: "read", durationMs: 10 } },
+        { ...base, seq: 13, ts: 3030, type: "tool_end", payload: { toolCallId: "c1", toolName: "codemode", durationMs: 30 } },
+    ];
+    const otlp = eventsToOtlp(evs);
+    const scout = findSpan(otlp, (s) => s.name === "invoke_agent scout");
+    const script = findSpan(otlp, (s) => s.name === "execute_tool codemode");
+    const child = findSpan(otlp, (s) => s.name === "execute_tool read");
+    assert.equal(script.parentSpanId, scout.spanId);
+    assert.equal(child.parentSpanId, script.spanId);
+    // a top-level call is unchanged: still under its agent
+    assert.equal(findSpan(otlp, (s) => s.name === "execute_tool grep").parentSpanId, scout.spanId);
+});
+
 test("times are decimal-string nanoseconds with end >= start", () => {
     const otlp = eventsToOtlp(sampleEvents());
     const orc = findSpan(otlp, (s) => s.name === "invoke_agent orchestrator");
