@@ -88,50 +88,25 @@ downstream agents, so it is never re-threaded through the context.
   `on-context-tag` mode; in the default `agent-message` mode the agents'
   `context_tag` calls are just harmless bookmarks.
 
-  **Patch the pruner for sub-agents — `npm run patch:prune`.** In `agent-message`
-  mode pruning flushes only on the *final* assistant message, which never happens
-  mid-run in a spawned sub-agent (`pi -p` is one user turn, many tool-calling
-  messages, one final message at the end). So sub-agents carry every turn's tool
-  output for the whole phase and flush once, uselessly, at the end — measured as a
-  phase-implementer reaching 98.6% of a 256k window and truncating a turn, and later
-  as all 12 sessions of a build logging exactly ONE flush while context grew
-  monotonically and never dropped.
+  **Headless sub-agents rely on pi's compaction, not the pruner.** In
+  `agent-message` mode the pruner flushes on the *final* assistant message, and a
+  spawned sub-agent (`pi -p`) has exactly one, at the end — so mid-run it prunes
+  nothing, then summarizes every batch once the work is already done. What keeps a
+  sub-agent inside its window is pi's own compaction, which since pi 1.2 runs
+  between turns in headless sessions too. This repo used to patch the pruner to
+  prune mid-run; pi made that unnecessary, and pruner 2.1.0 ships compiled code the
+  patch could not apply to anyway.
 
-  The patch is **pressure-triggered with a keep-recent floor**: below
-  `PI_PRUNE_AT_PCT` (default 60) of the context window it prunes *nothing* — there
-  is room, and an agent's working set is worth more than the tokens — and above it
-  it summarizes oldest-first while always keeping the most recent
-  `PI_PRUNE_KEEP_RECENT` (default 3) batches raw.
+  Checked behaviourally (2026-10-15, pi 1.2.0, pruner 2.1.0): headless agents read
+  a 171KB file in chunks with compaction forced to fire mid-read, then reported
+  markers from its start, middle and end — 3 runs per arm:
 
-  Two earlier attempts pruned on a schedule instead, and both failed with the window
-  barely 10% full. Flushing every turn removed turn N's output before turn N+1 could
-  use it: an agent reading a 113KB file looped ~30 times at 8-9k of a 1M window,
-  escalating through `python3`, `dd`, `base64` and ROT13 to get its own read back.
-  Keeping only the last 3 turns was better but still wrong: a planner surveying a
-  codebase at 25k of a 256k window re-read the same files every ~3 minutes for 53
-  turns. Pruning exists to prevent overflow, so it should fire when overflow
-  threatens — not on a cadence.
-
-  Verified behaviourally in both directions — 12 source files, one read per turn,
-  then recall every file's token without re-reading:
-
-  | | below threshold | forced (`PI_PRUNE_AT_PCT=1`) |
+  | | pi compaction only | + pruner |
   |---|---|---|
-  | mid-run flushes | 1 (end only) | **10** |
-  | tokens recalled | **12/12** | **12/12** |
-  | files re-read | none | none |
-
-  Interactive sessions are untouched (`every-turn` keeps its upstream branch;
-  `agent-message` with a UI still flushes on the final message). `-- --revert`
-  restores upstream.
-
-  **`install.sh` applies this patch for you**, right after it installs the pruner —
-  it is part of installing it, not an optional extra. But `pi update` replaces the
-  package and wipes the patch, and an upgrade never re-runs the installer, so
-  **`run.sh` checks for the patch marker at startup and warns when it is gone**.
-  That check is the thing that actually catches an upgrade; it warns rather than
-  blocking, because an unpatched pruner degrades a run without breaking it. Restore
-  with `npm run patch:prune`.
+  | markers correct | 3/3 every run | 3/3 every run |
+  | mid-run compactions | 1 per run | 1 per run |
+  | peak context | 27,453 | 27,453 |
+  | wall time | 82–86s | 95–107s (an 18-call summarize at the end) |
 
   The installer also sets `showStartupNotice: false` in
   `~/.pi/agent/context-prune/settings.json` to suppress the per-session "pruner
@@ -151,7 +126,7 @@ downstream agents, so it is never re-threaded through the context.
   hand-edit this script replaced.
 
   **Re-run it after every `pi update`.** An upgrade replaces pi's package and
-  wipes the patch, and unlike the pruner patch nothing warns you — the `Model:`
+  wipes the patch, and nothing warns you — the `Model:`
   line simply comes back. On pi 1.2.0 a successful run reports
   `suppressed 2 call(s)` plus `syntax OK` for each of two files,
   `interactive-mode.js` and the bundle chunk (`dist/bundle/chunks/chunk-*.js`,
@@ -524,8 +499,6 @@ ones:
 | `PI_AGENT_TRANSIENT_RETRIES` | Same-model retries on transient errors (interrupted stream, dropped connection, 429/502/503/504/529). |
 | `PI_WORKFLOW_AGENT_TIMEOUT` | Per-agent watchdog (minutes; 0 = off). |
 | `PI_CONFINE_CWD` | Confine sub-agents' file tools to the working directory. |
-| `PI_PRUNE_AT_PCT` | Context-window % at which a headless session starts pruning at all (default 60). |
-| `PI_PRUNE_KEEP_RECENT` | Turns of tool output never summarized, even under pressure (default 3). |
 | `PI_ROADMAP_AUTOTICK` | `0` stops the orchestrator ticking milestones off `roadmap.md` on a validated run. |
 | `PI_WORKFLOW_ARCHIVE_PLANS` | Archive each run's final plan to `docs/plans/`. |
 | `PI_WORKFLOW_APPROVE_PROJECT` | Force project-trust `--approve` on/off for spawned agents (see below). |
@@ -559,8 +532,10 @@ with `PI_WORKFLOW_APPROVE_PROJECT=1` (force on, e.g. session-only trust) or `=0`
 Long runs are kept inside the model's context window by two complementary layers:
 
 1. **pi's built-in compaction** (always on, no setup) — as a session nears the
-   window, pi summarizes the older messages and keeps the most recent. The coarse
-   safety net.
+   window, pi summarizes the older messages and keeps the most recent. Since pi 1.2
+   it checks between turns, so it also covers headless sub-agents mid-run, and it
+   compacts and retries once if a response is cut off for length. This is the layer
+   that keeps sub-agents inside their window.
 2. **pi-context-prune** (the third-party package from *Prerequisites*) — precise,
    lossless, **cache-aware** pruning of *verbose tool output* (file reads, command
    output, sub-agent dumps) once it has been used. Originals stay retrievable via the
@@ -569,9 +544,10 @@ Long runs are kept inside the model's context window by two complementary layers
 **Recommended mode: `agent-message`** (the package default). A prune flushes
 automatically after each final agent reply — no agent has to remember to do
 anything — batching a whole tool-using run and pruning it once, so the next request
-becomes cacheable again. This is the most robust choice for a multi-agent workflow:
-it behaves the same for the orchestrator and every headless sub-agent, with **no
-reliance on a model calling a tool**. For the workflow's bursty requests (one ask
+becomes cacheable again. This is the most robust choice for the interactive
+orchestrator, with **no reliance on a model calling a tool**. Headless sub-agents
+have only one final reply, so there it prunes once, at the end — pi's compaction
+is what bounds them (see *Prerequisites*). For the workflow's bursty requests (one ask
 triggers many back-to-back dispatch/read rounds), pair it with `batchingMode:
 agent-message` so all those rounds merge into one cohesive summary:
 

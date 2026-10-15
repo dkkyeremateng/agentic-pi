@@ -232,23 +232,15 @@ npm run -s setup:types || warn "type linking failed — typecheck/tests may not 
 
 # 6. context pruner (recommended; registers in pi's global config)
 #
-#    The install is only half of it. `pi install` lays down UPSTREAM
-#    pi-context-prune, whose `agent-message` mode flushes on the final assistant
-#    message only — sensible interactively, useless in a `pi -p` sub-agent, which
-#    has exactly one final message, at the end. Unpatched, a phase-implementer was
-#    measured at 252,289 of a 256,000-token window and truncated with stopReason
-#    "length". So the patch is part of installing the pruner, not an optional
-#    extra, and it runs here rather than being left to a command nobody remembers.
-#
-#    `pi update` replaces the package and wipes it again — see the marker check in
-#    run.sh, which is what actually catches that, since an upgrade never re-runs
-#    this installer.
+#    Upstream, unpatched. Its `agent-message` mode prunes after each final reply,
+#    which is what an interactive session wants. Headless sub-agents (`pi -p`) have
+#    one final reply, at the end, so there it does nothing useful mid-run — pi's
+#    own compaction keeps them inside the window (pi 1.2 compacts between turns,
+#    headless included). We used to patch the pruner to prune mid-run; pi made the
+#    patch unnecessary, and pruner 2.1.0 ships compiled code it cannot apply to.
 if [ "$WITH_PRUNE" -eq 1 ]; then
     say "installing pi-context-prune (recommended context manager)"
     if pi install npm:pi-context-prune; then
-        say "patching pi-context-prune for headless sub-agents"
-        npm run -s patch:prune ||
-            warn "could not patch pi-context-prune — sub-agents will flush only at the end of a run. Re-run: npm run patch:prune"
         # The "pruner loaded" banner is a real setting now (it was a source edit
         # before). Written only when unset, so an explicit choice is never
         # overwritten.
