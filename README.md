@@ -150,6 +150,18 @@ downstream agents, so it is never re-threaded through the context.
   `dist/modes/interactive/interactive-mode.js`, which silently invalidated the
   hand-edit this script replaced.
 
+  **Re-run it after every `pi update`.** An upgrade replaces pi's package and
+  wipes the patch, and unlike the pruner patch nothing warns you — the `Model:`
+  line simply comes back. On pi 1.2.0 a successful run reports
+  `suppressed 2 call(s)` plus `syntax OK` for each of two files,
+  `interactive-mode.js` and the bundle chunk (`dist/bundle/chunks/chunk-*.js`,
+  the copy pi actually runs); a second run says `nothing to do`.
+
+  **Check it on screen, not by its output.** Until #142 this script printed
+  "commented out" and "syntax OK" while suppressing nothing — its comment closed
+  *before* the call. To confirm: start `pi`, run `/model <id>`, and the footer
+  should show the new model with no `Model: <id>` line above the editor.
+
 ### The sticky widget is a status line, not a dashboard
 
 The terminal widget shows **at most 6 rows**:
