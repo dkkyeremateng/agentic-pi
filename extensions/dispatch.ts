@@ -453,10 +453,11 @@ export default function (pi: ExtensionAPI) {
     // A new user request rebuilds dispatch phases from scratch (first dispatch of
     // the turn resets), and resets the per-turn dispatch cap. A run an extension
     // starts with `triggerTurn` (pi 1.2+, messageType "custom") is not a new
-    // request, so it keeps the current phases.
+    // request, so it keeps the current phases. (A pi before 1.2 sends no
+    // messageType, and all its runs are user prompts — hence `!== "custom"`.)
     pi.on("before_agent_start", async (event, ctx) => {
         widgetCtx = ctx;
-        if (event.messageType === "user") st.freshDispatchSession = true;
+        if (event.messageType !== "custom") st.freshDispatchSession = true;
     });
     pi.on("agent_start", async () => {
         st.primaryTurnStartedAt = Date.now();

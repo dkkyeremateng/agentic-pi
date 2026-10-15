@@ -290,7 +290,6 @@ export default function obsLive(pi: any): void {
     let lastName = ""; // last emitted session name, to emit only on change
     let bootEmitted = false;
     let turnStartTs = 0;
-    const toolStartTs = new Map<string, number>();
     // Per-turn timing for prefill (request→response) and generation throughput.
     let reqSentTs = 0; // before_provider_request
     let respStartTs = 0; // after_provider_response (≈ first byte / headers)
@@ -609,7 +608,6 @@ export default function obsLive(pi: any): void {
         try {
             control?.onTool("start", e?.toolName || "tool");
         } catch {}
-        if (e?.toolCallId) toolStartTs.set(e.toolCallId, Date.now());
         // Full args (pretty JSON, capped) power the expand-on-click view.
         let argsRaw = "";
         try {
@@ -633,17 +631,10 @@ export default function obsLive(pi: any): void {
         try {
             control?.onTool("end", e?.toolName || "tool");
         } catch {}
-        // (d) tool execution latency. pi 1.1+ reports how long `execute()` took
-        // on a monotonic clock; our own start→end stamp is the fallback for
-        // older runtimes and for calls that never ran (pi omits it then).
-        const started = e?.toolCallId ? toolStartTs.get(e.toolCallId) : undefined;
-        const durationMs =
-            typeof e?.durationMs === "number"
-                ? Math.round(e.durationMs)
-                : started
-                  ? Date.now() - started
-                  : 0;
-        if (e?.toolCallId) toolStartTs.delete(e.toolCallId);
+        // (d) tool execution latency: how long `execute()` took, measured by pi
+        // on a monotonic clock (pi 1.1+; run.sh warns below 1.2). pi omits it
+        // for a call that never ran — blocked by a guard — and 0 is right then.
+        const durationMs = typeof e?.durationMs === "number" ? Math.round(e.durationMs) : 0;
         const full = flattenText(e?.result);
         const cap = toolMax();
         emit("tool_end", {

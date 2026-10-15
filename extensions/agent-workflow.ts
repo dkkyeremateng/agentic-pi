@@ -1800,8 +1800,10 @@ export default function (pi: ExtensionAPI) {
         // Since pi 1.2 this hook also fires for runs an extension starts with
         // `pi.sendMessage(..., { triggerTurn: true })` (messageType "custom");
         // those continue the current request, so they keep its cards — but they
-        // still get the orchestrator prompt below.
-        if (event.messageType === "user") st.freshDispatchSession = true;
+        // still get the orchestrator prompt below. `!== "custom"`, not
+        // `=== "user"`: a pi before 1.2 sends no messageType at all, and every
+        // run it starts is a user prompt.
+        if (event.messageType !== "custom") st.freshDispatchSession = true;
 
         // The agents the orchestrator may dispatch. Only while a team-scoped
         // job is actually running do we restrict it to that team's roster;
