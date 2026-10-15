@@ -352,6 +352,46 @@ if [ -f "$PRUNE_INDEX" ] &&
     printf '         A pi upgrade wipes it. Restore with: \033[1mnpm run patch:prune\033[0m\n' >&2
 fi
 
+# pi version floor. Below it nothing breaks loudly, it degrades: obs records
+# every tool as 0ms (pi 1.1 added the timing it now uses), and `--no-mcp` is
+# silently ignored (pi accepts unknown flags), so sub-agents inherit MCP tools.
+# Read from pi's package.json rather than `pi --version`, which costs ~0.25s of
+# startup; walk up from the bin because pi moves its entry point between
+# releases. Warn, never block — same contract as the preflight above.
+PI_MIN_VERSION="1.2.0"
+pi_installed_version() {
+    local bin dir
+    bin="$(command -v pi 2>/dev/null)" || return 1
+    dir="$(dirname "$(readlink -f "$bin" 2>/dev/null || echo "$bin")")"
+    while [ "$dir" != "/" ] && [ -n "$dir" ]; do
+        if [ -f "$dir/package.json" ] &&
+            grep -q '"name": *"@earendil-works/pi-coding-agent"' "$dir/package.json"; then
+            sed -n 's/^[[:space:]]*"version": *"\([^"]*\)".*/\1/p' "$dir/package.json" | head -1
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    return 1
+}
+# version_lt A B: true when A is older than B (major.minor.patch; a pre-release
+# suffix is ignored). bash 3.2-safe: no associative arrays, no `sort -V`.
+version_lt() {
+    local IFS=.
+    local a=($1) b=($2) i x y
+    for i in 0 1 2; do
+        x="${a[i]:-0}"; x="${x%%[!0-9]*}"; x="${x:-0}"
+        y="${b[i]:-0}"; y="${y%%[!0-9]*}"; y="${y:-0}"
+        [ "$x" -lt "$y" ] && return 0
+        [ "$x" -gt "$y" ] && return 1
+    done
+    return 1
+}
+PI_VERSION="$(pi_installed_version)"
+if [ -n "$PI_VERSION" ] && version_lt "$PI_VERSION" "$PI_MIN_VERSION"; then
+    printf '\033[33mwarning:\033[0m pi %s is older than %s — obs tool timings read 0ms and sub-agents may inherit MCP tools.\n' "$PI_VERSION" "$PI_MIN_VERSION" >&2
+    printf '         Upgrade with: \033[1mpi update\033[0m\n' >&2
+fi
+
 # dispatch.ts first (the workflow depends on it for dispatch_agent/select_agents).
 # interactive.ts adds the ask_user tool for the primary session.
 # footer.ts renders the status bar from the state agent-workflow.ts publishes, so

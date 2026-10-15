@@ -60,7 +60,9 @@ downstream agents, so it is never re-threaded through the context.
 
 ## Prerequisites
 
-- **`pi`** on your `PATH` — the only hard requirement to *run*.
+- **`pi` 1.2.0 or newer** on your `PATH` — the only hard requirement to *run*.
+  Older versions still start, but obs tool timings read 0ms and sub-agents can
+  inherit MCP tools; `run.sh` warns when it sees one.
 - **`python3`** — for the skills (`lsp`, `linear`, `atlassian`) and Playwright.
 - **Node.js + npm** — runs the observability server (via `tsx`) and builds the
   obs dashboard, and is used for type-checking/tests during development. Not
