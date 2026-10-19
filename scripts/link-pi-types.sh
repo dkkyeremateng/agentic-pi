@@ -62,44 +62,25 @@ fallback_stubs() {
     exit 1
 }
 
-PI_BIN="$(command -v pi || true)"
-if [[ -z "$PI_BIN" ]]; then
-    fallback_stubs
-fi
+# shellcheck source=lib/pi-package.sh
+. "$ROOT/scripts/lib/pi-package.sh"
+command -v pi >/dev/null 2>&1 || fallback_stubs
 
-# Resolve the pi package root by walking UP from the bin until a package.json
-# with pi's own name appears. Do not assume how deep the entry point sits: pi
-# 0.84.3 moved it from <pkg>/dist/cli.js to <pkg>/dist/bundle/cli.js, and the
-# old fixed `../..` silently resolved to <pkg>/dist — breaking `npm test` and
-# `npm run typecheck` on upgrade, with an error that pointed at the types being
-# missing rather than at the path being wrong.
-PI_PKG="$(node -e '
-const fs = require("fs"), p = require("path");
-let dir = p.dirname(fs.realpathSync(process.argv[1]));
-for (let i = 0; i < 10; i++) {
-    const pkg = p.join(dir, "package.json");
-    if (fs.existsSync(pkg)) {
-        try {
-            if (JSON.parse(fs.readFileSync(pkg, "utf8")).name === "@earendil-works/pi-coding-agent") {
-                console.log(dir);
-                process.exit(0);
-            }
-        } catch {}
-    }
-    const up = p.dirname(dir);
-    if (up === dir) break;
-    dir = up;
-}
-process.exit(1);
-' "$PI_BIN" 2>/dev/null || true)"
+# Resolve the pi package root from the entry `pi` really runs — through the
+# managed launcher when that is what `pi` is (lib/pi-package.sh). Walking up
+# rather than assuming a depth matters too: 0.84.3 moved the entry to
+# dist/bundle/cli.js, and a fixed `../..` silently resolved to <pkg>/dist —
+# breaking `npm test` and `npm run typecheck` with an error that blamed missing
+# types rather than the path.
+PI_PKG="$(pi_package_dir || true)"
 
 if [[ -z "$PI_PKG" || ! -f "$PI_PKG/dist/index.d.ts" ]]; then
     fallback_stubs
 fi
 
-PI_TUI="$PI_PKG/node_modules/@earendil-works/pi-tui"
-TYPEBOX="$PI_PKG/node_modules/typebox"
-
+# Nested under pi (npm global) or beside it (managed install).
+PI_TUI="$(pi_dependency_dir "$PI_PKG" "@earendil-works/pi-tui" || true)"
+TYPEBOX="$(pi_dependency_dir "$PI_PKG" "typebox" || true)"
 
 # Repo imports both scopes for the coding-agent API and pi-tui; typebox is `Type`.
 link "$PI_PKG" "@earendil-works/pi-coding-agent"

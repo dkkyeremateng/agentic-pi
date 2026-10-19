@@ -21,30 +21,12 @@
 # `pi update` wipes it; re-run afterwards.
 set -euo pipefail
 
-PI_BIN="$(command -v pi || true)"
-[[ -n "$PI_BIN" ]] || { echo "patch-pi-statusline: 'pi' not found on PATH." >&2; exit 1; }
-
-# Walk up from the bin to pi's package root. Do not assume how deep the entry
-# point sits: 0.84.3 moved it to dist/bundle/cli.js, and the fixed `../..` that
-# link-pi-types.sh used silently resolved to the wrong directory.
-PI_PKG="$(node -e '
-const fs = require("fs"), p = require("path");
-let dir = p.dirname(fs.realpathSync(process.argv[1]));
-for (let i = 0; i < 10; i++) {
-    const pkg = p.join(dir, "package.json");
-    if (fs.existsSync(pkg)) {
-        try {
-            if (JSON.parse(fs.readFileSync(pkg, "utf8")).name === "@earendil-works/pi-coding-agent") {
-                console.log(dir); process.exit(0);
-            }
-        } catch {}
-    }
-    const up = p.dirname(dir);
-    if (up === dir) break;
-    dir = up;
-}
-process.exit(1);
-' "$PI_BIN")" || { echo "patch-pi-statusline: could not locate pi's package root." >&2; exit 1; }
+# shellcheck source=lib/pi-package.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/pi-package.sh"
+command -v pi >/dev/null 2>&1 || { echo "patch-pi-statusline: 'pi' not found on PATH." >&2; exit 1; }
+# Walks up from the real entry, through the managed launcher when that is what
+# `pi` is — see lib/pi-package.sh for the two layouts.
+PI_PKG="$(pi_package_dir)" || { echo "patch-pi-statusline: could not locate pi's package root." >&2; exit 1; }
 
 # Find the files by CONTENT, not by path, so the next reorganisation is survivable.
 #
