@@ -340,23 +340,12 @@ export PI_CLEAR_ON_SHRINK="${PI_CLEAR_ON_SHRINK:-1}"
 # every tool as 0ms (pi 1.1 added the timing it now uses), and `--no-mcp` is
 # silently ignored (pi accepts unknown flags), so sub-agents inherit MCP tools.
 # Read from pi's package.json rather than `pi --version`, which costs ~0.25s of
-# startup; walk up from the bin because pi moves its entry point between
-# releases. Warn, never block — an old pi degrades a run, it does not break it.
+# startup (scripts/lib/pi-package.sh handles both the npm and the managed
+# install layout). Warn, never block — an old pi degrades a run, it does not
+# break it.
 PI_MIN_VERSION="1.2.0"
-pi_installed_version() {
-    local bin dir
-    bin="$(command -v pi 2>/dev/null)" || return 1
-    dir="$(dirname "$(readlink -f "$bin" 2>/dev/null || echo "$bin")")"
-    while [ "$dir" != "/" ] && [ -n "$dir" ]; do
-        if [ -f "$dir/package.json" ] &&
-            grep -q '"name": *"@earendil-works/pi-coding-agent"' "$dir/package.json"; then
-            sed -n 's/^[[:space:]]*"version": *"\([^"]*\)".*/\1/p' "$dir/package.json" | head -1
-            return 0
-        fi
-        dir="$(dirname "$dir")"
-    done
-    return 1
-}
+# shellcheck source=scripts/lib/pi-package.sh
+. "$DIR/scripts/lib/pi-package.sh"
 # version_lt A B: true when A is older than B (major.minor.patch; a pre-release
 # suffix is ignored). bash 3.2-safe: no associative arrays, no `sort -V`.
 version_lt() {
@@ -370,7 +359,11 @@ version_lt() {
     done
     return 1
 }
-PI_VERSION="$(pi_installed_version)"
+# `|| true`: this script runs under `set -e`, so a lookup that fails — a pi
+# layout nothing here knows yet — must cost the warning, not the launcher. It
+# did once: pi 1.3.0's move to the managed install made this line exit 1 with
+# nothing on screen, and `./run.sh` stopped opening.
+PI_VERSION="$(pi_package_version || true)"
 if [ -n "$PI_VERSION" ] && version_lt "$PI_VERSION" "$PI_MIN_VERSION"; then
     printf '\033[33mwarning:\033[0m pi %s is older than %s — obs tool timings read 0ms and sub-agents may inherit MCP tools.\n' "$PI_VERSION" "$PI_MIN_VERSION" >&2
     printf '         Upgrade with: \033[1mpi update\033[0m\n' >&2
